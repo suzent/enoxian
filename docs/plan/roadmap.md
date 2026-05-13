@@ -70,7 +70,7 @@ PSK is now applied to every swarm via `pnet::PnetConfig` + `with_other_transport
 - [x] On `ConnectionEstablished`: open sync stream, run y-sync handshake for all open docs
 - [x] Subscribe to `all_updates` broadcast channel, forward to peer stream
 - [x] On incoming update: apply to local CRDT, flush to workspace disk
-- [ ] Handle new docs created after connection established (dynamic doc discovery)
+- [x] Handle new docs created after connection established (dynamic doc discovery via all_updates broadcast)
 
 ---
 

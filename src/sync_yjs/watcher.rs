@@ -76,8 +76,6 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
             Err(_) => continue,
         };
 
-        tracing::info!("[watcher] detected change: '{rel}' ({} bytes)", contents.len());
-
         // Apply to Y.Text (full replace — last external writer wins).
         // The observer fires on TransactionMut drop → broadcasts to doc_updates + all_updates.
         let doc = state.get_or_create_doc(&rel);
@@ -93,9 +91,6 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
                 if !contents.is_empty() {
                     text.insert(&mut txn, 0, &contents);
                 }
-                tracing::info!("[watcher] CRDT updated for '{rel}', broadcasting");
-            } else {
-                tracing::info!("[watcher] '{rel}' content unchanged — skipping CRDT write");
             }
         }
 
