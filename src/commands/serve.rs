@@ -154,11 +154,13 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                         for (peer_id, addr) in peers {
                             info!("[{}] mDNS discovered: {peer_id} @ {addr}", circle_id);
                             swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
-                            if swarm.is_connected(&peer_id) { continue; }
                             if let Err(e) = swarm.dial(
-                                DialOpts::peer_id(peer_id).addresses(vec![addr]).build(),
+                                DialOpts::peer_id(peer_id)
+                                    .addresses(vec![addr])
+                                    .condition(libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing)
+                                    .build(),
                             ) {
-                                warn!("[{}] Failed to dial {peer_id}: {e}", circle_id);
+                                tracing::debug!("[{}] dial skipped/failed for {peer_id}: {e}", circle_id);
                             }
                         }
                     }
