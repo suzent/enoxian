@@ -108,10 +108,12 @@ fn apply_update(state: &AppState, path: &str, raw: &[u8]) {
                 warn!("[sync] apply_update for {path}: {e}");
                 return;
             }
+            tracing::info!("[sync] applied update for '{path}' ({} bytes)", raw.len());
             if path != "__control__" {
                 let state = state.clone();
                 let path = path.to_string();
                 tokio::spawn(async move {
+                    tracing::info!("[sync] flushing '{path}' to disk");
                     crate::store::fs::flush_to_disk(&state, &path).await;
                 });
             }
@@ -280,6 +282,7 @@ async fn sync_inner(
             result = all_rx.recv() => {
                 match result {
                     Ok((path, raw)) => {
+                        tracing::info!("[sync] → sending update for '{path}' ({} bytes) to {peer_id}", raw.len());
                         let msg = encode_sync(Message::Sync(SyncMessage::Update(raw)));
                         write_frame(&mut tx, &path, &msg).await?;
                     }

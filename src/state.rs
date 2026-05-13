@@ -63,13 +63,15 @@ impl AppState {
 
         let sub = doc.observe_update_v1(move |txn, event| {
             let raw = event.update.clone();
+            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+            tracing::info!("[state] observer fired for '{}' ({} bytes, p2p={})", path_owned, raw.len(), is_p2p);
             // Always notify local WS subscribers.
             let _ = tx.send(raw.clone());
             // Only forward to P2P if the update was NOT from a remote peer.
             // This prevents echoing a received update back to the sender.
-            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
             if !is_p2p {
-                let _ = all_tx.send((path_owned.clone(), raw));
+                let r = all_tx.send((path_owned.clone(), raw));
+                tracing::info!("[state] all_updates send result: {:?}", r.map(|_| "ok").map_err(|e| e.to_string()));
             }
         }).expect("observe_update_v1 failed");
 
