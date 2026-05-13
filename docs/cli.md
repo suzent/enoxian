@@ -6,11 +6,15 @@ The `enoch` binary is the agent-facing CLI. It is stateless — every invocation
 Usage: enoch [OPTIONS] <COMMAND>
 
 Options:
-  --json    Output raw JSON instead of human-readable text
+  --json              Output raw JSON instead of human-readable text
+  --circle <NAME>     Target circle by name, name prefix, or UUID prefix
+                      (overrides ENOCHIAN_CIRCLE env var)
   -h, --help
 ```
 
-The target daemon is configured via the `ENOCHIAN_API` environment variable (default: `http://127.0.0.1:9090/api`).
+Circle resolution order: exact name → case-insensitive name prefix → UUID prefix → error if ambiguous. If only one circle exists, it is selected automatically and `--circle` is optional.
+
+The target daemon URL is configured via `ENOCHIAN_API` (default: `http://127.0.0.1:9090`).
 
 ---
 
@@ -38,10 +42,23 @@ enoch init --name <NAME> [--ttl <DURATION>]
   invite    : enochian://v1/CRxkUjpN...?expires=2026-05-20T14:00:00Z&name=MyCircle
 
   Share the invite link to let peers join (valid for 7d).
-  Generate a new link anytime: enoch invite 8e563c41-...
+  Generate a new link anytime: enoch invite MyCircle
 ```
 
-The invite link encodes both the circle ID and the pre-shared key. Share it over a trusted channel (direct message, config file, secrets manager). Do not post it publicly.
+---
+
+### `circles`
+
+List known circles. If the daemon is running, shows active circles. Falls back to local configs if the daemon is not reachable.
+
+```bash
+enoch circles
+```
+
+```
+  MyCircle    — 8e563c41-f0ec-4225-9764-064f1fb04341
+  WorkProject — 2a3b4c5d-...
+```
 
 ---
 
@@ -50,13 +67,15 @@ The invite link encodes both the circle ID and the pre-shared key. Share it over
 Generate a new invite link for an existing circle.
 
 ```bash
-enoch invite <CIRCLE-ID> [--ttl <DURATION>] [--peer <MULTIADDR>]
+enoch invite <CIRCLE> [--ttl <DURATION>] [--peer <MULTIADDR>]
 ```
+
+`<CIRCLE>` is resolved by name, name prefix, or UUID prefix.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--ttl` | `7d` | How long the invite is valid |
-| `--peer` | — | Embed a peer address so the invitee can connect without mDNS (useful for WAN) |
+| `--peer` | — | Embed a peer address for WAN connections |
 
 **Output:**
 ```
@@ -65,11 +84,6 @@ enoch invite <CIRCLE-ID> [--ttl <DURATION>] [--peer <MULTIADDR>]
   enochian://v1/CRxkUjpN...?expires=2026-05-14T14:00:00Z&name=MyCircle
 
   Join with: enoch enter "<invite>"
-```
-
-With embedded peer (for WAN connections):
-```bash
-enoch invite 8e563c41-... --ttl 24h --peer /ip4/203.0.113.5/tcp/9091
 ```
 
 ---
@@ -89,26 +103,19 @@ enoch enter <CIRCLE-ID> --secret <HEX>
 | Flag | Description |
 |------|-------------|
 | `--secret` | Pre-shared key hex — required when target is a raw Circle ID |
-| `--peer` | Override or supplement the peer address (takes priority over any address in the invite) |
+| `--peer` | Override or supplement the peer address |
 | `--rendezvous` | WAN rendezvous server multiaddr |
 
-**Expiry check:** If the invite has expired, `enter` exits immediately with an error:
-```
-Error: invite expired 2h ago (at 2026-05-13 12:00 UTC)
-```
-
-**mDNS (LAN):** On the same network, peers are discovered automatically — no `--peer` flag needed.
-
-**WAN:** Either embed `--peer` in the invite when generating it (`enoch invite --peer ...`), or pass `--peer` directly at join time.
+**Expiry check:** If the invite has expired, `enter` exits immediately with an error.
 
 ---
 
 ### `status`
 
-Show Circle overview.
+Show circle overview.
 
 ```bash
-enoch status
+enoch [--circle <NAME>] status
 ```
 
 ```
@@ -125,12 +132,7 @@ enoch status
 Show registered agent presence.
 
 ```bash
-enoch who
-```
-
-```
-  agent-alpha   active    2026-05-13 14:32:01
-  agent-beta    idle      2026-05-13 14:29:44
+enoch [--circle <NAME>] who
 ```
 
 ---
@@ -140,13 +142,7 @@ enoch who
 List tasks, optionally filtered by status.
 
 ```bash
-enoch tasks [--status open|claimed|done]
-```
-
-```
-  [open]    4873c16e  Write integration tests
-  [claimed] a2853491  Refactor network layer  (→ agent-beta)
-  [done]    f1e2d3c4  Update README
+enoch [--circle <NAME>] tasks [--status open|claimed|done]
 ```
 
 ---
@@ -156,10 +152,8 @@ enoch tasks [--status open|claimed|done]
 Claim an open task.
 
 ```bash
-enoch claim <TASK-ID>
+enoch [--circle <NAME>] claim <TASK-ID>
 ```
-
-The agent ID is read from `ENOCHIAN_AGENT_ID` (default: `"anonymous"`).
 
 ---
 
@@ -168,7 +162,7 @@ The agent ID is read from `ENOCHIAN_AGENT_ID` (default: `"anonymous"`).
 Mark a task as done.
 
 ```bash
-enoch done <TASK-ID>
+enoch [--circle <NAME>] done <TASK-ID>
 ```
 
 ---
@@ -178,10 +172,10 @@ enoch done <TASK-ID>
 Acquire an advisory file lock.
 
 ```bash
-enoch bind <PATH>
+enoch [--circle <NAME>] bind <PATH>
 ```
 
-`<PATH>` is relative to the sync directory, forward slashes. Returns an error if another agent holds the lock.
+`<PATH>` is relative to the sync directory, forward slashes.
 
 ---
 
@@ -190,24 +184,17 @@ enoch bind <PATH>
 Release a file lock.
 
 ```bash
-enoch release <PATH>
+enoch [--circle <NAME>] release <PATH>
 ```
 
 ---
 
 ### `watch`
 
-Stream live Circle events. Blocks until Ctrl+C.
+Stream live circle events. Blocks until Ctrl+C.
 
 ```bash
-enoch watch
-```
-
-```
-◆ Watching circle events (Ctrl+C to stop)...
-  [task_created]  {"type":"task_created","task_id":"..."}
-  [lock_acquired] {"type":"lock_acquired","path":"src/main.rs","agent_id":"agent-alpha"}
-  [file_updated]  {"type":"file_updated","path":"notes.txt"}
+enoch [--circle <NAME>] watch
 ```
 
 ---
@@ -216,5 +203,6 @@ enoch watch
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `ENOCHIAN_API` | `http://127.0.0.1:9090/api` | Daemon base URL |
+| `ENOCHIAN_API` | `http://127.0.0.1:9090` | Daemon base URL |
+| `ENOCHIAN_CIRCLE` | — | Default circle (name, prefix, or UUID prefix) |
 | `ENOCHIAN_AGENT_ID` | `anonymous` | Agent ID used in `claim` and `bind` |

@@ -38,3 +38,28 @@ pub fn load(circle_id: &str) -> Result<CircleConfig> {
         .with_context(|| format!("failed to read {}", path.display()))?;
     toml::from_str(&contents).context("failed to parse config.toml")
 }
+
+/// Load every circle config found under ~/.enochian/circles/*/config.toml.
+pub fn load_all() -> Result<Vec<CircleConfig>> {
+    let dir = circles_dir()?;
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut configs = Vec::new();
+    for entry in std::fs::read_dir(&dir)
+        .with_context(|| format!("failed to read circles dir {}", dir.display()))?
+    {
+        let entry = entry?;
+        let config_path = entry.path().join("config.toml");
+        if config_path.exists() {
+            match std::fs::read_to_string(&config_path)
+                .and_then(|s| toml::from_str(&s).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+            {
+                Ok(cfg) => configs.push(cfg),
+                Err(e) => tracing::warn!("skipping {}: {e}", config_path.display()),
+            }
+        }
+    }
+    configs.sort_by(|a: &CircleConfig, b: &CircleConfig| a.circle_name.cmp(&b.circle_name));
+    Ok(configs)
+}

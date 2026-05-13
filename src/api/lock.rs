@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -12,6 +12,7 @@ use crate::control::{
     fs_lock::set_readonly,
     CircleEvent, LockAction, LockEntry, Task, TaskStatus, LOCK_LOG_KEY, TASKS_KEY,
 };
+use crate::daemon::DaemonState;
 use crate::state::AppState;
 
 // ── File locking ──────────────────────────────────────────────────────────
@@ -23,9 +24,14 @@ pub struct PathRequest {
 }
 
 pub async fn bind_path(
-    State(state): State<AppState>,
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
     Json(req): Json<PathRequest>,
 ) -> impl IntoResponse {
+    let state = match daemon.get(&circle_id) {
+        Some(s) => s,
+        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+    };
     let agent_id = req.agent_id.unwrap_or_else(|| "anonymous".to_string());
 
     let conflict = {
@@ -73,9 +79,14 @@ pub async fn bind_path(
 }
 
 pub async fn release_path(
-    State(state): State<AppState>,
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
     Json(req): Json<PathRequest>,
 ) -> impl IntoResponse {
+    let state = match daemon.get(&circle_id) {
+        Some(s) => s,
+        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+    };
     let agent_id = req.agent_id.unwrap_or_else(|| "anonymous".to_string());
 
     {
@@ -111,9 +122,14 @@ pub struct TaskRequest {
 }
 
 pub async fn claim_task(
-    State(state): State<AppState>,
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
     Json(req): Json<TaskRequest>,
 ) -> impl IntoResponse {
+    let state = match daemon.get(&circle_id) {
+        Some(s) => s,
+        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+    };
     let agent_id = req.agent_id.unwrap_or_else(|| "anonymous".to_string());
     match update_task_status(&state, &req.task_id, TaskStatus::Claimed, Some(agent_id.clone())).await {
         Ok(_) => {
@@ -128,9 +144,14 @@ pub async fn claim_task(
 }
 
 pub async fn done_task(
-    State(state): State<AppState>,
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
     Json(req): Json<TaskRequest>,
 ) -> impl IntoResponse {
+    let state = match daemon.get(&circle_id) {
+        Some(s) => s,
+        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+    };
     match update_task_status(&state, &req.task_id, TaskStatus::Done, None).await {
         Ok(_) => {
             let _ = state.events.send(CircleEvent::TaskDone { task_id: req.task_id.clone() });

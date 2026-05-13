@@ -3,13 +3,14 @@ use chrono::Utc;
 
 use crate::{
     cli::InviteArgs,
-    config::load,
     invite::{self, InvitePayload},
 };
 
 pub async fn run(args: InviteArgs) -> Result<()> {
-    let config = load(&args.circle_id)
-        .with_context(|| format!("circle '{}' not found — run `enoch init` first", args.circle_id))?;
+    let configs = crate::config::load_all()?;
+    let config = crate::resolve::resolve(&args.circle, &configs)
+        .with_context(|| format!("circle '{}' not found — run `enoch circles` to list known circles", args.circle))?
+        .clone();
 
     let psk_bytes = hex::decode(&config.psk_hex)
         .context("config.toml has invalid psk_hex")?;

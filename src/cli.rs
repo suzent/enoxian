@@ -3,16 +3,11 @@ use clap::{Parser, Subcommand};
 // ── Daemon CLI ─────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "enochd", about = "ENOCHIAN daemon — runs the P2P sync node")]
+#[command(name = "enochd", about = "ENOCHIAN daemon — serves all known Circles over HTTP/P2P")]
 pub struct DaemonCli {
-    #[command(subcommand)]
-    pub command: DaemonCommands,
-}
-
-#[derive(Subcommand)]
-pub enum DaemonCommands {
-    /// Start the ENOCHIAN daemon for a Circle
-    Serve(ServeArgs),
+    /// Port to listen on
+    #[arg(long, default_value = "9090")]
+    pub port: u16,
 }
 
 // ── Agent CLI ──────────────────────────────────────────────────────────────
@@ -23,6 +18,10 @@ pub struct AgentCli {
     /// Output raw JSON (machine-readable)
     #[arg(long, global = true)]
     pub json: bool,
+
+    /// Circle name or ID prefix to target (overrides ENOCHIAN_CIRCLE)
+    #[arg(long, global = true, env = "ENOCHIAN_CIRCLE")]
+    pub circle: Option<String>,
 
     #[command(subcommand)]
     pub command: AgentCommands,
@@ -36,6 +35,8 @@ pub enum AgentCommands {
     Enter(EnterArgs),
     /// Generate a new invite link for an existing Circle
     Invite(InviteArgs),
+    /// List all known Circles (local) or active ones (daemon)
+    Circles,
     /// Show Circle overview
     Status,
     /// Show agent presence
@@ -91,8 +92,8 @@ pub struct EnterArgs {
 
 #[derive(Parser)]
 pub struct InviteArgs {
-    /// Circle ID to generate an invite for
-    pub circle_id: String,
+    /// Circle name, name prefix, or UUID prefix to generate an invite for
+    pub circle: String,
 
     /// How long the invite is valid (e.g. 7d, 24h)
     #[arg(long, default_value = "7d")]
@@ -105,15 +106,7 @@ pub struct InviteArgs {
 
 #[derive(Parser)]
 pub struct ServeArgs {
-    /// Circle ID (UUID)
-    #[arg(long)]
-    pub circle: String,
-
     /// Port to listen on
     #[arg(long, default_value = "9090")]
     pub port: u16,
-
-    /// Directory to sync (defaults to ~/.enochian/circles/<id>/files)
-    #[arg(long)]
-    pub sync_dir: Option<std::path::PathBuf>,
 }

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 use yrs::{Any, Map, MapRef, Out, Transact};
 use crate::control::{CircleEvent, Task, TaskStatus, TASKS_KEY};
-use crate::state::AppState;
+use crate::daemon::DaemonState;
 
 #[derive(Deserialize)]
 pub struct TasksQuery {
@@ -16,9 +16,14 @@ pub struct TasksQuery {
 }
 
 pub async fn get_tasks(
-    State(state): State<AppState>,
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
     Query(q): Query<TasksQuery>,
 ) -> impl IntoResponse {
+    let state = match daemon.get(&circle_id) {
+        Some(s) => s,
+        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+    };
     let doc = &state.control;
     let tasks_map: MapRef = doc.get_or_insert_map(TASKS_KEY);
     let txn = doc.transact();
@@ -48,9 +53,14 @@ pub struct CreateTaskRequest {
 }
 
 pub async fn create_task(
-    State(state): State<AppState>,
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
     Json(req): Json<CreateTaskRequest>,
 ) -> impl IntoResponse {
+    let state = match daemon.get(&circle_id) {
+        Some(s) => s,
+        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+    };
     let task = Task {
         task_id: uuid::Uuid::new_v4().to_string(),
         title: req.title,
@@ -78,3 +88,4 @@ pub async fn create_task(
     let _ = state.events.send(CircleEvent::TaskCreated { task_id: task_id.clone() });
     (StatusCode::CREATED, Json(json!({ "task_id": task_id, "status": "created" }))).into_response()
 }
+

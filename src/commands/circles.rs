@@ -1,0 +1,48 @@
+use anyhow::Result;
+
+pub async fn run(client: &reqwest::Client, daemon_base: &str, json: bool) -> Result<()> {
+    let url = format!("{}/circles", daemon_base);
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            let circles: serde_json::Value = resp.json().await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&circles)?);
+            } else {
+                if let Some(arr) = circles.as_array() {
+                    if arr.is_empty() {
+                        println!("No active circles.");
+                    } else {
+                        for c in arr {
+                            println!(
+                                "  {} — {}",
+                                c["circle_name"].as_str().unwrap_or("?"),
+                                c["circle_id"].as_str().unwrap_or("?")
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            // Daemon not running — fall back to local config
+            let configs = crate::config::load_all()?;
+            if json {
+                let v: Vec<_> = configs.iter().map(|c| serde_json::json!({
+                    "circle_id": c.circle_id,
+                    "circle_name": c.circle_name,
+                })).collect();
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                if configs.is_empty() {
+                    println!("No circles found — run `enoch init` to create one.");
+                } else {
+                    println!("Known circles (enochd not running):");
+                    for c in &configs {
+                        println!("  {} — {}", c.circle_name, c.circle_id);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}

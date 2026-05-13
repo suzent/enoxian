@@ -1,14 +1,18 @@
 use axum::{
-    extract::{Query, State, WebSocketUpgrade},
+    extract::{Path, Query, State, WebSocketUpgrade},
     extract::ws::{Message as WsMsg, WebSocket},
-    response::Response,
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
 };
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
+use serde_json::json;
 use yrs::sync::protocol::{Message, SyncMessage};
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
 use yrs::updates::decoder::Decode;
 use yrs::{ReadTxn, Transact, Update};
+use crate::daemon::DaemonState;
 use crate::state::AppState;
 use crate::store::fs::flush_to_disk;
 use std::sync::Arc;
@@ -21,11 +25,16 @@ pub struct WsParams {
 
 pub async fn ws_yjs_handler(
     ws: WebSocketUpgrade,
-    State(state): State<AppState>,
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
     Query(params): Query<WsParams>,
-) -> Response {
+) -> impl IntoResponse {
+    let state = match daemon.get(&circle_id) {
+        Some(s) => s,
+        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+    };
     let path = params.path.clone();
-    ws.on_upgrade(move |socket| handle_socket(socket, state, path))
+    ws.on_upgrade(move |socket| handle_socket(socket, state, path)).into_response()
 }
 
 async fn handle_socket(socket: WebSocket, state: AppState, doc_path: String) {
@@ -50,7 +59,6 @@ async fn handle_socket(socket: WebSocket, state: AppState, doc_path: String) {
     // ── Main loop ────────────────────────────────────────────────────────────
     loop {
         tokio::select! {
-            // Outbound: a local update → forward to this WS client as Update msg
             Ok(raw_update) = update_rx.recv() => {
                 let msg = Message::Sync(SyncMessage::Update(raw_update));
                 let mut enc = EncoderV1::new();
@@ -60,7 +68,6 @@ async fn handle_socket(socket: WebSocket, state: AppState, doc_path: String) {
                 }
             }
 
-            // Inbound: message from this WS client
             maybe_msg = receiver.next() => {
                 match maybe_msg {
                     Some(Ok(WsMsg::Binary(data))) => {
@@ -82,7 +89,6 @@ async fn handle_incoming(
     doc_path: &str,
     self_write_flag: &Arc<AtomicBool>,
 ) {
-    // Decode the y-sync message
     let mut decoder = yrs::updates::decoder::DecoderV1::new(
         yrs::encoding::read::Cursor::new(data)
     );
@@ -95,7 +101,6 @@ async fn handle_incoming(
     };
 
     match msg {
-        // Peer sends us their state vector → reply with everything they're missing
         Message::Sync(SyncMessage::SyncStep1(sv)) => {
             let diff = doc.transact().encode_diff_v1(&sv);
             let reply = Message::Sync(SyncMessage::SyncStep2(diff));
@@ -104,7 +109,6 @@ async fn handle_incoming(
             let _ = sender.send(WsMsg::Binary(enc.to_vec().into())).await;
         }
 
-        // Peer sends us a diff or incremental update → apply it
         Message::Sync(SyncMessage::SyncStep2(raw))
         | Message::Sync(SyncMessage::Update(raw)) => {
             match Update::decode_v1(&raw) {
@@ -113,16 +117,13 @@ async fn handle_incoming(
                     if let Err(e) = txn.apply_update(update) {
                         tracing::warn!("apply_update error for {doc_path}: {e}");
                     }
-                    // txn drop triggers observe_update_v1 → broadcasts to other subscribers
                 }
                 Err(e) => tracing::warn!("decode update error for {doc_path}: {e}"),
             }
-            // Flush updated doc text to disk
-            self_write_flag.store(false, Ordering::SeqCst); // reset before flush
+            self_write_flag.store(false, Ordering::SeqCst);
             flush_to_disk(state, doc_path, self_write_flag).await;
         }
 
-        // Awareness / custom messages — ignore for now
         _ => {}
     }
 }

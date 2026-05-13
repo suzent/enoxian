@@ -28,7 +28,7 @@ libp2p = { version = "0.56", features = [
 ] }
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

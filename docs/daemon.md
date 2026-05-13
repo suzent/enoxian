@@ -1,40 +1,46 @@
 # Daemon Reference — `enochd`
 
-The `enochd` binary is the long-running daemon. It hosts the P2P node, HTTP/WS API server, and file watcher for a single Circle.
+The `enochd` binary is the long-running daemon. It serves **all known Circles** over a single HTTP/WS port, with each Circle getting its own P2P swarm on a random port.
 
 ```
-Usage: enochd serve [OPTIONS] --circle <CIRCLE>
+Usage: enochd [OPTIONS]
 
 Options:
-  --circle <CIRCLE>      Circle ID (UUID)                          [required]
-  --port <PORT>          HTTP port                                 [default: 9090]
-  --sync-dir <PATH>      Override the sync directory
+  --port <PORT>    HTTP port [default: 9090]
   -h, --help
 ```
 
 ---
 
-## Ports
+## Startup sequence
 
-The daemon uses two ports:
-
-| Port | Role |
-|------|------|
-| `--port` (default 9090) | HTTP REST API + WebSocket sync |
-| `--port + 1` (default 9091) | libp2p P2P TCP transport |
-
-These are always separated by 1 so they don't conflict.
+1. Scan `~/.enochian/circles/*/config.toml` and load all known circles
+2. For each circle:
+   a. Create in-memory AppState (CRDT doc store)
+   b. Spawn a file watcher on `~/.enochian/circles/<id>/files`
+   c. Build a libp2p swarm (TCP + Noise + Yamux + mDNS + Kademlia + Identify + Ping + Rendezvous) on a random port
+   d. Register the circle in the shared DaemonState
+3. Start a single HTTP/WS server on `--port` serving all circles
 
 ---
 
-## Startup sequence
+## API routing
 
-1. Load `~/.enochian/circles/<circle-id>/config.toml`
-2. Build the libp2p swarm (TCP + Noise + Yamux + mDNS + Kademlia + Identify + Ping + Rendezvous)
-3. Start file watcher on the sync directory (`notify`)
-4. Bind HTTP/WS server on `--port`
-5. Begin P2P listen on `--port + 1`
-6. Run swarm event loop and HTTP server concurrently via `tokio::select!`
+All per-circle endpoints are prefixed with `/circles/<circle-id>`:
+
+| Path | Description |
+|------|-------------|
+| `GET /circles` | List all active circles |
+| `GET /circles/<id>/api/status` | Circle status |
+| `GET /circles/<id>/api/who` | Agent presence |
+| `GET /circles/<id>/api/tasks` | Task list |
+| `POST /circles/<id>/api/tasks` | Create task |
+| `POST /circles/<id>/api/claim` | Claim task |
+| `POST /circles/<id>/api/done` | Mark task done |
+| `POST /circles/<id>/api/bind` | Acquire file lock |
+| `POST /circles/<id>/api/release` | Release file lock |
+| `GET /circles/<id>/api/events` | SSE event stream |
+| `GET /circles/<id>/ws/yjs?path=<file>` | Yjs WebSocket sync |
 
 ---
 
@@ -49,30 +55,25 @@ psk_hex           = "d2d89de6..."        # 256-bit pre-shared key
 keypair_proto_hex = "0802..."            # Ed25519 keypair, protobuf-encoded hex
 ```
 
-> Do not share `keypair_proto_hex`. The `secret` (`psk_hex`) is the membership credential.
-
----
-
-## Log levels
-
-Controlled by the `RUST_LOG` environment variable:
-
-```bash
-RUST_LOG=info  enochd serve ...      # recommended for normal use
-RUST_LOG=debug enochd serve ...      # full verbosity including libp2p internals
-RUST_LOG=enochian=debug enochd ...   # only enochian crate logs
-RUST_LOG=warn  enochd serve ...      # errors and warnings only (silent operation)
-```
+> Do not share `keypair_proto_hex`. The `psk_hex` is the membership credential.
 
 ---
 
 ## Sync directory
 
-Default: `~/.enochian/circles/<circle-id>/files`
+`~/.enochian/circles/<circle-id>/files` — one per circle, fixed.
 
-Override: `--sync-dir /path/to/dir`
+Files are watched recursively. Any write triggers a Y.Text CRDT update and broadcasts to connected WebSocket clients.
 
-All files under this directory are watched recursively. Any file write triggers a Y.Text CRDT update and broadcasts the change to connected WebSocket clients.
+---
+
+## Log levels
+
+```bash
+RUST_LOG=info  enochd          # recommended for normal use
+RUST_LOG=debug enochd          # full verbosity including libp2p internals
+RUST_LOG=warn  enochd          # errors and warnings only
+```
 
 ---
 

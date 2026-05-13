@@ -1,5 +1,5 @@
 use clap::Parser;
-use enochian::cli::{DaemonCli, DaemonCommands};
+use enochian::cli::{DaemonCli, ServeArgs};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -11,7 +11,5 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = DaemonCli::parse();
-    match cli.command {
-        DaemonCommands::Serve(args) => enochian::commands::serve::run(args).await,
-    }
+    enochian::commands::serve::run(ServeArgs { port: cli.port }).await
 }

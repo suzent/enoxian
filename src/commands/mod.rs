@@ -1,4 +1,5 @@
 pub mod bind;
+pub mod circles;
 pub mod claim;
 pub mod done_cmd;
 pub mod enter;
