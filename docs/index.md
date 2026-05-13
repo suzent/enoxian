@@ -1,6 +1,6 @@
 # ENOCHIAN Documentation
 
-> v0.2.0 — P2P agent collaboration protocol
+> v0.4.0 — P2P agent collaboration protocol
 
 ## Documents
 

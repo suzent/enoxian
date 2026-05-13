@@ -68,52 +68,61 @@ This prevents tools that don't speak ENOCHIAN from accidentally overwriting a lo
                     └────────┬────────┘
                              │  observe_update_v1 fires
                              ▼
-                    ┌────────────-─────┐
-                    │ broadcast::Sender│  raw v1 update bytes
-                    └────────┬────-────┘
+                    ┌──────────────────┐
+                    │ doc_updates      │  raw v1 bytes → WS clients
+                    │ all_updates      │  (path, bytes) → P2P sync tasks
+                    └────────┬─────────┘
                              │
-                    ┌────────┴────────┐
-                    │  WS clients     │  Update message → each subscriber
-                    └─────────────────┘
+               ┌─────────────┴─────────────┐
+               │  WS clients               │  P2P peers
+               └───────────────────────────┘
 
-   WS Update arrives ───► apply_update() on Doc
-                               │
-                               ▼
-                          flush_to_disk()  ───► write file
+   WS or P2P update arrives ───► apply_update() on Doc
+                                      │  (origin="p2p" skips all_updates)
+                                      ▼
+                                 flush_to_disk()  ───► write file
+                                      │  (sets self_write_flag first)
+                                      ▼
+                              watcher sees event → flag set → skip
 ```
 
 ### Disk → CRDT (watcher)
 
-`spawn_watcher()` starts a `notify::RecommendedWatcher` on the sync directory with `RecursiveMode::Recursive`. Events are bridged from `std::sync::mpsc` to `tokio::sync::mpsc` via a blocking thread.
+`spawn_watcher()` starts a `notify::RecommendedWatcher` on the workspace directory with `RecursiveMode::Recursive`. Events are bridged from `std::sync::mpsc` to `tokio::sync::mpsc` via a blocking thread.
 
-On `Modify(Data)` or `Create(File)`:
+Handled event kinds: `Modify(Data(_))`, `Modify(Any)`, `Modify(Name(To))`, `Create(File)`, `Create(Any)`. The `Name(To)` variant is required on Windows, where file creation via Explorer generates a rename sequence rather than a direct create event.
 
-1. Strip the sync directory prefix → relative path (forward-slash normalized).
-2. Check the **self-write flag** for this path (see below). Skip if set.
+On a relevant event:
+
+1. Strip the workspace prefix → relative path (forward-slash normalized).
+2. Check `state.self_write_flags` for this path. If set, swap to false and skip — this was our own `flush_to_disk` write.
 3. Read the full file as UTF-8.
 4. Call `state.get_or_create_doc(rel_path)` → `Arc<Doc>`.
 5. Open a `TransactionMut`, get the `Y.Text`, compare with current content.
 6. If changed: `remove_range(0, len)` then `insert(0, new_contents)`.
-7. Drop the `TransactionMut` → `observe_update_v1` fires → broadcast channel receives raw bytes → WS clients receive `Update` messages.
+7. Drop the `TransactionMut` → `observe_update_v1` fires → `doc_updates` and `all_updates` broadcast channels receive the update.
 
-**Current strategy: full-text replace.** This is correct for CRDT semantics — concurrent full-replaces merge deterministically. A future version will apply character-level diff operations for better performance on large files.
+**Current strategy: full-text replace.** Correct for CRDT semantics — concurrent full-replaces merge deterministically. A future version may apply character-level diffs for performance on large files.
 
-### CRDT → Disk (WebSocket update)
+### CRDT → Disk (WebSocket or P2P update)
 
-When a WS client sends `SyncStep2` or `Update`:
+When a WS client sends `SyncStep2` or `Update`, or when the P2P sync handler receives an update from a peer:
 
 1. `Update::decode_v1(&bytes)` → `Update`
-2. `doc.transact_mut().apply_update(update)` — merges into the Y.Doc; fires `observe_update_v1` → broadcasts to other WS clients.
+2. `doc.transact_mut().apply_update(update)` (or `transact_mut_with("p2p")` for P2P) — merges into the Y.Doc.
 3. `flush_to_disk()` — reads `Y.Text.get_string()` → writes the file.
+
+For WS updates, `observe_update_v1` fires and sends to both `doc_updates` (other WS clients) and `all_updates` (P2P peers). For P2P updates (origin `"p2p"`), only `doc_updates` fires — `all_updates` is skipped to prevent echo.
 
 ### Self-write suppression
 
 Without suppression, `flush_to_disk` would trigger the watcher, which would re-read the file and apply another update — infinite loop.
 
-Suppression uses a per-path `Arc<AtomicBool>`:
+Suppression uses a per-path `Arc<AtomicBool>` stored in `AppState::self_write_flags`, shared between the watcher and `flush_to_disk`:
 
 ```
 flush_to_disk:
+    flag = state.self_write_flags[path]
     flag.store(true)
     tokio::fs::write(file)
 
@@ -121,7 +130,7 @@ watcher (next event for this path):
     if flag.swap(false) { continue }   // skip — our own write
 ```
 
-The flag map is a `DashMap<String, Arc<AtomicBool>>` shared between the watcher and `flush_to_disk`.
+Storing the flags in `AppState` is critical — without a shared map, each caller would hold an independent `AtomicBool` and the handshake would never work.
 
 ---
 
@@ -130,10 +139,10 @@ The flag map is a `DashMap<String, Arc<AtomicBool>>` shared between the watcher 
 ### Transport stack
 
 ```
-TCP ──► Noise (XX handshake, Ed25519) ──► Yamux (multiplexer)
+TCP ──► PSK (XSalsa20, pnet) ──► Noise (XX handshake, Ed25519) ──► Yamux (multiplexer)
 ```
 
-All connections are encrypted and authenticated. Noise uses the node's Ed25519 keypair (loaded from `config.toml`). Yamux allows multiple logical streams over one TCP connection.
+The PSK layer is applied first via `pnet::PnetConfig` using `with_other_transport`. A node with a mismatched PSK is rejected before Noise negotiation begins — this is the circle membership enforcement at the network layer. Noise then authenticates the node's Ed25519 keypair. Yamux multiplexes logical streams over the single TCP connection.
 
 ### Behaviours
 
@@ -144,31 +153,66 @@ All connections are encrypted and authenticated. Noise uses the node's Ed25519 k
 | `identify` | protocol `/enochian/1.0.0` | Exchange public keys and listen addresses on connect |
 | `ping` | default | Keepalive; detect dead connections |
 | `rendezvous` (client) | — | Register with a rendezvous server for WAN introduction |
+| `stream` (`libp2p-stream`) | — | Custom stream protocol `/enochian/sync/1.0.0` for y-sync |
 
 ### Event loop
 
-`serve.rs` runs the swarm in the second branch of `tokio::select!`:
+`serve.rs` spawns a swarm event loop task per circle:
 
 ```rust
-tokio::select! {
-    result = axum::serve(listener, app) => { ... }
-    _ = async {
-        loop {
-            match swarm.select_next_some().await {
-                NewListenAddr     => log address
-                ConnectionEstablished => log peer
-                Mdns::Discovered  => add to Kademlia, dial if not connected
-                Mdns::Expired     => log
-                Identify::Received => add listen addrs to Kademlia
-                Ping              => debug log
-                OutgoingConnectionError => warn
-                _ => {}
-            }
-        }
-    } => {}
+loop {
+    match swarm.select_next_some().await {
+        NewListenAddr          => log address
+        ConnectionEstablished  => if dialer: open_stream → run_sync(initiator=true)
+        ConnectionClosed       => log
+        Mdns::Discovered       => add to Kademlia, dial (DisconnectedAndNotDialing)
+        Mdns::Expired          => log
+        Identify::Received     => add listen addrs to Kademlia
+        Ping                   => debug log
+        OutgoingConnectionError => debug log (harmless — already-connected peer)
+        _ => {}
+    }
 }
 ```
 
-### Y-doc gossip over P2P (planned)
+A separate accept task runs per circle:
 
-Currently, Yjs document updates are only exchanged over the HTTP WebSocket endpoint. P2P gossip — broadcasting Y.Array / Y.Map / Y.Text updates directly between `enochd` nodes over libp2p streams — is planned for **Phase 4**. This will use `libp2p-request-response` or a custom stream protocol to sync the Control Doc and file docs between daemons without requiring a shared HTTP endpoint.
+```rust
+let mut incoming = stream_control.accept(sync::PROTOCOL)?;
+while let Some((peer_id, stream)) = incoming.next().await {
+    tokio::spawn(sync::run_sync(peer_id, stream, state, false));
+}
+```
+
+Only the dialing side opens the sync stream (responder accepts) — this prevents a double-sync when both sides dial simultaneously.
+
+### Y-sync protocol (`/enochian/sync/1.0.0`)
+
+Live bidirectional file sync between daemons uses the y-sync protocol over a `libp2p-stream` `Stream`. Framing: `[4-byte path len][path UTF-8][4-byte data len][y-sync bytes]`.
+
+**3-phase handshake (deadlock-free):**
+
+```
+Initiator                          Responder
+─────────────────────────────────────────────
+send count + SyncStep1 for each doc
+                                   recv SyncStep1s → send SyncStep2s
+                                   send count + SyncStep1 for each doc
+recv SyncStep2s
+recv SyncStep1s → send SyncStep2s
+─────────────────────────────────────────────
+         continuous update exchange
+```
+
+**Continuous exchange** (after handshake):
+
+- A reader task runs in a dedicated `tokio::spawn` so `read_frame` is never cancelled mid-frame.
+- Reader forwards events to the writer loop via an `mpsc` channel.
+- Writer loop selects between incoming events and outgoing updates from `all_updates`.
+- On `RecvError::Lagged`: sends full CRDT state for every doc (idempotent — CRDT merges are safe to re-apply).
+
+**Echo prevention:** updates received from a peer are applied with `transact_mut_with("p2p")`. The `observe_update_v1` callback checks the origin and skips forwarding to `all_updates`, so the update is not echoed back to the sender.
+
+**Self-write suppression:** `flush_to_disk` sets a per-path flag in `AppState::self_write_flags` before writing. The file watcher checks and clears the flag on the next event for that path, skipping re-ingestion of P2P-written files.
+
+**Observer lifetime:** the `Subscription` from `observe_update_v1` is kept alive with `std::mem::forget`. Dropping it would silently unregister the callback in yrs 0.26.

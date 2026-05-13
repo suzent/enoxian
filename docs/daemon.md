@@ -16,11 +16,15 @@ Options:
 
 1. Scan `~/.enochian/circles/*/config.toml` and load all known circles
 2. For each circle:
-   a. Create in-memory state (CRDT doc store)
+   a. Create in-memory state (CRDT doc store, `all_updates` broadcast, `self_write_flags`)
    b. Spawn a file watcher on the circle's workspace directory
-   c. Build a libp2p swarm (TCP + Noise + Yamux + mDNS + Kademlia + Identify + Ping + Rendezvous) on a random port
-   d. Register the circle in the shared daemon state
+   c. Build a libp2p swarm with PSK-enforced transport (XSalsa20 via `pnet`) + Noise + Yamux + mDNS + Kademlia + Identify + Ping + Rendezvous + Stream, on a random port
+   d. Spawn the stream accept task (listens for incoming `/enochian/sync/1.0.0` streams)
+   e. Spawn the swarm event loop (dials mDNS peers, opens sync streams on connect)
+   f. Register the circle in the shared daemon state
 3. Start a single HTTP/WS server on `--port` serving all circles
+
+Each circle's P2P swarm is isolated by its PSK — peers from a different circle are rejected at the transport layer before any protocol negotiation.
 
 ---
 
@@ -51,12 +55,15 @@ Located at `~/.enochian/circles/<circle-id>/config.toml`. Created by `enoch init
 ```toml
 circle_id         = "8e563c41-f0ec-4225-9764-064f1fb04341"
 circle_name       = "MyCircle"
-psk_hex           = "d2d89de6..."        # 256-bit pre-shared key
-keypair_proto_hex = "0802..."            # Ed25519 keypair, protobuf-encoded hex
+psk_hex           = "d2d89de6..."        # 256-bit pre-shared key (circle membership)
+keypair_proto_hex = "0802..."            # Ed25519 node keypair, protobuf-encoded hex
 workspace_dir     = "/Users/suzy/enochian/MyCircle"
+admin_pubkey_hex  = "0803..."            # Ed25519 admin pubkey (enforced in M6)
 ```
 
-> Do not share `keypair_proto_hex`. The `psk_hex` is the membership credential.
+> Do not share `keypair_proto_hex`. The `psk_hex` is the circle membership credential — every member holds it and any member can generate invite links (until M6 restricts invite authority to the admin keypair).
+
+The `admin_pubkey_hex` is generated at `enoch init` and stored in `admin.key` (private) alongside `config.toml`. It is replicated into joining members' configs via the invite flow. It is currently stored but not enforced — enforcement of invite signing and member lists is planned for M6.
 
 ---
 

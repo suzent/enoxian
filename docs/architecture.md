@@ -10,21 +10,21 @@
 │  │  libp2p     │   │   axum HTTP + WS   │   │   notify   │  │
 │  │  Swarm      │   │   :9090            │   │   watcher  │  │
 │  │             │   │                    │   │            │  │
-│  │  TCP/Noise  │   │  GET  /api/status  │   │  disk →    │  │
+│  │  PSK/Noise  │   │  GET  /api/status  │   │  disk →    │  │
 │  │  Yamux      │   │  GET  /api/who     │   │  Y.Text    │  │
 │  │  mDNS       │   │  GET  /api/tasks   │   │            │  │
 │  │  Kademlia   │   │  POST /api/tasks   │   │  Y.Text →  │  │
 │  │  Identify   │   │  POST /api/claim   │   │  disk      │  │
 │  │  Ping       │   │  POST /api/done    │   └────────────┘  │
 │  │  Rendezvous │   │  POST /api/bind    │                   │
-│  │  :9091      │   │  POST /api/release │   ┌────────────┐  │
-│  └─────────────┘   │  GET  /api/events  │   │  AppState  │  │
-│         │          │  WS   /ws/yjs      │   │            │  │
+│  │  Stream     │   │  POST /api/release │   ┌────────────┐  │
+│  │  :random    │   │  GET  /api/events  │   │  AppState  │  │
+│  └─────────────┘   │  WS   /ws/yjs      │   │            │  │
 │         │          └────────────────────┘   │ docs       │  │
 │         │                   │               │ Arc<Doc>×N │  │
-│         │                   │               │            │  │
-│  P2P gossip          HTTP / WS              │ control    │  │
-│  (future)            reqwest                │ Arc<Doc>   │  │
+│  /enochian/sync      HTTP / WS              │            │  │
+│  y-sync protocol     reqwest                │ control    │  │
+│  (live, M3)                                 │ Arc<Doc>   │  │
 │         │                   │               │            │  │
 └─────────────────────────────────────────────────────────────┘
           │                   │
@@ -54,7 +54,9 @@
 | Lock arbitration | `src/control/arbitration.rs` | Replay `lock_log` array → current holder map |
 | Control types | `src/control/mod.rs` | Task, LockEntry, Presence, CircleEvent structs |
 | FS lock | `src/control/fs_lock.rs` | `set_readonly()` — chmod wrapper |
-| Serve command | `src/commands/serve.rs` | Main daemon loop; swarm + axum via `tokio::select!` |
+| P2P sync | `src/network/sync.rs` | `/enochian/sync/1.0.0` stream handler; 3-phase handshake + continuous update exchange |
+| P2P behaviour | `src/network/behaviour.rs` | `EnochBehaviour` combining all libp2p behaviours |
+| Serve command | `src/commands/serve.rs` | Main daemon loop; one swarm per circle + axum HTTP server |
 | CLI commands | `src/commands/*.rs` | `reqwest` calls to the REST API |
 | CLI definitions | `src/cli.rs` | `clap` arg structs for both binaries |
 
@@ -69,7 +71,7 @@
 pub struct AppState {
     pub circle_id:   String,
     pub circle_name: String,
-    pub sync_dir:    PathBuf,
+    pub workspace:   PathBuf,
 
     /// File docs. Key = relative path with forward slashes.
     pub docs:        Arc<DashMap<String, Arc<Doc>>>,
@@ -80,8 +82,15 @@ pub struct AppState {
     /// Per-doc update broadcast (raw v1 bytes → WS clients)
     pub doc_updates: Arc<DashMap<String, broadcast::Sender<Vec<u8>>>>,
 
+    /// Global broadcast: (rel_path, raw_v1_update) → P2P sync tasks
+    pub all_updates: broadcast::Sender<(String, Vec<u8>)>,
+
     /// SSE event stream
     pub events:      broadcast::Sender<CircleEvent>,
+
+    /// Per-path flag shared between flush_to_disk and the file watcher.
+    /// Set to true before writing, cleared by the watcher to skip its own writes.
+    pub self_write_flags: Arc<DashMap<String, Arc<AtomicBool>>>,
 }
 ```
 
@@ -89,7 +98,10 @@ pub struct AppState {
 
 - `Arc<Doc>` (not `Arc<RwLock<Awareness>>`): `yrs::Awareness` stores `dyn Fn(...)` callbacks without a `Send` bound, making it non-`Send`. `yrs::Doc` is internally `Arc`-based and `Send + Sync`.
 - `DashMap`: lock-free concurrent HashMap, so handlers don't need to hold a mutex while doing async work.
-- Broadcast channels: `observe_update_v1` fires synchronously on `TransactionMut` drop, sends raw update bytes to a `tokio::sync::broadcast::Sender`. WS handlers subscribe and forward.
+- `doc_updates` broadcast: `observe_update_v1` fires synchronously on `TransactionMut` drop, sends raw update bytes. WS handlers subscribe and forward.
+- `all_updates` broadcast: same observer also sends `(path, bytes)` to this channel, but only for locally-originated updates (origin ≠ `"p2p"`). P2P sync tasks subscribe here to forward to peers without echoing received updates back.
+- `self_write_flags` in `AppState`: both the file watcher and `flush_to_disk` reference the same flag map so the suppress-self-write handshake works across tasks.
+- Observer lifetime: the `Subscription` returned by `observe_update_v1` is kept alive via `std::mem::forget` — dropping it would silently unregister the observer.
 
 ---
 
@@ -163,12 +175,17 @@ Serialized to JSON (`{"type":"task_created", ...}`) for the SSE stream.
 ~/.enochian/
 └── circles/
     └── <circle-id>/
-        ├── config.toml          # Circle config + keypair
-        └── files/               # Sync directory (watched)
-            ├── notes.txt
-            └── src/
-                └── main.rs
+        ├── config.toml          # Circle config, node keypair, PSK, workspace path
+        └── admin.key            # Admin Ed25519 keypair hex (creator only; unenforced until M6)
+
+~/enochian/                      # Default workspace root (configurable via --dir or workspace_dir)
+└── <circle-name>/               # One directory per circle
+    ├── notes.txt
+    └── src/
+        └── main.rs
 ```
+
+The workspace path is stored in `config.toml` as `workspace_dir` and can be any directory on the filesystem. The config dir (`~/.enochian/circles/<id>/`) holds credentials only — workspace files live separately so they're easy to find and edit directly.
 
 ### Source
 
@@ -208,7 +225,8 @@ src/
 ├── crypto.rs                    # Keypair generation + hex encoding
 ├── lib.rs                       # Crate root
 ├── network/
-│   └── behaviour.rs             # EnochBehaviour + EnochEvent (libp2p)
+│   ├── behaviour.rs             # EnochBehaviour + EnochEvent (libp2p)
+│   └── sync.rs                  # /enochian/sync/1.0.0 — y-sync over libp2p Stream
 └── state.rs                     # AppState
 ```
 
@@ -221,6 +239,8 @@ src/
 | `tokio` | 1 | Async runtime |
 | `axum` | 0.8 | HTTP + WebSocket server |
 | `libp2p` | 0.56 | P2P transport and protocols |
+| `libp2p-stream` | 0.4.0-alpha | Custom stream protocol (`/enochian/sync/1.0.0`) |
+| `tokio-util` | 0.7 | `FuturesAsyncReadCompatExt` — bridges libp2p Stream to tokio AsyncRead/Write |
 | `yrs` | 0.26 | Yjs CRDT (Y.Doc, Y.Text, Y.Map, Y.Array) |
 | `notify` | 8 | Cross-platform file watcher |
 | `dashmap` | 6 | Lock-free concurrent HashMap |
