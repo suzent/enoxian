@@ -9,7 +9,7 @@ use crate::control::CircleEvent;
 use crate::state::AppState;
 
 /// Spawn the file-system watcher task.
-pub async fn spawn_watcher(state: AppState, sync_dir: PathBuf) -> anyhow::Result<()> {
+pub async fn spawn_watcher(state: AppState, workspace: PathBuf) -> anyhow::Result<()> {
     let (tokio_tx, mut tokio_rx) = mpsc::channel::<notify::Result<Event>>(128);
     let (std_tx, std_rx) = std::sync::mpsc::channel::<notify::Result<Event>>();
 
@@ -24,8 +24,8 @@ pub async fn spawn_watcher(state: AppState, sync_dir: PathBuf) -> anyhow::Result
     });
 
     let mut watcher = RecommendedWatcher::new(std_tx, Config::default())?;
-    tokio::fs::create_dir_all(&sync_dir).await?;
-    watcher.watch(&sync_dir, RecursiveMode::Recursive)?;
+    tokio::fs::create_dir_all(&workspace).await?;
+    watcher.watch(&workspace, RecursiveMode::Recursive)?;
 
     // Self-write flags shared per path: prevents re-entrancy loop
     let self_write_flags: Arc<dashmap::DashMap<String, Arc<AtomicBool>>> =
@@ -36,7 +36,7 @@ pub async fn spawn_watcher(state: AppState, sync_dir: PathBuf) -> anyhow::Result
         while let Some(result) = tokio_rx.recv().await {
             match result {
                 Ok(event) => {
-                    handle_event(&state, &sync_dir, event, &self_write_flags).await;
+                    handle_event(&state, &workspace, event, &self_write_flags).await;
                 }
                 Err(e) => tracing::warn!("watcher error: {e}"),
             }
@@ -48,7 +48,7 @@ pub async fn spawn_watcher(state: AppState, sync_dir: PathBuf) -> anyhow::Result
 
 async fn handle_event(
     state: &AppState,
-    sync_dir: &PathBuf,
+    workspace: &PathBuf,
     event: Event,
     self_write_flags: &Arc<dashmap::DashMap<String, Arc<AtomicBool>>>,
 ) {
@@ -61,7 +61,7 @@ async fn handle_event(
     }
 
     for path in &event.paths {
-        let rel = match path.strip_prefix(sync_dir) {
+        let rel = match path.strip_prefix(workspace) {
             Ok(r) => r.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
         };

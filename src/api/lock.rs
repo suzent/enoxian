@@ -68,7 +68,7 @@ pub async fn bind_path(
         let _ = append_lock_entry(&lock_log, &mut txn, &entry);
     }
 
-    let full = state.sync_dir.join(req.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let full = state.workspace.join(req.path.replace('/', std::path::MAIN_SEPARATOR_STR));
     let _ = set_readonly(&full, true).await;
     let _ = state.events.send(CircleEvent::LockAcquired {
         path: req.path.clone(),
@@ -103,7 +103,7 @@ pub async fn release_path(
         let _ = append_lock_entry(&lock_log, &mut txn, &entry);
     }
 
-    let full = state.sync_dir.join(req.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let full = state.workspace.join(req.path.replace('/', std::path::MAIN_SEPARATOR_STR));
     let _ = set_readonly(&full, false).await;
     let _ = state.events.send(CircleEvent::LockReleased {
         path: req.path.clone(),

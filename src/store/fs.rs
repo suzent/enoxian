@@ -23,7 +23,7 @@ pub async fn flush_to_disk(
     };
 
     let full_path = state
-        .sync_dir
+        .workspace
         .join(rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
 
     if let Some(parent) = full_path.parent() {

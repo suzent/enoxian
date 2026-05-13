@@ -13,7 +13,7 @@ pub async fn get_status(
     Json(json!({
         "circle_id":   state.circle_id,
         "circle_name": state.circle_name,
-        "workspace":   state.sync_dir.to_string_lossy(),
+        "workspace":   state.workspace.to_string_lossy(),
         "docs":        state.docs.len(),
     })).into_response()
 }

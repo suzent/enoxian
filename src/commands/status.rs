@@ -9,7 +9,7 @@ pub async fn run(client: &reqwest::Client, base: &str, json: bool) -> Result<()>
     } else {
         println!("◆ Circle:  {}", val["circle_name"].as_str().unwrap_or("?"));
         println!("  ID:      {}", val["circle_id"].as_str().unwrap_or("?"));
-        println!("  SyncDir: {}", val["sync_dir"].as_str().unwrap_or("?"));
+        println!("  Workspace: {}", val["workspace"].as_str().unwrap_or("?"));
         println!("  Docs:    {}", val["docs"]);
     }
     Ok(())

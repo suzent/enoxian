@@ -32,28 +32,28 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     for config in configs {
         let keypair = keypair_from_hex(&config.keypair_proto_hex)?;
         let peer_id = keypair.public().to_peer_id();
-        let sync_dir = if config.workspace_dir.is_empty() {
+        let workspace = if config.workspace_dir.is_empty() {
             crate::config::circle_dir(&config.circle_id)?.join("files")
         } else {
             std::path::PathBuf::from(&config.workspace_dir)
         };
-        tokio::fs::create_dir_all(&sync_dir).await?;
+        tokio::fs::create_dir_all(&workspace).await?;
 
         info!(
             "  Circle '{}' ({}) — PeerID: {} — SyncDir: {}",
             config.circle_name,
             config.circle_id,
             peer_id,
-            sync_dir.display()
+            workspace.display()
         );
 
         let state = AppState::new(
             config.circle_id.clone(),
             config.circle_name.clone(),
-            sync_dir.clone(),
+            workspace.clone(),
         );
 
-        spawn_watcher(state.clone(), sync_dir).await?;
+        spawn_watcher(state.clone(), workspace).await?;
         daemon.insert(config.circle_id.clone(), state);
 
         // Spawn a P2P swarm for this circle on a random port

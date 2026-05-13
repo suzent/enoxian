@@ -14,7 +14,7 @@ pub const EVENT_CAPACITY: usize = 256;
 pub struct AppState {
     pub circle_id: String,
     pub circle_name: String,
-    pub sync_dir: PathBuf,
+    pub workspace: PathBuf,
     /// File docs. Key = relative path with forward slashes.
     pub docs: Arc<DashMap<String, Arc<Doc>>>,
     /// __control__ coordination document
@@ -26,12 +26,12 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(circle_id: String, circle_name: String, sync_dir: PathBuf) -> Self {
+    pub fn new(circle_id: String, circle_name: String, workspace: PathBuf) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
         Self {
             circle_id,
             circle_name,
-            sync_dir,
+            workspace,
             docs: Arc::new(DashMap::new()),
             control: Arc::new(Doc::new()),
             doc_updates: Arc::new(DashMap::new()),
