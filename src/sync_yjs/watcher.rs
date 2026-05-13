@@ -27,17 +27,11 @@ pub async fn spawn_watcher(state: AppState, workspace: PathBuf) -> anyhow::Resul
     tokio::fs::create_dir_all(&workspace).await?;
     watcher.watch(&workspace, RecursiveMode::Recursive)?;
 
-    // Self-write flags shared per path: prevents re-entrancy loop
-    let self_write_flags: Arc<dashmap::DashMap<String, Arc<AtomicBool>>> =
-        Arc::new(dashmap::DashMap::new());
-
     tokio::spawn(async move {
         let _watcher = watcher; // keep alive inside task
         while let Some(result) = tokio_rx.recv().await {
             match result {
-                Ok(event) => {
-                    handle_event(&state, &workspace, event, &self_write_flags).await;
-                }
+                Ok(event) => handle_event(&state, &workspace, event).await,
                 Err(e) => tracing::warn!("watcher error: {e}"),
             }
         }
@@ -46,12 +40,7 @@ pub async fn spawn_watcher(state: AppState, workspace: PathBuf) -> anyhow::Resul
     Ok(())
 }
 
-async fn handle_event(
-    state: &AppState,
-    workspace: &PathBuf,
-    event: Event,
-    self_write_flags: &Arc<dashmap::DashMap<String, Arc<AtomicBool>>>,
-) {
+async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
     let relevant = matches!(
         event.kind,
         EventKind::Modify(ModifyKind::Data(_)) | EventKind::Create(CreateKind::File)
@@ -66,8 +55,10 @@ async fn handle_event(
             Err(_) => continue,
         };
 
-        // Skip if this write was triggered by flush_to_disk
-        let flag = self_write_flags
+        // Check the shared self_write_flag. If flush_to_disk set it, this event
+        // was caused by a P2P or WS write — skip it to avoid a re-entrancy loop.
+        let flag = state
+            .self_write_flags
             .entry(rel.clone())
             .or_insert_with(|| Arc::new(AtomicBool::new(false)))
             .clone();
@@ -81,7 +72,8 @@ async fn handle_event(
             Err(_) => continue,
         };
 
-        // Apply to Y.Text (full replace — last external writer wins)
+        // Apply to Y.Text (full replace — last external writer wins).
+        // The observer fires on TransactionMut drop → broadcasts to doc_updates + all_updates.
         let doc = state.get_or_create_doc(&rel);
         {
             let text = doc.get_or_insert_text(rel.as_str());
@@ -95,7 +87,6 @@ async fn handle_event(
                 if !contents.is_empty() {
                     text.insert(&mut txn, 0, &contents);
                 }
-                // TransactionMut drop triggers observe_update_v1 → broadcast channel
             }
         }
 

@@ -8,8 +8,6 @@
 /// Framing: [4-byte path len][path UTF-8][4-byte data len][y-sync bytes]
 use anyhow::Result;
 use libp2p::{PeerId, Stream, StreamProtocol};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
@@ -104,17 +102,17 @@ fn apply_update(state: &AppState, path: &str, raw: &[u8]) {
 
     match Update::decode_v1(raw) {
         Ok(update) => {
-            if let Err(e) = doc.transact_mut().apply_update(update) {
+            // Use "p2p" origin so the observer skips forwarding this back to all_updates,
+            // preventing the update from echoing to the peer that just sent it.
+            if let Err(e) = doc.transact_mut_with("p2p").apply_update(update) {
                 warn!("[sync] apply_update for {path}: {e}");
                 return;
             }
             if path != "__control__" {
                 let state = state.clone();
                 let path = path.to_string();
-                let flag = Arc::new(AtomicBool::new(true));
-                flag.store(true, Ordering::SeqCst);
                 tokio::spawn(async move {
-                    crate::store::fs::flush_to_disk(&state, &path, &flag).await;
+                    crate::store::fs::flush_to_disk(&state, &path).await;
                 });
             }
         }
@@ -221,7 +219,7 @@ async fn sync_inner(
         }
     }
 
-    debug!("[sync] handshake complete with {peer_id}");
+    tracing::info!("[sync] handshake complete with {peer_id}");
 
     // ── Continuous exchange ───────────────────────────────────────────────────
     //

@@ -15,8 +15,6 @@ use yrs::{ReadTxn, Transact, Update};
 use crate::daemon::DaemonState;
 use crate::state::AppState;
 use crate::store::fs::flush_to_disk;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Deserialize)]
 pub struct WsParams {
@@ -39,7 +37,6 @@ pub async fn ws_yjs_handler(
 
 async fn handle_socket(socket: WebSocket, state: AppState, doc_path: String) {
     let doc = state.get_or_create_doc(&doc_path);
-    let self_write_flag = Arc::new(AtomicBool::new(false));
     let (mut sender, mut receiver) = socket.split();
 
     // ── Handshake: send SyncStep1 (our state vector) ────────────────────────
@@ -71,7 +68,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, doc_path: String) {
             maybe_msg = receiver.next() => {
                 match maybe_msg {
                     Some(Ok(WsMsg::Binary(data))) => {
-                        handle_incoming(&doc, &data, &mut sender, &state, &doc_path, &self_write_flag).await;
+                        handle_incoming(&doc, &data, &mut sender, &state, &doc_path).await;
                     }
                     Some(Ok(WsMsg::Close(_))) | None => break,
                     _ => {}
@@ -87,7 +84,6 @@ async fn handle_incoming(
     sender: &mut futures::stream::SplitSink<WebSocket, WsMsg>,
     state: &AppState,
     doc_path: &str,
-    self_write_flag: &Arc<AtomicBool>,
 ) {
     let mut decoder = yrs::updates::decoder::DecoderV1::new(
         yrs::encoding::read::Cursor::new(data)
@@ -120,8 +116,7 @@ async fn handle_incoming(
                 }
                 Err(e) => tracing::warn!("decode update error for {doc_path}: {e}"),
             }
-            self_write_flag.store(false, Ordering::SeqCst);
-            flush_to_disk(state, doc_path, self_write_flag).await;
+            flush_to_disk(state, doc_path).await;
         }
 
         _ => {}
