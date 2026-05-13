@@ -9,17 +9,15 @@ use tracing::{info, warn};
 
 use crate::{
     cli::EnterArgs,
-    crypto::{generate_keypair, keypair_from_hex},
+    crypto::generate_keypair,
     network::behaviour::{EnochBehaviour, EnochEvent},
 };
 
 pub async fn run(args: EnterArgs) -> Result<()> {
-    // Use the saved keypair if this circle was previously init'd locally,
-    // otherwise generate an ephemeral one.
-    let keypair = crate::config::load(&args.circle_id)
-        .ok()
-        .and_then(|c| keypair_from_hex(&c.keypair_proto_hex).ok())
-        .unwrap_or_else(generate_keypair);
+    // Always generate a fresh ephemeral keypair for `enter`.
+    // `serve` owns the circle's persistent keypair/PeerID.
+    // Two nodes sharing the same PeerID cannot connect to each other.
+    let keypair = generate_keypair();
 
     let peer_id = keypair.public().to_peer_id();
     info!("Entering circle {} as {peer_id}", args.circle_id);
@@ -44,6 +42,15 @@ pub async fn run(args: EnterArgs) -> Result<()> {
 
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
+    // Direct dial — bypasses mDNS (useful when multicast is blocked, e.g. Windows Firewall)
+    if let Some(peer_addr) = &args.peer {
+        let addr: Multiaddr = peer_addr
+            .parse()
+            .context("invalid peer multiaddr, expected e.g. /ip4/192.168.1.10/tcp/9090")?;
+        info!("Dialing peer directly at {addr}");
+        swarm.dial(addr)?;
+    }
+
     if let Some(rendezvous_addr) = &args.rendezvous {
         let addr: Multiaddr = rendezvous_addr
             .parse()
@@ -67,6 +74,11 @@ pub async fn run(args: EnterArgs) -> Result<()> {
                 for (peer_id, addr) in peers {
                     info!("✦ mDNS discovered: {peer_id} @ {addr}");
                     swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
+                    // Skip dial if already connected — mDNS reports all addresses
+                    // including duplicates; the "already connected" error is benign.
+                    if swarm.is_connected(&peer_id) {
+                        continue;
+                    }
                     if let Err(e) = swarm.dial(
                         DialOpts::peer_id(peer_id).addresses(vec![addr]).build(),
                     ) {

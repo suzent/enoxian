@@ -8,6 +8,7 @@ pub fn generate_psk() -> [u8; 32] {
     bytes
 }
 
+#[allow(dead_code)] // used in Phase 1 (pnet transport PSK)
 pub fn psk_from_hex(s: &str) -> Result<[u8; 32]> {
     let bytes = hex::decode(s.trim())?;
     if bytes.len() != 32 {

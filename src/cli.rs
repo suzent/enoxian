@@ -47,4 +47,9 @@ pub struct EnterArgs {
     /// Rendezvous server multiaddr for WAN peer discovery
     #[arg(long)]
     pub rendezvous: Option<String>,
+
+    /// Directly dial a peer multiaddr, e.g. /ip4/192.168.1.10/tcp/9090
+    /// Useful when mDNS is blocked (Windows Firewall, different subnets)
+    #[arg(long)]
+    pub peer: Option<String>,
 }
