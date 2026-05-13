@@ -32,7 +32,11 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     for config in configs {
         let keypair = keypair_from_hex(&config.keypair_proto_hex)?;
         let peer_id = keypair.public().to_peer_id();
-        let sync_dir = crate::config::circle_dir(&config.circle_id)?.join("files");
+        let sync_dir = if config.workspace_dir.is_empty() {
+            crate::config::circle_dir(&config.circle_id)?.join("files")
+        } else {
+            std::path::PathBuf::from(&config.workspace_dir)
+        };
         tokio::fs::create_dir_all(&sync_dir).await?;
 
         info!(

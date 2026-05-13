@@ -15,3 +15,12 @@
 | [protocol.md](protocol.md) | WebSocket y-sync protocol and SSE event stream |
 | [architecture.md](architecture.md) | System diagram, components, data model, directory layout |
 | [internals.md](internals.md) | Lock arbitration, file sync, P2P layer |
+
+## Planning
+
+> Documents in `plan/` describe what is **not yet built**. Implemented features are documented above.
+
+| File | Description |
+|------|-------------|
+| [plan/roadmap.md](plan/roadmap.md) | Milestone plan — what works today and what's next |
+| [plan/workspace.md](plan/workspace.md) | M1: Workspace folder design and implementation tasks |

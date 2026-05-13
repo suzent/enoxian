@@ -70,6 +70,10 @@ pub struct InitArgs {
     /// How long the initial invite link is valid (e.g. 7d, 24h)
     #[arg(long, default_value = "7d")]
     pub ttl: String,
+
+    /// Workspace directory (default: ~/enochian/<name>)
+    #[arg(long)]
+    pub dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Parser)]
@@ -88,6 +92,10 @@ pub struct EnterArgs {
     /// Rendezvous server multiaddr for WAN
     #[arg(long)]
     pub rendezvous: Option<String>,
+
+    /// Workspace directory (default: ~/enochian/<circle-name>)
+    #[arg(long)]
+    pub dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Parser)]

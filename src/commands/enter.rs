@@ -9,7 +9,7 @@ use tracing::{info, warn};
 
 use crate::{
     cli::EnterArgs,
-    config::{self, CircleConfig},
+    config::{self, CircleConfig, resolve_workspace_dir},
     crypto::{generate_keypair, keypair_to_hex},
     invite,
     network::behaviour::{EnochBehaviour, EnochEvent},
@@ -33,28 +33,56 @@ pub async fn run(args: EnterArgs) -> Result<()> {
         (circle_id.clone(), circle_id.clone(), secret.to_string(), None)
     };
 
-    // --peer flag overrides any peer embedded in the invite
     let peer = args.peer.or(peer_from_invite);
 
-    // ── Step 2: Generate a fresh keypair for this node's identity ─────────────
+    // ── Step 2: Conflict detection ────────────────────────────────────────────
+    let existing = config::load_all()?;
+
+    let workspace_resolution = resolve_workspace_dir(
+        &circle_name,
+        &circle_id,
+        &existing,
+        args.dir,
+    )?;
+
+    let (workspace_dir, warn_msg) = match workspace_resolution {
+        None => {
+            // Same UUID — already a member
+            println!("✦ Already a member of '{circle_name}' — nothing to do.");
+            println!();
+            println!("  Start the daemon: enochd");
+            println!("  Then: enoch --circle \"{circle_name}\" status");
+            return Ok(());
+        }
+        Some(r) => r,
+    };
+
+    if let Some(ref msg) = warn_msg {
+        println!("{msg}");
+    }
+
+    // ── Step 3: Generate keypair + save config ────────────────────────────────
     let keypair = generate_keypair();
     let peer_id = keypair.public().to_peer_id();
     info!("Entering circle {circle_id} as {peer_id}");
 
-    // ── Step 3: Save config immediately — before any network operations ───────
+    tokio::fs::create_dir_all(&workspace_dir).await
+        .with_context(|| format!("failed to create workspace {}", workspace_dir.display()))?;
+
     let circle_config = CircleConfig {
         circle_id:         circle_id.clone(),
         circle_name:       circle_name.clone(),
         psk_hex:           psk_hex.clone(),
         keypair_proto_hex: keypair_to_hex(&keypair)?,
+        workspace_dir:     workspace_dir.to_string_lossy().into_owned(),
     };
-    config::save(&circle_config)
-        .context("failed to save circle config")?;
-    println!("  Saved → ~/.enochian/circles/{circle_id}/config.toml");
+    config::save(&circle_config).context("failed to save circle config")?;
+
+    println!("  Workspace : {}", workspace_dir.display());
+    println!("  Config    → ~/.enochian/circles/{circle_id}/config.toml");
 
     // ── Step 4: Optionally verify connectivity to the invite peer ─────────────
     let Some(peer_addr_str) = peer else {
-        // No peer address — config is saved, user should start enochd to connect via mDNS
         println!();
         println!("  No peer address in invite. Start the daemon to connect via mDNS:");
         println!("    enochd");
@@ -64,9 +92,8 @@ pub async fn run(args: EnterArgs) -> Result<()> {
 
     let addr: Multiaddr = peer_addr_str
         .parse()
-        .context("invalid peer multiaddr in invite, expected e.g. /ip4/1.2.3.4/tcp/9091")?;
+        .context("invalid peer multiaddr in invite")?;
 
-    // Minimal swarm — no mDNS, just a direct dial to confirm the peer is reachable
     use libp2p::kad;
     let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
         .with_tokio()
