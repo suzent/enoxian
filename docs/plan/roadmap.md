@@ -1,22 +1,24 @@
 # ENOCHIAN Roadmap
 
-## What works today (v0.3.0)
+## What works today (v0.4.0)
 
 | Feature | Notes |
 |---------|-------|
 | Circle creation — `enoch init` | Generates keypair + PSK, prints invite link |
 | Invite links — `enochian://v1/<b64>` | No-quote shell-safe URI, expiry enforced |
 | Join — `enoch enter` | Saves config, workspace created, conflict handling, exits cleanly |
-| Multi-circle daemon — `enochd` | Loads all circles at startup, one P2P swarm per circle |
+| Multi-circle daemon — `enochd` | Loads all circles at startup, one P2P swarm per circle; one machine can join multiple circles simultaneously |
 | Workspace folders | `~/enochian/<name>/` per circle, configurable via `--dir` |
 | REST API | Tasks, locks, presence (read), events SSE |
 | Yjs CRDT + file watcher | Local file changes sync into CRDT, broadcast to local WS clients |
 | WebSocket Yjs sync | Local editor/agent clients can sync documents over WS |
 | Name-based circle resolution | `--circle Work` resolves by exact name → prefix → UUID prefix |
 | `enoch` CLI | init, enter, invite, circles, status, who, tasks, claim, done, bind, release, watch |
-| PSK-enforced transport | `pnet` XSalsa20 applied at TCP layer — cross-circle connections rejected |
-| Live P2P file sync | y-sync over libp2p streams; mDNS peers discovered and synced automatically |
+| PSK-enforced transport | `pnet` XSalsa20 applied at TCP layer — cross-circle connections rejected at handshake |
+| Live P2P file sync | Bidirectional y-sync over libp2p streams; mDNS auto-discovery; new files sync without reconnect |
 | Admin keypair | Generated at `enoch init`; stored as `admin.key`; unenforced until M6 |
+| Self-write loop prevention | Shared per-path flags prevent flush_to_disk from triggering re-sync |
+| P2P echo prevention | Updates applied from peers use `"p2p"` origin; observer skips forwarding them back |
 
 ---
 
@@ -46,23 +48,25 @@ See [workspace.md](workspace.md) for details.
 ### M2 — Secure network (PSK enforcement)
 **Status: Complete**
 
-PSK is now applied to every swarm via `pnet::PnetConfig` + `with_other_transport()`. Nodes with a mismatched PSK fail the handshake before Noise even starts. Applied in both `commands/serve.rs` (daemon swarm) and `commands/enter.rs` (connectivity check).
+PSK is now applied to every swarm via `pnet::PnetConfig` + `with_other_transport()`. Nodes with a mismatched PSK fail the handshake before Noise even starts. Applied in both `commands/serve.rs` (daemon swarm) and `commands/enter.rs` (connectivity check). Cross-circle rejection verified on LAN — mDNS discovers all peers but mismatched circles are silently dropped at the PSK layer.
 
 **Tasks:**
 - [x] Apply circle PSK to swarm in `commands/serve.rs`
 - [x] Apply circle PSK to swarm in `commands/enter.rs` (connectivity check)
-- [ ] Verify that cross-circle connections are rejected
+- [x] Verify that cross-circle connections are rejected
 
 ---
 
 ### M3 — Live P2P sync (core protocol)
 **Status: Complete**
 
-`libp2p_stream` behaviour is wired into every circle swarm. On `ConnectionEstablished` (dialing side), a `/enochian/sync/1.0.0` stream is opened. A deadlock-free handshake exchanges `SyncStep1`/`SyncStep2` for all currently-open docs. After handshake, local updates are forwarded via the `all_updates` global broadcast channel; incoming updates are applied to the local CRDT and flushed to workspace disk.
+`libp2p_stream` behaviour is wired into every circle swarm. On `ConnectionEstablished` (dialing side), a `/enochian/sync/1.0.0` stream is opened. A deadlock-free handshake exchanges `SyncStep1`/`SyncStep2` for all currently-open docs. After handshake, local updates are forwarded via the `all_updates` global broadcast channel; incoming updates are applied to the local CRDT and flushed to workspace disk. Verified end-to-end bidirectional file sync on a real LAN (Windows ↔ Mac).
 
 **Implementation:**
-- `src/network/sync.rs` — full sync handler
-- `src/state.rs` — `all_updates` broadcast channel added
+- `src/network/sync.rs` — full sync handler; deadlock-free 3-phase handshake; lag recovery via full-state resend
+- `src/state.rs` — `all_updates` broadcast + `self_write_flags` shared between watcher and flush_to_disk; observer kept alive with `mem::forget`; `"p2p"` origin filter prevents echo
+- `src/store/fs.rs` — `flush_to_disk` uses `state.self_write_flags` (no longer takes a separate flag arg)
+- `src/sync_yjs/watcher.rs` — handles Windows rename-sequence creation events (`Name(To)`) in addition to standard data-modify events
 - `libp2p-stream = "0.4.0-alpha"` added to dependencies
 
 **Tasks:**
@@ -71,6 +75,10 @@ PSK is now applied to every swarm via `pnet::PnetConfig` + `with_other_transport
 - [x] Subscribe to `all_updates` broadcast channel, forward to peer stream
 - [x] On incoming update: apply to local CRDT, flush to workspace disk
 - [x] Handle new docs created after connection established (dynamic doc discovery via all_updates broadcast)
+- [x] Fix observer subscription lifetime (`mem::forget` keeps observer registered for doc's lifetime)
+- [x] Fix self-write flag isolation (moved into AppState, shared by watcher + flush_to_disk)
+- [x] Fix P2P echo loop (`"p2p"` origin on transact_mut_with, filtered in observer)
+- [x] Handle Windows file creation via rename sequence (`Name(To)` event kind)
 
 ---
 
