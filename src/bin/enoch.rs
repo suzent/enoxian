@@ -20,10 +20,11 @@ async fn main() -> anyhow::Result<()> {
     let client = reqwest::Client::new();
 
     match cli.command {
-        AgentCommands::Init(args)  => enochian::commands::init::run(args).await,
-        AgentCommands::Enter(args) => enochian::commands::enter::run(args).await,
-        AgentCommands::Status      => enochian::commands::status::run(&client, &base, cli.json).await,
-        AgentCommands::Who         => enochian::commands::who::run(&client, &base, cli.json).await,
+        AgentCommands::Init(args)    => enochian::commands::init::run(args).await,
+        AgentCommands::Enter(args)   => enochian::commands::enter::run(args).await,
+        AgentCommands::Invite(args)  => enochian::commands::invite::run(args).await,
+        AgentCommands::Status        => enochian::commands::status::run(&client, &base, cli.json).await,
+        AgentCommands::Who           => enochian::commands::who::run(&client, &base, cli.json).await,
         AgentCommands::Tasks { status } =>
             enochian::commands::tasks::run(&client, &base, status, cli.json).await,
         AgentCommands::Claim { task_id } =>

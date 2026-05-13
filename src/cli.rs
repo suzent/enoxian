@@ -32,8 +32,10 @@ pub struct AgentCli {
 pub enum AgentCommands {
     /// Create a new Circle (generates keypair + PSK)
     Init(InitArgs),
-    /// Join an existing Circle
+    /// Join a Circle using an invite URI or Circle ID + secret
     Enter(EnterArgs),
+    /// Generate a new invite link for an existing Circle
+    Invite(InviteArgs),
     /// Show Circle overview
     Status,
     /// Show agent presence
@@ -63,6 +65,42 @@ pub struct InitArgs {
     /// Human-readable name for the Circle
     #[arg(long)]
     pub name: String,
+
+    /// How long the initial invite link is valid (e.g. 7d, 24h)
+    #[arg(long, default_value = "7d")]
+    pub ttl: String,
+}
+
+#[derive(Parser)]
+pub struct EnterArgs {
+    /// enochian:// invite URI  — OR —  a Circle ID (requires --secret)
+    pub target: String,
+
+    /// Pre-shared key (hex) — required when target is a raw Circle ID
+    #[arg(long)]
+    pub secret: Option<String>,
+
+    /// Directly dial a peer multiaddr (overrides any peer embedded in the invite)
+    #[arg(long)]
+    pub peer: Option<String>,
+
+    /// Rendezvous server multiaddr for WAN
+    #[arg(long)]
+    pub rendezvous: Option<String>,
+}
+
+#[derive(Parser)]
+pub struct InviteArgs {
+    /// Circle ID to generate an invite for
+    pub circle_id: String,
+
+    /// How long the invite is valid (e.g. 7d, 24h)
+    #[arg(long, default_value = "7d")]
+    pub ttl: String,
+
+    /// Embed a peer multiaddr so invitees can connect without mDNS (e.g. /ip4/1.2.3.4/tcp/9091)
+    #[arg(long)]
+    pub peer: Option<String>,
 }
 
 #[derive(Parser)]
@@ -78,22 +116,4 @@ pub struct ServeArgs {
     /// Directory to sync (defaults to ~/.enochian/circles/<id>/files)
     #[arg(long)]
     pub sync_dir: Option<std::path::PathBuf>,
-}
-
-#[derive(Parser)]
-pub struct EnterArgs {
-    /// Circle ID to join
-    pub circle_id: String,
-
-    /// Pre-shared key (hex)
-    #[arg(long)]
-    pub secret: String,
-
-    /// Rendezvous server multiaddr for WAN
-    #[arg(long)]
-    pub rendezvous: Option<String>,
-
-    /// Directly dial a peer multiaddr (bypasses mDNS)
-    #[arg(long)]
-    pub peer: Option<String>,
 }

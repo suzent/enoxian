@@ -10,17 +10,36 @@ use tracing::{info, warn};
 use crate::{
     cli::EnterArgs,
     crypto::generate_keypair,
+    invite,
     network::behaviour::{EnochBehaviour, EnochEvent},
 };
 
 pub async fn run(args: EnterArgs) -> Result<()> {
+    // Resolve credentials — either from an enochian:// URI or legacy flags
+    let (circle_id, peer_from_invite) = if args.target.starts_with("enochian://") {
+        let payload = invite::decode(&args.target)?;
+        invite::check_expiry(&payload)?;
+
+        let name = payload.circle_name.as_deref().unwrap_or("unknown");
+        println!("✦ Joining circle: {name} ({})", payload.circle_id);
+
+        (payload.circle_id, payload.peer_addr)
+    } else {
+        // Legacy: positional circle_id + --secret
+        let _secret = args.secret.as_deref()
+            .context("--secret is required when target is a Circle ID (or pass an enochian:// invite)")?;
+        (args.target.clone(), None)
+    };
+
+    // --peer flag overrides any peer embedded in the invite
+    let peer = args.peer.or(peer_from_invite);
+
     // Always generate a fresh ephemeral keypair for `enter`.
     // `serve` owns the circle's persistent keypair/PeerID.
     // Two nodes sharing the same PeerID cannot connect to each other.
     let keypair = generate_keypair();
-
     let peer_id = keypair.public().to_peer_id();
-    info!("Entering circle {} as {peer_id}", args.circle_id);
+    info!("Entering circle {circle_id} as {peer_id}");
 
     let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
         .with_tokio()
@@ -42,12 +61,11 @@ pub async fn run(args: EnterArgs) -> Result<()> {
 
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
-    // Direct dial — bypasses mDNS (useful when multicast is blocked, e.g. Windows Firewall)
-    if let Some(peer_addr) = &args.peer {
+    if let Some(peer_addr) = &peer {
         let addr: Multiaddr = peer_addr
             .parse()
-            .context("invalid peer multiaddr, expected e.g. /ip4/192.168.1.10/tcp/9090")?;
-        info!("Dialing peer directly at {addr}");
+            .context("invalid peer multiaddr, expected e.g. /ip4/192.168.1.10/tcp/9091")?;
+        info!("Dialing peer at {addr}");
         swarm.dial(addr)?;
     }
 
@@ -72,10 +90,8 @@ pub async fn run(args: EnterArgs) -> Result<()> {
             }
             SwarmEvent::Behaviour(EnochEvent::Mdns(mdns::Event::Discovered(peers))) => {
                 for (peer_id, addr) in peers {
-                    info!("✦ mDNS discovered: {peer_id} @ {addr}");
+                    info!("mDNS discovered: {peer_id} @ {addr}");
                     swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
-                    // Skip dial if already connected — mDNS reports all addresses
-                    // including duplicates; the "already connected" error is benign.
                     if swarm.is_connected(&peer_id) {
                         continue;
                     }

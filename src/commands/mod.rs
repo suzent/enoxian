@@ -3,6 +3,7 @@ pub mod claim;
 pub mod done_cmd;
 pub mod enter;
 pub mod init;
+pub mod invite;
 pub mod release;
 pub mod serve;
 pub mod status;

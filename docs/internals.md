@@ -68,9 +68,9 @@ This prevents tools that don't speak ENOCHIAN from accidentally overwriting a lo
                     └────────┬────────┘
                              │  observe_update_v1 fires
                              ▼
-                    ┌─────────────────┐
+                    ┌────────────-─────┐
                     │ broadcast::Sender│  raw v1 update bytes
-                    └────────┬────────┘
+                    └────────┬────-────┘
                              │
                     ┌────────┴────────┐
                     │  WS clients     │  Update message → each subscriber

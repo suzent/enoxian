@@ -4,6 +4,7 @@ pub mod commands;
 pub mod config;
 pub mod control;
 pub mod crypto;
+pub mod invite;
 pub mod network;
 pub mod state;
 pub mod store;

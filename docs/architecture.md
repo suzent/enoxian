@@ -3,9 +3,9 @@
 ## System Diagram
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                           enochd                             │
-│                                                              │
+┌─────────────────────────────────────────────────────────────┐
+│                           enochd                            │
+│                                                             │
 │  ┌─────────────┐   ┌────────────────────┐   ┌────────────┐  │
 │  │  libp2p     │   │   axum HTTP + WS   │   │   notify   │  │
 │  │  Swarm      │   │   :9090            │   │   watcher  │  │
@@ -16,7 +16,7 @@
 │  │  Kademlia   │   │  POST /api/tasks   │   │  Y.Text →  │  │
 │  │  Identify   │   │  POST /api/claim   │   │  disk      │  │
 │  │  Ping       │   │  POST /api/done    │   └────────────┘  │
-│  │  Rendezvous │   │  POST /api/bind    │                    │
+│  │  Rendezvous │   │  POST /api/bind    │                   │
 │  │  :9091      │   │  POST /api/release │   ┌────────────┐  │
 │  └─────────────┘   │  GET  /api/events  │   │  AppState  │  │
 │         │          │  WS   /ws/yjs      │   │            │  │

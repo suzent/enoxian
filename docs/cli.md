@@ -18,39 +18,88 @@ The target daemon is configured via the `ENOCHIAN_API` environment variable (def
 
 ### `init`
 
-Create a new Circle.
+Create a new Circle and print a shareable invite link.
 
 ```bash
-enoch init --name <NAME>
+enoch init --name <NAME> [--ttl <DURATION>]
 ```
 
-Generates a fresh Ed25519 keypair and a random 256-bit PSK. Saves config to `~/.enochian/circles/<id>/config.toml`.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name` | required | Human-readable circle name |
+| `--ttl` | `7d` | Validity of the generated invite link (`7d`, `24h`, etc.) |
 
 **Output:**
 ```
 ✦ Circle cast: MyCircle
   circle-id : 8e563c41-f0ec-4225-9764-064f1fb04341
   peer-id   : 12D3KooW...
-  secret    : d2d89de6...
+
+  invite    : enochian://v1/CRxkUjpN...?expires=2026-05-20T14:00:00Z&name=MyCircle
+
+  Share the invite link to let peers join (valid for 7d).
+  Generate a new link anytime: enoch invite 8e563c41-...
+```
+
+The invite link encodes both the circle ID and the pre-shared key. Share it over a trusted channel (direct message, config file, secrets manager). Do not post it publicly.
+
+---
+
+### `invite`
+
+Generate a new invite link for an existing circle.
+
+```bash
+enoch invite <CIRCLE-ID> [--ttl <DURATION>] [--peer <MULTIADDR>]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--ttl` | `7d` | How long the invite is valid |
+| `--peer` | — | Embed a peer address so the invitee can connect without mDNS (useful for WAN) |
+
+**Output:**
+```
+✦ Invite for 'MyCircle' (valid 24h):
+
+  enochian://v1/CRxkUjpN...?expires=2026-05-14T14:00:00Z&name=MyCircle
+
+  Join with: enoch enter "<invite>"
+```
+
+With embedded peer (for WAN connections):
+```bash
+enoch invite 8e563c41-... --ttl 24h --peer /ip4/203.0.113.5/tcp/9091
 ```
 
 ---
 
 ### `enter`
 
-Join an existing Circle via P2P dial.
+Join a Circle using an invite link or a raw circle ID + secret.
 
 ```bash
-enoch enter <CIRCLE-ID> --secret <HEX> [--peer <MULTIADDR>] [--rendezvous <MULTIADDR>]
+# Recommended — single invite link
+enoch enter "enochian://v1/CRxkUjpN...?expires=...&name=MyCircle"
+
+# Legacy — explicit flags
+enoch enter <CIRCLE-ID> --secret <HEX>
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--secret` | Pre-shared key (hex), shared by the circle creator |
-| `--peer` | Directly dial a peer multiaddr (e.g. `/ip4/1.2.3.4/tcp/9091`) |
+| `--secret` | Pre-shared key hex — required when target is a raw Circle ID |
+| `--peer` | Override or supplement the peer address (takes priority over any address in the invite) |
 | `--rendezvous` | WAN rendezvous server multiaddr |
 
-On a LAN, mDNS discovers peers automatically — no `--peer` is needed.
+**Expiry check:** If the invite has expired, `enter` exits immediately with an error:
+```
+Error: invite expired 2h ago (at 2026-05-13 12:00 UTC)
+```
+
+**mDNS (LAN):** On the same network, peers are discovered automatically — no `--peer` flag needed.
+
+**WAN:** Either embed `--peer` in the invite when generating it (`enoch invite --peer ...`), or pass `--peer` directly at join time.
 
 ---
 
@@ -100,8 +149,6 @@ enoch tasks [--status open|claimed|done]
   [done]    f1e2d3c4  Update README
 ```
 
-Tasks are sorted by `created_at` ascending.
-
 ---
 
 ### `claim`
@@ -112,11 +159,7 @@ Claim an open task.
 enoch claim <TASK-ID>
 ```
 
-The agent ID is read from the `ENOCHIAN_AGENT_ID` environment variable (default: `"anonymous"`).
-
-```
-✦ claimed: 4873c16e-15c8-4ddb-9598-c0ad85395862
-```
+The agent ID is read from `ENOCHIAN_AGENT_ID` (default: `"anonymous"`).
 
 ---
 
@@ -126,10 +169,6 @@ Mark a task as done.
 
 ```bash
 enoch done <TASK-ID>
-```
-
-```
-✦ done: 4873c16e-15c8-4ddb-9598-c0ad85395862
 ```
 
 ---
@@ -142,16 +181,7 @@ Acquire an advisory file lock.
 enoch bind <PATH>
 ```
 
-`<PATH>` is relative to the sync directory, using forward slashes. Returns an error if another agent holds the lock.
-
-```
-✦ bound: src/main.rs
-```
-
-On conflict:
-```
-✗ conflict: src/main.rs is held by agent-beta
-```
+`<PATH>` is relative to the sync directory, forward slashes. Returns an error if another agent holds the lock.
 
 ---
 
@@ -161,10 +191,6 @@ Release a file lock.
 
 ```bash
 enoch release <PATH>
-```
-
-```
-✦ released: src/main.rs
 ```
 
 ---
@@ -191,4 +217,4 @@ enoch watch
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `ENOCHIAN_API` | `http://127.0.0.1:9090/api` | Daemon base URL |
-| `ENOCHIAN_AGENT_ID` | `anonymous` | Agent ID sent in `claim` / `bind` requests |
+| `ENOCHIAN_AGENT_ID` | `anonymous` | Agent ID used in `claim` and `bind` |
