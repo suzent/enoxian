@@ -1,42 +1,68 @@
 [package]
-name = "enochd"
-version = "0.1.0"
+name = "enochian"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.83.0"
 
 [[bin]]
 name = "enochd"
-path = "src/main.rs"
+path = "src/bin/enochd.rs"
+
+[[bin]]
+name = "enoch"
+path = "src/bin/enoch.rs"
+
+[lib]
+name = "enochian"
+path = "src/lib.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util"] }
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time"] }
 
+# P2P
 libp2p = { version = "0.56", features = [
-    "tcp",
-    "websocket",
-    "dns",
-    "noise",
-    "yamux",
-    "ed25519",
-    "mdns",
-    "kad",
-    "identify",
-    "ping",
-    "rendezvous",
-    "pnet",
-    "macros",
-    "tokio",
+    "tcp", "websocket", "dns", "noise", "yamux",
+    "ed25519", "mdns", "kad", "identify", "ping",
+    "rendezvous", "pnet", "macros", "tokio",
 ] }
 
+# CLI
 clap = { version = "4", features = ["derive"] }
+
+# Serialization
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
+
+# IDs / crypto
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
+hex = "0.4"
+
+# Error handling
 anyhow = "1"
 thiserror = "2"
+
+# Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-hex = "0.4"
+
+# Utils
 dirs = "5"
 futures = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+
+# Phase 1 — CRDT + HTTP/WS server
+yrs = "0.26"
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+# Phase 1 — File watcher
+notify = "8"
+
+# Phase 2 — enoch HTTP client
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }

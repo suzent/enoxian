@@ -1,3 +1,11 @@
+pub mod bind;
+pub mod claim;
+pub mod done_cmd;
 pub mod enter;
 pub mod init;
+pub mod release;
 pub mod serve;
+pub mod status;
+pub mod tasks;
+pub mod watch;
+pub mod who;

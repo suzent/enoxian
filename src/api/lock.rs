@@ -1,0 +1,171 @@
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use serde::Deserialize;
+use serde_json::json;
+use yrs::{Any, ArrayRef, Map, MapRef, Out, Transact};
+use crate::control::{
+    arbitration::{append_lock_entry, compute_lock_state, is_locked_by_other},
+    fs_lock::set_readonly,
+    CircleEvent, LockAction, LockEntry, Task, TaskStatus, LOCK_LOG_KEY, TASKS_KEY,
+};
+use crate::state::AppState;
+
+// ── File locking ──────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct PathRequest {
+    pub path: String,
+    pub agent_id: Option<String>,
+}
+
+pub async fn bind_path(
+    State(state): State<AppState>,
+    Json(req): Json<PathRequest>,
+) -> impl IntoResponse {
+    let agent_id = req.agent_id.unwrap_or_else(|| "anonymous".to_string());
+
+    let conflict = {
+        let doc = &state.control;
+        let lock_log: ArrayRef = doc.get_or_insert_array(LOCK_LOG_KEY);
+        let txn = doc.transact();
+        if is_locked_by_other(&lock_log, &txn, &req.path, &agent_id) {
+            let holders = compute_lock_state(&lock_log, &txn);
+            let holder = holders.get(&req.path).cloned().unwrap_or_default();
+            Some(holder)
+        } else {
+            None
+        }
+    };
+
+    if let Some(holder) = conflict {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "already locked", "held_by": holder })),
+        ).into_response();
+    }
+
+    {
+        let doc = &state.control;
+        let lock_log: ArrayRef = doc.get_or_insert_array(LOCK_LOG_KEY);
+        let entry = LockEntry {
+            entry_id: uuid::Uuid::new_v4().to_string(),
+            agent_id: agent_id.clone(),
+            path: req.path.clone(),
+            action: LockAction::Acquire,
+            ts: chrono::Utc::now(),
+        };
+        let mut txn = doc.transact_mut();
+        let _ = append_lock_entry(&lock_log, &mut txn, &entry);
+    }
+
+    let full = state.sync_dir.join(req.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let _ = set_readonly(&full, true).await;
+    let _ = state.events.send(CircleEvent::LockAcquired {
+        path: req.path.clone(),
+        agent_id: agent_id.clone(),
+    });
+
+    (StatusCode::OK, Json(json!({ "status": "bound", "path": req.path, "agent_id": agent_id }))).into_response()
+}
+
+pub async fn release_path(
+    State(state): State<AppState>,
+    Json(req): Json<PathRequest>,
+) -> impl IntoResponse {
+    let agent_id = req.agent_id.unwrap_or_else(|| "anonymous".to_string());
+
+    {
+        let doc = &state.control;
+        let lock_log: ArrayRef = doc.get_or_insert_array(LOCK_LOG_KEY);
+        let entry = LockEntry {
+            entry_id: uuid::Uuid::new_v4().to_string(),
+            agent_id: agent_id.clone(),
+            path: req.path.clone(),
+            action: LockAction::Release,
+            ts: chrono::Utc::now(),
+        };
+        let mut txn = doc.transact_mut();
+        let _ = append_lock_entry(&lock_log, &mut txn, &entry);
+    }
+
+    let full = state.sync_dir.join(req.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let _ = set_readonly(&full, false).await;
+    let _ = state.events.send(CircleEvent::LockReleased {
+        path: req.path.clone(),
+        agent_id: agent_id.clone(),
+    });
+
+    (StatusCode::OK, Json(json!({ "status": "released", "path": req.path }))).into_response()
+}
+
+// ── Task claiming / completion ─────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct TaskRequest {
+    pub task_id: String,
+    pub agent_id: Option<String>,
+}
+
+pub async fn claim_task(
+    State(state): State<AppState>,
+    Json(req): Json<TaskRequest>,
+) -> impl IntoResponse {
+    let agent_id = req.agent_id.unwrap_or_else(|| "anonymous".to_string());
+    match update_task_status(&state, &req.task_id, TaskStatus::Claimed, Some(agent_id.clone())).await {
+        Ok(_) => {
+            let _ = state.events.send(CircleEvent::TaskClaimed {
+                task_id: req.task_id.clone(),
+                agent_id,
+            });
+            (StatusCode::OK, Json(json!({ "status": "claimed", "task_id": req.task_id }))).into_response()
+        }
+        Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+pub async fn done_task(
+    State(state): State<AppState>,
+    Json(req): Json<TaskRequest>,
+) -> impl IntoResponse {
+    match update_task_status(&state, &req.task_id, TaskStatus::Done, None).await {
+        Ok(_) => {
+            let _ = state.events.send(CircleEvent::TaskDone { task_id: req.task_id.clone() });
+            (StatusCode::OK, Json(json!({ "status": "done", "task_id": req.task_id }))).into_response()
+        }
+        Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+async fn update_task_status(
+    state: &AppState,
+    task_id: &str,
+    new_status: TaskStatus,
+    claimed_by: Option<String>,
+) -> anyhow::Result<()> {
+    let doc = &state.control;
+    let tasks_map: MapRef = doc.get_or_insert_map(TASKS_KEY);
+
+    let json_str = {
+        let txn = doc.transact();
+        match tasks_map.get(&txn, task_id) {
+            Some(Out::Any(Any::String(s))) => s.to_string(),
+            _ => return Err(anyhow::anyhow!("task not found")),
+        }
+    };
+
+    let mut task: Task = serde_json::from_str(&json_str)?;
+    task.status = new_status;
+    task.updated_at = chrono::Utc::now();
+    if let Some(agent) = claimed_by {
+        task.claimed_by = Some(agent);
+    }
+
+    let updated_json = serde_json::to_string(&task)?;
+    let mut txn = doc.transact_mut();
+    tasks_map.insert(&mut txn, task_id, Any::String(updated_json.as_str().into()));
+    Ok(())
+}
