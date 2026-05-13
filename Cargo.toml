@@ -1,0 +1,42 @@
+[package]
+name = "enochd"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83.0"
+
+[[bin]]
+name = "enochd"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util"] }
+
+libp2p = { version = "0.56", features = [
+    "tcp",
+    "websocket",
+    "dns",
+    "noise",
+    "yamux",
+    "ed25519",
+    "mdns",
+    "kad",
+    "identify",
+    "ping",
+    "rendezvous",
+    "pnet",
+    "macros",
+    "tokio",
+] }
+
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+hex = "0.4"
+dirs = "5"
+futures = "0.3"
