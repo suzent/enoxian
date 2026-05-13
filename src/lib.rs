@@ -7,6 +7,7 @@ pub mod crypto;
 pub mod daemon;
 pub mod invite;
 pub mod network;
+pub mod presence;
 pub mod resolve;
 pub mod state;
 pub mod store;

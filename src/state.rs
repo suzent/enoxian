@@ -33,12 +33,24 @@ impl AppState {
     pub fn new(circle_id: String, circle_name: String, workspace: PathBuf) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
+        let control = Arc::new(Doc::new());
+
+        // Forward control doc updates to P2P peers (skip updates that arrived from peers).
+        let all_tx = all_updates_tx.clone();
+        let sub = control.observe_update_v1(move |txn, event| {
+            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+            if !is_p2p {
+                let _ = all_tx.send(("__control__".to_string(), event.update.clone()));
+            }
+        }).expect("observe control doc failed");
+        std::mem::forget(sub);
+
         Self {
             circle_id,
             circle_name,
             workspace,
             docs: Arc::new(DashMap::new()),
-            control: Arc::new(Doc::new()),
+            control,
             doc_updates: Arc::new(DashMap::new()),
             all_updates: all_updates_tx,
             events: events_tx,

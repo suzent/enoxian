@@ -1,6 +1,6 @@
 # ENOCHIAN Roadmap
 
-## What works today (v0.4.0)
+## What works today (v0.5.0)
 
 | Feature | Notes |
 |---------|-------|
@@ -19,6 +19,7 @@
 | Admin keypair | Generated at `enoch init`; stored as `admin.key`; unenforced until M6 |
 | Self-write loop prevention | Shared per-path flags prevent flush_to_disk from triggering re-sync |
 | P2P echo prevention | Updates applied from peers use `"p2p"` origin; observer skips forwarding them back |
+| Live presence | Daemon writes hostname-based presence entry on start; 30s heartbeat; `enoch who` shows last-seen age |
 
 ---
 
@@ -119,14 +120,19 @@ See [lifecycle.md](lifecycle.md) for the full design.
 ---
 
 ### M5 — Presence
-**Status: Planned**
+**Status: Complete**
 
-`enoch who` reads the presence map from the control doc but no code writes to it. Agents never announce themselves.
+On startup, each daemon writes a `Presence` entry (`agent_id = hostname-shortpeerid`, status=online, last_seen=now) to the control doc's `presence` Y.Map. A 30-second heartbeat task refreshes `last_seen`. The control doc observer now forwards updates to `all_updates` so presence changes sync live to P2P peers. `enoch who` shows last-seen age and marks agents stale if their heartbeat is > 90s old.
+
+**Implementation:**
+- `src/presence.rs` — `local_agent_id()`, `spawn_presence()`, heartbeat loop
+- `src/state.rs` — control doc observer wired into `all_updates`
+- `src/commands/who.rs` — last-seen age display, stale detection
 
 **Tasks:**
-- [ ] Write presence entry (agent ID, hostname, timestamp) on daemon start
-- [ ] Refresh presence heartbeat every 30s via a tokio interval task
-- [ ] `enoch who` displays live agents with last-seen time
+- [x] Write presence entry (agent ID, hostname, timestamp) on daemon start
+- [x] Refresh presence heartbeat every 30s via a tokio interval task
+- [x] `enoch who` displays live agents with last-seen time
 
 ---
 

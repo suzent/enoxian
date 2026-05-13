@@ -18,6 +18,7 @@ use crate::{
         behaviour::{EnochBehaviour, EnochEvent},
         sync,
     },
+    presence,
     state::AppState,
     sync_yjs::watcher::spawn_watcher,
 };
@@ -60,6 +61,8 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         );
 
         spawn_watcher(state.clone(), workspace).await?;
+        let agent_id = presence::local_agent_id(&peer_id);
+        presence::spawn_presence(state.clone(), agent_id);
         daemon.insert(config.circle_id.clone(), state.clone());
 
         // ── Build the P2P swarm with PSK-enforced transport (M2) ────────────
