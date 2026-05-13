@@ -13,6 +13,9 @@ pub struct CircleConfig {
     /// Absolute path to the workspace directory for this circle
     #[serde(default)]
     pub workspace_dir: String,
+    /// Admin public key hex (Ed25519). Present on all peers; private key only on admin machines.
+    #[serde(default)]
+    pub admin_pubkey_hex: String,
 }
 
 pub fn circles_dir() -> Result<PathBuf> {

@@ -1,16 +1,18 @@
 use anyhow::{Context, Result};
 use libp2p::{
     futures::StreamExt,
-    identify, noise, tcp, yamux,
+    identify, noise, pnet, tcp, yamux,
     swarm::SwarmEvent,
     Multiaddr, SwarmBuilder,
 };
 use tracing::{info, warn};
 
+use libp2p_stream as stream_proto;
+
 use crate::{
     cli::EnterArgs,
     config::{self, CircleConfig, resolve_workspace_dir},
-    crypto::{generate_keypair, keypair_to_hex},
+    crypto::{generate_keypair, keypair_to_hex, psk_from_hex},
     invite,
     network::behaviour::{EnochBehaviour, EnochEvent},
 };
@@ -75,6 +77,7 @@ pub async fn run(args: EnterArgs) -> Result<()> {
         psk_hex:           psk_hex.clone(),
         keypair_proto_hex: keypair_to_hex(&keypair)?,
         workspace_dir:     workspace_dir.to_string_lossy().into_owned(),
+        admin_pubkey_hex:  String::new(), // populated when admin distributes member list (M6)
     };
     config::save(&circle_config).context("failed to save circle config")?;
 
@@ -94,10 +97,24 @@ pub async fn run(args: EnterArgs) -> Result<()> {
         .parse()
         .context("invalid peer multiaddr in invite")?;
 
+    let psk_bytes = psk_from_hex(&psk_hex)?;
+    let pnet_config = pnet::PnetConfig::new(pnet::PreSharedKey::new(psk_bytes));
+    let keypair_clone = keypair.clone();
+
     use libp2p::kad;
     let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
         .with_tokio()
-        .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)?
+        .with_other_transport(|key| {
+            use libp2p::{core::{muxing::StreamMuxerBox, upgrade}, Transport};
+            let noise = noise::Config::new(key)?;
+            let transport = tcp::tokio::Transport::new(tcp::Config::default())
+                .and_then(move |s, _| pnet_config.handshake(s))
+                .upgrade(upgrade::Version::V1Lazy)
+                .authenticate(noise)
+                .multiplex(yamux::Config::default())
+                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
+            Ok(transport)
+        })?
         .with_behaviour(|key| {
             let peer_id = key.public().to_peer_id();
             Ok(EnochBehaviour {
@@ -111,7 +128,8 @@ pub async fn run(args: EnterArgs) -> Result<()> {
                     key.public(),
                 )),
                 ping: libp2p::ping::Behaviour::default(),
-                rendezvous: libp2p::rendezvous::client::Behaviour::new(keypair.clone()),
+                rendezvous: libp2p::rendezvous::client::Behaviour::new(keypair_clone),
+                stream: stream_proto::Behaviour::new(),
             })
         })?
         .build();

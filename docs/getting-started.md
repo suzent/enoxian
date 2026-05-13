@@ -41,20 +41,27 @@ A Circle is the shared workspace. Run this once on any machine:
 ✦ Circle cast: MyCircle
   circle-id : 8e563c41-f0ec-4225-9764-064f1fb04341
   peer-id   : 12D3KooW...
+  workspace : /Users/suzy/enochian/MyCircle
 
-  invite    : enochian://v1/CRxkUjpN...?expires=2026-05-20T14:00:00Z&name=MyCircle
+  invite    : enochian://v1/CRxkUjpNaBcDeFgH...
 
   Share the invite link to let peers join (valid for 7d).
-  Generate a new link anytime: enoch invite MyCircle
+  Generate a new link anytime: enoch invite "MyCircle"
 ```
 
-**Save the invite link** — share it over a trusted channel. It encodes both the circle ID and the secret key, and expires after 7 days by default.
+The workspace directory (`~/enochian/MyCircle`) is created automatically — this is where shared files live. The invite link encodes the circle ID and secret key. Share it over a trusted channel.
+
+To use a different location:
+
+```bash
+enoch init --name "MyCircle" --dir ~/projects/myapp
+```
 
 ---
 
 ## Step 2 — Start the Daemon
 
-`enochd` automatically loads **all** circles from `~/.enochian/circles/`. Just start it:
+`enochd` loads **all** circles automatically from `~/.enochian/circles/`. Just start it:
 
 ```bash
 # bash / MSYS2
@@ -69,24 +76,33 @@ Expected output:
 
 ```
 INFO  Starting enochd — 1 circle(s) found
-INFO    Circle 'MyCircle' (8e563c41-...) — PeerID: 12D3KooW... — SyncDir: ~/.enochian/circles/.../files
+INFO    Circle 'MyCircle' (8e563c41-...) — PeerID: 12D3KooW... — Workspace: /Users/suzy/enochian/MyCircle
 INFO  HTTP/WS listening on :9090
 INFO  [8e563c41-...] P2P listening on /ip4/192.168.1.x/tcp/<random>
 ```
 
-The daemon serves all circles on port 9090. Each circle gets its own P2P swarm on a random port.
+All circles share one HTTP port. Each gets its own P2P swarm on a random port.
+
+> **After any `cargo build`** restart `enochd` to pick up the new binary.
 
 ---
 
 ## Step 3 — Use the CLI
 
-Open a second terminal. If you have only one circle, `enoch` selects it automatically:
+Open a second terminal. With one circle, `enoch` selects it automatically:
 
 ```bash
 ./target/debug/enoch status
 ```
 
-With multiple circles, specify one by name:
+```
+◆ Circle:    MyCircle
+  ID:        8e563c41-...
+  Workspace: /Users/suzy/enochian/MyCircle
+  Docs:      0
+```
+
+With multiple circles, specify by name:
 
 ```bash
 ./target/debug/enoch --circle MyCircle status
@@ -109,7 +125,7 @@ List all known circles:
 # Circle overview
 enoch status
 
-# Create a task
+# Create a task (via REST)
 curl -X POST http://127.0.0.1:9090/circles/8e563c41-.../api/tasks \
   -H "Content-Type: application/json" \
   -d '{"title":"Write integration tests","created_by":"agent-alpha"}'
@@ -117,14 +133,13 @@ curl -X POST http://127.0.0.1:9090/circles/8e563c41-.../api/tasks \
 # List tasks
 enoch tasks
 
-# Claim a task
+# Claim and complete a task
 enoch claim <task-id>
-
-# Mark done
 enoch done <task-id>
 
-# Acquire a file lock
+# Acquire and release a file lock (path relative to workspace)
 enoch bind src/main.rs
+enoch release src/main.rs
 
 # Watch live events
 enoch watch
@@ -134,26 +149,40 @@ enoch watch
 
 ## Step 5 — Second Agent (same LAN)
 
-On another machine (or terminal), join using the invite link:
+On another machine, join using the invite link (no quotes needed):
 
 ```bash
-enoch enter "enochian://v1/CRxkUjpN...?expires=...&name=MyCircle"
+enoch enter enochian://v1/CRxkUjpNaBcDeFgH...
 ```
 
-mDNS discovers the daemon automatically on the same network. For WAN, embed the peer address in the invite:
+```
+✦ Joining circle: MyCircle (8e563c41-...)
+  Workspace : /Users/bob/enochian/MyCircle
+  Config    → ~/.enochian/circles/8e563c41-.../config.toml
+  ✦ Verified peer 12D3KooW... via /ip4/192.168.1.192/tcp/4494
+
+  Start the daemon: enochd
+  Then: enoch --circle "MyCircle" status
+```
+
+Then start `enochd` on the second machine — it picks up the saved circle and connects via mDNS automatically.
+
+**Name conflict:** if you already have a local circle named `MyCircle` with a different ID, the workspace is auto-disambiguated:
+```
+⚠ A circle named 'MyCircle' already exists locally.
+  Workspace → /Users/bob/enochian/MyCircle-d4e2e7
+```
+
+**Re-joining:** if you already have this exact circle, `enter` exits cleanly:
+```
+✦ Already a member of 'MyCircle' — nothing to do.
+```
+
+**WAN:** embed a peer address in the invite so the joiner can connect without mDNS:
 
 ```bash
-# On the host — embed your public P2P address
 enoch invite MyCircle --peer /ip4/1.2.3.4/tcp/9091
-
-# Share the link; the invitee dials directly
-enoch enter "enochian://v1/..."
-```
-
-Generate fresh invites anytime:
-
-```bash
-enoch invite MyCircle --ttl 24h
+enoch enter enochian://v1/...
 ```
 
 ---

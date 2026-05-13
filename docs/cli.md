@@ -22,34 +22,38 @@ The target daemon URL is configured via `ENOCHIAN_API` (default: `http://127.0.0
 
 ### `init`
 
-Create a new Circle and print a shareable invite link.
+Create a new Circle, generate a workspace directory, and print a shareable invite link.
 
 ```bash
-enoch init --name <NAME> [--ttl <DURATION>]
+enoch init --name <NAME> [--ttl <DURATION>] [--dir <PATH>]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--name` | required | Human-readable circle name |
+| `--name` | required | Human-readable circle name (must be unique on this machine) |
 | `--ttl` | `7d` | Validity of the generated invite link (`7d`, `24h`, etc.) |
+| `--dir` | `~/enochian/<name>` | Workspace directory (created if it does not exist) |
 
 **Output:**
 ```
 ✦ Circle cast: MyCircle
   circle-id : 8e563c41-f0ec-4225-9764-064f1fb04341
   peer-id   : 12D3KooW...
+  workspace : /Users/suzy/enochian/MyCircle
 
-  invite    : enochian://v1/CRxkUjpN...?expires=2026-05-20T14:00:00Z&name=MyCircle
+  invite    : enochian://v1/CRxkUjpNaBcDeFgH...
 
   Share the invite link to let peers join (valid for 7d).
-  Generate a new link anytime: enoch invite MyCircle
+  Generate a new link anytime: enoch invite "MyCircle"
 ```
+
+The invite URI contains no shell-special characters and can be pasted without quotes.
 
 ---
 
 ### `circles`
 
-List known circles. If the daemon is running, shows active circles. Falls back to local configs if the daemon is not reachable.
+List known circles. If the daemon is running, shows active circles. Falls back to local configs if the daemon is unreachable.
 
 ```bash
 enoch circles
@@ -75,15 +79,15 @@ enoch invite <CIRCLE> [--ttl <DURATION>] [--peer <MULTIADDR>]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--ttl` | `7d` | How long the invite is valid |
-| `--peer` | — | Embed a peer address for WAN connections |
+| `--peer` | — | Embed a peer multiaddr for WAN connections (e.g. `/ip4/1.2.3.4/tcp/9091`) |
 
 **Output:**
 ```
 ✦ Invite for 'MyCircle' (valid 24h):
 
-  enochian://v1/CRxkUjpN...?expires=2026-05-14T14:00:00Z&name=MyCircle
+  enochian://v1/CRxkUjpNaBcDeFgH...
 
-  Join with: enoch enter "<invite>"
+  Join with: enoch enter enochian://v1/...
 ```
 
 ---
@@ -93,20 +97,28 @@ enoch invite <CIRCLE> [--ttl <DURATION>] [--peer <MULTIADDR>]
 Join a Circle using an invite link or a raw circle ID + secret.
 
 ```bash
-# Recommended — single invite link
-enoch enter "enochian://v1/CRxkUjpN...?expires=...&name=MyCircle"
+# Recommended — paste the invite link directly (no quotes needed)
+enoch enter enochian://v1/CRxkUjpNaBcDeFgH...
+
+# With a custom workspace location
+enoch enter enochian://v1/... --dir ~/projects/shared
 
 # Legacy — explicit flags
 enoch enter <CIRCLE-ID> --secret <HEX>
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--secret` | Pre-shared key hex — required when target is a raw Circle ID |
-| `--peer` | Override or supplement the peer address |
-| `--rendezvous` | WAN rendezvous server multiaddr |
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dir` | `~/enochian/<circle-name>` | Workspace directory for this circle |
+| `--secret` | — | Pre-shared key hex — required when target is a raw Circle ID |
+| `--peer` | — | Override the peer address embedded in the invite |
+| `--rendezvous` | — | WAN rendezvous server multiaddr |
 
-**Expiry check:** If the invite has expired, `enter` exits immediately with an error.
+**Conflict handling:**
+- Same circle (same UUID) → prints "Already a member", exits cleanly
+- Same name, different circle → workspace auto-suffixed with short UUID (`MyCircle-d4e2e7`)
+
+**Expiry check:** Expired invites are rejected immediately with an error.
 
 ---
 
@@ -119,10 +131,10 @@ enoch [--circle <NAME>] status
 ```
 
 ```
-◆ Circle:  MyCircle
-  ID:      8e563c41-...
-  SyncDir: ~/.enochian/circles/.../files
-  Docs:    3
+◆ Circle:    MyCircle
+  ID:        8e563c41-...
+  Workspace: /Users/suzy/enochian/MyCircle
+  Docs:      3
 ```
 
 ---
@@ -169,13 +181,11 @@ enoch [--circle <NAME>] done <TASK-ID>
 
 ### `bind`
 
-Acquire an advisory file lock.
+Acquire an advisory file lock. `<PATH>` is relative to the workspace, forward slashes.
 
 ```bash
 enoch [--circle <NAME>] bind <PATH>
 ```
-
-`<PATH>` is relative to the sync directory, forward slashes.
 
 ---
 

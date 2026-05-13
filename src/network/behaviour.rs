@@ -1,4 +1,5 @@
 use libp2p::{identify, kad, mdns, ping, rendezvous, swarm::NetworkBehaviour};
+use libp2p_stream as stream;
 
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "EnochEvent")]
@@ -8,6 +9,7 @@ pub struct EnochBehaviour {
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
     pub rendezvous: rendezvous::client::Behaviour,
+    pub stream: stream::Behaviour,
 }
 
 #[derive(Debug)]
@@ -17,6 +19,8 @@ pub enum EnochEvent {
     Identify(identify::Event),
     Ping(ping::Event),
     Rendezvous(rendezvous::client::Event),
+    /// stream::Behaviour emits no user events (ToSwarm = ())
+    Stream,
 }
 
 impl From<mdns::Event> for EnochEvent {
@@ -37,4 +41,8 @@ impl From<ping::Event> for EnochEvent {
 
 impl From<rendezvous::client::Event> for EnochEvent {
     fn from(e: rendezvous::client::Event) -> Self { Self::Rendezvous(e) }
+}
+
+impl From<()> for EnochEvent {
+    fn from(_: ()) -> Self { Self::Stream }
 }

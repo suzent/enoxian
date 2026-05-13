@@ -156,9 +156,9 @@ Output gains a `Workspace` line:
 - [x] Include `workspace` in status response
 
 ### 7. Docs
-- [ ] Update `getting-started.md` — new init output, workspace path
-- [ ] Update `cli.md` — `--dir` flag for init and enter
-- [ ] Update `daemon.md` — `workspace_dir` in config.toml example
+- [x] Update `getting-started.md` — new init output, workspace path, conflict handling
+- [x] Update `cli.md` — `--dir` flag for init and enter, updated status output
+- [x] Update `daemon.md` — `workspace_dir` in config.toml, workspace table
 
 ---
 

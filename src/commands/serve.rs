@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use libp2p::{
     futures::StreamExt,
-    identify, kad, mdns, noise, tcp, yamux,
+    identify, kad, mdns, noise, pnet, tcp, yamux,
     swarm::{dial_opts::DialOpts, SwarmEvent},
     Multiaddr, SwarmBuilder,
 };
@@ -12,12 +12,16 @@ use crate::{
     api,
     cli::ServeArgs,
     config,
-    crypto::keypair_from_hex,
+    crypto::{keypair_from_hex, psk_from_hex},
     daemon::DaemonState,
-    network::behaviour::{EnochBehaviour, EnochEvent},
+    network::{
+        behaviour::{EnochBehaviour, EnochEvent},
+        sync,
+    },
     state::AppState,
     sync_yjs::watcher::spawn_watcher,
 };
+use libp2p_stream as stream_proto;
 
 pub async fn run(args: ServeArgs) -> Result<()> {
     let configs = config::load_all().context("failed to load circle configs")?;
@@ -32,6 +36,8 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     for config in configs {
         let keypair = keypair_from_hex(&config.keypair_proto_hex)?;
         let peer_id = keypair.public().to_peer_id();
+        let psk_bytes = psk_from_hex(&config.psk_hex)?;
+
         let workspace = if config.workspace_dir.is_empty() {
             crate::config::circle_dir(&config.circle_id)?.join("files")
         } else {
@@ -40,7 +46,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         tokio::fs::create_dir_all(&workspace).await?;
 
         info!(
-            "  Circle '{}' ({}) — PeerID: {} — SyncDir: {}",
+            "  Circle '{}' ({}) — PeerID: {} — Workspace: {}",
             config.circle_name,
             config.circle_id,
             peer_id,
@@ -54,12 +60,25 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         );
 
         spawn_watcher(state.clone(), workspace).await?;
-        daemon.insert(config.circle_id.clone(), state);
+        daemon.insert(config.circle_id.clone(), state.clone());
 
-        // Spawn a P2P swarm for this circle on a random port
+        // ── Build the P2P swarm with PSK-enforced transport (M2) ────────────
+        let pnet_config = pnet::PnetConfig::new(pnet::PreSharedKey::new(psk_bytes));
+        let keypair_clone = keypair.clone();
+
         let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
             .with_tokio()
-            .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)?
+            .with_other_transport(|key| {
+                use libp2p::{core::{muxing::StreamMuxerBox, upgrade}, Transport};
+                let noise = noise::Config::new(key)?;
+                let transport = tcp::tokio::Transport::new(tcp::Config::default())
+                    .and_then(move |s, _| pnet_config.handshake(s))
+                    .upgrade(upgrade::Version::V1Lazy)
+                    .authenticate(noise)
+                    .multiplex(yamux::Config::default())
+                    .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
+                Ok(transport)
+            })?
             .with_behaviour(|key| {
                 let peer_id = key.public().to_peer_id();
                 Ok(EnochBehaviour {
@@ -77,7 +96,8 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                         key.public(),
                     )),
                     ping: libp2p::ping::Behaviour::default(),
-                    rendezvous: libp2p::rendezvous::client::Behaviour::new(keypair.clone()),
+                    rendezvous: libp2p::rendezvous::client::Behaviour::new(keypair_clone),
+                    stream: stream_proto::Behaviour::new(),
                 })
             })?
             .build();
@@ -86,7 +106,27 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         let p2p_addr: Multiaddr = "/ip4/0.0.0.0/tcp/0".parse().unwrap();
         swarm.listen_on(p2p_addr)?;
 
+        // ── Accept incoming sync streams ────────────────────────────────────
+        let mut stream_control = swarm.behaviour().stream.new_control();
+        let state_for_accept = state.clone();
+        tokio::spawn(async move {
+            let mut incoming = match stream_control.accept(sync::PROTOCOL) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("[stream] accept failed: {e}");
+                    return;
+                }
+            };
+            while let Some((peer_id, stream)) = incoming.next().await {
+                let s = state_for_accept.clone();
+                tokio::spawn(sync::run_sync(peer_id, stream, s, false));
+            }
+        });
+
+        // ── Swarm event loop ────────────────────────────────────────────────
         let circle_id = config.circle_id.clone();
+        let open_ctrl = swarm.behaviour().stream.new_control();
+
         tokio::spawn(async move {
             loop {
                 match swarm.select_next_some().await {
@@ -95,6 +135,17 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         info!("[{}] P2P connected: {peer_id} via {}", circle_id, endpoint.get_remote_address());
+                        // Only the dialing side opens the sync stream to avoid double-sync
+                        if endpoint.is_dialer() {
+                            let mut ctrl = open_ctrl.clone();
+                            let s = state.clone();
+                            tokio::spawn(async move {
+                                match ctrl.open_stream(peer_id, sync::PROTOCOL).await {
+                                    Ok(stream) => sync::run_sync(peer_id, stream, s, true).await,
+                                    Err(e) => warn!("[sync] open_stream to {peer_id}: {e}"),
+                                }
+                            });
+                        }
                     }
                     SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
                         info!("[{}] P2P disconnected: {peer_id}: {cause:?}", circle_id);

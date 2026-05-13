@@ -1,0 +1,305 @@
+/// P2P sync handler — runs the y-sync protocol over a libp2p Stream.
+///
+/// Protocol (deadlock-free):
+///   Initiator: sends [count][SyncStep1...] → reads [SyncStep2...][count_r][SyncStep1_r...] → sends [SyncStep2_r...]
+///   Responder: reads [count][SyncStep1...] → sends [SyncStep2...][count_r][SyncStep1_r...] → reads [SyncStep2_r...]
+///   Both: enter continuous Update/SyncStep1 exchange (see IncomingEvent).
+///
+/// Framing: [4-byte path len][path UTF-8][4-byte data len][y-sync bytes]
+use anyhow::Result;
+use libp2p::{PeerId, Stream, StreamProtocol};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::broadcast::error::RecvError;
+use tokio_util::compat::FuturesAsyncReadCompatExt;
+use tracing::{debug, warn};
+use yrs::sync::protocol::{Message, SyncMessage};
+use yrs::updates::decoder::{Decode, DecoderV1};
+use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
+use yrs::{encoding::read::Cursor, ReadTxn, StateVector, Transact, Update};
+
+use crate::state::AppState;
+
+pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enochian/sync/1.0.0");
+
+// ── Wire helpers ──────────────────────────────────────────────────────────────
+
+async fn write_frame<W: AsyncWriteExt + Unpin>(w: &mut W, path: &str, data: &[u8]) -> Result<()> {
+    let pb = path.as_bytes();
+    w.write_all(&(pb.len() as u32).to_be_bytes()).await?;
+    w.write_all(pb).await?;
+    w.write_all(&(data.len() as u32).to_be_bytes()).await?;
+    w.write_all(data).await?;
+    w.flush().await?;
+    Ok(())
+}
+
+async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<(String, Vec<u8>)> {
+    let mut u32buf = [0u8; 4];
+    r.read_exact(&mut u32buf).await?;
+    let plen = u32::from_be_bytes(u32buf) as usize;
+    let mut pbuf = vec![0u8; plen];
+    r.read_exact(&mut pbuf).await?;
+    let path = String::from_utf8(pbuf)?;
+
+    r.read_exact(&mut u32buf).await?;
+    let dlen = u32::from_be_bytes(u32buf) as usize;
+    let mut data = vec![0u8; dlen];
+    r.read_exact(&mut data).await?;
+    Ok((path, data))
+}
+
+async fn write_u32<W: AsyncWriteExt + Unpin>(w: &mut W, n: u32) -> Result<()> {
+    w.write_all(&n.to_be_bytes()).await?;
+    w.flush().await?;
+    Ok(())
+}
+
+async fn read_u32<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<u32> {
+    let mut buf = [0u8; 4];
+    r.read_exact(&mut buf).await?;
+    Ok(u32::from_be_bytes(buf))
+}
+
+fn encode_sync(msg: Message) -> Vec<u8> {
+    let mut enc = EncoderV1::new();
+    msg.encode(&mut enc);
+    enc.to_vec()
+}
+
+// ── Events from the reader task to the writer loop ───────────────────────────
+
+enum IncomingEvent {
+    /// Peer sent an Update or SyncStep2 — apply locally
+    Apply { path: String, raw_update: Vec<u8> },
+    /// Peer sent SyncStep1 (they lagged and need our state) — send SyncStep2 back
+    ResyncRequest { path: String, sv: Vec<u8> },
+    /// Stream closed
+    Closed,
+}
+
+fn parse_frame(path: String, data: &[u8]) -> IncomingEvent {
+    let mut dec = DecoderV1::new(Cursor::new(data));
+    match Message::decode(&mut dec) {
+        Ok(Message::Sync(SyncMessage::SyncStep1(sv))) => {
+            IncomingEvent::ResyncRequest { path, sv: sv.encode_v1() }
+        }
+        Ok(Message::Sync(SyncMessage::SyncStep2(raw))) |
+        Ok(Message::Sync(SyncMessage::Update(raw))) => {
+            IncomingEvent::Apply { path, raw_update: raw }
+        }
+        _ => IncomingEvent::Closed,
+    }
+}
+
+// ── Apply an update to the local CRDT ────────────────────────────────────────
+
+fn apply_update(state: &AppState, path: &str, raw: &[u8]) {
+    let doc = if path == "__control__" {
+        state.control.clone()
+    } else {
+        state.get_or_create_doc(path)
+    };
+
+    match Update::decode_v1(raw) {
+        Ok(update) => {
+            if let Err(e) = doc.transact_mut().apply_update(update) {
+                warn!("[sync] apply_update for {path}: {e}");
+                return;
+            }
+            if path != "__control__" {
+                let state = state.clone();
+                let path = path.to_string();
+                let flag = Arc::new(AtomicBool::new(true));
+                flag.store(true, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    crate::store::fs::flush_to_disk(&state, &path, &flag).await;
+                });
+            }
+        }
+        Err(e) => warn!("[sync] decode_v1 for {path}: {e}"),
+    }
+}
+
+/// Encode the full CRDT state of a doc as an Update message.
+/// Sending this is equivalent to "here is everything I have" — safe to apply
+/// at any time because CRDT merges are idempotent.
+fn full_state_update(state: &AppState, path: &str) -> Vec<u8> {
+    let doc = if path == "__control__" {
+        state.control.clone()
+    } else {
+        state.get_or_create_doc(path)
+    };
+    let empty_sv = StateVector::default();
+    let full_diff = doc.transact().encode_diff_v1(&empty_sv);
+    encode_sync(Message::Sync(SyncMessage::Update(full_diff)))
+}
+
+fn all_doc_paths(state: &AppState) -> Vec<String> {
+    let mut paths: Vec<String> = state.docs.iter().map(|e| e.key().clone()).collect();
+    paths.insert(0, "__control__".to_string());
+    paths
+}
+
+// ── Main entry point ──────────────────────────────────────────────────────────
+
+pub async fn run_sync(peer_id: PeerId, stream: Stream, state: AppState, is_initiator: bool) {
+    if let Err(e) = sync_inner(peer_id, stream, &state, is_initiator).await {
+        debug!("[sync] {peer_id}: {e}");
+    }
+}
+
+async fn sync_inner(
+    peer_id: PeerId,
+    stream: Stream,
+    state: &AppState,
+    is_initiator: bool,
+) -> Result<()> {
+    let compat = stream.compat();
+    let (mut rx, mut tx) = tokio::io::split(compat);
+
+    let my_paths = all_doc_paths(state);
+
+    // ── Handshake ─────────────────────────────────────────────────────────────
+
+    if is_initiator {
+        // Send our SyncStep1 messages
+        write_u32(&mut tx, my_paths.len() as u32).await?;
+        for path in &my_paths {
+            let doc = if path == "__control__" { state.control.clone() } else { state.get_or_create_doc(path) };
+            let sv = doc.transact().state_vector();
+            write_frame(&mut tx, path, &encode_sync(Message::Sync(SyncMessage::SyncStep1(sv)))).await?;
+        }
+
+        // Read SyncStep2 replies (one per our SyncStep1)
+        for _ in 0..my_paths.len() {
+            let (path, data) = read_frame(&mut rx).await?;
+            if let IncomingEvent::Apply { raw_update, .. } = parse_frame(path.clone(), &data) {
+                apply_update(state, &path, &raw_update);
+            }
+        }
+
+        // Read responder's SyncStep1 count + messages, send SyncStep2 for each
+        let their_count = read_u32(&mut rx).await? as usize;
+        for _ in 0..their_count {
+            let (path, data) = read_frame(&mut rx).await?;
+            if let IncomingEvent::ResyncRequest { sv, .. } = parse_frame(path.clone(), &data) {
+                let sv = StateVector::decode_v1(&sv)?;
+                let doc = if path == "__control__" { state.control.clone() } else { state.get_or_create_doc(&path) };
+                let diff = doc.transact().encode_diff_v1(&sv);
+                write_frame(&mut tx, &path, &encode_sync(Message::Sync(SyncMessage::SyncStep2(diff)))).await?;
+            }
+        }
+    } else {
+        // Read initiator's SyncStep1 messages, send SyncStep2 for each
+        let their_count = read_u32(&mut rx).await? as usize;
+        for _ in 0..their_count {
+            let (path, data) = read_frame(&mut rx).await?;
+            if let IncomingEvent::ResyncRequest { sv, .. } = parse_frame(path.clone(), &data) {
+                let sv = StateVector::decode_v1(&sv)?;
+                let doc = if path == "__control__" { state.control.clone() } else { state.get_or_create_doc(&path) };
+                let diff = doc.transact().encode_diff_v1(&sv);
+                write_frame(&mut tx, &path, &encode_sync(Message::Sync(SyncMessage::SyncStep2(diff)))).await?;
+            }
+        }
+
+        // Send our own SyncStep1 messages
+        write_u32(&mut tx, my_paths.len() as u32).await?;
+        for path in &my_paths {
+            let doc = if path == "__control__" { state.control.clone() } else { state.get_or_create_doc(path) };
+            let sv = doc.transact().state_vector();
+            write_frame(&mut tx, path, &encode_sync(Message::Sync(SyncMessage::SyncStep1(sv)))).await?;
+        }
+
+        // Read initiator's SyncStep2 replies
+        for _ in 0..my_paths.len() {
+            let (path, data) = read_frame(&mut rx).await?;
+            if let IncomingEvent::Apply { raw_update, .. } = parse_frame(path.clone(), &data) {
+                apply_update(state, &path, &raw_update);
+            }
+        }
+    }
+
+    debug!("[sync] handshake complete with {peer_id}");
+
+    // ── Continuous exchange ───────────────────────────────────────────────────
+    //
+    // The reader runs in a dedicated task so read_frame is never cancelled
+    // mid-frame (which would corrupt the stream). It forwards events to the
+    // writer loop via an mpsc channel.
+    //
+    // The writer loop selects between:
+    //   - incoming events from the reader (apply update or respond to resync)
+    //   - local CRDT updates to forward to peer (from all_updates broadcast)
+    //
+    // Lag handling: if all_updates overflows and we miss broadcasts, we send
+    // our full CRDT state for every doc. The peer applies it idempotently.
+
+    let (evt_tx, mut evt_rx) = tokio::sync::mpsc::channel::<IncomingEvent>(256);
+    let peer_str = peer_id.to_string();
+
+    tokio::spawn(async move {
+        loop {
+            match read_frame(&mut rx).await {
+                Ok((path, data)) => {
+                    if evt_tx.send(parse_frame(path, &data)).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    debug!("[sync] reader closed ({peer_str}): {e}");
+                    let _ = evt_tx.send(IncomingEvent::Closed).await;
+                    break;
+                }
+            }
+        }
+    });
+
+    let mut all_rx = state.all_updates.subscribe();
+
+    loop {
+        tokio::select! {
+            // ── Incoming from peer ──────────────────────────────────────────
+            Some(event) = evt_rx.recv() => {
+                match event {
+                    IncomingEvent::Apply { path, raw_update } => {
+                        apply_update(state, &path, &raw_update);
+                    }
+                    IncomingEvent::ResyncRequest { path, sv } => {
+                        // Peer lagged — send them our full state for this doc
+                        let sv = StateVector::decode_v1(&sv)?;
+                        let doc = if path == "__control__" { state.control.clone() } else { state.get_or_create_doc(&path) };
+                        let diff = doc.transact().encode_diff_v1(&sv);
+                        let step2 = encode_sync(Message::Sync(SyncMessage::SyncStep2(diff)));
+                        write_frame(&mut tx, &path, &step2).await?;
+                    }
+                    IncomingEvent::Closed => break,
+                }
+            }
+
+            // ── Outgoing local updates ──────────────────────────────────────
+            result = all_rx.recv() => {
+                match result {
+                    Ok((path, raw)) => {
+                        let msg = encode_sync(Message::Sync(SyncMessage::Update(raw)));
+                        write_frame(&mut tx, &path, &msg).await?;
+                    }
+                    Err(RecvError::Lagged(n)) => {
+                        // We dropped n updates. Send our full CRDT state for every
+                        // doc so the peer is guaranteed to converge. CRDT merges
+                        // are idempotent so re-sending existing state is safe.
+                        warn!("[sync] lagged {n} updates to {peer_id} — sending full state");
+                        for path in all_doc_paths(state) {
+                            let msg = full_state_update(state, &path);
+                            write_frame(&mut tx, &path, &msg).await?;
+                        }
+                    }
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        }
+    }
+
+    Ok(())
+}

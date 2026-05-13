@@ -16,10 +16,10 @@ Options:
 
 1. Scan `~/.enochian/circles/*/config.toml` and load all known circles
 2. For each circle:
-   a. Create in-memory AppState (CRDT doc store)
-   b. Spawn a file watcher on `~/.enochian/circles/<id>/files`
+   a. Create in-memory state (CRDT doc store)
+   b. Spawn a file watcher on the circle's workspace directory
    c. Build a libp2p swarm (TCP + Noise + Yamux + mDNS + Kademlia + Identify + Ping + Rendezvous) on a random port
-   d. Register the circle in the shared DaemonState
+   d. Register the circle in the shared daemon state
 3. Start a single HTTP/WS server on `--port` serving all circles
 
 ---
@@ -46,24 +46,33 @@ All per-circle endpoints are prefixed with `/circles/<circle-id>`:
 
 ## Configuration file
 
-Located at `~/.enochian/circles/<circle-id>/config.toml`. Created by `enoch init`.
+Located at `~/.enochian/circles/<circle-id>/config.toml`. Created by `enoch init` or `enoch enter`.
 
 ```toml
 circle_id         = "8e563c41-f0ec-4225-9764-064f1fb04341"
 circle_name       = "MyCircle"
 psk_hex           = "d2d89de6..."        # 256-bit pre-shared key
 keypair_proto_hex = "0802..."            # Ed25519 keypair, protobuf-encoded hex
+workspace_dir     = "/Users/suzy/enochian/MyCircle"
 ```
 
 > Do not share `keypair_proto_hex`. The `psk_hex` is the membership credential.
 
 ---
 
-## Sync directory
+## Workspace directory
 
-`~/.enochian/circles/<circle-id>/files` — one per circle, fixed.
+Each circle has a **workspace** — a visible directory where shared files live.
 
-Files are watched recursively. Any write triggers a Y.Text CRDT update and broadcasts to connected WebSocket clients.
+| Scenario | Default location |
+|----------|-----------------|
+| `enoch init --name MyCircle` | `~/enochian/MyCircle` |
+| `enoch init --name MyCircle --dir ~/projects` | `~/projects` |
+| `enoch enter <invite>` | `~/enochian/<circle-name>` |
+| Name conflict on join | `~/enochian/<circle-name>-<short-id>` |
+| Old config without `workspace_dir` | `~/.enochian/circles/<id>/files` (migration fallback) |
+
+Files in the workspace are watched recursively. Any write triggers a CRDT update and broadcasts to connected WebSocket clients.
 
 ---
 

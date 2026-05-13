@@ -21,6 +21,8 @@ pub struct AppState {
     pub control: Arc<Doc>,
     /// Per-doc raw v1 update bytes broadcast
     pub doc_updates: Arc<DashMap<String, broadcast::Sender<Vec<u8>>>>,
+    /// Global broadcast: (rel_path, raw_v1_update). Used by P2P sync to forward all updates.
+    pub all_updates: broadcast::Sender<(String, Vec<u8>)>,
     /// SSE event stream
     pub events: broadcast::Sender<CircleEvent>,
 }
@@ -28,6 +30,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(circle_id: String, circle_name: String, workspace: PathBuf) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
+        let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
         Self {
             circle_id,
             circle_name,
@@ -35,6 +38,7 @@ impl AppState {
             docs: Arc::new(DashMap::new()),
             control: Arc::new(Doc::new()),
             doc_updates: Arc::new(DashMap::new()),
+            all_updates: all_updates_tx,
             events: events_tx,
         }
     }
@@ -67,11 +71,15 @@ impl AppState {
         self.docs.insert(rel_path.to_string(), doc.clone());
         self.doc_updates.insert(rel_path.to_string(), update_tx);
 
-        // Re-register observer on the stored doc so sub stays alive
-        // (we accept that the first sub was dropped; the channel is what matters)
+        // Re-register observer on the stored doc so sub stays alive.
+        // Also forward every update to the global all_updates channel for P2P sync.
         let tx2 = self.doc_updates.get(rel_path).unwrap().clone();
+        let all_tx = self.all_updates.clone();
+        let path_owned = rel_path.to_string();
         let _ = doc.observe_update_v1(move |_, event| {
-            let _ = tx2.send(event.update.clone());
+            let raw = event.update.clone();
+            let _ = tx2.send(raw.clone());
+            let _ = all_tx.send((path_owned.clone(), raw));
         });
 
         doc

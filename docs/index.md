@@ -24,3 +24,5 @@
 |------|-------------|
 | [plan/roadmap.md](plan/roadmap.md) | Milestone plan — what works today and what's next |
 | [plan/workspace.md](plan/workspace.md) | M1: Workspace folder design and implementation tasks |
+| [plan/lifecycle.md](plan/lifecycle.md) | M4: Circle lifecycle — disable, enable, leave |
+| [plan/admin.md](plan/admin.md) | M6: Admin keypair, member list, roles, revocation |
