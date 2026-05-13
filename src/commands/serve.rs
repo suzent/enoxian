@@ -180,7 +180,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                         tracing::debug!("[{}] Ping: {e:?}", circle_id);
                     }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                        warn!("[{}] Outgoing error to {peer_id:?}: {error}", circle_id);
+                        tracing::debug!("[{}] Outgoing error to {peer_id:?}: {error}", circle_id);
                     }
                     _ => {}
                 }
