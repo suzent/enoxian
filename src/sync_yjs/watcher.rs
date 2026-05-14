@@ -90,7 +90,7 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
         event.kind,
         EventKind::Modify(ModifyKind::Data(_))
             | EventKind::Modify(ModifyKind::Any)
-            | EventKind::Modify(ModifyKind::Name(RenameMode::To))
+            | EventKind::Modify(ModifyKind::Name(_))  // To, From, Both, Any — covers macOS atomic renames
             | EventKind::Create(CreateKind::File)
             | EventKind::Create(CreateKind::Any)
     );
@@ -98,7 +98,18 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
         return;
     }
 
-    for path in &event.paths {
+    // For rename events, only process the destination (last path).
+    // Name(From) carries the source that moved away — skip it.
+    // Name(Both) carries [source, destination] — we only want the destination.
+    let paths: &[_] = match event.kind {
+        EventKind::Modify(ModifyKind::Name(RenameMode::From)) => &[],
+        EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
+            event.paths.last().map(std::slice::from_ref).unwrap_or(&[])
+        }
+        _ => &event.paths,
+    };
+
+    for path in paths {
         let rel = match path.strip_prefix(workspace) {
             Ok(r) => r.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
