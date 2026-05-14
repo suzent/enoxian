@@ -7,6 +7,7 @@
 | File | Description |
 |------|-------------|
 | [getting-started.md](getting-started.md) | Build, initialize a Circle, run your first commands |
+| [dev-guide.md](dev-guide.md) | Developer workflow: multi-machine setup, `enoch update`, cargo-watch |
 | [concepts.md](concepts.md) | Core ideas: Circle, Agent, Document, Control Doc |
 | [cli.md](cli.md) | Full `enoch` command reference |
 | [invite.md](invite.md) | Invite link format, expiry, security model |

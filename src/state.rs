@@ -15,6 +15,7 @@ pub struct AppState {
     pub circle_name: String,
     pub workspace: PathBuf,
     pub admin_pubkey_hex: String,
+    pub agent_id: String,
     /// File docs. Key = relative path with forward slashes.
     pub docs: Arc<DashMap<String, Arc<Doc>>>,
     /// __control__ coordination document
@@ -31,7 +32,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, admin_pubkey_hex: String) -> Self {
+    pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, admin_pubkey_hex: String, agent_id: String) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let control = Arc::new(Doc::new());
@@ -51,6 +52,7 @@ impl AppState {
             circle_name,
             workspace,
             admin_pubkey_hex,
+            agent_id,
             docs: Arc::new(DashMap::new()),
             control,
             doc_updates: Arc::new(DashMap::new()),

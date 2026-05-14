@@ -14,6 +14,7 @@ pub async fn get_status(
         "circle_id":   state.circle_id,
         "circle_name": state.circle_name,
         "workspace":   state.workspace.to_string_lossy(),
+        "agent_id":    state.agent_id,
         "docs":        state.docs.len(),
     })).into_response()
 }

@@ -21,9 +21,43 @@ pub struct CircleConfig {
     pub disabled: bool,
 }
 
-pub fn circles_dir() -> Result<PathBuf> {
+pub fn enochian_dir() -> Result<PathBuf> {
     let base = dirs::home_dir().context("cannot resolve home directory")?;
-    Ok(base.join(".enochian").join("circles"))
+    Ok(base.join(".enochian"))
+}
+
+pub fn circles_dir() -> Result<PathBuf> {
+    Ok(enochian_dir()?.join("circles"))
+}
+
+// ── Global config ──────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct GlobalConfig {
+    /// Path to the enochian source directory, saved by `enoch update --dev`.
+    #[serde(default)]
+    pub dev_src: Option<String>,
+}
+
+pub fn global_config_path() -> Result<PathBuf> {
+    Ok(enochian_dir()?.join("config.toml"))
+}
+
+pub fn load_global() -> GlobalConfig {
+    global_config_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| toml::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_global(cfg: &GlobalConfig) -> Result<()> {
+    let path = global_config_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, toml::to_string_pretty(cfg).context("serialize failed")?)?;
+    Ok(())
 }
 
 pub fn circle_dir(circle_id: &str) -> Result<PathBuf> {

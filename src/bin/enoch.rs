@@ -36,6 +36,7 @@ async fn main() -> anyhow::Result<()> {
         AgentCommands::Enter(args)  => enochian::commands::enter::run(args).await,
         AgentCommands::Invite(args) => enochian::commands::invite::run(args).await,
         AgentCommands::Circles      => enochian::commands::circles::run(&client, &root, cli.json).await,
+        AgentCommands::Update { dev, src, no_pull } => enochian::commands::update::run(dev, src, no_pull).await,
 
         // All other commands need a resolved circle
         cmd => {
@@ -78,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
                 AgentCommands::Chat { follow, since } =>
                     enochian::commands::chat::run(&client, &base, follow, since).await,
                 AgentCommands::Say { text } =>
-                    enochian::commands::say::run(&client, &base, text, None).await,
+                    enochian::commands::say::run(&client, &base, text).await,
                 // Already handled above
                 AgentCommands::Init(_)
                 | AgentCommands::Enter(_)
@@ -86,7 +87,8 @@ async fn main() -> anyhow::Result<()> {
                 | AgentCommands::Circles
                 | AgentCommands::Disable
                 | AgentCommands::Enable
-                | AgentCommands::Leave { .. } => unreachable!(),
+                | AgentCommands::Leave { .. }
+                | AgentCommands::Update { .. } => unreachable!(),
             }
         }
     }

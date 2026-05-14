@@ -91,6 +91,19 @@ pub enum AgentCommands {
         /// Message text (use @agent_id to mention an agent)
         text: String,
     },
+    /// Update enoch and enochd to the latest version
+    Update {
+        /// Build from source instead of downloading a release binary.
+        /// Use this during development.
+        #[arg(long)]
+        dev: bool,
+        /// Path to the enochian source directory (saved after first use)
+        #[arg(long)]
+        src: Option<std::path::PathBuf>,
+        /// Skip git pull (just rebuild)
+        #[arg(long)]
+        no_pull: bool,
+    },
 }
 
 #[derive(Parser)]

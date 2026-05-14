@@ -42,17 +42,18 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         config.circle_name, config.circle_id, peer_id, workspace.display()
     );
 
+    let agent_id = presence::local_agent_id(&peer_id);
     let state = AppState::new(
         config.circle_id.clone(),
         config.circle_name.clone(),
         workspace.clone(),
         config.admin_pubkey_hex.clone(),
+        agent_id.clone(),
     );
 
     let token = CancellationToken::new();
 
     spawn_watcher(state.clone(), workspace, token.clone()).await?;
-    let agent_id = presence::local_agent_id(&peer_id);
     presence::spawn_presence(state.clone(), agent_id, token.clone());
 
     // ── Build the P2P swarm ───────────────────────────────────────────────────
