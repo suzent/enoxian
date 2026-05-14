@@ -10,12 +10,25 @@ use crate::state::AppState;
 /// Derive a human-readable agent ID from the hostname and peer_id.
 /// Format: `<hostname>-<last8 of peer_id>`
 pub fn local_agent_id(peer_id: &PeerId) -> String {
-    let host = std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "unknown".to_string());
+    let host = hostname();
     let peer_str = peer_id.to_string();
     let short = &peer_str[peer_str.len().saturating_sub(8)..];
     format!("{host}-{short}")
+}
+
+fn hostname() -> String {
+    // COMPUTERNAME on Windows; HOSTNAME on Linux (often set); neither on macOS by default.
+    if let Ok(h) = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")) {
+        return h;
+    }
+    // Fall back to the `hostname` command — always available on macOS and Linux.
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Write or refresh the local presence entry in the control doc.
