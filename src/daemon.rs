@@ -13,6 +13,8 @@ pub struct DaemonState {
     pub circles: Arc<DashMap<String, AppState>>,
     /// circle_id → cancellation token for all tasks belonging to that circle
     pub tokens: Arc<DashMap<String, CancellationToken>>,
+    /// Cancelled when `POST /shutdown` is called — triggers graceful server exit.
+    pub shutdown_token: CancellationToken,
 }
 
 impl DaemonState {
@@ -20,6 +22,7 @@ impl DaemonState {
         Self {
             circles: Arc::new(DashMap::new()),
             tokens: Arc::new(DashMap::new()),
+            shutdown_token: CancellationToken::new(),
         }
     }
 

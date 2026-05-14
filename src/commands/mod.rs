@@ -1,6 +1,8 @@
 pub mod bind;
 pub mod chat;
 pub mod say;
+pub mod start;
+pub mod stop;
 pub mod update;
 pub mod circles;
 pub mod claim;

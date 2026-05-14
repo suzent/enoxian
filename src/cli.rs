@@ -91,6 +91,14 @@ pub enum AgentCommands {
         /// Message text (use @agent_id to mention an agent)
         text: String,
     },
+    /// Start the enochd daemon in the background
+    Start {
+        /// Port to listen on
+        #[arg(long, default_value = "9090")]
+        port: u16,
+    },
+    /// Stop the running enochd daemon
+    Stop,
     /// Update enoch and enochd to the latest version
     Update {
         /// Build from source instead of downloading a release binary.

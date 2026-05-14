@@ -62,23 +62,32 @@ fn install_windows(src: &PathBuf) -> Result<()> {
     }
 
     // Kill enochd now (not locked). enoch.exe itself is still locked until we exit.
-    Command::new("taskkill").args(["/F", "/IM", "enochd.exe"]).status().ok();
+    // Suppress output — "process not found" is expected if daemon wasn't running.
+    Command::new("taskkill")
+        .args(["/F", "/IM", "enochd.exe"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok();
 
-    // Write a batch script to copy binaries + restart daemon after enoch.exe exits.
+    // Write a PowerShell script to copy binaries + restart daemon after enoch.exe exits.
     let cargo_bin = home_cargo_bin()?;
     let enoch_src  = src.join("target\\release\\enoch.exe");
     let enochd_src = src.join("target\\release\\enochd.exe");
     let enoch_dst  = cargo_bin.join("enoch.exe");
     let enochd_dst = cargo_bin.join("enochd.exe");
-    let script_path = std::env::temp_dir().join("enoch-update.bat");
+    let script_path = std::env::temp_dir().join("enoch-update.ps1");
 
     let script = format!(
-        "@echo off\r\n\
-         timeout /t 2 /nobreak > nul\r\n\
-         copy /Y \"{enoch_src}\" \"{enoch_dst}\" > nul\r\n\
-         copy /Y \"{enochd_src}\" \"{enochd_dst}\" > nul\r\n\
-         start \"\" \"{enochd_dst}\"\r\n\
-         del \"%~f0\"\r\n",
+        "Start-Sleep -Seconds 2\n\
+         $log = \"$env:TEMP\\enoch-update.log\"\n\
+         \"$(Get-Date): copying binaries\" | Out-File $log\n\
+         Copy-Item -Force '{enoch_src}' '{enoch_dst}'\n\
+         Copy-Item -Force '{enochd_src}' '{enochd_dst}'\n\
+         \"$(Get-Date): starting enochd\" | Out-File $log -Append\n\
+         Start-Process -FilePath '{enochd_dst}' -WindowStyle Hidden\n\
+         \"$(Get-Date): done\" | Out-File $log -Append\n\
+         Remove-Item $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue\n",
         enoch_src  = enoch_src.display(),
         enochd_src = enochd_src.display(),
         enoch_dst  = enoch_dst.display(),
@@ -86,10 +95,16 @@ fn install_windows(src: &PathBuf) -> Result<()> {
     );
     std::fs::write(&script_path, script)?;
 
-    // Spawn the script detached — it runs after this process exits.
-    Command::new("cmd")
-        .args(["/C", "start", "/B", "\"\"", &script_path.to_string_lossy()])
-        .creation_flags(0x00000008) // DETACHED_PROCESS
+    // Spawn PowerShell in a new hidden console — runs after this process exits.
+    // CREATE_NEW_CONSOLE (0x10) gives PowerShell its own console so it can run properly.
+    // -WindowStyle Hidden keeps it invisible.
+    Command::new("powershell")
+        .args([
+            "-NonInteractive",
+            "-WindowStyle", "Hidden",
+            "-File", &script_path.to_string_lossy(),
+        ])
+        .creation_flags(0x00000010) // CREATE_NEW_CONSOLE
         .spawn()?;
 
     println!("✓ Binaries built. Replacements will be applied in 2 seconds after this process exits.");

@@ -3,6 +3,7 @@ pub mod events;
 pub mod lifecycle;
 pub mod lock;
 pub mod members;
+pub mod shutdown;
 pub mod status;
 pub mod tasks;
 pub mod who;
@@ -23,6 +24,7 @@ async fn list_circles(State(daemon): State<DaemonState>) -> Json<serde_json::Val
 
 pub fn router(daemon: DaemonState) -> Router {
     Router::new()
+        .route("/shutdown", post(shutdown::shutdown))
         .route("/circles", get(list_circles))
         .route("/circles/{circle_id}/ws/yjs", get(ws_yjs_handler))
         .route("/circles/{circle_id}/api/status",  get(status::get_status))

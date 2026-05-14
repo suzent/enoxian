@@ -43,13 +43,19 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         });
     }
 
-    let app = api::router(daemon);
+    let app = api::router(daemon.clone());
     let http_addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let listener = tokio::net::TcpListener::bind(http_addr)
         .await
         .with_context(|| format!("failed to bind HTTP server on :{}", args.port))?;
     info!("HTTP/WS listening on :{}", args.port);
 
-    axum::serve(listener, app).await.context("axum server error")?;
+    let shutdown = daemon.shutdown_token.clone();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move { shutdown.cancelled().await })
+        .await
+        .context("axum server error")?;
+
+    info!("enochd stopped");
     Ok(())
 }
