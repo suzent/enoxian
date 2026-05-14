@@ -17,6 +17,7 @@
 | `enoch` CLI | init, enter, invite, circles, status, who, tasks, task-create, claim, done, bind, release, watch, disable, enable, leave, member |
 | PSK-enforced transport | `pnet` XSalsa20 applied at TCP layer — cross-circle connections rejected at handshake |
 | Live P2P file sync | Bidirectional y-sync over libp2p streams; mDNS auto-discovery; new files sync without reconnect |
+| File sync hardening | Startup preload; post-handshake full-state push; macOS atomic-save fix (`Name(Both)`); temp file filter; CRDT state persistence across restarts |
 | Self-write loop prevention | Shared per-path flags prevent flush_to_disk from triggering re-sync |
 | P2P echo prevention | Updates applied from peers use `"p2p"` origin; observer skips forwarding them back |
 | Live presence | Daemon writes hostname-based presence entry on start; 30s heartbeat; `enoch who` shows last-seen age |
@@ -26,14 +27,17 @@
 
 ## Architecture principles
 
-**No host, no server.** Every peer in a circle is equal:
-- The PSK is the membership credential — every peer holds it, any peer can generate invites
-- CRDT (Yjs) means there is no authoritative copy — all peers hold the full state
+**No single host, no mandatory server.** Every peer in a circle is equal:
+- The PSK is the network-layer membership credential — every peer holds it
+- The admin keypair is the authority for membership operations — only the admin can add/remove members
+- CRDT (Yjs) means there is no authoritative copy for real-time edits — all peers hold the full state
 - mDNS handles LAN discovery automatically with no coordination
-- Kademlia DHT handles WAN peer discovery without a central server
-- The optional `--peer` in an invite is just a bootstrap hint — any online peer's address works, not just the original creator's
+- Kademlia DHT + rendezvous handles WAN peer discovery
+- The optional `--peer` in an invite is just a bootstrap hint — any online peer's address works
 
-The circle exists as long as at least one peer has the config. If any peer is offline, the others continue operating independently and resync when they reconnect.
+**Anchor nodes** are regular `enochd` peers that happen to run 24/7 on a VPS. They act as relay, rendezvous point, and always-on presence for their circles. No special code — just a peer that's always reachable. Teams that need WAN or strong liveness guarantees deploy one; LAN-only teams don't need it.
+
+**Conflict model:** CRDT handles concurrent real-time edits perfectly. For offline edits (both peers disconnected simultaneously), conflict detection uses the persisted CRDT state as the common ancestor. If only one side diverged, the merge is clean. If both sides diverged, the loser's version is preserved as a conflict copy (`file.conflict.<peer>`) and the CRDT merge becomes the working file.
 
 ---
 
@@ -81,6 +85,11 @@ PSK is now applied to every swarm via `pnet::PnetConfig` + `with_other_transport
 - [x] Fix self-write flag isolation (moved into AppState, shared by watcher + flush_to_disk)
 - [x] Fix P2P echo loop (`"p2p"` origin on transact_mut_with, filtered in observer)
 - [x] Handle Windows file creation via rename sequence (`Name(To)` event kind)
+- [x] Pre-load all workspace files into CRDT on startup (so handshake includes all local docs)
+- [x] Post-handshake full-state push (both sides send full CRDT state after handshake — fixes asymmetric doc sets)
+- [x] Handle macOS atomic-save rename (`Name(Both)` event — fixes Mac→Windows sync)
+- [x] Temp file filter (`is_ignored` — Sublime Text `.sb-*`, Vim `.swp`, hidden files, etc.)
+- [x] CRDT state persistence (`store/crdt.rs` — saves binary state to `.enoch_crdt/` after every update; restores on restart to preserve operation IDs and prevent content duplication)
 
 ---
 
@@ -173,7 +182,46 @@ Admin keypair is generated at `enoch init` and stored in `admin.key`. The public
 
 ---
 
-### M8 — Chat
+### M8 — File sync hardening
+**Status: In Progress**
+
+Robust conflict detection and circle liveness tracking. The CRDT handles real-time concurrent edits perfectly; this milestone handles the offline-edit case where both peers diverge from a common ancestor while disconnected.
+
+**Conflict resolution model:**
+
+```
+Both peers online          → CRDT merge (perfect, no conflict)
+One peer was offline       → offline peer catches up, no conflict
+Both peers were offline    → detect via session tracking:
+  only one side edited     → clean merge
+  both sides edited        → CRDT merge attempt + conflict copy for the losing version
+```
+
+**Session & liveness tracking:**
+
+Each peer tracks a `session_id` (incremented on every daemon start) and `last_connected_at`. On reconnect, peers exchange these to determine who was offline and whether both sides diverged.
+
+**Implementation (done):**
+- `src/store/crdt.rs` — CRDT state persistence and restore
+- `src/sync_yjs/watcher.rs` — startup preload, macOS `Name(Both)` fix, temp file filter
+- `src/network/sync.rs` — post-handshake full-state push
+
+**Tasks:**
+- [x] CRDT state persistence across restarts (`.enoch_crdt/`)
+- [x] Startup workspace preload
+- [x] Post-handshake full-state push
+- [x] macOS atomic-save fix (`Name(Both)` rename event)
+- [x] Temp/hidden file filter
+- [ ] Session ID — increment on each daemon start, store in circle state
+- [ ] `last_connected_at` — updated on every swarm `ConnectionEstablished` event
+- [ ] Exchange session metadata on reconnect (via control doc or handshake extension)
+- [ ] Conflict detection — compare both sides' CRDT state against common ancestor (persisted state)
+- [ ] Conflict copy — when both sides diverged, write `<file>.conflict.<agent_id>` and keep CRDT merge as working file
+- [ ] `enoch status` shows unresolved conflict files in the workspace
+
+---
+
+### M9 — Chat
 **Status: Planned**
 
 A persistent, replicated chat channel per circle. Messages are stored in a `chat` Y.Array in the control doc and sync to all peers via the existing CRDT layer — no new protocol needed.
@@ -212,7 +260,7 @@ The array is append-only by convention — edits are not supported. Deletes are 
 
 ---
 
-### M9 — Frontend
+### M10 — Frontend
 **Status: Planned**
 
 A minimal web UI served by `enochd` itself (no separate build server). Targets local agent use: one browser tab per circle, showing files, tasks, presence, and chat.
@@ -246,3 +294,43 @@ A minimal web UI served by `enochd` itself (no separate build server). Targets l
 - [ ] File tree — list workspace files via a new `GET /api/files` endpoint
 - [ ] Collaborative editor — CodeMirror 6 + y-codemirror bound to `/ws/yjs`
 - [ ] Production build step: `npm run build` before `cargo build --release`
+
+---
+
+### M11 — Anchor Node & WAN
+**Status: Planned**
+
+An anchor node is a regular `enochd` peer running 24/7 on a VPS. It acts as relay, rendezvous point, and always-on presence for its circles — no special code, just a peer that's always reachable. Teams that need WAN connectivity or strong liveness guarantees deploy one; LAN-only teams don't need it.
+
+**Design:**
+
+- Anchor node runs `enochd` with `--anchor` flag, which enables circuit relay and rendezvous server behaviors
+- Invite links can embed the anchor's multiaddr as a bootstrap hint (`--relay <multiaddr>`)
+- Peers that can't reach each other directly (NAT, firewall) connect via the anchor as relay
+- Anchor node is just a peer — it holds the PSK, syncs files, maintains presence like any other member
+
+**Tasks:**
+- [ ] `--anchor` flag for `enochd` — enables `libp2p::relay::Behaviour` (circuit relay server)
+- [ ] Wire rendezvous server (`libp2p-rendezvous`) so anchor acts as meeting point for WAN peers
+- [ ] `enoch anchor` convenience command — generates a config with `--anchor` and prints multiaddr
+- [ ] `enoch invite --relay <multiaddr>` — embed relay address in invite URI for WAN circles
+- [ ] `enoch enter` reads relay address from invite and adds as bootstrap peer
+- [ ] Kademlia DHT enabled for WAN peer discovery (already in roadmap; anchor acts as bootstrap node)
+- [ ] Document anchor node VPS setup (minimal: any Linux box with a stable IP and open port)
+
+---
+
+### M12 — Packaging & Distribution
+**Status: Planned**
+
+Ship `enochd` and `enoch` as ready-to-use binaries for all major platforms. Anchor nodes ship as a Docker image.
+
+**Tasks:**
+- [ ] GitHub Actions CI — build and test on Linux, macOS, Windows on every push
+- [ ] Release workflow — on `git tag v*`, build release binaries for all platforms and upload to GitHub Releases
+- [ ] macOS: universal binary (x86_64 + aarch64), `.tar.gz` archive; optional `.app` bundle + DMG
+- [ ] Linux: static musl binary (x86_64 + aarch64), `.tar.gz`; optional `.deb` and `.rpm` packages
+- [ ] Windows: `enoch.exe` + `enochd.exe`, zipped; optional NSIS installer
+- [ ] Docker image for anchor node — `ghcr.io/enochian/enochd:latest`; `docker run` one-liner in docs
+- [ ] `install.sh` / `install.ps1` quick-install scripts (download latest release binary, place in PATH)
+- [ ] Homebrew formula for macOS/Linux
