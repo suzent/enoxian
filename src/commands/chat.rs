@@ -27,10 +27,8 @@ pub async fn run(
 
     println!("◆ Following chat (Ctrl+C to stop)...");
 
-    // Build a client with no timeout — SSE connections must stay open indefinitely.
-    let stream_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(0))
-        .build()?;
+    // Build a dedicated client with no timeout — SSE connections stay open indefinitely.
+    let stream_client = reqwest::Client::builder().build()?;
 
     let mut resp = stream_client
         .get(format!("{base}/chat/stream"))
