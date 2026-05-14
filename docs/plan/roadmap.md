@@ -178,3 +178,79 @@ The PSK becomes a transport-layer network filter only ("can you reach the swarm"
 **Tasks:**
 - [ ] `enoch task create --title "..." [--description "..."]`
 - [ ] Hot-reload new circles without restarting `enochd` (watch `~/.enochian/circles/`)
+
+---
+
+### M8 — Chat
+**Status: Planned**
+
+A persistent, replicated chat channel per circle. Messages are stored in a `chat` Y.Array in the control doc and sync to all peers via the existing CRDT layer — no new protocol needed.
+
+**Data model:**
+
+Each message is a JSON object appended to the array:
+```json
+{ "id": "<uuid>", "agent_id": "hostname-shortpeer", "text": "...", "ts": 1234567890 }
+```
+
+The array is append-only by convention — edits are not supported. Deletes are soft (a `deleted: true` flag).
+
+**API:**
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /circles/<id>/api/chat?since=<ts>` | Return messages after a Unix timestamp (default: all) |
+| `POST /circles/<id>/api/chat` | Append a message `{ "text": "..." }` |
+
+**CLI:**
+
+| Command | Description |
+|---------|-------------|
+| `enoch chat` | Print recent messages (last 50) |
+| `enoch chat --follow` | Stream new messages as they arrive (SSE) |
+| `enoch say "<text>"` | Post a message |
+
+**Tasks:**
+- [ ] Add `chat` Y.Array to control doc; define `ChatMessage` struct in `src/control/mod.rs`
+- [ ] `GET /api/chat` — read messages, optional `?since=<ts>` filter
+- [ ] `POST /api/chat` — append message, emit `CircleEvent::MessagePosted`
+- [ ] SSE stream for chat (reuse events infrastructure)
+- [ ] `enoch chat` and `enoch chat --follow` commands
+- [ ] `enoch say "<text>"` shorthand command
+
+---
+
+### M9 — Frontend
+**Status: Planned**
+
+A minimal web UI served by `enochd` itself (no separate build server). Targets local agent use: one browser tab per circle, showing files, tasks, presence, and chat.
+
+**Scope (first cut):**
+
+| Panel | Content |
+|-------|---------|
+| Sidebar | Circle selector, online members (presence) |
+| Files | Directory tree of workspace files; click to open in a Yjs-backed CodeMirror editor (collaborative) |
+| Tasks | Task list with claim/done actions |
+| Chat | Scrolling message log + send box |
+
+**Serving:**
+
+`enochd` serves the compiled SPA from `static/` via `tower-http::ServeDir` at `/app`. No separate dev server in production — `cargo build` bundles the assets. In development, Vite proxy forwards `/circles/` API calls to the daemon.
+
+**Tech stack:**
+- Vite + React + TypeScript
+- [y-codemirror.next](https://github.com/yjs/y-codemirror.next) for collaborative editing (connects to existing `/ws/yjs` endpoint)
+- `yjs` + `y-protocols` for local CRDT binding
+- Tailwind CSS for styling
+
+**Tasks:**
+- [ ] `frontend/` Vite + React scaffold; `npm run build` outputs to `static/`
+- [ ] `enochd` serves `static/` at `/app` via `tower-http::ServeDir`
+- [ ] Circle selector — `GET /circles` to list active circles
+- [ ] Presence panel — poll `GET /api/who` every 30s
+- [ ] Task panel — list, claim, done
+- [ ] Chat panel — load history + SSE stream for live messages; send via `POST /api/chat`
+- [ ] File tree — list workspace files via a new `GET /api/files` endpoint
+- [ ] Collaborative editor — CodeMirror 6 + y-codemirror bound to `/ws/yjs`
+- [ ] Production build step: `npm run build` before `cargo build --release`

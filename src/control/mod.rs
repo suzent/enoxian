@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub const LOCK_LOG_KEY: &str = "lock_log";
 pub const TASKS_KEY: &str = "tasks";
 pub const PRESENCE_KEY: &str = "presence";
+pub const MEMBER_LIST_KEY: &str = "member_list";
 
 // ── Lock ──────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,31 @@ pub enum AgentStatus {
     Offline,
 }
 
+// ── Members ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MemberRole { Admin, Member }
+
+impl std::fmt::Display for MemberRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Admin => write!(f, "admin"),
+            Self::Member => write!(f, "member"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemberEntry {
+    pub peer_id: String,
+    pub agent_id: String,
+    pub role: MemberRole,
+    pub added_at: DateTime<Utc>,
+    /// Hex-encoded Ed25519 admin signature of "add:{peer_id}:{role}"
+    pub signature: String,
+}
+
 // ── Events ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,4 +114,6 @@ pub enum CircleEvent {
     TaskClaimed { task_id: String, agent_id: String },
     TaskDone { task_id: String },
     PresenceChanged { agent_id: String },
+    MemberAdded { peer_id: String },
+    MemberRemoved { peer_id: String },
 }

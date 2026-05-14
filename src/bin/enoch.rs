@@ -4,7 +4,6 @@ use enochian::cli::{AgentCli, AgentCommands};
 fn daemon_root() -> String {
     let base = std::env::var("ENOCHIAN_API")
         .unwrap_or_else(|_| "http://127.0.0.1:9090".to_string());
-    // Strip trailing /api if someone set it for backward compat
     base.trim_end_matches("/api").to_string()
 }
 
@@ -40,6 +39,20 @@ async fn main() -> anyhow::Result<()> {
 
         // All other commands need a resolved circle
         cmd => {
+            // Lifecycle commands hit daemon_root directly (not per-circle /api)
+            match &cmd {
+                AgentCommands::Disable => {
+                    return enochian::commands::disable::run(&client, &root, cli.circle.as_deref()).await;
+                }
+                AgentCommands::Enable => {
+                    return enochian::commands::enable::run(&client, &root, cli.circle.as_deref()).await;
+                }
+                AgentCommands::Leave { yes } => {
+                    return enochian::commands::leave::run(&client, &root, cli.circle.as_deref(), *yes).await;
+                }
+                _ => {}
+            }
+
             let base = resolve_api_base(cli.circle.as_deref())?;
             match cmd {
                 AgentCommands::Status =>
@@ -48,6 +61,8 @@ async fn main() -> anyhow::Result<()> {
                     enochian::commands::who::run(&client, &base, cli.json).await,
                 AgentCommands::Tasks { status } =>
                     enochian::commands::tasks::run(&client, &base, status, cli.json).await,
+                AgentCommands::TaskCreate { title, description } =>
+                    enochian::commands::tasks::create(&client, &base, title, description, cli.json).await,
                 AgentCommands::Claim { task_id } =>
                     enochian::commands::claim::run(&client, &base, task_id, cli.json).await,
                 AgentCommands::Done { task_id } =>
@@ -58,11 +73,16 @@ async fn main() -> anyhow::Result<()> {
                     enochian::commands::release::run(&client, &base, path, cli.json).await,
                 AgentCommands::Watch =>
                     enochian::commands::watch::run(&client, &base).await,
+                AgentCommands::Member(args) =>
+                    enochian::commands::member::run(&client, &root, cli.circle.as_deref(), args.action, cli.json).await,
                 // Already handled above
                 AgentCommands::Init(_)
                 | AgentCommands::Enter(_)
                 | AgentCommands::Invite(_)
-                | AgentCommands::Circles => unreachable!(),
+                | AgentCommands::Circles
+                | AgentCommands::Disable
+                | AgentCommands::Enable
+                | AgentCommands::Leave { .. } => unreachable!(),
             }
         }
     }

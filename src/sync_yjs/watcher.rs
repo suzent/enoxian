@@ -4,12 +4,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use yrs::{GetString, Text, Transact};
 use crate::control::CircleEvent;
 use crate::state::AppState;
 
 /// Spawn the file-system watcher task.
-pub async fn spawn_watcher(state: AppState, workspace: PathBuf) -> anyhow::Result<()> {
+pub async fn spawn_watcher(state: AppState, workspace: PathBuf, token: CancellationToken) -> anyhow::Result<()> {
     let (tokio_tx, mut tokio_rx) = mpsc::channel::<notify::Result<Event>>(128);
     let (std_tx, std_rx) = std::sync::mpsc::channel::<notify::Result<Event>>();
 
@@ -29,10 +30,14 @@ pub async fn spawn_watcher(state: AppState, workspace: PathBuf) -> anyhow::Resul
 
     tokio::spawn(async move {
         let _watcher = watcher; // keep alive inside task
-        while let Some(result) = tokio_rx.recv().await {
-            match result {
-                Ok(event) => handle_event(&state, &workspace, event).await,
-                Err(e) => tracing::warn!("watcher error: {e}"),
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                result = tokio_rx.recv() => match result {
+                    Some(Ok(event)) => handle_event(&state, &workspace, event).await,
+                    Some(Err(e)) => tracing::warn!("watcher error: {e}"),
+                    None => break,
+                }
             }
         }
     });

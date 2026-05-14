@@ -6,6 +6,7 @@ pub mod control;
 pub mod crypto;
 pub mod daemon;
 pub mod invite;
+pub mod lifecycle;
 pub mod network;
 pub mod presence;
 pub mod resolve;

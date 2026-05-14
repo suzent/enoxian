@@ -16,6 +16,9 @@ pub struct CircleConfig {
     /// Admin public key hex (Ed25519). Present on all peers; private key only on admin machines.
     #[serde(default)]
     pub admin_pubkey_hex: String,
+    /// If true, enochd skips this circle at startup and does not start its swarm.
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 pub fn circles_dir() -> Result<PathBuf> {

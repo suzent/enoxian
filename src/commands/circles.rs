@@ -30,6 +30,7 @@ pub async fn run(client: &reqwest::Client, daemon_base: &str, json: bool) -> Res
                 let v: Vec<_> = configs.iter().map(|c| serde_json::json!({
                     "circle_id": c.circle_id,
                     "circle_name": c.circle_name,
+                    "disabled": c.disabled,
                 })).collect();
                 println!("{}", serde_json::to_string_pretty(&v)?);
             } else {
@@ -38,7 +39,8 @@ pub async fn run(client: &reqwest::Client, daemon_base: &str, json: bool) -> Res
                 } else {
                     println!("Known circles (enochd not running):");
                     for c in &configs {
-                        println!("  {} — {}", c.circle_name, c.circle_id);
+                        let tag = if c.disabled { " [paused]" } else { "" };
+                        println!("  {}{} — {}", c.circle_name, tag, c.circle_id);
                     }
                 }
             }

@@ -19,7 +19,7 @@ use crate::{
 
 pub async fn run(args: EnterArgs) -> Result<()> {
     // ── Step 1: Resolve credentials from invite URI or legacy flags ───────────
-    let (circle_id, circle_name, psk_hex, peer_from_invite) = if args.target.starts_with("enochian://") {
+    let (circle_id, circle_name, psk_hex, peer_from_invite, admin_pubkey_hex) = if args.target.starts_with("enochian://") {
         let payload = invite::decode(&args.target)?;
         invite::check_expiry(&payload)?;
 
@@ -27,12 +27,16 @@ pub async fn run(args: EnterArgs) -> Result<()> {
         println!("✦ Joining circle: {name} ({})", payload.circle_id);
 
         let psk_hex = hex::encode(payload.psk_bytes);
-        (payload.circle_id, name, psk_hex, payload.peer_addr)
+        let admin_pubkey_hex = payload.admin_pubkey_bytes
+            .as_deref()
+            .map(hex::encode)
+            .unwrap_or_default();
+        (payload.circle_id, name, psk_hex, payload.peer_addr, admin_pubkey_hex)
     } else {
         let secret = args.secret.as_deref()
             .context("--secret is required when target is a Circle ID (or pass an enochian:// invite)")?;
         let circle_id = args.target.clone();
-        (circle_id.clone(), circle_id.clone(), secret.to_string(), None)
+        (circle_id.clone(), circle_id.clone(), secret.to_string(), None, String::new())
     };
 
     let peer = args.peer.or(peer_from_invite);
@@ -77,7 +81,8 @@ pub async fn run(args: EnterArgs) -> Result<()> {
         psk_hex:           psk_hex.clone(),
         keypair_proto_hex: keypair_to_hex(&keypair)?,
         workspace_dir:     workspace_dir.to_string_lossy().into_owned(),
-        admin_pubkey_hex:  String::new(), // populated when admin distributes member list (M6)
+        admin_pubkey_hex,
+        disabled:          false,
     };
     config::save(&circle_config).context("failed to save circle config")?;
 

@@ -1,5 +1,7 @@
 pub mod events;
+pub mod lifecycle;
 pub mod lock;
+pub mod members;
 pub mod status;
 pub mod tasks;
 pub mod who;
@@ -30,6 +32,13 @@ pub fn router(daemon: DaemonState) -> Router {
         .route("/circles/{circle_id}/api/bind",    post(lock::bind_path))
         .route("/circles/{circle_id}/api/release", post(lock::release_path))
         .route("/circles/{circle_id}/api/events",  get(events::sse_handler))
+        // M4 lifecycle
+        .route("/circles/{circle_id}/stop",  post(lifecycle::stop_circle))
+        .route("/circles/{circle_id}/start", post(lifecycle::start_circle))
+        // M6 members
+        .route("/circles/{circle_id}/members",         get(members::list_members).post(members::add_member))
+        .route("/circles/{circle_id}/members/remove",  post(members::remove_member))
+        .route("/circles/{circle_id}/members/promote", post(members::promote_member))
         .with_state(daemon)
         .layer(tower_http::cors::CorsLayer::permissive())
 }

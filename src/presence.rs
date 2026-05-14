@@ -1,6 +1,7 @@
 use chrono::Utc;
 use libp2p::PeerId;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use yrs::{Map, Transact};
 
 use crate::control::{AgentStatus, Presence, PRESENCE_KEY};
@@ -32,7 +33,7 @@ fn write_presence(state: &AppState, agent_id: &str, status: AgentStatus) {
 }
 
 /// Write the initial presence entry and spawn the 30-second heartbeat task.
-pub fn spawn_presence(state: AppState, agent_id: String) {
+pub fn spawn_presence(state: AppState, agent_id: String, token: CancellationToken) {
     write_presence(&state, &agent_id, AgentStatus::Online);
     tracing::info!("[presence] online as '{agent_id}'");
 
@@ -40,8 +41,12 @@ pub fn spawn_presence(state: AppState, agent_id: String) {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
         interval.tick().await; // consume the immediate first tick
         loop {
-            interval.tick().await;
-            write_presence(&state, &agent_id, AgentStatus::Online);
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = interval.tick() => write_presence(&state, &agent_id, AgentStatus::Online),
+            }
         }
+        // Mark offline on clean shutdown
+        write_presence(&state, &agent_id, AgentStatus::Offline);
     });
 }

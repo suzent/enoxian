@@ -45,6 +45,7 @@ pub async fn run(args: InitArgs) -> Result<()> {
         keypair_proto_hex: keypair_to_hex(&keypair)?,
         workspace_dir:     workspace_dir.to_string_lossy().into_owned(),
         admin_pubkey_hex:  admin_pubkey_hex.clone(),
+        disabled:          false,
     };
     config::save(&config)?;
 
@@ -55,12 +56,14 @@ pub async fn run(args: InitArgs) -> Result<()> {
 
     // ── Generate invite ───────────────────────────────────────────────────────
     let ttl = invite::parse_ttl(&args.ttl)?;
+    let admin_pubkey_bytes = hex::decode(&admin_pubkey_hex).ok();
     let invite_uri = invite::encode(&InvitePayload {
         circle_id:   circle_id.clone(),
         psk_bytes:   psk,
         circle_name: Some(args.name.clone()),
         expires_at:  Utc::now() + ttl,
         peer_addr:   None,
+        admin_pubkey_bytes,
     });
 
     println!("✦ Circle cast: {}", args.name);

@@ -35,3 +35,26 @@ pub async fn run(
     }
     Ok(())
 }
+
+pub async fn create(
+    client: &reqwest::Client,
+    base: &str,
+    title: String,
+    description: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let mut body = serde_json::json!({ "title": title });
+    if let Some(desc) = description {
+        body["description"] = serde_json::Value::String(desc);
+    }
+    let resp = client.post(&format!("{base}/tasks")).json(&body).send().await?;
+    let val: Value = resp.json().await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&val)?);
+    } else {
+        let id = val["task_id"].as_str().unwrap_or("?");
+        let short = if id.len() >= 8 { &id[..8] } else { id };
+        println!("✦ Task created: {short}  {title}");
+    }
+    Ok(())
+}

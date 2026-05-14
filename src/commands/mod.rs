@@ -1,10 +1,14 @@
 pub mod bind;
 pub mod circles;
 pub mod claim;
+pub mod disable;
 pub mod done_cmd;
+pub mod enable;
 pub mod enter;
 pub mod init;
 pub mod invite;
+pub mod leave;
+pub mod member;
 pub mod release;
 pub mod serve;
 pub mod status;

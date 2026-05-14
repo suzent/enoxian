@@ -47,6 +47,14 @@ pub enum AgentCommands {
         #[arg(long)]
         status: Option<String>,
     },
+    /// Create a new task
+    TaskCreate {
+        /// Task title
+        title: String,
+        /// Optional task description
+        #[arg(long)]
+        description: Option<String>,
+    },
     /// Claim a task
     Claim { task_id: String },
     /// Mark a task as done
@@ -57,6 +65,41 @@ pub enum AgentCommands {
     Release { path: String },
     /// Stream live Circle events
     Watch,
+    /// Disable a Circle (stops it and prevents auto-start)
+    Disable,
+    /// Enable a disabled Circle (allows auto-start)
+    Enable,
+    /// Leave a Circle permanently (removes local config)
+    Leave {
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Manage Circle members
+    Member(MemberArgs),
+}
+
+#[derive(Parser)]
+pub struct MemberArgs {
+    #[command(subcommand)]
+    pub action: MemberAction,
+}
+
+#[derive(Subcommand)]
+pub enum MemberAction {
+    /// List members
+    List,
+    /// Add a member (auto-signs with admin.key if present)
+    Add {
+        peer_id: String,
+        /// Role: member (default) or admin
+        #[arg(long, default_value = "member")]
+        role: String,
+    },
+    /// Remove a member (auto-signs with admin.key if present)
+    Remove { peer_id: String },
+    /// Promote a member to admin (auto-signs with admin.key if present)
+    Promote { peer_id: String },
 }
 
 // ── Shared arg structs ─────────────────────────────────────────────────────
