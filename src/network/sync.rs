@@ -221,6 +221,19 @@ async fn sync_inner(
 
     tracing::info!("[sync] handshake complete with {peer_id}");
 
+    // ── Post-handshake catch-up ───────────────────────────────────────────────
+    //
+    // The handshake only covers docs that were open on BOTH sides at the moment
+    // it ran. If one side has docs the other doesn't know about, those are missed.
+    // Fix: immediately push our full CRDT state for every doc we hold as Update
+    // messages — the peer applies them idempotently via the continuous exchange
+    // reader. Both sides do this, so convergence is guaranteed regardless of the
+    // initial asymmetry.
+    for path in all_doc_paths(state) {
+        let msg = full_state_update(state, &path);
+        write_frame(&mut tx, &path, &msg).await?;
+    }
+
     // ── Continuous exchange ───────────────────────────────────────────────────
     //
     // The reader runs in a dedicated task so read_frame is never cancelled

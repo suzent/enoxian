@@ -1,25 +1,26 @@
 # ENOCHIAN Roadmap
 
-## What works today (v0.5.0)
+## What works today
 
 | Feature | Notes |
 |---------|-------|
-| Circle creation — `enoch init` | Generates keypair + PSK, prints invite link |
-| Invite links — `enochian://v1/<b64>` | No-quote shell-safe URI, expiry enforced |
-| Join — `enoch enter` | Saves config, workspace created, conflict handling, exits cleanly |
-| Multi-circle daemon — `enochd` | Loads all circles at startup, one P2P swarm per circle; one machine can join multiple circles simultaneously |
+| Circle creation — `enoch init` | Generates keypair + PSK + admin keypair; prints invite link with embedded admin pubkey |
+| Invite links — `enochian://v1/<b64>` | No-quote shell-safe URI, expiry enforced, admin pubkey embedded |
+| Join — `enoch enter` | Saves config + admin pubkey, workspace created, conflict handling |
+| Multi-circle daemon — `enochd` | Loads all enabled circles at startup; one P2P swarm per circle; hot-reload every 10s |
+| Circle lifecycle | `enoch disable/enable/leave`; `POST /circles/<id>/stop|start`; per-circle `CancellationToken` |
 | Workspace folders | `~/enochian/<name>/` per circle, configurable via `--dir` |
-| REST API | Tasks, locks, presence (read), events SSE |
+| REST API | Tasks, locks, presence, members, events SSE, lifecycle |
 | Yjs CRDT + file watcher | Local file changes sync into CRDT, broadcast to local WS clients |
 | WebSocket Yjs sync | Local editor/agent clients can sync documents over WS |
 | Name-based circle resolution | `--circle Work` resolves by exact name → prefix → UUID prefix |
-| `enoch` CLI | init, enter, invite, circles, status, who, tasks, claim, done, bind, release, watch |
+| `enoch` CLI | init, enter, invite, circles, status, who, tasks, task-create, claim, done, bind, release, watch, disable, enable, leave, member |
 | PSK-enforced transport | `pnet` XSalsa20 applied at TCP layer — cross-circle connections rejected at handshake |
 | Live P2P file sync | Bidirectional y-sync over libp2p streams; mDNS auto-discovery; new files sync without reconnect |
-| Admin keypair | Generated at `enoch init`; stored as `admin.key`; unenforced until M6 |
 | Self-write loop prevention | Shared per-path flags prevent flush_to_disk from triggering re-sync |
 | P2P echo prevention | Updates applied from peers use `"p2p"` origin; observer skips forwarding them back |
 | Live presence | Daemon writes hostname-based presence entry on start; 30s heartbeat; `enoch who` shows last-seen age |
+| Admin & member management | Admin keypair signs member operations; `enoch member list/add/remove/promote`; daemon verifies signatures |
 
 ---
 
@@ -84,38 +85,28 @@ PSK is now applied to every swarm via `pnet::PnetConfig` + `with_other_transport
 ---
 
 ### M4 — Circle lifecycle management
-**Status: Planned**
+**Status: Complete**
 
-Currently all circles load at daemon startup and run until the daemon is killed. There is no way to disable, leave, or toggle individual circles.
+All circles load at daemon startup; individual circles can be stopped, started, disabled, and left without restarting the daemon. Hot-reload polls every 10s for newly-enabled circles.
 
-See [lifecycle.md](lifecycle.md) for the full design.
-
-
-
-**Operations:**
-
-| Command | Description |
-|---------|-------------|
-| `enoch disable <circle>` | Pause a circle — stop its P2P swarm and file watcher, keep config |
-| `enoch enable <circle>` | Resume a disabled circle |
-| `enoch leave <circle>` | Permanently remove a circle from this machine |
-
-**Runtime control (no daemon restart):**
-
-| Endpoint | Description |
-|----------|-------------|
-| `POST /circles/<id>/stop` | Stop a circle's swarm at runtime |
-| `POST /circles/<id>/start` | Start a stopped circle at runtime |
+**Implementation:**
+- `src/lifecycle.rs` — `spawn_circle()` with `CancellationToken` per circle; all tasks cancel cleanly
+- `src/daemon.rs` — `DaemonState` extended with `tokens` map; `insert_circle`, `stop_circle`, `is_active`
+- `src/api/lifecycle.rs` — `POST /circles/<id>/stop` and `/start` handlers
+- `src/commands/disable.rs` — sets `disabled=true`, best-effort stop
+- `src/commands/enable.rs` — sets `disabled=false`, best-effort start
+- `src/commands/leave.rs` — confirmation prompt, removes config dir, best-effort stop
+- `src/commands/serve.rs` — hot-reload task (10s poll)
 
 **Tasks:**
-- [ ] Add `disabled: bool` field to `CircleConfig` (default false, `#[serde(default)]`)
-- [ ] `enochd` skips disabled circles at startup
-- [ ] `enoch disable <circle>` — set flag in config, call `/circles/<id>/stop`
-- [ ] `enoch enable <circle>` — clear flag in config, call `/circles/<id>/start`
-- [ ] `enoch leave <circle>` — confirm prompt, delete config dir, call `/circles/<id>/stop`
-- [ ] `POST /circles/<id>/stop` API endpoint — drop swarm task + watcher, remove from DaemonState
-- [ ] `POST /circles/<id>/start` API endpoint — re-load config, spawn swarm + watcher, insert into DaemonState
-- [ ] `enoch circles` output shows disabled circles with a `[paused]` marker
+- [x] Add `disabled: bool` field to `CircleConfig` (default false, `#[serde(default)]`)
+- [x] `enochd` skips disabled circles at startup
+- [x] `enoch disable` — set flag in config, call `/circles/<id>/stop`
+- [x] `enoch enable` — clear flag in config, call `/circles/<id>/start`
+- [x] `enoch leave [--yes]` — confirm prompt, delete config dir, call `/circles/<id>/stop`
+- [x] `POST /circles/<id>/stop` API endpoint — cancels token, removes from DaemonState
+- [x] `POST /circles/<id>/start` API endpoint — reloads config, spawns circle, inserts into DaemonState
+- [x] `enoch circles` output shows disabled circles with a `[paused]` marker
 
 ---
 
@@ -140,44 +131,45 @@ On startup, each daemon writes a `Presence` entry (`agent_id = hostname-shortpee
 
 See [admin.md](admin.md) for the full design.
 
-**Status: Planned**
+**Status: Complete**
 
-> ⚠ **Security prerequisite.** The current shared-PSK model has no access control — anyone with a valid invite link is a permanent equal member with no way to be removed. This milestone is required before ENOCHIAN is safe for any multi-user or production use.
+Admin keypair is generated at `enoch init` and stored in `admin.key`. The public key is embedded in invite URIs so joining peers save it automatically. Member operations (add, remove, promote) require an admin signature verified by the daemon; the CLI auto-signs from `admin.key` when present.
 
-**The problem with shared PSK:**
-- Any peer can generate invites — there is no invite gating
-- Revoking a member requires rotating the PSK and manually redistributing it to every remaining member out-of-band
-- The CRDT merges all writes equally — there is no concept of read-only or restricted members
+> ⚠ **Note:** The PSK still governs transport-layer access. The member list is enforced at the API layer but peers do not yet reject connections from removed members at the swarm level — that enforcement is deferred to a future hardening pass.
 
-**Required architecture change — per-member credentials:**
-
-| Component | Current | With admin |
-|-----------|---------|------------|
-| Membership credential | Shared PSK (everyone equal) | Admin-signed member list (per-member public key) |
-| Invite authority | Any peer | Admin keypair only |
-| Revocation | Impossible without PSK rotation | Admin removes key from member list |
-| Write permissions | All peers equal | Tiered: admin / member / observer |
-
-The PSK becomes a transport-layer network filter only ("can you reach the swarm"). Authorization moves to a signed member list stored in the control doc.
+**Implementation:**
+- `src/invite.rs` — extended binary format: optional admin pubkey appended as u16-length-prefixed bytes (backward-compatible)
+- `src/commands/init.rs` — generates admin keypair; saves `admin.key`; embeds pubkey in initial invite
+- `src/commands/invite.rs` — loads `admin.key` if present, embeds pubkey in invite
+- `src/commands/enter.rs` — extracts `admin_pubkey_hex` from invite, saves to `config.toml`
+- `src/api/members.rs` — `list_members`, `add_member`, `remove_member`, `promote_member`; all mutating ops verify admin signature via `libp2p::identity::PublicKey::verify`
+- `src/commands/member.rs` — `enoch member list/add/remove/promote`; auto-signs with `admin.key`
+- `src/control/mod.rs` — `MemberEntry`, `MemberRole`, `MEMBER_LIST_KEY`, `MemberAdded`/`MemberRemoved` events
 
 **Tasks:**
-- [ ] Design signed member list format (admin keypair signs `{peer_id, role, added_at}` entries)
-- [ ] `enoch init` designates the creator as admin (admin keypair stored separately from node keypair)
-- [ ] Invites signed by admin key — peers verify signature on `enoch enter`
-- [ ] Member list stored in control doc CRDT — replicated to all peers
-- [ ] `enoch member list` — show all members and their roles
-- [ ] `enoch member remove <peer-id>` — admin removes member, broadcasts updated list
-- [ ] Peers reject connections from removed members (check member list on connect)
-- [ ] `enoch member add-admin <peer-id>` — promote a member to admin
+- [x] Admin keypair generated at `enoch init`, stored as `admin.key`
+- [x] Invite format carries admin pubkey (backward-compatible extension)
+- [x] `enoch enter` saves `admin_pubkey_hex` from invite to `config.toml`
+- [x] Member list stored in control doc CRDT (`member_list` Y.Map) — replicated to all peers
+- [x] `enoch member list` — show all members and their roles
+- [x] `enoch member add <peer-id> [--role admin|member]` — admin-signed add
+- [x] `enoch member remove <peer-id>` — admin-signed remove
+- [x] `enoch member promote <peer-id>` — promote to admin
+- [x] Daemon verifies admin signature on all member write operations
 
 ---
 
 ### M7 — CLI completeness
-**Status: Planned**
+**Status: Complete**
+
+**Implementation:**
+- `src/commands/tasks.rs` — `create()` function posts to `POST /api/tasks`
+- `src/cli.rs` — `TaskCreate { title, description }` subcommand
+- `src/commands/serve.rs` — hot-reload loop (10s poll, shared with M4)
 
 **Tasks:**
-- [ ] `enoch task create --title "..." [--description "..."]`
-- [ ] Hot-reload new circles without restarting `enochd` (watch `~/.enochian/circles/`)
+- [x] `enoch task-create <title> [--description "..."]`
+- [x] Hot-reload new circles without restarting `enochd`
 
 ---
 
