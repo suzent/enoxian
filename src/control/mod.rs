@@ -8,6 +8,7 @@ pub const LOCK_LOG_KEY: &str = "lock_log";
 pub const TASKS_KEY: &str = "tasks";
 pub const PRESENCE_KEY: &str = "presence";
 pub const MEMBER_LIST_KEY: &str = "member_list";
+pub const CHAT_KEY: &str = "chat";
 
 // ── Lock ──────────────────────────────────────────────────────────────────
 
@@ -102,6 +103,17 @@ pub struct MemberEntry {
     pub signature: String,
 }
 
+// ── Chat ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub id: String,
+    pub agent_id: String,
+    pub text: String,
+    pub mentions: Vec<String>,
+    pub ts: i64, // Unix timestamp seconds
+}
+
 // ── Events ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,4 +128,8 @@ pub enum CircleEvent {
     PresenceChanged { agent_id: String },
     MemberAdded { peer_id: String },
     MemberRemoved { peer_id: String },
+    /// A chat message was posted to the circle.
+    MessagePosted { message: ChatMessage },
+    /// A message mentioned a specific agent — the agent's wake signal.
+    AgentMentioned { agent_id: String, message: ChatMessage },
 }

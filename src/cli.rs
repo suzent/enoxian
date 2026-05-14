@@ -77,6 +77,20 @@ pub enum AgentCommands {
     },
     /// Manage Circle members
     Member(MemberArgs),
+    /// Show recent chat messages
+    Chat {
+        /// Stream new messages as they arrive
+        #[arg(long, short = 'f')]
+        follow: bool,
+        /// Only show messages after this Unix timestamp
+        #[arg(long)]
+        since: Option<i64>,
+    },
+    /// Post a chat message
+    Say {
+        /// Message text (use @agent_id to mention an agent)
+        text: String,
+    },
 }
 
 #[derive(Parser)]

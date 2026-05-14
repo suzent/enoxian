@@ -22,6 +22,7 @@
 | P2P echo prevention | Updates applied from peers use `"p2p"` origin; observer skips forwarding them back |
 | Live presence | Daemon writes hostname-based presence entry on start; 30s heartbeat; `enoch who` shows last-seen age |
 | Admin & member management | Admin keypair signs member operations; `enoch member list/add/remove/promote`; daemon verifies signatures |
+| Chat | `enoch say` posts messages; `enoch chat [--follow]` reads/streams; `@mention` emits `AgentMentioned` event as agent wake signal |
 
 ---
 
@@ -222,7 +223,7 @@ Each peer tracks a `session_id` (incremented on every daemon start) and `last_co
 ---
 
 ### M9 — Chat
-**Status: Planned**
+**Status: Complete**
 
 A persistent, replicated chat channel per circle. Messages are stored in a `chat` Y.Array in the control doc and sync to all peers via the existing CRDT layer — no new protocol needed.
 
@@ -250,13 +251,20 @@ The array is append-only by convention — edits are not supported. Deletes are 
 | `enoch chat --follow` | Stream new messages as they arrive (SSE) |
 | `enoch say "<text>"` | Post a message |
 
+**Implementation:**
+- `src/control/mod.rs` — `ChatMessage` struct (`id`, `agent_id`, `text`, `mentions`, `ts`); `CHAT_KEY` constant; `MessagePosted` and `AgentMentioned` events added to `CircleEvent`
+- `src/api/chat.rs` — `GET /api/chat?since=<ts>`, `POST /api/chat`, `GET /api/chat/stream` (SSE, chat events only)
+- `src/commands/chat.rs` — `enoch chat [--follow] [--since=<ts>]`
+- `src/commands/say.rs` — `enoch say "<text>"`
+
 **Tasks:**
-- [ ] Add `chat` Y.Array to control doc; define `ChatMessage` struct in `src/control/mod.rs`
-- [ ] `GET /api/chat` — read messages, optional `?since=<ts>` filter
-- [ ] `POST /api/chat` — append message, emit `CircleEvent::MessagePosted`
-- [ ] SSE stream for chat (reuse events infrastructure)
-- [ ] `enoch chat` and `enoch chat --follow` commands
-- [ ] `enoch say "<text>"` shorthand command
+- [x] Add `chat` Y.Array to control doc; define `ChatMessage` struct in `src/control/mod.rs`
+- [x] `GET /api/chat` — read messages, optional `?since=<ts>` filter
+- [x] `POST /api/chat` — append message, emit `CircleEvent::MessagePosted`
+- [x] `@mention` parsing — emits `CircleEvent::AgentMentioned` per mention (agent wake signal)
+- [x] SSE stream for chat (`GET /api/chat/stream` — chat events only)
+- [x] `enoch chat` and `enoch chat --follow` commands
+- [x] `enoch say "<text>"` shorthand command
 
 ---
 

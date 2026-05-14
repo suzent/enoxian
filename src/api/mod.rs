@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod events;
 pub mod lifecycle;
 pub mod lock;
@@ -32,6 +33,9 @@ pub fn router(daemon: DaemonState) -> Router {
         .route("/circles/{circle_id}/api/bind",    post(lock::bind_path))
         .route("/circles/{circle_id}/api/release", post(lock::release_path))
         .route("/circles/{circle_id}/api/events",  get(events::sse_handler))
+        // M9 chat
+        .route("/circles/{circle_id}/api/chat",        get(chat::get_chat).post(chat::post_chat))
+        .route("/circles/{circle_id}/api/chat/stream", get(chat::chat_stream))
         // M4 lifecycle
         .route("/circles/{circle_id}/stop",  post(lifecycle::stop_circle))
         .route("/circles/{circle_id}/start", post(lifecycle::start_circle))

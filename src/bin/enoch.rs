@@ -75,6 +75,10 @@ async fn main() -> anyhow::Result<()> {
                     enochian::commands::watch::run(&client, &base).await,
                 AgentCommands::Member(args) =>
                     enochian::commands::member::run(&client, &root, cli.circle.as_deref(), args.action, cli.json).await,
+                AgentCommands::Chat { follow, since } =>
+                    enochian::commands::chat::run(&client, &base, follow, since).await,
+                AgentCommands::Say { text } =>
+                    enochian::commands::say::run(&client, &base, text, None).await,
                 // Already handled above
                 AgentCommands::Init(_)
                 | AgentCommands::Enter(_)
