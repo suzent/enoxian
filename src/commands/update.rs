@@ -24,34 +24,90 @@ fn run_dev(src: Option<PathBuf>, no_pull: bool) -> Result<()> {
         }
     }
 
+    #[cfg(unix)]
+    install_unix(&src)?;
+
+    #[cfg(windows)]
+    install_windows(&src)?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn install_unix(src: &PathBuf) -> Result<()> {
     println!("▶ Installing binaries to ~/.cargo/bin/ ...");
+    // On Unix, running executables can be replaced in-place (inode swap).
     let status = Command::new("cargo")
         .args(["install", "--path", &src.to_string_lossy(), "--bins"])
         .status()?;
     if !status.success() {
         bail!("cargo install failed");
     }
-
     restart_daemon()?;
     println!("✓ Update complete");
     Ok(())
 }
 
+#[cfg(windows)]
+fn install_windows(src: &PathBuf) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+
+    println!("▶ Building release binaries...");
+    let status = Command::new("cargo")
+        .args(["build", "--release", "--bins"])
+        .current_dir(src)
+        .status()?;
+    if !status.success() {
+        bail!("cargo build failed");
+    }
+
+    // Kill enochd now (not locked). enoch.exe itself is still locked until we exit.
+    Command::new("taskkill").args(["/F", "/IM", "enochd.exe"]).status().ok();
+
+    // Write a batch script to copy binaries + restart daemon after enoch.exe exits.
+    let cargo_bin = home_cargo_bin()?;
+    let enoch_src  = src.join("target\\release\\enoch.exe");
+    let enochd_src = src.join("target\\release\\enochd.exe");
+    let enoch_dst  = cargo_bin.join("enoch.exe");
+    let enochd_dst = cargo_bin.join("enochd.exe");
+    let script_path = std::env::temp_dir().join("enoch-update.bat");
+
+    let script = format!(
+        "@echo off\r\n\
+         timeout /t 2 /nobreak > nul\r\n\
+         copy /Y \"{enoch_src}\" \"{enoch_dst}\" > nul\r\n\
+         copy /Y \"{enochd_src}\" \"{enochd_dst}\" > nul\r\n\
+         start \"\" \"{enochd_dst}\"\r\n\
+         del \"%~f0\"\r\n",
+        enoch_src  = enoch_src.display(),
+        enochd_src = enochd_src.display(),
+        enoch_dst  = enoch_dst.display(),
+        enochd_dst = enochd_dst.display(),
+    );
+    std::fs::write(&script_path, script)?;
+
+    // Spawn the script detached — it runs after this process exits.
+    Command::new("cmd")
+        .args(["/C", "start", "/B", "\"\"", &script_path.to_string_lossy()])
+        .creation_flags(0x00000008) // DETACHED_PROCESS
+        .spawn()?;
+
+    println!("✓ Binaries built. Replacements will be applied in 2 seconds after this process exits.");
+    println!("  enochd will restart automatically.");
+    Ok(())
+}
+
 fn run_stable() -> Result<()> {
-    // M12: download pre-built binary from GitHub Releases.
-    // Until then, guide users to --dev.
     println!("Stable binary downloads are not yet available (coming in M12).");
     println!("To update from source: enoch update --dev [--src <path>]");
     Ok(())
 }
 
-/// Resolve source dir: prefer explicit arg, then saved config, then error.
 fn resolve_src(arg: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(p) = arg {
         if !p.join("Cargo.toml").exists() {
             bail!("'{}' doesn't look like an enochian source directory", p.display());
         }
-        // Save for future use
         let mut cfg = config::load_global();
         cfg.dev_src = Some(p.to_string_lossy().into_owned());
         let _ = config::save_global(&cfg);
@@ -70,26 +126,21 @@ fn resolve_src(arg: Option<PathBuf>) -> Result<PathBuf> {
     bail!("no source path configured — run once with: enoch update --dev --src <path/to/enochian>")
 }
 
+#[cfg(unix)]
 fn restart_daemon() -> Result<()> {
     println!("▶ Restarting enochd...");
-    #[cfg(unix)]
-    {
-        Command::new("pkill").args(["-f", "enochd"]).status().ok();
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        Command::new("enochd")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()?;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        Command::new("taskkill").args(["/F", "/IM", "enochd.exe"]).status().ok();
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        Command::new("enochd.exe")
-            .creation_flags(0x00000008) // DETACHED_PROCESS
-            .spawn()?;
-    }
+    Command::new("pkill").args(["-f", "enochd"]).status().ok();
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    Command::new("enochd")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
     println!("✓ enochd restarted");
     Ok(())
+}
+
+#[cfg(windows)]
+fn home_cargo_bin() -> Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve home directory"))?;
+    Ok(home.join(".cargo").join("bin"))
 }
