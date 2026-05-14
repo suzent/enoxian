@@ -18,7 +18,63 @@ The target daemon URL is configured via `ENOCHIAN_API` (default: `http://127.0.0
 
 ---
 
-## Commands
+## Daemon
+
+### `start`
+
+Start the `enochd` daemon in the background. Returns to the shell immediately.
+
+```bash
+enoch start [--port <PORT>]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port` | `9090` | Port for the HTTP/WS server |
+
+Finds the `enochd` binary next to itself first, then falls back to `~/.cargo/bin/enochd`.
+
+---
+
+### `stop`
+
+Stop the running daemon gracefully. All circles are cancelled before exit.
+
+```bash
+enoch stop
+```
+
+---
+
+### `update`
+
+Pull the latest code and reinstall `enoch` and `enochd`.
+
+```bash
+enoch update --dev [--src <PATH>] [--no-pull]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dev` | — | Build from source (for developers) |
+| `--src <PATH>` | saved | Path to the enochian source directory. Saved to `~/.enochian/config.toml` on first use — not required after that |
+| `--no-pull` | — | Skip `git pull`, just rebuild |
+
+Without `--dev`, prints a message pointing to M12 stable binary downloads (not yet available).
+
+**First-time setup per machine:**
+```bash
+enoch update --dev --src /path/to/enochian   # saves the path
+```
+
+**Every update after that:**
+```bash
+enoch update --dev
+```
+
+---
+
+## Circle Setup
 
 ### `init`
 
@@ -30,9 +86,9 @@ enoch init --name <NAME> [--ttl <DURATION>] [--dir <PATH>]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--name` | required | Human-readable circle name (must be unique on this machine) |
+| `--name` | required | Human-readable circle name |
 | `--ttl` | `7d` | Validity of the generated invite link (`7d`, `24h`, etc.) |
-| `--dir` | `~/enochian/<name>` | Workspace directory (created if it does not exist) |
+| `--dir` | `~/enochian/<name>` | Workspace directory |
 
 **Output:**
 ```
@@ -47,22 +103,26 @@ enoch init --name <NAME> [--ttl <DURATION>] [--dir <PATH>]
   Generate a new link anytime: enoch invite "MyCircle"
 ```
 
-The invite URI contains no shell-special characters and can be pasted without quotes.
-
 ---
 
-### `circles`
+### `enter`
 
-List known circles. If the daemon is running, shows active circles. Falls back to local configs if the daemon is unreachable.
+Join a Circle using an invite link.
 
 ```bash
-enoch circles
+enoch enter enochian://v1/CRxkUjpNaBcDeFgH...
+enoch enter enochian://v1/... --dir ~/projects/shared
 ```
 
-```
-  MyCircle    — 8e563c41-f0ec-4225-9764-064f1fb04341
-  WorkProject — 2a3b4c5d-...
-```
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dir` | `~/enochian/<name>` | Workspace directory for this circle |
+| `--peer` | — | Override the peer address embedded in the invite |
+| `--rendezvous` | — | WAN rendezvous server multiaddr |
+
+- Same circle (same UUID) → "Already a member", exits cleanly
+- Same name, different circle → workspace auto-suffixed (`MyCircle-d4e2e7`)
+- Expired invite → rejected immediately
 
 ---
 
@@ -74,53 +134,63 @@ Generate a new invite link for an existing circle.
 enoch invite <CIRCLE> [--ttl <DURATION>] [--peer <MULTIADDR>]
 ```
 
-`<CIRCLE>` is resolved by name, name prefix, or UUID prefix.
-
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--ttl` | `7d` | How long the invite is valid |
-| `--peer` | — | Embed a peer multiaddr for WAN connections (e.g. `/ip4/1.2.3.4/tcp/9091`) |
-
-**Output:**
-```
-✦ Invite for 'MyCircle' (valid 24h):
-
-  enochian://v1/CRxkUjpNaBcDeFgH...
-
-  Join with: enoch enter enochian://v1/...
-```
+| `--peer` | — | Embed a peer multiaddr for WAN connections |
 
 ---
 
-### `enter`
+### `circles`
 
-Join a Circle using an invite link or a raw circle ID + secret.
+List known circles. Shows active/paused status from the daemon; falls back to local configs if the daemon is unreachable.
 
 ```bash
-# Recommended — paste the invite link directly (no quotes needed)
-enoch enter enochian://v1/CRxkUjpNaBcDeFgH...
-
-# With a custom workspace location
-enoch enter enochian://v1/... --dir ~/projects/shared
-
-# Legacy — explicit flags
-enoch enter <CIRCLE-ID> --secret <HEX>
+enoch circles
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--dir` | `~/enochian/<circle-name>` | Workspace directory for this circle |
-| `--secret` | — | Pre-shared key hex — required when target is a raw Circle ID |
-| `--peer` | — | Override the peer address embedded in the invite |
-| `--rendezvous` | — | WAN rendezvous server multiaddr |
-
-**Conflict handling:**
-- Same circle (same UUID) → prints "Already a member", exits cleanly
-- Same name, different circle → workspace auto-suffixed with short UUID (`MyCircle-d4e2e7`)
-
-**Expiry check:** Expired invites are rejected immediately with an error.
+```
+  MyCircle    — 8e563c41-...
+  WorkProject — 2a3b4c5d-... [paused]
+```
 
 ---
+
+### `disable`
+
+Stop a circle and prevent it from auto-starting with the daemon.
+
+```bash
+enoch [--circle <NAME>] disable
+```
+
+---
+
+### `enable`
+
+Re-enable a disabled circle (starts it immediately if the daemon is running).
+
+```bash
+enoch [--circle <NAME>] enable
+```
+
+---
+
+### `leave`
+
+Leave a circle permanently. Removes the local config and workspace reference.
+
+```bash
+enoch [--circle <NAME>] leave [--yes]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--yes` / `-y` | Skip the confirmation prompt |
+
+---
+
+## Circle Info
 
 ### `status`
 
@@ -133,6 +203,7 @@ enoch [--circle <NAME>] status
 ```
 ◆ Circle:    MyCircle
   ID:        8e563c41-...
+  Agent:     mymac-KRhAf4ug
   Workspace: /Users/suzy/enochian/MyCircle
   Docs:      3
 ```
@@ -141,13 +212,22 @@ enoch [--circle <NAME>] status
 
 ### `who`
 
-Show registered agent presence.
+Show agent presence — who is online and when they were last seen.
 
 ```bash
 enoch [--circle <NAME>] who
 ```
 
+```
+● mymac-KRhAf4ug    online   just now
+○ linux-Ab3cDe4f    offline  2m ago
+```
+
+Agents not seen in 90 seconds are shown as stale.
+
 ---
+
+## Tasks
 
 ### `tasks`
 
@@ -155,6 +235,16 @@ List tasks, optionally filtered by status.
 
 ```bash
 enoch [--circle <NAME>] tasks [--status open|claimed|done]
+```
+
+---
+
+### `task-create`
+
+Create a new task.
+
+```bash
+enoch [--circle <NAME>] task-create <TITLE> [--description <TEXT>]
 ```
 
 ---
@@ -179,6 +269,8 @@ enoch [--circle <NAME>] done <TASK-ID>
 
 ---
 
+## File Locks
+
 ### `bind`
 
 Acquire an advisory file lock. `<PATH>` is relative to the workspace, forward slashes.
@@ -199,9 +291,92 @@ enoch [--circle <NAME>] release <PATH>
 
 ---
 
+## Chat
+
+### `chat`
+
+Show recent messages (last fetch, no filter by default). Blocks and streams new messages with `--follow`.
+
+```bash
+enoch [--circle <NAME>] chat [--follow] [--since <UNIX_TS>]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--follow` / `-f` | Stream new messages as they arrive (Ctrl+C to stop) |
+| `--since <TS>` | Only show messages after this Unix timestamp |
+
+```
+[2026-05-15 10:00] mymac-KRhAf4ug: hello @bob can you review this?
+[2026-05-15 10:01] macbook-Ab3cDe4f: sure, looking now
+```
+
+---
+
+### `say`
+
+Post a message. Use `@agent_id` to mention an agent — they receive an `agent_mentioned` event.
+
+```bash
+enoch [--circle <NAME>] say "<TEXT>"
+```
+
+```bash
+enoch say "hello everyone"
+enoch say "@bob-KRhAf4ug can you check the logs?"
+```
+
+The agent ID is read automatically from the daemon's status endpoint.
+
+---
+
+## Members
+
+### `member list`
+
+List all circle members and their roles.
+
+```bash
+enoch [--circle <NAME>] member list
+```
+
+---
+
+### `member add`
+
+Add a peer as a member. Requires `admin.key` to be present (auto-signs).
+
+```bash
+enoch [--circle <NAME>] member add <PEER-ID> [--role member|admin]
+```
+
+---
+
+### `member remove`
+
+Remove a member. Requires `admin.key`.
+
+```bash
+enoch [--circle <NAME>] member remove <PEER-ID>
+```
+
+---
+
+### `member promote`
+
+Promote a member to admin. Requires `admin.key`.
+
+```bash
+enoch [--circle <NAME>] member promote <PEER-ID>
+```
+
+---
+
+## Events
+
 ### `watch`
 
-Stream live circle events. Blocks until Ctrl+C.
+Stream all live circle events. Blocks until Ctrl+C.
 
 ```bash
 enoch [--circle <NAME>] watch
@@ -211,8 +386,8 @@ enoch [--circle <NAME>] watch
 
 ## Environment Variables
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `ENOCHIAN_API` | `http://127.0.0.1:9090` | Daemon base URL |
 | `ENOCHIAN_CIRCLE` | — | Default circle (name, prefix, or UUID prefix) |
-| `ENOCHIAN_AGENT_ID` | `anonymous` | Agent ID used in `claim` and `bind` |
+| `ENOCHIAN_SRC` | — | Source directory for `enoch update --dev` (saved after first use) |
