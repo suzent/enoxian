@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::HashSet;
 use crate::control::ChatMessage;
 
 pub async fn run(
@@ -7,7 +8,6 @@ pub async fn run(
     follow: bool,
     since: Option<i64>,
 ) -> Result<()> {
-    // Print recent messages
     let mut url = format!("{base}/chat");
     if let Some(s) = since {
         url.push_str(&format!("?since={s}"));
@@ -21,10 +21,18 @@ pub async fn run(
         return Ok(());
     }
 
-    // Stream new messages via SSE
-    let last_ts = messages.last().map(|m| m.ts).unwrap_or(0);
+    // Track IDs already shown so we don't duplicate messages that arrive
+    // between the history fetch and the SSE subscription.
+    let seen: HashSet<String> = messages.into_iter().map(|m| m.id).collect();
+
     println!("◆ Following chat (Ctrl+C to stop)...");
-    let mut resp = client
+
+    // Build a client with no timeout — SSE connections must stay open indefinitely.
+    let stream_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(0))
+        .build()?;
+
+    let mut resp = stream_client
         .get(format!("{base}/chat/stream"))
         .header("Accept", "text/event-stream")
         .send()
@@ -35,10 +43,9 @@ pub async fn run(
         for line in text.lines() {
             if let Some(data) = line.strip_prefix("data: ") {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
-                    // Only handle message_posted (not agent_mentioned duplicates)
                     if val["type"].as_str() == Some("message_posted") {
                         if let Ok(msg) = serde_json::from_value::<ChatMessage>(val["message"].clone()) {
-                            if msg.ts > last_ts {
+                            if !seen.contains(&msg.id) {
                                 print_message(&msg);
                             }
                         }
