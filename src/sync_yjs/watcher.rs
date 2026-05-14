@@ -28,6 +28,7 @@ pub async fn preload_workspace(state: &AppState, workspace: &PathBuf) {
                     Ok(r) => r.to_string_lossy().replace('\\', "/"),
                     Err(_) => continue,
                 };
+                if is_ignored(&rel) { continue; }
                 let contents = match tokio::fs::read_to_string(&path).await {
                     Ok(c) => c,
                     Err(_) => continue, // skip binary files
@@ -85,6 +86,21 @@ pub async fn spawn_watcher(state: AppState, workspace: PathBuf, token: Cancellat
     Ok(())
 }
 
+fn is_ignored(rel: &str) -> bool {
+    let name = rel.split('/').last().unwrap_or(rel);
+    // Hidden files
+    if name.starts_with('.') { return true; }
+    // Editor temp/swap files
+    if name.ends_with('~') { return true; }
+    if name.ends_with(".swp") || name.ends_with(".swx") || name.ends_with(".swo") { return true; }
+    if name.ends_with(".tmp") { return true; }
+    // Sublime Text safe-write: test.txt.sb-<hex>-<random>
+    if name.contains(".sb-") { return true; }
+    // Vim temp files (numeric names like 4913)
+    if name.chars().all(|c| c.is_ascii_digit()) { return true; }
+    false
+}
+
 async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
     let relevant = matches!(
         event.kind,
@@ -114,6 +130,8 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
             Ok(r) => r.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
         };
+
+        if is_ignored(&rel) { continue; }
 
         // Check the shared self_write_flag. If flush_to_disk set it, this event
         // was caused by a P2P or WS write — skip it to avoid a re-entrancy loop.
