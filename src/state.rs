@@ -74,6 +74,9 @@ impl AppState {
         let tx = self.doc_updates.get(rel_path).unwrap().clone();
         let all_tx = self.all_updates.clone();
         let path_owned = rel_path.to_string();
+        let doc_weak = Arc::downgrade(&doc);
+        let workspace = self.workspace.clone();
+        let crdt_rel = rel_path.to_string();
 
         let sub = doc.observe_update_v1(move |txn, event| {
             let raw = event.update.clone();
@@ -84,6 +87,14 @@ impl AppState {
             // This prevents echoing a received update back to the sender.
             if !is_p2p {
                 let _ = all_tx.send((path_owned.clone(), raw));
+            }
+            // Persist CRDT state so restarts don't generate new operation IDs.
+            if let Some(doc) = doc_weak.upgrade() {
+                let ws = workspace.clone();
+                let rp = crdt_rel.clone();
+                tokio::spawn(async move {
+                    crate::store::crdt::save(&ws, &rp, &doc).await;
+                });
             }
         }).expect("observe_update_v1 failed");
 

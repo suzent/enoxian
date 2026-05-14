@@ -34,15 +34,20 @@ pub async fn preload_workspace(state: &AppState, workspace: &PathBuf) {
                     Err(_) => continue, // skip binary files
                 };
                 let doc = state.get_or_create_doc(&rel);
+                // Restore saved CRDT state first — preserves operation IDs from previous session
+                // so merging with peers after restart is idempotent (no content duplication).
+                crate::store::crdt::restore(&state.workspace, &rel, &doc).await;
                 let text = doc.get_or_insert_text(rel.as_str());
-                let mut txn = doc.transact_mut();
-                let current = text.get_string(&txn);
+                let current = { let txn = doc.transact(); text.get_string(&txn) };
                 if current != contents {
+                    // File was edited while daemon was offline — apply the diff.
+                    // This creates new ops, but only happens for genuine offline edits.
+                    let mut txn = doc.transact_mut();
                     let len = text.len(&txn);
                     if len > 0 { text.remove_range(&mut txn, 0, len); }
                     if !contents.is_empty() { text.insert(&mut txn, 0, &contents); }
                 }
-                tracing::debug!("[preload] loaded '{rel}'");
+                tracing::debug!("[preload] loaded '{rel}' (crdt restored: {})", current != contents);
             }
         }
     }
