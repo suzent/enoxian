@@ -44,6 +44,38 @@ export class YjsProvider {
     ws.send(encoding.toUint8Array(enc))
   }
 
+  private pruneDuplicateRemoteUsers() {
+    const latestByName = new Map<string, { clientId: number; lastUpdated: number }>()
+    const removals: number[] = []
+
+    this.awareness.getStates().forEach((state, clientId) => {
+      if (clientId === this.doc.clientID) return
+
+      const name = typeof state.user?.name === 'string' ? state.user.name : ''
+      if (!name) return
+
+      const meta = this.awareness.meta.get(clientId)
+      const lastUpdated = meta?.lastUpdated ?? 0
+      const current = latestByName.get(name)
+
+      if (!current) {
+        latestByName.set(name, { clientId, lastUpdated })
+        return
+      }
+
+      if (lastUpdated >= current.lastUpdated) {
+        removals.push(current.clientId)
+        latestByName.set(name, { clientId, lastUpdated })
+      } else {
+        removals.push(clientId)
+      }
+    })
+
+    if (removals.length > 0) {
+      awarenessProtocol.removeAwarenessStates(this.awareness, removals, this)
+    }
+  }
+
   private closeAfterBufferedSend(ws = this.ws) {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       ws?.close()
@@ -105,6 +137,7 @@ export class YjsProvider {
       } else if (msgType === MSG_AWARENESS) {
         const raw = decoding.readVarUint8Array(dec)
         awarenessProtocol.applyAwarenessUpdate(this.awareness, raw, this)
+        this.pruneDuplicateRemoteUsers()
       }
     }
 

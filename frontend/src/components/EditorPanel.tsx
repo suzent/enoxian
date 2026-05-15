@@ -67,6 +67,7 @@ const enochTheme = EditorView.theme({
   // the label left by its own width so it never overflows the right boundary.
   '.cm-ySelectionInfo': {
     position: 'absolute',
+    display: 'inline-block',
     top: '0',
     left: '0',
     transform: 'translateY(-100%)',
@@ -84,6 +85,10 @@ const enochTheme = EditorView.theme({
     opacity: '1',
     transition: 'none',
     zIndex: '200',
+    contain: 'paint',
+    willChange: 'transform, left',
+    backfaceVisibility: 'hidden',
+    WebkitFontSmoothing: 'antialiased',
   },
 }, { dark: false })
 
