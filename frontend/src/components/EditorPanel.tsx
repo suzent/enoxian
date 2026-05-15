@@ -45,7 +45,8 @@ const enochTheme = EditorView.theme({
   '.cm-selectionBackground': { backgroundColor: 'rgba(17,17,17,0.12) !important' },
   '&.cm-focused .cm-selectionBackground': { backgroundColor: 'rgba(17,17,17,0.15) !important' },
   '.cm-scroller': { overflow: 'auto' },
-  // Remote cursor caret
+  // Remote cursor caret — z-index ensures the whole widget (including label)
+  // stacks above the selection mark decorations (.cm-ySelection backgrounds).
   '.cm-ySelectionCaret': {
     position: 'relative',
     borderLeft: '2px solid',
@@ -54,26 +55,31 @@ const enochTheme = EditorView.theme({
     marginRight: '-1px',
     boxSizing: 'border-box',
     display: 'inline',
+    zIndex: '10',
   },
   // Remote selection highlight
   '.cm-ySelection': { opacity: '0.25' },
-  // Name label above cursor
+  // Name label above cursor. `left: 0` prevents bleeding into the gutter
+  // when the cursor is at column 0. `top: -1.6em` is a fixed em offset which
+  // works reliably for inline positioned elements (unlike bottom: 100%).
   '.cm-ySelectionInfo': {
     position: 'absolute',
-    top: '-1.4em',
-    left: '-1px',
+    top: '-1.6em',
+    left: '0',
     fontSize: '10px',
     fontFamily: "'JetBrains Mono', monospace",
     fontStyle: 'normal',
     fontWeight: 'bold',
     lineHeight: 'normal',
     userSelect: 'none',
+    pointerEvents: 'none',
     color: '#eaeae4',
     padding: '1px 4px',
     whiteSpace: 'nowrap',
     borderRadius: '0',
     opacity: '1',
     transition: 'none',
+    zIndex: '200',
   },
 }, { dark: false })
 
