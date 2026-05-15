@@ -51,6 +51,9 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
         if (data.type === 'file_updated' || data.type === 'file_deleted') {
           getFiles(activeCircleId).then(data => { if (!cancelled) setFiles(data) }).catch(() => {})
         }
+        if (data.type === 'task_created' || data.type === 'task_claimed' || data.type === 'task_done') {
+          getTasks(activeCircleId).then(data => { if (!cancelled) setTasks(data) }).catch(() => {})
+        }
       } catch {}
     })
     return () => {
