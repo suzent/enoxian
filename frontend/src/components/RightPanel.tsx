@@ -287,7 +287,11 @@ function FileTree({ nodes, onSelect, selected, depth }: {
         <div key={n.path}>
           <div
             className={`flex justify-between py-1 border-b border-dashed border-obsidian/20 cursor-pointer
-                        hover:bg-obsidian/5 ${selected === n.path ? 'bg-obsidian text-alabaster' : ''}`}
+                        transition-colors ${
+                          selected === n.path
+                            ? 'bg-obsidian text-alabaster'
+                            : 'hover:bg-slate/15 hover:text-obsidian'
+                        }`}
             style={{ paddingLeft: `${depth * 12}px` }}
             onClick={() => {
               if (n.isDir) setOpen(s => { const ns = new Set(s); ns.has(n.path) ? ns.delete(n.path) : ns.add(n.path); return ns })
