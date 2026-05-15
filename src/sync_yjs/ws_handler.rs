@@ -95,6 +95,18 @@ async fn handle_incoming(
     doc_path: &str,
     awareness_tx: &tokio::sync::broadcast::Sender<Vec<u8>>,
 ) {
+    if data.is_empty() { return; }
+
+    // y-protocols wire format: first varuint byte is the message type.
+    // Type 0 = MSG_SYNC (yrs can decode), type 1 = MSG_AWARENESS.
+    // yrs::Message uses a different awareness encoding than y-protocols, so we must
+    // intercept awareness messages BEFORE the yrs decoder sees them and relay the
+    // original bytes directly — the receiving client will parse them with y-protocols.
+    if data[0] == 1 {
+        let _ = awareness_tx.send(data.to_vec());
+        return;
+    }
+
     let mut decoder = yrs::updates::decoder::DecoderV1::new(
         yrs::encoding::read::Cursor::new(data)
     );
@@ -127,12 +139,6 @@ async fn handle_incoming(
                 Err(e) => tracing::warn!("decode update error for {doc_path}: {e}"),
             }
             flush_to_disk(state, doc_path).await;
-        }
-
-        // Relay awareness updates (cursor positions, selections) to all other clients.
-        // Broadcast the original encoded bytes so we don't need to re-encode AwarenessUpdate.
-        Message::Awareness(_) => {
-            let _ = awareness_tx.send(data.to_vec());
         }
 
         _ => {}

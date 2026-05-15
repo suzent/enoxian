@@ -55,13 +55,33 @@ const enochTheme = EditorView.theme({
   '.cm-selectionBackground': { backgroundColor: 'rgba(17,17,17,0.12) !important' },
   '&.cm-focused .cm-selectionBackground': { backgroundColor: 'rgba(17,17,17,0.15) !important' },
   '.cm-scroller': { overflow: 'auto' },
-  // Collaborator cursors
+  // Remote cursor caret
+  '.cm-ySelectionCaret': {
+    position: 'relative',
+    borderLeft: '2px solid',
+    borderRight: 'none',
+    marginLeft: '-1px',
+    marginRight: '-1px',
+    boxSizing: 'border-box',
+    display: 'inline',
+  },
+  // Remote selection highlight
+  '.cm-ySelection': { opacity: '0.25' },
+  // Name label above cursor
   '.cm-ySelectionInfo': {
-    fontFamily: "'JetBrains Mono', monospace",
+    position: 'absolute',
+    top: '-1.4em',
+    left: '-1px',
     fontSize: '10px',
-    padding: '1px 4px',
-    backgroundColor: '#111111',
+    fontFamily: "'JetBrains Mono', monospace",
+    fontStyle: 'normal',
+    fontWeight: 'bold',
+    lineHeight: 'normal',
+    userSelect: 'none',
     color: '#eaeae4',
+    padding: '1px 4px',
+    whiteSpace: 'nowrap',
+    borderRadius: '0',
   },
 }, { dark: false })
 
