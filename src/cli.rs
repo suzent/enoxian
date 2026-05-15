@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 #[command(name = "enochd", about = "ENOCHIAN daemon — serves all known Circles over HTTP/P2P")]
 pub struct DaemonCli {
     /// Port to listen on
-    #[arg(long, default_value = "9090")]
+    #[arg(long, default_value = "36521")]
     pub port: u16,
 }
 
@@ -91,10 +91,12 @@ pub enum AgentCommands {
         /// Message text (use @agent_id to mention an agent)
         text: String,
     },
+    /// Open the Circle UI in the default browser
+    Open,
     /// Start the enochd daemon in the background
     Start {
         /// Port to listen on
-        #[arg(long, default_value = "9090")]
+        #[arg(long, default_value = "36521")]
         port: u16,
     },
     /// Stop the running enochd daemon
@@ -193,6 +195,6 @@ pub struct InviteArgs {
 #[derive(Parser)]
 pub struct ServeArgs {
     /// Port to listen on
-    #[arg(long, default_value = "9090")]
+    #[arg(long, default_value = "36521")]
     pub port: u16,
 }

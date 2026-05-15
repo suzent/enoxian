@@ -26,8 +26,10 @@
 | Admin & member management | Admin keypair signs member operations; `enoch member list/add/remove/promote`; daemon verifies signatures |
 | Chat | `enoch say` posts messages; `enoch chat [--follow]` reads/streams; `@mention` emits `AgentMentioned` event as agent wake signal |
 | Task SSE events from P2P | Control doc observer fires `TaskCreated/Claimed/Done` SSE events when task updates arrive via P2P sync |
-| Web frontend | React SPA: circle selector, presence panel, file tree, collaborative CodeMirror editor, task queue, chat |
+| Web frontend | React SPA: circle selector, presence panel, file tree, collaborative CodeMirror editor, task queue, chat; served from `enochd` at `/app` |
 | Remote cursors | Yjs awareness in CodeMirror shows live cursor position and agent name label per connected peer |
+| `enoch open` | Opens the circle UI in the default browser (`http://127.0.0.1:9090/app`) |
+| Production build | `cargo build --release` automatically runs `npm run build` via `build.rs` |
 
 ---
 
@@ -304,7 +306,7 @@ The array is append-only by convention — edits are not supported. Deletes are 
 ---
 
 ### M10 — Frontend
-**Status: In Progress**
+**Status: Complete**
 
 A minimal web UI served by `enochd` itself (no separate build server). Targets local agent use: one browser tab per circle, showing files, tasks, presence, and chat.
 
@@ -335,9 +337,9 @@ A minimal web UI served by `enochd` itself (no separate build server). Targets l
 - [x] Collaborative editor — CodeMirror 6 + y-codemirror + `YjsProvider` bound to `/ws/yjs`
 - [x] Remote cursors — Yjs awareness relayed between WS clients and across P2P peers; name labels always visible
 - [x] Agent colors — deterministic per-agent palette, shared between editor cursors and presence panel
-- [ ] `enochd` serves `static/` at `/app` via `tower-http::ServeDir` (dev: Vite proxy only)
-- [ ] Production build step: `npm run build` before `cargo build --release`
-- [ ] `enoch open` command — open the UI for a circle in the default browser
+- [x] `enochd` serves `static/` at `/app` via `tower-http::ServeDir` (dev: Vite proxy only)
+- [x] Production build step — `build.rs` runs `npm run build` automatically on `cargo build --release`
+- [x] `enoch open` — opens `http://127.0.0.1:9090/app` in the default browser
 
 ---
 

@@ -69,3 +69,4 @@ notify = "8"
 # Phase 2 — enoch HTTP client
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
 libp2p-stream = "0.4.0-alpha"
+open = "5"

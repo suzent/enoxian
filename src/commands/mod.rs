@@ -1,4 +1,5 @@
 pub mod bind;
+pub mod open;
 pub mod chat;
 pub mod say;
 pub mod start;

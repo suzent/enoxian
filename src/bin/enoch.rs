@@ -3,12 +3,12 @@ use enochian::cli::{AgentCli, AgentCommands};
 
 fn daemon_root() -> String {
     let base = std::env::var("ENOCHIAN_API")
-        .unwrap_or_else(|_| "http://127.0.0.1:9090".to_string());
+        .unwrap_or_else(|_| "http://127.0.0.1:36521".to_string());
     base.trim_end_matches("/api").to_string()
 }
 
 /// Resolve the target circle and return the per-circle API base URL.
-/// e.g. http://127.0.0.1:9090/circles/<uuid>/api
+/// e.g. http://127.0.0.1:36521/circles/<uuid>/api
 fn resolve_api_base(circle_hint: Option<&str>) -> anyhow::Result<String> {
     let configs = enochian::config::load_all()?;
     let cfg = match circle_hint {
@@ -36,6 +36,7 @@ async fn main() -> anyhow::Result<()> {
         AgentCommands::Enter(args)  => enochian::commands::enter::run(args).await,
         AgentCommands::Invite(args) => enochian::commands::invite::run(args).await,
         AgentCommands::Circles      => enochian::commands::circles::run(&client, &root, cli.json).await,
+        AgentCommands::Open         => enochian::commands::open::run(&root).map_err(Into::into),
         AgentCommands::Start { port } => enochian::commands::start::run(port).await,
         AgentCommands::Stop         => enochian::commands::stop::run(&client, &root).await,
         AgentCommands::Update { dev, src, no_pull } => enochian::commands::update::run(dev, src, no_pull).await,
@@ -87,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
                 | AgentCommands::Enter(_)
                 | AgentCommands::Invite(_)
                 | AgentCommands::Circles
+                | AgentCommands::Open
                 | AgentCommands::Disable
                 | AgentCommands::Enable
                 | AgentCommands::Leave { .. }
