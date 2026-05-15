@@ -45,6 +45,9 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     es.addEventListener('message', e => {
       try {
         const data = JSON.parse(e.data)
+        if (data.type === 'file_deleted' && typeof data.path === 'string') {
+          setFiles(prev => prev.filter(path => path !== data.path && !path.startsWith(`${data.path}/`)))
+        }
         if (data.type === 'file_updated' || data.type === 'file_deleted') {
           getFiles(activeCircleId).then(data => { if (!cancelled) setFiles(data) }).catch(() => {})
         }

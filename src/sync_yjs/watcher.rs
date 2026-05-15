@@ -155,6 +155,7 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
         if matches!(event.kind, EventKind::Remove(_)) {
             state.remove_doc(&rel);
             crate::store::crdt::delete(&state.workspace, &rel).await;
+            let _ = state.all_deletes.send(rel.clone());
             let _ = state.events.send(CircleEvent::FileDeleted { path: rel });
             continue;
         }

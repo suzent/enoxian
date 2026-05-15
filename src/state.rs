@@ -29,6 +29,9 @@ pub struct AppState {
     /// Global broadcast: (rel_path, y-protocols awareness message). Used by P2P sync
     /// to forward ephemeral cursor/presence updates without storing them in CRDT docs.
     pub all_awareness_updates: broadcast::Sender<(String, Vec<u8>)>,
+    /// Global broadcast: rel_path deletions. Used by P2P sync to propagate file
+    /// removals, which cannot be represented by deleting a Yjs text doc update.
+    pub all_deletes: broadcast::Sender<String>,
     /// SSE event stream
     pub events: broadcast::Sender<CircleEvent>,
     /// Per-path flag: set to true before flush_to_disk writes, cleared by watcher on receipt.
@@ -41,6 +44,7 @@ impl AppState {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_awareness_tx, _) = broadcast::channel(EVENT_CAPACITY);
+        let (all_deletes_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let control = Arc::new(Doc::new());
 
         // Forward control doc updates to P2P peers (skip updates that arrived from peers).
@@ -92,6 +96,7 @@ impl AppState {
             awareness_updates: Arc::new(DashMap::new()),
             all_updates: all_updates_tx,
             all_awareness_updates: all_awareness_tx,
+            all_deletes: all_deletes_tx,
             events: events_tx,
             self_write_flags: Arc::new(DashMap::new()),
         }

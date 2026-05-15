@@ -21,6 +21,7 @@ use crate::state::AppState;
 
 pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enochian/sync/1.0.0");
 const AWARENESS_PATH_PREFIX: &str = "\0awareness/";
+const DELETE_PATH_PREFIX: &str = "\0delete/";
 
 // ── Wire helpers ──────────────────────────────────────────────────────────────
 
@@ -76,11 +77,19 @@ enum IncomingEvent {
     ResyncRequest { path: String, sv: Vec<u8> },
     /// Peer sent an ephemeral y-protocols awareness update for a file doc.
     Awareness { path: String, data: Vec<u8> },
+    /// Peer deleted a file doc.
+    Delete { path: String },
     /// Stream closed
     Closed,
 }
 
 fn parse_frame(path: String, data: &[u8]) -> IncomingEvent {
+    if let Some(doc_path) = path.strip_prefix(DELETE_PATH_PREFIX) {
+        return IncomingEvent::Delete {
+            path: doc_path.to_string(),
+        };
+    }
+
     if let Some(doc_path) = path.strip_prefix(AWARENESS_PATH_PREFIX) {
         return IncomingEvent::Awareness {
             path: doc_path.to_string(),
@@ -133,6 +142,20 @@ fn apply_update(state: &AppState, path: &str, raw: &[u8]) {
 fn apply_awareness(state: &AppState, path: &str, data: Vec<u8>) {
     let tx = state.awareness_sender(path);
     let _ = tx.send(data);
+}
+
+async fn apply_delete(state: &AppState, path: &str) {
+    state.remove_doc(path);
+    crate::store::crdt::delete(&state.workspace, path).await;
+
+    let full_path = state
+        .workspace
+        .join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let _ = tokio::fs::remove_file(full_path).await;
+
+    let _ = state.events.send(crate::control::CircleEvent::FileDeleted {
+        path: path.to_string(),
+    });
 }
 
 /// Encode the full CRDT state of a doc as an Update message.
@@ -259,6 +282,7 @@ async fn sync_inner(
     //   - incoming events from the reader (apply update, awareness, or resync)
     //   - local CRDT updates to forward to peer (from all_updates broadcast)
     //   - local awareness updates to forward to peer (from all_awareness_updates)
+    //   - local file deletions to forward to peer (from all_deletes)
     //
     // Lag handling: if all_updates overflows and we miss broadcasts, we send
     // our full CRDT state for every doc. The peer applies it idempotently.
@@ -285,6 +309,7 @@ async fn sync_inner(
 
     let mut all_rx = state.all_updates.subscribe();
     let mut all_awareness_rx = state.all_awareness_updates.subscribe();
+    let mut all_deletes_rx = state.all_deletes.subscribe();
 
     loop {
         tokio::select! {
@@ -304,6 +329,9 @@ async fn sync_inner(
                     }
                     IncomingEvent::Awareness { path, data } => {
                         apply_awareness(state, &path, data);
+                    }
+                    IncomingEvent::Delete { path } => {
+                        apply_delete(state, &path).await;
                     }
                     IncomingEvent::Closed => break,
                 }
@@ -341,6 +369,20 @@ async fn sync_inner(
                         // Awareness is ephemeral. If we drop cursor frames, the
                         // next local movement/selection update will repair state.
                         debug!("[sync] lagged {n} awareness updates to {peer_id}");
+                    }
+                    Err(RecvError::Closed) => break,
+                }
+            }
+
+            // ── Outgoing local file deletions ─────────────────────────────
+            result = all_deletes_rx.recv() => {
+                match result {
+                    Ok(path) => {
+                        let path = format!("{DELETE_PATH_PREFIX}{path}");
+                        write_frame(&mut tx, &path, &[]).await?;
+                    }
+                    Err(RecvError::Lagged(n)) => {
+                        warn!("[sync] lagged {n} delete events to {peer_id}");
                     }
                     Err(RecvError::Closed) => break,
                 }
