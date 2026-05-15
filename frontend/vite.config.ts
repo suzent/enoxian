@@ -16,5 +16,17 @@ export default defineConfig({
   build: {
     outDir: '../static',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (id.includes('three')) return 'vendor-three'
+          if (id.includes('@codemirror') || id.includes('y-codemirror.next')) return 'vendor-editor'
+          if (id.includes('yjs') || id.includes('y-protocols') || id.includes('lib0')) return 'vendor-yjs'
+          if (id.includes('react') || id.includes('react-dom')) return 'vendor-react'
+          return 'vendor'
+        },
+      },
+    },
   },
 })

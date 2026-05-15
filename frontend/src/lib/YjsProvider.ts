@@ -7,26 +7,37 @@ import * as decoding from 'lib0/decoding'
 const MSG_SYNC = 0
 const MSG_AWARENESS = 1
 
+export type YjsConnectionStatus = 'connecting' | 'synced' | 'disconnected'
+
 export class YjsProvider {
   public awareness: awarenessProtocol.Awareness
   private ws: WebSocket | null = null
   private destroyed = false
   private onSyncCallback: (() => void) | undefined
+  private onStatusChange: ((status: YjsConnectionStatus) => void) | undefined
 
   constructor(
     private url: string,
     private doc: Y.Doc,
     onSync?: () => void,
+    onStatusChange?: (status: YjsConnectionStatus) => void,
   ) {
     this.awareness = new awarenessProtocol.Awareness(doc)
     this.onSyncCallback = onSync
+    this.onStatusChange = onStatusChange
+    this.emitStatus('connecting')
     // Defer connect to next microtask so the caller can set awareness state
     // (e.g. user name/color) before the initial awareness broadcast is sent.
     Promise.resolve().then(() => { if (!this.destroyed) this.connect() })
   }
 
+  private emitStatus(status: YjsConnectionStatus) {
+    this.onStatusChange?.(status)
+  }
+
   private connect() {
     if (this.destroyed) return
+    this.emitStatus('connecting')
     const ws = new WebSocket(this.url)
     ws.binaryType = 'arraybuffer'
     this.ws = ws
@@ -57,24 +68,29 @@ export class YjsProvider {
         const replyEnc = encoding.createEncoder()
         encoding.writeVarUint(replyEnc, MSG_SYNC)
         const syncType = syncProtocol.readSyncMessage(dec, replyEnc, this.doc, this)
-        if (encoding.length(replyEnc) > 1) {
+        if (encoding.length(replyEnc) > 1 && ws.readyState === WebSocket.OPEN) {
           ws.send(encoding.toUint8Array(replyEnc))
         }
-        if (syncType === syncProtocol.messageYjsSyncStep2 && this.onSyncCallback) {
-          this.onSyncCallback()
+        if (syncType === syncProtocol.messageYjsSyncStep2) {
+          this.onSyncCallback?.()
           this.onSyncCallback = undefined
+          this.emitStatus('synced')
         }
       } else if (msgType === MSG_AWARENESS) {
         const raw = decoding.readVarUint8Array(dec)
-        console.debug('[yjs] recv awareness', raw.length, 'bytes, states before:', this.awareness.getStates().size)
         awarenessProtocol.applyAwarenessUpdate(this.awareness, raw, this)
-        console.debug('[yjs] recv awareness applied, states after:', this.awareness.getStates().size, [...this.awareness.getStates().entries()])
       }
     }
 
     ws.onclose = () => {
-      awarenessProtocol.removeAwarenessStates(this.awareness, [this.doc.clientID], this)
-      if (!this.destroyed) setTimeout(() => this.connect(), 2000)
+      if (!this.destroyed) {
+        this.emitStatus('disconnected')
+        setTimeout(() => this.connect(), 2000)
+      }
+    }
+
+    ws.onerror = () => {
+      if (!this.destroyed) this.emitStatus('disconnected')
     }
 
     // Forward local doc updates to server
@@ -92,7 +108,6 @@ export class YjsProvider {
       if (ws.readyState !== WebSocket.OPEN) return
       const changed = [...added, ...updated, ...removed]
       const payload = awarenessProtocol.encodeAwarenessUpdate(this.awareness, changed)
-      console.debug('[yjs] send awareness', payload.length, 'bytes, clients:', changed)
       const enc = encoding.createEncoder()
       encoding.writeVarUint(enc, MSG_AWARENESS)
       encoding.writeVarUint8Array(enc, payload)

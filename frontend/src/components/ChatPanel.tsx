@@ -50,29 +50,46 @@ export default function ChatPanel({ onMessage }: Props) {
   const [input, setInput] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
   const seenRef = useRef(new Set<string>())
+  const latestTsRef = useRef<number | null>(null)
 
   const addMsg = useCallback((msg: ChatMessage) => {
     if (seenRef.current.has(msg.id)) return
     seenRef.current.add(msg.id)
-    setMessages(prev => [...prev, msg])
+    latestTsRef.current = Math.max(latestTsRef.current ?? msg.ts, msg.ts)
+    setMessages(prev => [...prev, msg].sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id)))
     onMessage?.()
   }, [onMessage])
 
   useEffect(() => {
     if (!activeCircleId) return
+    let cancelled = false
     seenRef.current.clear()
+    latestTsRef.current = null
     setMessages([])
 
-    getChat(activeCircleId).then(msgs => msgs.forEach(addMsg)).catch(() => {})
+    const catchUp = () => {
+      const since = latestTsRef.current === null ? undefined : Math.max(0, latestTsRef.current - 1)
+      getChat(activeCircleId, since)
+        .then(msgs => {
+          if (cancelled) return
+          msgs.forEach(addMsg)
+        })
+        .catch(() => {})
+    }
 
     const es = chatStream(activeCircleId)
+    es.onopen = catchUp
     es.addEventListener('message', e => {
       try {
         const data = JSON.parse(e.data)
         if (data.type === 'message_posted') addMsg(data.message)
       } catch {}
     })
-    return () => es.close()
+    catchUp()
+    return () => {
+      cancelled = true
+      es.close()
+    }
   }, [activeCircleId, addMsg])
 
   useEffect(() => {

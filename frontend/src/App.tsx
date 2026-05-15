@@ -24,7 +24,7 @@ function Layout() {
     )
   }, [])
 
-  const onFileSelect = useCallback((path: string) => {
+  const onFileSelect = useCallback((path: string | null) => {
     setSelectedFile(path)
   }, [])
 

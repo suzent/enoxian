@@ -5,7 +5,7 @@ import { getCircles, getStatus } from '../api'
 interface AppContextValue {
   circles: Circle[]
   activeCircleId: string | null
-  setActiveCircleId: (id: string) => void
+  setActiveCircleId: (id: string | null) => void
   status: Status | null
   reloadCircles: () => Promise<void>
 }
@@ -27,7 +27,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const cs = await getCircles()
       setCircles(cs)
-      if (cs.length > 0 && !cs.find(c => c.circle_id === activeCircleId)) {
+      if (activeCircleId && !cs.find(c => c.circle_id === activeCircleId)) {
+        const nextCircleId = cs[0]?.circle_id ?? null
+        setActiveCircleIdState(nextCircleId)
+        setStatus(null)
+      } else if (!activeCircleId && cs.length > 0) {
         setActiveCircleIdState(cs[0].circle_id)
       }
     } catch {}
@@ -37,14 +41,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     reloadCircles()
   }, [])
 
-  const setActiveCircleId = useCallback((id: string) => {
+  const setActiveCircleId = useCallback((id: string | null) => {
     setActiveCircleIdState(id)
     setStatus(null)
   }, [])
 
   useEffect(() => {
-    if (!activeCircleId) return
-    getStatus(activeCircleId).then(setStatus).catch(() => {})
+    if (!activeCircleId) {
+      setStatus(null)
+      return
+    }
+    let cancelled = false
+    getStatus(activeCircleId)
+      .then(data => { if (!cancelled) setStatus(data) })
+      .catch(() => { if (!cancelled) setStatus(null) })
+    return () => { cancelled = true }
   }, [activeCircleId])
 
   return (

@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Presence, Task } from '../types'
 import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, eventStream, inviteCircle } from '../api'
 import { useApp } from '../context/AppContext'
 import { agentColor } from '../lib/agentColor'
 
 interface Props {
-  onFileSelect: (path: string) => void
+  onFileSelect: (path: string | null) => void
   selectedFile: string | null
 }
 
@@ -25,6 +25,11 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [newTaskDesc, setNewTaskDesc] = useState('')
   const [creating, setCreating] = useState(false)
   const [inviteUri, setInviteUri] = useState<string | null>(null)
+  const selectedFileRef = useRef<string | null>(selectedFile)
+
+  useEffect(() => {
+    selectedFileRef.current = selectedFile
+  }, [selectedFile])
 
   useEffect(() => {
     setPresence([])
@@ -34,10 +39,74 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 
     let cancelled = false
 
-    const refresh = () => {
+    let filesTimer: number | undefined
+    let tasksTimer: number | undefined
+    let filesInFlight = false
+    let tasksInFlight = false
+    let filesRefreshPending = false
+    let tasksRefreshPending = false
+
+    const refreshPresence = () => {
       getWho(activeCircleId).then(data => { if (!cancelled) setPresence(data) }).catch(() => {})
-      getTasks(activeCircleId).then(data => { if (!cancelled) setTasks(data) }).catch(() => {})
-      getFiles(activeCircleId).then(data => { if (!cancelled) setFiles(data) }).catch(e => console.error('[files]', e))
+    }
+
+    const refreshTasks = () => {
+      if (tasksInFlight) {
+        tasksRefreshPending = true
+        return
+      }
+      tasksInFlight = true
+      getTasks(activeCircleId)
+        .then(data => { if (!cancelled) setTasks(data) })
+        .catch(() => {})
+        .finally(() => {
+          tasksInFlight = false
+          if (tasksRefreshPending && !cancelled) {
+            tasksRefreshPending = false
+            refreshTasks()
+          }
+        })
+    }
+
+    const refreshFiles = () => {
+      if (filesInFlight) {
+        filesRefreshPending = true
+        return
+      }
+      filesInFlight = true
+      getFiles(activeCircleId)
+        .then(data => {
+          if (cancelled) return
+          setFiles(data)
+          const selected = selectedFileRef.current
+          if (selected && !data.includes(selected)) {
+            onFileSelect(null)
+          }
+        })
+        .catch(e => console.error('[files]', e))
+        .finally(() => {
+          filesInFlight = false
+          if (filesRefreshPending && !cancelled) {
+            filesRefreshPending = false
+            refreshFiles()
+          }
+        })
+    }
+
+    const scheduleFilesRefresh = () => {
+      if (filesTimer !== undefined) window.clearTimeout(filesTimer)
+      filesTimer = window.setTimeout(refreshFiles, 150)
+    }
+
+    const scheduleTasksRefresh = () => {
+      if (tasksTimer !== undefined) window.clearTimeout(tasksTimer)
+      tasksTimer = window.setTimeout(refreshTasks, 150)
+    }
+
+    const refresh = () => {
+      refreshPresence()
+      refreshTasks()
+      refreshFiles()
     }
 
     refresh()
@@ -48,25 +117,31 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
         const data = JSON.parse(e.data)
         if (data.type === 'file_deleted' && typeof data.path === 'string') {
           setFiles(prev => prev.filter(path => path !== data.path && !path.startsWith(`${data.path}/`)))
+          const selected = selectedFileRef.current
+          if (selected === data.path || selected?.startsWith(`${data.path}/`)) {
+            onFileSelect(null)
+          }
         }
         if (data.type === 'file_updated' || data.type === 'file_deleted') {
-          getFiles(activeCircleId).then(data => { if (!cancelled) setFiles(data) }).catch(() => {})
+          scheduleFilesRefresh()
         }
         if (data.type === 'task_created' || data.type === 'task_claimed' || data.type === 'task_done') {
-          getTasks(activeCircleId).then(data => { if (!cancelled) setTasks(data) }).catch(() => {})
+          scheduleTasksRefresh()
         }
       } catch {}
     })
     return () => {
       cancelled = true
       clearInterval(id)
+      if (filesTimer !== undefined) window.clearTimeout(filesTimer)
+      if (tasksTimer !== undefined) window.clearTimeout(tasksTimer)
       es.close()
     }
-  }, [activeCircleId])
+  }, [activeCircleId, onFileSelect])
 
-  const refreshTasks = () => {
+  const refreshTasks = useCallback(() => {
     if (activeCircleId) getTasks(activeCircleId).then(setTasks).catch(() => {})
-  }
+  }, [activeCircleId])
 
   const submitTask = () => {
     const title = newTaskTitle.trim()

@@ -11,7 +11,7 @@ import * as Y from 'yjs'
 import { yCollab } from 'y-codemirror.next'
 import { wsYjsUrl } from '../api'
 import { useApp } from '../context/AppContext'
-import { YjsProvider } from '../lib/YjsProvider'
+import { YjsProvider, type YjsConnectionStatus } from '../lib/YjsProvider'
 import { agentColor, agentColorLight } from '../lib/agentColor'
 import { constrainCursorLabels } from '../lib/constrainCursorLabels'
 
@@ -93,7 +93,7 @@ export default function EditorPanel({ filePath }: Props) {
   const viewRef = useRef<EditorView | null>(null)
   const providerRef = useRef<YjsProvider | null>(null)
   const ydocRef = useRef<Y.Doc | null>(null)
-  const [synced, setSynced] = useState(false)
+  const [connectionStatus, setConnectionStatus] = useState<YjsConnectionStatus>('disconnected')
 
   useEffect(() => {
     if (!editorRef.current || !filePath || !activeCircleId) return
@@ -102,14 +102,19 @@ export default function EditorPanel({ filePath }: Props) {
     viewRef.current?.destroy()
     providerRef.current?.destroy()
     ydocRef.current?.destroy()
-    setSynced(false)
+    setConnectionStatus('connecting')
 
     const ydoc = new Y.Doc()
     ydocRef.current = ydoc
     const ytext = ydoc.getText(filePath)
 
     const url = wsYjsUrl(activeCircleId, filePath)
-    const provider = new YjsProvider(url, ydoc, () => setSynced(true))
+    const provider = new YjsProvider(
+      url,
+      ydoc,
+      () => setConnectionStatus('synced'),
+      setConnectionStatus,
+    )
     providerRef.current = provider
 
     const awareness = provider.awareness
@@ -160,8 +165,8 @@ export default function EditorPanel({ filePath }: Props) {
         <div className="flex justify-between items-center px-4 py-3 border-b-2 border-obsidian
                         font-mono text-[10px] font-bold uppercase bg-alabaster">
           <span>{filePath}</span>
-          <span className={`text-[9px] ${synced ? 'text-obsidian' : 'text-slate'}`}>
-            {synced ? '◉ SYNCED' : '◎ CONNECTING...'}
+          <span className={`text-[9px] ${connectionStatus === 'synced' ? 'text-obsidian' : 'text-slate'}`}>
+            {connectionStatus === 'synced' ? '◉ SYNCED' : connectionStatus === 'connecting' ? '◎ CONNECTING...' : '○ OFFLINE'}
           </span>
         </div>
         <div ref={editorRef} className="flex-1 overflow-auto bg-transparent" />
