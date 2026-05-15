@@ -14,8 +14,12 @@ pub struct AppState {
     pub circle_id: String,
     pub circle_name: String,
     pub workspace: PathBuf,
+    /// ~/.enochian/circles/<circle_id>/ — used for session and peer records.
+    pub circle_dir: PathBuf,
     pub admin_pubkey_hex: String,
     pub agent_id: String,
+    /// Monotonically increasing counter, incremented on every daemon start.
+    pub session_id: u64,
     /// File docs. Key = relative path with forward slashes.
     pub docs: Arc<DashMap<String, Arc<Doc>>>,
     /// __control__ coordination document
@@ -40,7 +44,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, admin_pubkey_hex: String, agent_id: String) -> Self {
+    pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, circle_dir: PathBuf, admin_pubkey_hex: String, agent_id: String, session_id: u64) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_awareness_tx, _) = broadcast::channel(EVENT_CAPACITY);
@@ -133,8 +137,10 @@ impl AppState {
             circle_id,
             circle_name,
             workspace,
+            circle_dir,
             admin_pubkey_hex,
             agent_id,
+            session_id,
             docs: Arc::new(DashMap::new()),
             control,
             doc_updates: Arc::new(DashMap::new()),

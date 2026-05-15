@@ -228,9 +228,9 @@ Each peer tracks a `session_id` (incremented on every daemon start) and `last_co
 - [x] Temp/hidden file filter
 - [x] File deletion propagation via P2P (`all_deletes` broadcast + P2P sync handler)
 - [x] Fix CRDT/file race condition — `crdt::save` now awaited synchronously in `flush_to_disk` (not background spawn)
-- [ ] Session ID — increment on each daemon start, store in circle state
-- [ ] `last_connected_at` — updated on every swarm `ConnectionEstablished` event
-- [ ] Exchange session metadata on reconnect (via control doc or handshake extension)
+- [x] Session ID — `store/session.rs`; incremented on every daemon start, stored in `~/.enochian/circles/<id>/session_id`; held in `AppState`
+- [x] `last_connected_at` — recorded per-peer on every sync handshake in `~/.enochian/circles/<id>/peers/<peer_id>`
+- [x] Exchange session metadata on reconnect — `\0session` frame exchanged before CRDT handshake; both sides log each other's session ID
 - [ ] Conflict detection — compare both sides' CRDT state against common ancestor (persisted state)
 - [ ] Conflict copy — when both sides diverged, write `<file>.conflict.<agent_id>` and keep CRDT merge as working file
 - [ ] `enoch status` shows unresolved conflict files in the workspace

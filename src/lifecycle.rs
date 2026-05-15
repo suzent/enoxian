@@ -44,12 +44,16 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     );
 
     let agent_id = presence::local_agent_id(&peer_id);
+    let circle_dir = config::circle_dir(&config.circle_id)?;
+    let session_id = crate::store::session::next_session_id(&circle_dir).await;
     let state = AppState::new(
         config.circle_id.clone(),
         config.circle_name.clone(),
         workspace.clone(),
+        circle_dir,
         config.admin_pubkey_hex.clone(),
         agent_id.clone(),
+        session_id,
     );
 
     let token = CancellationToken::new();

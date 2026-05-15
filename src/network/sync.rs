@@ -22,6 +22,7 @@ use crate::state::AppState;
 pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enochian/sync/1.0.0");
 const AWARENESS_PATH_PREFIX: &str = "\0awareness/";
 const DELETE_PATH_PREFIX: &str = "\0delete/";
+const SESSION_PATH: &str = "\0session";
 
 // ── Wire helpers ──────────────────────────────────────────────────────────────
 
@@ -196,6 +197,40 @@ async fn sync_inner(
     let (mut rx, mut tx) = tokio::io::split(compat);
 
     let my_paths = all_doc_paths(state);
+
+    // ── Session exchange ──────────────────────────────────────────────────────
+    //
+    // Both sides send their session_id before any CRDT frames.
+    // Initiator sends first, then reads; responder reads first, then sends.
+    // This gives us two pieces of information per reconnect:
+    //   1. Their current session_id  — did they restart since we last talked?
+    //   2. Our saved last_session_id for them — did WE restart since then?
+    // Together these detect the dual-offline case needed for conflict detection.
+
+    let peer_session_id: u64;
+
+    if is_initiator {
+        write_frame(&mut tx, SESSION_PATH, &state.session_id.to_be_bytes()).await?;
+        let (_, data) = read_frame(&mut rx).await?;
+        peer_session_id = if data.len() == 8 {
+            u64::from_be_bytes(data.try_into().unwrap())
+        } else {
+            0
+        };
+    } else {
+        let (_, data) = read_frame(&mut rx).await?;
+        peer_session_id = if data.len() == 8 {
+            u64::from_be_bytes(data.try_into().unwrap())
+        } else {
+            0
+        };
+        write_frame(&mut tx, SESSION_PATH, &state.session_id.to_be_bytes()).await?;
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    let peer_id_str = peer_id.to_string();
+    crate::store::session::record_peer(&state.circle_dir, &peer_id_str, peer_session_id, now).await;
+    tracing::info!("[sync] {peer_id}: session {peer_session_id} (ours: {})", state.session_id);
 
     // ── Handshake ─────────────────────────────────────────────────────────────
 
