@@ -34,5 +34,10 @@ pub async fn flush_to_disk(state: &AppState, rel_path: &str) {
 
     flag.store(true, Ordering::SeqCst);
     let _ = tokio::fs::write(&full_path, &contents).await;
+    // Save CRDT state immediately after the file write — guarantees the saved state
+    // always matches the file. Doing this here (awaited, not spawned) prevents the
+    // race where a background save is killed on shutdown, leaving a stale CRDT state
+    // that causes content duplication when the daemon restarts and syncs with peers.
+    crate::store::crdt::save(&state.workspace, rel_path, &doc).await;
     // The watcher clears the flag when it sees and ignores the resulting fs event.
 }

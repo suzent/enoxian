@@ -158,7 +158,7 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
         // Apply to Y.Text (full replace — last external writer wins).
         // The observer fires on TransactionMut drop → broadcasts to doc_updates + all_updates.
         let doc = state.get_or_create_doc(&rel);
-        {
+        let changed = {
             let text = doc.get_or_insert_text(rel.as_str());
             let mut txn = doc.transact_mut();
             let current = text.get_string(&txn);
@@ -170,7 +170,15 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
                 if !contents.is_empty() {
                     text.insert(&mut txn, 0, &contents);
                 }
+                true
+            } else {
+                false
             }
+        };
+
+        // Save CRDT state after a local edit so restarts see the correct state.
+        if changed {
+            crate::store::crdt::save(&state.workspace, &rel, &doc).await;
         }
 
         let _ = state.events.send(CircleEvent::FileUpdated { path: rel });
