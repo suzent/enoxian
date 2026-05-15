@@ -7,17 +7,73 @@ use yrs::{Any, Map, Out, Transact};
 use crate::control::{AgentStatus, Presence, PRESENCE_KEY};
 use crate::state::AppState;
 
-/// Derive a stable, human-readable agent ID from the peer_id.
-/// Do not include hostname here: hostnames can change or be unavailable, but a
-/// peer should keep one presence identity across sessions.
+/// Derive a stable, human-readable agent ID from a custom agent name and peer_id.
+///
+/// `ENOCHIAN_AGENT_ID` can be any short user/agent name (`codex`, `cursor`,
+/// `alice`, ...). If unset, we default to `human`. The peer suffix keeps names
+/// unique across machines while allowing multiple agents on one machine.
 pub fn local_agent_id(peer_id: &PeerId) -> String {
     let peer_str = peer_id.to_string();
     let short = &peer_str[peer_str.len().saturating_sub(8)..];
-    format!("peer-{short}")
+    let agent = std::env::var("ENOCHIAN_AGENT_ID")
+        .ok()
+        .map(|s| sanitize_agent_name(&s))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "human".to_string());
+    if agent.ends_with(short) {
+        agent
+    } else {
+        format!("{agent}-{short}")
+    }
+}
+
+fn sanitize_agent_name(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
 }
 
 fn peer_suffix(agent_id: &str) -> &str {
     agent_id.rsplit_once('-').map(|(_, suffix)| suffix).unwrap_or(agent_id)
+}
+
+fn hostname_candidates() -> Vec<String> {
+    let mut names = Vec::new();
+    for key in ["COMPUTERNAME", "HOSTNAME"] {
+        if let Ok(value) = std::env::var(key) {
+            let value = value.trim();
+            if !value.is_empty() {
+                names.push(value.to_string());
+            }
+        }
+    }
+    if let Some(value) = std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        names.push(value);
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn is_legacy_presence_id(agent_id: &str, suffix: &str) -> bool {
+    let Some((prefix, id_suffix)) = agent_id.rsplit_once('-') else {
+        return false;
+    };
+    if id_suffix != suffix {
+        return false;
+    }
+    prefix == "unknown"
+        || prefix.ends_with(".local")
+        || hostname_candidates().iter().any(|host| prefix == host)
 }
 
 fn remove_legacy_presence_keys(state: &AppState, agent_id: &str) {
@@ -27,7 +83,7 @@ fn remove_legacy_presence_keys(state: &AppState, agent_id: &str) {
         let txn = state.control.transact();
         map.iter(&txn)
             .map(|(key, _)| key.to_string())
-            .filter(|key| key != agent_id && peer_suffix(key) == suffix)
+            .filter(|key| key != agent_id && is_legacy_presence_id(key, suffix))
             .collect()
     };
     if stale_keys.is_empty() {

@@ -125,7 +125,7 @@ All circles load at daemon startup; individual circles can be stopped, started, 
 ### M5 — Presence
 **Status: Complete**
 
-On startup, each daemon writes a `Presence` entry (`agent_id = hostname-shortpeerid`, status=online, last_seen=now) to the control doc's `presence` Y.Map. A 30-second heartbeat task refreshes `last_seen`. The control doc observer now forwards updates to `all_updates` so presence changes sync live to P2P peers. `enoch who` shows last-seen age and marks agents stale if their heartbeat is > 90s old.
+On startup, each daemon writes a `Presence` entry (`agent_id = <custom-agent-or-human>-shortpeerid`, status=online, last_seen=now) to the control doc's `presence` Y.Map. The custom prefix comes from `ENOCHIAN_AGENT_ID`; if unset, it defaults to `human`. A 30-second heartbeat task refreshes `last_seen`. The control doc observer now forwards updates to `all_updates` so presence changes sync live to P2P peers. `enoch who` shows last-seen age and marks agents stale if their heartbeat is > 90s old.
 
 **Implementation:**
 - `src/presence.rs` — `local_agent_id()`, `spawn_presence()`, heartbeat loop

@@ -1,17 +1,8 @@
 use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Json};
-use std::collections::HashMap;
 use serde_json::json;
 use yrs::{Any, Map, MapRef, Out, Transact};
 use crate::control::{Presence, PRESENCE_KEY};
 use crate::daemon::DaemonState;
-
-fn peer_suffix(agent_id: &str) -> &str {
-    agent_id.rsplit_once('-').map(|(_, suffix)| suffix).unwrap_or(agent_id)
-}
-
-fn canonical_presence_key(agent_id: &str) -> String {
-    format!("peer-{}", peer_suffix(agent_id))
-}
 
 pub async fn get_who(
     State(daemon): State<DaemonState>,
@@ -25,23 +16,14 @@ pub async fn get_who(
     let presence_map: MapRef = doc.get_or_insert_map(PRESENCE_KEY);
     let txn = doc.transact();
 
-    let mut deduped: HashMap<String, Presence> = HashMap::new();
+    let mut result = Vec::new();
     for (_key, val) in presence_map.iter(&txn) {
         if let Out::Any(Any::String(s)) = val {
             if let Ok(p) = serde_json::from_str::<Presence>(&s) {
-                let key = canonical_presence_key(&p.agent_id);
-                match deduped.get(&key) {
-                    Some(existing) if existing.last_seen >= p.last_seen => {}
-                    _ => {
-                        let mut p = p;
-                        p.agent_id = key.clone();
-                        deduped.insert(key, p);
-                    }
-                }
+                result.push(p);
             }
         }
     }
-    let mut result: Vec<_> = deduped.into_values().collect();
     result.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
     Json(result).into_response()
 }

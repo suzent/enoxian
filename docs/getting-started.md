@@ -72,6 +72,23 @@ $env:RUST_LOG = "info"
 .\target\debug\enochd.exe
 ```
 
+By default the daemon identifies its local editor/user presence as
+`human-<peer-suffix>`. To run multiple agents from the same machine or give the
+local user a stable custom name, set `ENOCHIAN_AGENT_ID` before starting
+`enochd`:
+
+```bash
+ENOCHIAN_AGENT_ID=codex ./target/debug/enochd
+```
+
+```powershell
+$env:ENOCHIAN_AGENT_ID = "codex"
+.\target\debug\enochd.exe
+```
+
+The displayed ID becomes `codex-<peer-suffix>`, so `human`, `codex`, `cursor`,
+or any other custom name can coexist on the same peer.
+
 Expected output:
 
 ```
