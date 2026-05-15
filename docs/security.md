@@ -87,22 +87,21 @@ Path 2 requires knowing where the config lives and how to write a new keypair en
 
 ---
 
-## Planned: true access revocation (PSK rotation)
+## Planned: true access revocation (MLS — RFC 9420)
 
-To revoke access from a peer that has the PSK, the PSK must be rotated. Blocking a peer ID alone is insufficient because the removed peer can rejoin with a fresh keypair.
+Blocking a peer ID alone is insufficient — the removed peer can rejoin with a fresh keypair. Custom PSK rotation is also fragile (coordination window, restart requirement). The correct solution is **IETF MLS (RFC 9420)**, the international standard for group key management in decentralised systems.
 
-**Design goal:** rotation must not require all remaining members to be online simultaneously or restart their daemon manually.
+**How MLS solves this (M11):**
 
-**Planned mechanism (M11):**
+MLS uses TreeKEM — members are arranged in a binary tree. When a member is evicted, their node is pruned and a new epoch root key is derived from the remaining members' public keys. The evicted peer's key material is cryptographically useless for all future epochs.
 
-1. Admin runs `enoch member remove <peer>` — the peer is removed from the member list
-2. The admin's daemon generates a new PSK
-3. The new PSK is encrypted individually to each remaining member's Ed25519 public key (available via the `identify` protocol, stored in the member list) and written to the control doc CRDT as a `psk_rotation` entry
-4. Each online daemon picks up the rotation entry, decrypts their copy of the new PSK, updates `config.toml`, closes all existing swarm connections, and reconnects with the new PSK — no manual restart required
-5. Offline members receive the rotation entry when they next come online and auto-apply it before reconnecting
-6. The removed peer receives nothing: they are disconnected at the sync level before the rotation entry propagates to them, and their old PSK is rejected by all peers after rotation completes
+1. Admin runs `enoch member remove <peer>` — issues an MLS `Remove` + `Commit`
+2. A new epoch key is derived; remaining online peers receive it immediately
+3. Offline members receive pending commits via KeyPackages when they next reconnect — no coordination window required
+4. The removed peer cannot decrypt any future CRDT sync data regardless of whether they reconnect with the same or a new keypair, because they have no valid KeyPackage for the new epoch
+5. The existing PSK (transport layer) remains as a coarse admission gate; MLS provides the fine-grained revocation
 
-**During the rotation window** (between the remove and all members applying the new PSK), the removed peer may still be able to connect to peers that have not yet rotated. The sync-level block on the removed peer ID covers this gap.
+The Rust implementation is [`openmls`](https://github.com/openmls/openmls), a production crate implementing RFC 9420. See M11 in the roadmap for the full integration plan.
 
 ---
 

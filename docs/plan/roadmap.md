@@ -224,6 +224,28 @@ Each peer tracks a `session_id` (incremented on every daemon start) and `last_co
 - [ ] Conflict copy — when both sides diverged, write `<file>.conflict.<agent_id>` and keep CRDT merge as working file
 - [ ] `enoch status` shows unresolved conflict files in the workspace
 
+**Planned: Binary file dual-track sync**
+
+Text files sync via Yjs (sequence CRDT). Binary and large files need a different path: content-addressed blob sync layered on top of the same P2P transport.
+
+```
+Text/code files   → Yjs CRDT (operation-level merge, real-time collaboration)
+Binary/large files → Blob sync (hash ref in Yjs CRDT → fetch content by hash via libp2p)
+```
+
+Design:
+- On write: hash the binary file (BLAKE3) → store as `.enoch_blobs/<hash>` → write the hash string into the Yjs doc for that path
+- On sync: peer receives a hash ref → checks if it has the blob locally → if not, fetches via a new `/enochian/blob/1.0.0` libp2p stream protocol
+- The Yjs CRDT remains the source of truth for "which version is current" (the hash); the blob store is a content-addressed cache
+- Large text files (> configurable threshold, default 1 MB) can also go through the blob path to avoid bloating CRDT state
+
+Tasks (to be scheduled as part of M8 or a dedicated M8.5):
+- [ ] BLAKE3 blob store (`store/blobs.rs`) — `put(bytes) → hash`, `get(hash) → bytes`, stored in `.enoch_blobs/`
+- [ ] Binary/large file detection in watcher — route to blob store instead of Yjs text encoding
+- [ ] Hash ref format in Yjs — store `blob:<hash>` as the doc content for binary paths
+- [ ] `/enochian/blob/1.0.0` stream protocol — request/response for blob fetch by hash
+- [ ] On P2P sync: detect `blob:` refs in received docs → request missing blobs from peer
+
 ---
 
 ### M9 — Chat
@@ -309,28 +331,83 @@ A minimal web UI served by `enochd` itself (no separate build server). Targets l
 
 ---
 
-### M11 — Access Revocation & PSK Rotation
+### M10.5 — Structured Collaboration (Automerge)
 **Status: Planned**
 
-True membership revocation requires changing the PSK. The design goal is zero manual intervention for remaining members — no restarts, no out-of-band key exchange, no requirement for all peers to be online simultaneously.
+Yjs is the right CRDT for high-frequency text sequences (code files, chat). For sparse, structured data — kanban boards, canvas nodes, rich block documents — **Automerge** is the better fit: it is a JSON CRDT designed exactly for this shape of data.
 
-**Design:**
+**Why Automerge for these features:**
+- Kanban cards, canvas elements, and doc blocks are objects with named fields, not character sequences
+- Automerge natively represents maps, lists, and scalars with per-field CRDT semantics — concurrent edits to different fields of the same card merge cleanly
+- The [`automerge-rs`](https://github.com/automerge/automerge) Rust crate has a stable API and mature binary encoding
+- Automerge documents are saved as compact binary (not operation logs), keeping storage small for sparse data
 
-1. `enoch member remove <peer>` generates a new PSK and encrypts it individually to each remaining member's Ed25519 public key (from the identify protocol, already stored in the member list)
-2. The encrypted PSK bundles are written to the control doc as a `psk_rotation` entry
-3. The removed peer is disconnected at the sync level before the rotation entry propagates to them
-4. Each running daemon picks up the rotation entry, decrypts its copy of the new PSK, updates `config.toml`, closes its swarm, and reconnects with the new PSK — no user action required
-5. Offline members receive and apply the rotation when they next come online
+**Planned feature areas:**
 
-**Peer identity spoofing:** a removed peer cannot fake an existing peer ID (Noise handshake proves key ownership). They can rejoin with a fresh keypair, but the new PSK will not be in their possession — the old PSK is rejected by all rotated peers.
+| Feature | CRDT | Rationale |
+|---------|------|-----------|
+| Code / text files | Yjs | High-frequency character sequences |
+| Chat messages | Yjs | Append-only array, already implemented |
+| **Kanban board** | Automerge | Cards are structured objects with status, assignee, description fields |
+| **Canvas / whiteboard** | Automerge | Nodes have position, size, content — sparse concurrent edits |
+| **Block documents** | Automerge | Block tree structure; concurrent paragraph edits don't conflict |
+
+**Architecture:**
+- Automerge documents live alongside Yjs docs in the control doc's blob store (or a dedicated `automerge/` store)
+- The existing `/enochian/sync/1.0.0` stream protocol is extended to handle Automerge sync messages in addition to Yjs
+- Frontend uses [`@automerge/automerge-repo`](https://github.com/automerge/automerge-repo) for reactive binding to React components
+
+**Tasks (to be scheduled when these features are built):**
+- [ ] `automerge` crate added as dependency
+- [ ] Automerge document store (`store/automerge.rs`) — persist and restore Automerge binary snapshots
+- [ ] Sync protocol extension — handle Automerge sync messages in the existing P2P stream handler
+- [ ] Kanban board backend — `GET/POST/PATCH /api/kanban` backed by an Automerge doc
+- [ ] Canvas backend — node positions and edges stored in an Automerge doc
+- [ ] Frontend: `@automerge/automerge-repo` + React bindings for kanban and canvas views
+
+---
+
+### M11 — Access Revocation via MLS (RFC 9420)
+**Status: Planned**
+
+True revocation requires changing the group key when a member is removed. Rather than rolling a custom PSK rotation scheme, ENOCHIAN will adopt **IETF MLS (RFC 9420)** — the international standard for group key management in decentralised systems, implemented in Rust by [`openmls`](https://github.com/openmls/openmls).
+
+**Why MLS instead of custom PSK rotation:**
+- MLS TreeKEM is cryptographically proven and handles eviction, offline members, and key rotation as first-class operations
+- Offline members receive KeyPackages when they reconnect — no coordination window, no requirement for all members to be online simultaneously
+- Forward secrecy and post-compromise security are built in
+- `openmls` is a production Rust crate implementing RFC 9420
+
+**Architecture:**
+
+The existing PSK (via `libp2p::pnet`) is kept as a coarse transport-layer admission gate — proving you know the circle secret at all. MLS operates above it at the application layer, encrypting the CRDT sync data and managing group keys.
+
+```
+TCP
+└── pnet (PSK, XSalsa20)     ← coarse gate: "are you in this circle?"
+    └── Noise (identity)     ← peer authentication
+        └── MLS group key    ← fine gate: "are you still a member?"
+            └── CRDT sync    ← content (workspace files, chat, tasks)
+```
+
+When a member is evicted:
+1. Admin runs `enoch member remove <peer>`
+2. MLS `Remove` proposal is committed — TreeKEM prunes the evicted node and derives a new epoch key
+3. All remaining members receive the new epoch key (online peers immediately, offline peers via KeyPackage on reconnect)
+4. The evicted peer's key material is cryptographically useless for all future epochs
+5. Even if they rejoin with a new keypair, they don't have a valid MLS KeyPackage for the new epoch — connection is rejected at the application layer, not just the member list
 
 **Tasks:**
-- [ ] Sync-level block — reject sync streams from peer IDs in a `blocked_peers` G-Set CRDT; disconnect immediately on `member_removed` event
-- [ ] PSK rotation on remove — generate new PSK, encrypt to each remaining member's Ed25519 pubkey, write `psk_rotation` to control doc
-- [ ] Daemon watches for `psk_rotation` entries, decrypts, applies, reconnects automatically
-- [ ] `enoch member remove` output notes that PSK rotation is in progress
-- [ ] Verify: removed peer cannot reconnect with old PSK; cannot rejoin with new keypair
-- [ ] After rotation, all existing invite links are implicitly invalidated (they embed the old PSK); generate a new invite to share with remaining members if needed
+- [ ] Add `openmls` and `openmls_rust_crypto` dependencies
+- [ ] MLS group creation at `enoch init` — group state stored in circle config dir
+- [ ] KeyPackage generation and distribution on `enoch enter` — joining peer uploads their KeyPackage
+- [ ] Encrypt CRDT sync updates with the current MLS epoch key
+- [ ] `enoch member remove` issues a MLS `Remove` + `Commit`, distributes new epoch to remaining members
+- [ ] Offline KeyPackage store — members who were offline receive pending commits when they reconnect
+- [ ] `enoch member add` issues a MLS `Add` proposal (replacing current auto-registration for new peers)
+- [ ] Sync-level rejection — peers presenting an outdated epoch key are refused
+- [ ] Existing PSK invite links remain valid for transport admission; MLS KeyPackage is the revocation gate
+- [ ] Update `docs/security.md` with the MLS threat model
 
 ---
 
