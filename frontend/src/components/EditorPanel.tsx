@@ -73,7 +73,7 @@ export default function EditorPanel({ filePath }: Props) {
 
     const ydoc = new Y.Doc()
     ydocRef.current = ydoc
-    const ytext = ydoc.getText('codemirror')
+    const ytext = ydoc.getText(filePath)
 
     const url = wsYjsUrl(activeCircleId, filePath)
     const provider = new YjsProvider(url, ydoc, () => setSynced(true))
