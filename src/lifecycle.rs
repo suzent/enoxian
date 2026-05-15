@@ -55,26 +55,32 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     let token = CancellationToken::new();
 
     // Auto-register local peer in the member list so `enoch member list` shows all participants.
-    // Role is Admin if admin.key exists on this machine (circle creator), Member otherwise.
+    // Only writes if no entry exists yet — preserves explicit removals across restarts.
     {
-        use yrs::{Map, Transact};
-        let role = config::circle_dir(&config.circle_id)
-            .ok()
-            .map(|d| if d.join("admin.key").exists() { MemberRole::Admin } else { MemberRole::Member })
-            .unwrap_or(MemberRole::Member);
-        let msg = format!("add:{}:{}", peer_id, role);
-        let signature = keypair.sign(msg.as_bytes()).map(hex::encode).unwrap_or_default();
-        let entry = MemberEntry {
-            peer_id: peer_id.to_string(),
-            agent_id: agent_id.clone(),
-            role,
-            added_at: chrono::Utc::now(),
-            signature,
+        use yrs::{Map, Out, Any, Transact};
+        let map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
+        let already_registered = {
+            let txn = state.control.transact();
+            matches!(map.get(&txn, peer_id.to_string().as_str()), Some(Out::Any(Any::String(_))))
         };
-        if let Ok(json_str) = serde_json::to_string(&entry) {
-            let map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
-            let mut txn = state.control.transact_mut();
-            map.insert(&mut txn, peer_id.to_string().as_str(), json_str.as_str());
+        if !already_registered {
+            let role = config::circle_dir(&config.circle_id)
+                .ok()
+                .map(|d| if d.join("admin.key").exists() { MemberRole::Admin } else { MemberRole::Member })
+                .unwrap_or(MemberRole::Member);
+            let msg = format!("add:{}:{}", peer_id, role);
+            let signature = keypair.sign(msg.as_bytes()).map(hex::encode).unwrap_or_default();
+            let entry = MemberEntry {
+                peer_id: peer_id.to_string(),
+                agent_id: agent_id.clone(),
+                role,
+                added_at: chrono::Utc::now(),
+                signature,
+            };
+            if let Ok(json_str) = serde_json::to_string(&entry) {
+                let mut txn = state.control.transact_mut();
+                map.insert(&mut txn, peer_id.to_string().as_str(), json_str.as_str());
+            }
         }
     }
 

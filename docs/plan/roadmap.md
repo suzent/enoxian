@@ -28,6 +28,8 @@
 
 ## Architecture principles
 
+See [security.md](../security.md) for the full threat model, including PSK semantics, peer identity guarantees, and current limitations of member removal.
+
 **No single host, no mandatory server.** Every peer in a circle is equal:
 - The PSK is the network-layer membership credential — every peer holds it
 - The admin keypair is the authority for membership operations — only the admin can add/remove members
@@ -145,7 +147,7 @@ See [admin.md](admin.md) for the full design.
 
 Admin keypair is generated at `enoch init` and stored in `admin.key`. The public key is embedded in invite URIs so joining peers save it automatically. Member operations (add, remove, promote) require an admin signature verified by the daemon; the CLI auto-signs from `admin.key` when present.
 
-> ⚠ **Note:** The PSK still governs transport-layer access. The member list is enforced at the API layer but peers do not yet reject connections from removed members at the swarm level — that enforcement is deferred to a future hardening pass.
+> ⚠ **Security note:** The member list is a directory, not an access gate. Removing a peer from the list stops them from auto-registering on restart but does not revoke their PSK — they can still connect and sync, or rejoin with a fresh keypair. True access revocation requires PSK rotation (planned M11). See [security.md](../security.md) for the full threat model.
 
 **Implementation:**
 - `src/invite.rs` — extended binary format: optional admin pubkey appended as u16-length-prefixed bytes (backward-compatible)
@@ -166,6 +168,8 @@ Admin keypair is generated at `enoch init` and stored in `admin.key`. The public
 - [x] `enoch member remove <peer-id>` — admin-signed remove
 - [x] `enoch member promote <peer-id>` — promote to admin
 - [x] Daemon verifies admin signature on all member write operations
+- [x] Auto-registration — each peer writes its own member entry to the CRDT on daemon start (role=Admin if `admin.key` present, Member otherwise); skips if entry already exists so explicit removals persist across restarts
+- [x] Peer ID prefix/suffix resolution in `member remove` and `member promote` (short suffix from `enoch member list` accepted directly)
 
 ---
 
@@ -305,7 +309,32 @@ A minimal web UI served by `enochd` itself (no separate build server). Targets l
 
 ---
 
-### M11 — Anchor Node & WAN
+### M11 — Access Revocation & PSK Rotation
+**Status: Planned**
+
+True membership revocation requires changing the PSK. The design goal is zero manual intervention for remaining members — no restarts, no out-of-band key exchange, no requirement for all peers to be online simultaneously.
+
+**Design:**
+
+1. `enoch member remove <peer>` generates a new PSK and encrypts it individually to each remaining member's Ed25519 public key (from the identify protocol, already stored in the member list)
+2. The encrypted PSK bundles are written to the control doc as a `psk_rotation` entry
+3. The removed peer is disconnected at the sync level before the rotation entry propagates to them
+4. Each running daemon picks up the rotation entry, decrypts its copy of the new PSK, updates `config.toml`, closes its swarm, and reconnects with the new PSK — no user action required
+5. Offline members receive and apply the rotation when they next come online
+
+**Peer identity spoofing:** a removed peer cannot fake an existing peer ID (Noise handshake proves key ownership). They can rejoin with a fresh keypair, but the new PSK will not be in their possession — the old PSK is rejected by all rotated peers.
+
+**Tasks:**
+- [ ] Sync-level block — reject sync streams from peer IDs in a `blocked_peers` G-Set CRDT; disconnect immediately on `member_removed` event
+- [ ] PSK rotation on remove — generate new PSK, encrypt to each remaining member's Ed25519 pubkey, write `psk_rotation` to control doc
+- [ ] Daemon watches for `psk_rotation` entries, decrypts, applies, reconnects automatically
+- [ ] `enoch member remove` output notes that PSK rotation is in progress
+- [ ] Verify: removed peer cannot reconnect with old PSK; cannot rejoin with new keypair
+- [ ] After rotation, all existing invite links are implicitly invalidated (they embed the old PSK); generate a new invite to share with remaining members if needed
+
+---
+
+### M12 — Anchor Node & WAN  *(was M11)*
 **Status: Planned**
 
 An anchor node is a regular `enochd` peer running 24/7 on a VPS. It acts as relay, rendezvous point, and always-on presence for its circles — no special code, just a peer that's always reachable. Teams that need WAN connectivity or strong liveness guarantees deploy one; LAN-only teams don't need it.
@@ -328,7 +357,7 @@ An anchor node is a regular `enochd` peer running 24/7 on a VPS. It acts as rela
 
 ---
 
-### M12 — Packaging & Distribution
+### M13 — Packaging & Distribution  *(was M12)*
 **Status: Planned**
 
 Ship `enochd` and `enoch` as ready-to-use binaries for all major platforms. Anchor nodes ship as a Docker image.

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::{
     cli::MemberAction,
@@ -6,6 +6,30 @@ use crate::{
     crypto::keypair_from_hex,
     resolve,
 };
+
+/// Fetch the member list and resolve a peer ID hint (prefix or suffix) to a full peer ID.
+async fn resolve_peer_id(client: &reqwest::Client, base: &str, hint: &str) -> Result<String> {
+    // Fast path: looks like a full peer ID already
+    if hint.len() > 20 {
+        return Ok(hint.to_string());
+    }
+    let resp = client.get(base).send().await
+        .context("failed to reach daemon — is enochd running?")?;
+    let members: serde_json::Value = resp.json().await?;
+    let members = members.as_array().context("unexpected response")?;
+
+    let matches: Vec<String> = members.iter()
+        .filter_map(|m| m["peer_id"].as_str())
+        .filter(|pid| pid.starts_with(hint) || pid.ends_with(hint))
+        .map(|s| s.to_string())
+        .collect();
+
+    match matches.len() {
+        0 => bail!("no member matching '{hint}'"),
+        1 => Ok(matches.into_iter().next().unwrap()),
+        _ => bail!("ambiguous prefix '{hint}' matches {} members: {}", matches.len(), matches.join(", ")),
+    }
+}
 
 pub async fn run(
     client: &reqwest::Client,
@@ -67,6 +91,7 @@ pub async fn run(
         }
 
         MemberAction::Remove { peer_id } => {
+            let peer_id = resolve_peer_id(client, &base, &peer_id).await?;
             let sig = sign_admin(&cfg.circle_id, format!("remove:{peer_id}").as_bytes())?;
             let body = serde_json::json!({
                 "peer_id": peer_id,
@@ -84,6 +109,7 @@ pub async fn run(
         }
 
         MemberAction::Promote { peer_id } => {
+            let peer_id = resolve_peer_id(client, &base, &peer_id).await?;
             let sig = sign_admin(&cfg.circle_id, format!("add:{peer_id}:admin").as_bytes())?;
             let body = serde_json::json!({
                 "peer_id": peer_id,
