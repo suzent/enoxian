@@ -20,7 +20,9 @@ export class YjsProvider {
   ) {
     this.awareness = new awarenessProtocol.Awareness(doc)
     this.onSyncCallback = onSync
-    this.connect()
+    // Defer connect to next microtask so the caller can set awareness state
+    // (e.g. user name/color) before the initial awareness broadcast is sent.
+    Promise.resolve().then(() => { if (!this.destroyed) this.connect() })
   }
 
   private connect() {

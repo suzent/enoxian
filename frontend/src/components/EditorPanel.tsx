@@ -59,13 +59,15 @@ const enochTheme = EditorView.theme({
   },
   // Remote selection highlight
   '.cm-ySelection': { opacity: '0.25' },
-  // Name label above cursor. `left: 0` prevents bleeding into the gutter
-  // when the cursor is at column 0. `top: -1.6em` is a fixed em offset which
-  // works reliably for inline positioned elements (unlike bottom: 100%).
+  // Name label. Sits just above the cursor line without escaping the scroller's
+  // clip rect. `top: 0` + negative translateY keeps the label inside the
+  // scrollable coordinate space — `top: -Nem` would clip at the scroll boundary
+  // when the cursor is on the first visible line. `left: 0` avoids gutter bleed.
   '.cm-ySelectionInfo': {
     position: 'absolute',
-    top: '-1.6em',
+    top: '0',
     left: '0',
+    transform: 'translateY(-100%)',
     fontSize: '10px',
     fontFamily: "'JetBrains Mono', monospace",
     fontStyle: 'normal',
