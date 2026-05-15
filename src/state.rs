@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 use dashmap::DashMap;
 use tokio::sync::broadcast;
 use yrs::{Doc, Observable};
-use crate::control::{CHAT_KEY, ChatMessage, CircleEvent};
+use crate::control::{CHAT_KEY, ChatMessage, CircleEvent, TASKS_KEY, Task, TaskStatus};
 
 pub const EVENT_CAPACITY: usize = 256;
 
@@ -83,6 +83,51 @@ impl AppState {
             }
         });
         std::mem::forget(chat_sub);
+
+        // Observe tasks for P2P-delivered changes and fire SSE events. Local task
+        // APIs emit their own events; this covers updates that arrived via CRDT sync.
+        let tasks_map = control.get_or_insert_map(TASKS_KEY);
+        let events_for_tasks = events_tx.clone();
+        let tasks_sub = tasks_map.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+            if !is_p2p { return; }
+
+            for (_key, change) in event.keys(txn) {
+                match change {
+                    yrs::types::EntryChange::Inserted(yrs::Out::Any(yrs::Any::String(s))) => {
+                        if let Ok(task) = serde_json::from_str::<Task>(s) {
+                            let _ = events_for_tasks.send(CircleEvent::TaskCreated {
+                                task_id: task.task_id,
+                            });
+                        }
+                    }
+                    yrs::types::EntryChange::Updated(_, yrs::Out::Any(yrs::Any::String(s))) => {
+                        if let Ok(task) = serde_json::from_str::<Task>(s) {
+                            match task.status {
+                                TaskStatus::Claimed => {
+                                    let _ = events_for_tasks.send(CircleEvent::TaskClaimed {
+                                        task_id: task.task_id,
+                                        agent_id: task.claimed_by.unwrap_or_default(),
+                                    });
+                                }
+                                TaskStatus::Done => {
+                                    let _ = events_for_tasks.send(CircleEvent::TaskDone {
+                                        task_id: task.task_id,
+                                    });
+                                }
+                                TaskStatus::Open => {
+                                    let _ = events_for_tasks.send(CircleEvent::TaskCreated {
+                                        task_id: task.task_id,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+        std::mem::forget(tasks_sub);
 
         Self {
             circle_id,
