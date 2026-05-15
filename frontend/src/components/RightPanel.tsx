@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import type { Presence, Task } from '../types'
-import { getWho, getTasks, claimTask, doneTask, getFiles } from '../api'
+import { getWho, getTasks, createTask, claimTask, doneTask, getFiles } from '../api'
 import { useApp } from '../context/AppContext'
 
 interface Props {
@@ -20,6 +20,9 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [presence, setPresence] = useState<Presence[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [files, setFiles] = useState<string[]>([])
+  const [newTaskTitle, setNewTaskTitle] = useState('')
+  const [newTaskDesc, setNewTaskDesc] = useState('')
+  const [creating, setCreating] = useState(false)
 
   useEffect(() => {
     if (!activeCircleId) return
@@ -27,7 +30,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     const refresh = () => {
       getWho(activeCircleId).then(setPresence).catch(() => {})
       getTasks(activeCircleId).then(setTasks).catch(() => {})
-      getFiles(activeCircleId).then(setFiles).catch(() => {})
+      getFiles(activeCircleId).then(setFiles).catch(e => console.error('[files]', e))
     }
 
     refresh()
@@ -35,21 +38,29 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     return () => clearInterval(id)
   }, [activeCircleId])
 
+  const refreshTasks = () => {
+    if (activeCircleId) getTasks(activeCircleId).then(setTasks).catch(() => {})
+  }
+
+  const submitTask = () => {
+    const title = newTaskTitle.trim()
+    if (!title || !activeCircleId || !status) return
+    createTask(activeCircleId, title, newTaskDesc.trim(), status.agent_id)
+      .then(() => { setNewTaskTitle(''); setNewTaskDesc(''); setCreating(false); refreshTasks() })
+      .catch(() => {})
+  }
+
   const local = presence.filter(p => p.agent_id === status?.agent_id)
   const remote = presence.filter(p => p.agent_id !== status?.agent_id)
 
   const claim = (taskId: string) => {
     if (!activeCircleId || !status) return
-    claimTask(activeCircleId, taskId, status.agent_id)
-      .then(() => getTasks(activeCircleId).then(setTasks))
-      .catch(() => {})
+    claimTask(activeCircleId, taskId, status.agent_id).then(refreshTasks).catch(() => {})
   }
 
   const done = (taskId: string) => {
     if (!activeCircleId || !status) return
-    doneTask(activeCircleId, taskId, status.agent_id)
-      .then(() => getTasks(activeCircleId).then(setTasks))
-      .catch(() => {})
+    doneTask(activeCircleId, taskId, status.agent_id).then(refreshTasks).catch(() => {})
   }
 
   // Build a simple nested tree from flat paths
@@ -77,29 +88,74 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
       </div>
 
       {/* ── Tasks ────────────────────────────────────────────────────────── */}
-      <div className="section-header border-t-2 border-obsidian">Task Queue</div>
-      <div className="p-4 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px] max-h-[200px] overflow-y-auto">
+      <div className="section-header border-t-2 border-obsidian flex justify-between items-center pr-3">
+        <span>Task Queue</span>
+        <button
+          onClick={() => setCreating(v => !v)}
+          className="text-[9px] font-bold font-mono hover:underline"
+        >{creating ? '✕ CANCEL' : '+ NEW'}</button>
+      </div>
+
+      {creating && (
+        <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px]">
+          <input
+            autoFocus
+            value={newTaskTitle}
+            onChange={e => setNewTaskTitle(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && submitTask()}
+            placeholder="Task title..."
+            className="bg-transparent border border-obsidian px-2 py-1 text-[11px] font-mono focus:outline-none focus:bg-obsidian/5 w-full"
+          />
+          <input
+            value={newTaskDesc}
+            onChange={e => setNewTaskDesc(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && submitTask()}
+            placeholder="Description (optional)..."
+            className="bg-transparent border border-dashed border-obsidian/50 px-2 py-1 text-[11px] font-mono focus:outline-none w-full"
+          />
+          <button onClick={submitTask} className="enoch-btn self-start">CREATE</button>
+        </div>
+      )}
+
+      <div className="p-4 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px] max-h-[220px] overflow-y-auto">
         {tasks.length === 0 && <div className="text-slate">NO ACTIVE TASKS</div>}
-        {tasks.map(t => (
-          <div key={t.task_id} className="flex flex-col gap-1 pb-2 border-b border-dashed border-obsidian/20 last:border-0">
-            <div className="flex justify-between">
-              <span className="font-bold truncate max-w-[160px]">{t.title}</span>
-              <span className={`text-[9px] font-bold ${t.status === 'done' ? 'text-slate' : ''}`}>
-                [{t.status.toUpperCase()}]
-              </span>
+        {tasks.map(t => {
+          const isMe = t.claimed_by === status?.agent_id
+          return (
+            <div key={t.task_id} className="flex flex-col gap-1 pb-2 border-b border-dashed border-obsidian/20 last:border-0">
+              <div className="flex justify-between items-start gap-2">
+                <span className={`font-bold leading-tight ${t.status === 'done' ? 'line-through text-slate' : ''}`}>
+                  {t.title}
+                </span>
+                <span className={`shrink-0 text-[9px] font-bold px-1 border ${
+                  t.status === 'open'    ? 'border-obsidian' :
+                  t.status === 'claimed' ? 'border-obsidian bg-obsidian text-alabaster' :
+                  'border-slate text-slate'
+                }`}>{t.status.toUpperCase()}</span>
+              </div>
+              {t.description && (
+                <div className="text-[9px] text-slate leading-tight">{t.description}</div>
+              )}
+              {t.claimed_by && t.status !== 'done' && (
+                <div className="text-[9px] text-slate">↳ {t.claimed_by}</div>
+              )}
+              <div className="flex gap-2 mt-1">
+                {t.status === 'open' && (
+                  <button
+                    onClick={() => claim(t.task_id)}
+                    className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster"
+                  >CLAIM</button>
+                )}
+                {t.status === 'claimed' && isMe && (
+                  <button
+                    onClick={() => done(t.task_id)}
+                    className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster"
+                  >DONE</button>
+                )}
+              </div>
             </div>
-            {t.status === 'open' && (
-              <button onClick={() => claim(t.task_id)} className="text-left text-[9px] text-slate hover:text-obsidian">
-                → CLAIM
-              </button>
-            )}
-            {t.status === 'claimed' && t.claimed_by === status?.agent_id && (
-              <button onClick={() => done(t.task_id)} className="text-left text-[9px] text-slate hover:text-obsidian">
-                → MARK DONE
-              </button>
-            )}
-          </div>
-        ))}
+          )
+        })}
       </div>
 
       {/* ── File tree ────────────────────────────────────────────────────── */}

@@ -88,6 +88,7 @@ export class YjsProvider {
 
     // Forward awareness changes to server
     const onAwareness = ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }) => {
+      if (ws.readyState !== WebSocket.OPEN) return
       const changed = [...added, ...updated, ...removed]
       const enc = encoding.createEncoder()
       encoding.writeVarUint(enc, MSG_AWARENESS)

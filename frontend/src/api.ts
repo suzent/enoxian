@@ -26,6 +26,8 @@ export const getChat = (id: string, since?: number) =>
 export const postChat = (id: string, text: string, agentId: string) =>
   post(`${api(id)}/chat`, { text, agent_id: agentId })
 export const getTasks = (id: string) => get<Task[]>(`${api(id)}/tasks`)
+export const createTask = (id: string, title: string, description: string, agentId: string) =>
+  post(`${api(id)}/tasks`, { title, description, created_by: agentId })
 export const claimTask = (id: string, taskId: string, agentId: string) =>
   post(`${api(id)}/claim`, { task_id: taskId, agent_id: agentId })
 export const doneTask = (id: string, taskId: string, agentId: string) =>
