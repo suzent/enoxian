@@ -13,6 +13,7 @@ import { wsYjsUrl } from '../api'
 import { useApp } from '../context/AppContext'
 import { YjsProvider } from '../lib/YjsProvider'
 import { agentColor, agentColorLight } from '../lib/agentColor'
+import { constrainCursorLabels } from '../lib/constrainCursorLabels'
 
 interface Props {
   filePath: string | null
@@ -68,7 +69,7 @@ const enochTheme = EditorView.theme({
     position: 'absolute',
     top: '0',
     left: '0',
-    transform: 'translateY(-100%) translateX(-100%)',
+    transform: 'translateY(-100%)',
     fontSize: '10px',
     fontFamily: "'JetBrains Mono', monospace",
     fontStyle: 'normal',
@@ -125,6 +126,7 @@ export default function EditorPanel({ filePath }: Props) {
         enochTheme,
         EditorView.lineWrapping,
         yCollab(ytext, awareness),
+        constrainCursorLabels,
       ],
     })
 
