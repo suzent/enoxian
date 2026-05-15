@@ -14,6 +14,7 @@ import { useApp } from '../context/AppContext'
 import { YjsProvider, type YjsConnectionStatus } from '../lib/YjsProvider'
 import { agentColor, agentColorLight } from '../lib/agentColor'
 import { constrainCursorLabels } from '../lib/constrainCursorLabels'
+import { textBoundRemoteSelections } from '../lib/textBoundRemoteSelections'
 
 interface Props {
   filePath: string | null
@@ -58,8 +59,15 @@ const enochTheme = EditorView.theme({
     display: 'inline',
     zIndex: '10',
   },
-  // Remote selection highlight
-  '.cm-ySelection': { opacity: '0.25' },
+  // Remote selection highlight. y-codemirror already encodes alpha in the
+  // inline background color, so extra opacity makes multi-line edges lighter.
+  '.cm-ySelection': { opacity: '1' },
+  '.cm-yLineSelection': {
+    backgroundColor: 'transparent !important',
+    margin: '0',
+    padding: '0',
+    opacity: '1',
+  },
   // Name label. Anchored so its bottom-right corner sits at the cursor caret.
   // translateX(-100%) keeps the label inside the editor when the cursor is near
   // the right edge (avoids horizontal clip). translateY(-100%) lifts it above
@@ -136,6 +144,7 @@ export default function EditorPanel({ filePath }: Props) {
         enochTheme,
         EditorView.lineWrapping,
         yCollab(ytext, awareness),
+        textBoundRemoteSelections,
         constrainCursorLabels,
       ],
     })
