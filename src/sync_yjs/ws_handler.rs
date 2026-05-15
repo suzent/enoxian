@@ -50,8 +50,10 @@ async fn handle_socket(socket: WebSocket, state: AppState, doc_path: String) {
         }
     }
 
-    // ── Subscribe to doc updates (from watcher or other WS clients) ─────────
+    // ── Subscribe to doc updates and awareness from other WS clients ─────────
     let mut update_rx = state.subscribe_doc_updates(&doc_path);
+    let awareness_tx = state.awareness_sender(&doc_path);
+    let mut awareness_rx = awareness_tx.subscribe();
 
     // ── Main loop ────────────────────────────────────────────────────────────
     loop {
@@ -65,10 +67,17 @@ async fn handle_socket(socket: WebSocket, state: AppState, doc_path: String) {
                 }
             }
 
+            Ok(awareness_raw) = awareness_rx.recv() => {
+                // Raw bytes are the fully-encoded message — relay as-is.
+                if sender.send(WsMsg::Binary(awareness_raw.into())).await.is_err() {
+                    break;
+                }
+            }
+
             maybe_msg = receiver.next() => {
                 match maybe_msg {
                     Some(Ok(WsMsg::Binary(data))) => {
-                        handle_incoming(&doc, &data, &mut sender, &state, &doc_path).await;
+                        handle_incoming(&doc, &data, &mut sender, &state, &doc_path, &awareness_tx).await;
                     }
                     Some(Ok(WsMsg::Close(_))) | None => break,
                     _ => {}
@@ -84,6 +93,7 @@ async fn handle_incoming(
     sender: &mut futures::stream::SplitSink<WebSocket, WsMsg>,
     state: &AppState,
     doc_path: &str,
+    awareness_tx: &tokio::sync::broadcast::Sender<Vec<u8>>,
 ) {
     let mut decoder = yrs::updates::decoder::DecoderV1::new(
         yrs::encoding::read::Cursor::new(data)
@@ -117,6 +127,12 @@ async fn handle_incoming(
                 Err(e) => tracing::warn!("decode update error for {doc_path}: {e}"),
             }
             flush_to_disk(state, doc_path).await;
+        }
+
+        // Relay awareness updates (cursor positions, selections) to all other clients.
+        // Broadcast the original encoded bytes so we don't need to re-encode AwarenessUpdate.
+        Message::Awareness(_) => {
+            let _ = awareness_tx.send(data.to_vec());
         }
 
         _ => {}

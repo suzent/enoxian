@@ -22,6 +22,8 @@ pub struct AppState {
     pub control: Arc<Doc>,
     /// Per-doc raw v1 update bytes broadcast (for WS clients and local subscribers)
     pub doc_updates: Arc<DashMap<String, broadcast::Sender<Vec<u8>>>>,
+    /// Per-doc awareness bytes broadcast — relays cursor/presence updates between WS clients.
+    pub awareness_updates: Arc<DashMap<String, broadcast::Sender<Vec<u8>>>>,
     /// Global broadcast: (rel_path, raw_v1_update). Used by P2P sync to forward local updates.
     pub all_updates: broadcast::Sender<(String, Vec<u8>)>,
     /// SSE event stream
@@ -83,6 +85,7 @@ impl AppState {
             docs: Arc::new(DashMap::new()),
             control,
             doc_updates: Arc::new(DashMap::new()),
+            awareness_updates: Arc::new(DashMap::new()),
             all_updates: all_updates_tx,
             events: events_tx,
             self_write_flags: Arc::new(DashMap::new()),
@@ -137,5 +140,15 @@ impl AppState {
     pub fn subscribe_doc_updates(&self, rel_path: &str) -> broadcast::Receiver<Vec<u8>> {
         self.get_or_create_doc(rel_path); // ensure doc + channel exist
         self.doc_updates.get(rel_path).unwrap().subscribe()
+    }
+
+    /// Get or create the awareness broadcast channel for a doc path.
+    pub fn awareness_sender(&self, rel_path: &str) -> broadcast::Sender<Vec<u8>> {
+        if let Some(tx) = self.awareness_updates.get(rel_path) {
+            return tx.clone();
+        }
+        let (tx, _) = broadcast::channel::<Vec<u8>>(64);
+        self.awareness_updates.insert(rel_path.to_string(), tx.clone());
+        tx
     }
 }

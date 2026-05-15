@@ -13,6 +13,17 @@ import { wsYjsUrl } from '../api'
 import { useApp } from '../context/AppContext'
 import { YjsProvider } from '../lib/YjsProvider'
 
+// Deterministic palette — same agent always gets same color across sessions.
+const CURSOR_COLORS = ['#c0392b','#2980b9','#27ae60','#8e44ad','#d35400','#16a085','#c0392b']
+function agentColor(id: string): string {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
+  return CURSOR_COLORS[h % CURSOR_COLORS.length]
+}
+function agentColorLight(id: string): string {
+  return agentColor(id) + '33' // 20% alpha
+}
+
 interface Props {
   filePath: string | null
 }
@@ -82,8 +93,8 @@ export default function EditorPanel({ filePath }: Props) {
     const awareness = provider.awareness
     awareness.setLocalStateField('user', {
       name: status?.agent_id ?? 'unknown',
-      color: '#111111',
-      colorLight: 'rgba(17,17,17,0.2)',
+      color: agentColor(status?.agent_id ?? ''),
+      colorLight: agentColorLight(status?.agent_id ?? ''),
     })
 
     const state = EditorState.create({
