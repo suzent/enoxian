@@ -50,7 +50,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, doc_path: String) {
         }
     }
 
-    // ── Subscribe to doc updates and awareness from other WS clients ─────────
+    // ── Subscribe to doc updates and awareness from local WS/P2P clients ─────
     let mut update_rx = state.subscribe_doc_updates(&doc_path);
     let awareness_tx = state.awareness_sender(&doc_path);
     let mut awareness_rx = awareness_tx.subscribe();
@@ -103,6 +103,9 @@ async fn handle_incoming(
     // intercept awareness messages BEFORE the yrs decoder sees them and relay the
     // original bytes directly — the receiving client will parse them with y-protocols.
     if data[0] == 1 {
+        let _ = state
+            .all_awareness_updates
+            .send((doc_path.to_string(), data.to_vec()));
         let _ = awareness_tx.send(data.to_vec());
         return;
     }

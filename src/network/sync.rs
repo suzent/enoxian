@@ -20,6 +20,7 @@ use yrs::{encoding::read::Cursor, ReadTxn, StateVector, Transact, Update};
 use crate::state::AppState;
 
 pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enochian/sync/1.0.0");
+const AWARENESS_PATH_PREFIX: &str = "\0awareness/";
 
 // ── Wire helpers ──────────────────────────────────────────────────────────────
 
@@ -73,11 +74,20 @@ enum IncomingEvent {
     Apply { path: String, raw_update: Vec<u8> },
     /// Peer sent SyncStep1 (they lagged and need our state) — send SyncStep2 back
     ResyncRequest { path: String, sv: Vec<u8> },
+    /// Peer sent an ephemeral y-protocols awareness update for a file doc.
+    Awareness { path: String, data: Vec<u8> },
     /// Stream closed
     Closed,
 }
 
 fn parse_frame(path: String, data: &[u8]) -> IncomingEvent {
+    if let Some(doc_path) = path.strip_prefix(AWARENESS_PATH_PREFIX) {
+        return IncomingEvent::Awareness {
+            path: doc_path.to_string(),
+            data: data.to_vec(),
+        };
+    }
+
     let mut dec = DecoderV1::new(Cursor::new(data));
     match Message::decode(&mut dec) {
         Ok(Message::Sync(SyncMessage::SyncStep1(sv))) => {
@@ -118,6 +128,11 @@ fn apply_update(state: &AppState, path: &str, raw: &[u8]) {
         }
         Err(e) => warn!("[sync] decode_v1 for {path}: {e}"),
     }
+}
+
+fn apply_awareness(state: &AppState, path: &str, data: Vec<u8>) {
+    let tx = state.awareness_sender(path);
+    let _ = tx.send(data);
 }
 
 /// Encode the full CRDT state of a doc as an Update message.
@@ -241,8 +256,9 @@ async fn sync_inner(
     // writer loop via an mpsc channel.
     //
     // The writer loop selects between:
-    //   - incoming events from the reader (apply update or respond to resync)
+    //   - incoming events from the reader (apply update, awareness, or resync)
     //   - local CRDT updates to forward to peer (from all_updates broadcast)
+    //   - local awareness updates to forward to peer (from all_awareness_updates)
     //
     // Lag handling: if all_updates overflows and we miss broadcasts, we send
     // our full CRDT state for every doc. The peer applies it idempotently.
@@ -268,6 +284,7 @@ async fn sync_inner(
     });
 
     let mut all_rx = state.all_updates.subscribe();
+    let mut all_awareness_rx = state.all_awareness_updates.subscribe();
 
     loop {
         tokio::select! {
@@ -284,6 +301,9 @@ async fn sync_inner(
                         let diff = doc.transact().encode_diff_v1(&sv);
                         let step2 = encode_sync(Message::Sync(SyncMessage::SyncStep2(diff)));
                         write_frame(&mut tx, &path, &step2).await?;
+                    }
+                    IncomingEvent::Awareness { path, data } => {
+                        apply_awareness(state, &path, data);
                     }
                     IncomingEvent::Closed => break,
                 }
@@ -305,6 +325,22 @@ async fn sync_inner(
                             let msg = full_state_update(state, &path);
                             write_frame(&mut tx, &path, &msg).await?;
                         }
+                    }
+                    Err(RecvError::Closed) => break,
+                }
+            }
+
+            // ── Outgoing local awareness updates ───────────────────────────
+            result = all_awareness_rx.recv() => {
+                match result {
+                    Ok((path, data)) => {
+                        let path = format!("{AWARENESS_PATH_PREFIX}{path}");
+                        write_frame(&mut tx, &path, &data).await?;
+                    }
+                    Err(RecvError::Lagged(n)) => {
+                        // Awareness is ephemeral. If we drop cursor frames, the
+                        // next local movement/selection update will repair state.
+                        debug!("[sync] lagged {n} awareness updates to {peer_id}");
                     }
                     Err(RecvError::Closed) => break,
                 }

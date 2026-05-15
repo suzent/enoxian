@@ -26,6 +26,9 @@ pub struct AppState {
     pub awareness_updates: Arc<DashMap<String, broadcast::Sender<Vec<u8>>>>,
     /// Global broadcast: (rel_path, raw_v1_update). Used by P2P sync to forward local updates.
     pub all_updates: broadcast::Sender<(String, Vec<u8>)>,
+    /// Global broadcast: (rel_path, y-protocols awareness message). Used by P2P sync
+    /// to forward ephemeral cursor/presence updates without storing them in CRDT docs.
+    pub all_awareness_updates: broadcast::Sender<(String, Vec<u8>)>,
     /// SSE event stream
     pub events: broadcast::Sender<CircleEvent>,
     /// Per-path flag: set to true before flush_to_disk writes, cleared by watcher on receipt.
@@ -37,6 +40,7 @@ impl AppState {
     pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, admin_pubkey_hex: String, agent_id: String) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
+        let (all_awareness_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let control = Arc::new(Doc::new());
 
         // Forward control doc updates to P2P peers (skip updates that arrived from peers).
@@ -87,6 +91,7 @@ impl AppState {
             doc_updates: Arc::new(DashMap::new()),
             awareness_updates: Arc::new(DashMap::new()),
             all_updates: all_updates_tx,
+            all_awareness_updates: all_awareness_tx,
             events: events_tx,
             self_write_flags: Arc::new(DashMap::new()),
         }

@@ -75,6 +75,9 @@ mod tests {
             circle_name: name.to_string(),
             psk_hex: String::new(),
             keypair_proto_hex: String::new(),
+            workspace_dir: String::new(),
+            admin_pubkey_hex: String::new(),
+            disabled: false,
         }
     }
 
