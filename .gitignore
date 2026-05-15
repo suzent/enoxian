@@ -1,2 +1,33 @@
+# Rust
 /target
-Cargo.lock
+
+# Frontend
+/frontend/node_modules
+/frontend/dist
+
+# Built frontend output (served by enochd)
+/static
+
+# Enochian runtime data
+.enoch_crdt/
+*.enoch_crdt
+
+# Config & secrets (user-specific, never commit)
+~/.enochian/
+admin.key
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+enoch-update.log

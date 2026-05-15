@@ -43,7 +43,20 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         });
     }
 
-    let app = api::router(daemon.clone());
+    let mut app = api::router(daemon.clone());
+
+    // Serve the compiled frontend at /app (built by `npm run build` in frontend/)
+    let static_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent().unwrap_or(&std::path::PathBuf::from("."))
+        .join("static");
+    if static_dir.exists() {
+        use tower_http::services::{ServeDir, ServeFile};
+        let serve = ServeDir::new(&static_dir)
+            .fallback(ServeFile::new(static_dir.join("index.html")));
+        app = app.nest_service("/app", serve);
+        info!("Serving frontend at /app from {}", static_dir.display());
+    }
+
     let http_addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let listener = tokio::net::TcpListener::bind(http_addr)
         .await
