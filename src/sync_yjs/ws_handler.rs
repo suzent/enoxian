@@ -13,6 +13,7 @@ use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
 use yrs::updates::decoder::Decode;
 use yrs::{ReadTxn, Transact, Update};
 use crate::daemon::DaemonState;
+use crate::presence;
 use crate::state::AppState;
 use crate::store::fs::flush_to_disk;
 
@@ -36,6 +37,8 @@ pub async fn ws_yjs_handler(
 }
 
 async fn handle_socket(socket: WebSocket, state: AppState, doc_path: String) {
+    presence::set_current_file(&state, Some(doc_path.clone()));
+
     let doc = state.get_or_create_doc(&doc_path);
     let (mut sender, mut receiver) = socket.split();
 
@@ -85,6 +88,8 @@ async fn handle_socket(socket: WebSocket, state: AppState, doc_path: String) {
             }
         }
     }
+
+    presence::clear_current_file_if_matches(&state, &doc_path);
 }
 
 async fn handle_incoming(

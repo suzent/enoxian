@@ -38,6 +38,10 @@ export function chatStream(circleId: string): EventSource {
   return new EventSource(`${api(circleId)}/chat/stream`)
 }
 
+export function eventStream(circleId: string): EventSource {
+  return new EventSource(`${api(circleId)}/events`)
+}
+
 export function wsYjsUrl(circleId: string, filePath: string): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   return `${proto}://${location.host}/circles/${circleId}/ws/yjs?path=${encodeURIComponent(filePath)}`

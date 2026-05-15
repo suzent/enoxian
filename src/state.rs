@@ -139,6 +139,13 @@ impl AppState {
         self.doc_updates.get(rel_path).unwrap().subscribe()
     }
 
+    pub fn remove_doc(&self, rel_path: &str) {
+        self.docs.remove(rel_path);
+        self.doc_updates.remove(rel_path);
+        self.awareness_updates.remove(rel_path);
+        self.self_write_flags.remove(rel_path);
+    }
+
     /// Get or create the awareness broadcast channel for a doc path.
     pub fn awareness_sender(&self, rel_path: &str) -> broadcast::Sender<Vec<u8>> {
         self.awareness_updates

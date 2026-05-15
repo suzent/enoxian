@@ -12,17 +12,7 @@ import { yCollab } from 'y-codemirror.next'
 import { wsYjsUrl } from '../api'
 import { useApp } from '../context/AppContext'
 import { YjsProvider } from '../lib/YjsProvider'
-
-// Deterministic palette — same agent always gets same color across sessions.
-const CURSOR_COLORS = ['#c0392b','#2980b9','#27ae60','#8e44ad','#d35400','#16a085','#c0392b']
-function agentColor(id: string): string {
-  let h = 0
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
-  return CURSOR_COLORS[h % CURSOR_COLORS.length]
-}
-function agentColorLight(id: string): string {
-  return agentColor(id) + '33' // 20% alpha
-}
+import { agentColor, agentColorLight } from '../lib/agentColor'
 
 interface Props {
   filePath: string | null

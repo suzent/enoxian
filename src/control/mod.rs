@@ -120,6 +120,7 @@ pub struct ChatMessage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CircleEvent {
     FileUpdated { path: String },
+    FileDeleted { path: String },
     LockAcquired { path: String, agent_id: String },
     LockReleased { path: String, agent_id: String },
     TaskCreated { task_id: String },

@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import type { Presence, Task } from '../types'
-import { getWho, getTasks, createTask, claimTask, doneTask, getFiles } from '../api'
+import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, eventStream } from '../api'
 import { useApp } from '../context/AppContext'
+import { agentColor } from '../lib/agentColor'
 
 interface Props {
   onFileSelect: (path: string) => void
@@ -40,9 +41,19 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 
     refresh()
     const id = setInterval(refresh, 15_000)
+    const es = eventStream(activeCircleId)
+    es.addEventListener('message', e => {
+      try {
+        const data = JSON.parse(e.data)
+        if (data.type === 'file_updated' || data.type === 'file_deleted') {
+          getFiles(activeCircleId).then(data => { if (!cancelled) setFiles(data) }).catch(() => {})
+        }
+      } catch {}
+    })
     return () => {
       cancelled = true
       clearInterval(id)
+      es.close()
     }
   }, [activeCircleId])
 
@@ -178,13 +189,21 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 
 function PresenceRow({ p }: { p: Presence }) {
   const dot = p.status === 'online' ? '●' : p.status === 'idle' ? '◑' : '○'
+  const color = agentColor(p.agent_id)
   return (
-    <div className="flex justify-between items-baseline">
-      <span className="font-bold">@{p.agent_id}</span>
-      <div className="flex gap-2 items-baseline">
-        <span className="text-[9px] font-bold">{dot} {p.status.toUpperCase()}</span>
-        <span className="text-[9px] text-slate">{age(p.last_seen)}</span>
+    <div className="flex flex-col gap-0.5">
+      <div className="flex justify-between items-baseline">
+        <span className="font-bold">@{p.agent_id}</span>
+        <div className="flex gap-2 items-baseline">
+          <span className="text-[9px] font-bold" style={{ color }}>{dot} {p.status.toUpperCase()}</span>
+          <span className="text-[9px] text-slate">{age(p.last_seen)}</span>
+        </div>
       </div>
+      {p.current_file && (
+        <div className="text-[9px] text-slate truncate" title={p.current_file}>
+          AT {p.current_file}
+        </div>
+      )}
     </div>
   )
 }

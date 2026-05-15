@@ -1,5 +1,5 @@
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use notify::event::{CreateKind, ModifyKind, RenameMode};
+use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -114,6 +114,8 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
             | EventKind::Modify(ModifyKind::Name(_))  // To, From, Both, Any — covers macOS atomic renames
             | EventKind::Create(CreateKind::File)
             | EventKind::Create(CreateKind::Any)
+            | EventKind::Remove(RemoveKind::File)
+            | EventKind::Remove(RemoveKind::Any)
     );
     if !relevant {
         return;
@@ -137,6 +139,13 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
         };
 
         if is_ignored(&rel) { continue; }
+
+        if matches!(event.kind, EventKind::Remove(_)) {
+            state.remove_doc(&rel);
+            crate::store::crdt::delete(&state.workspace, &rel).await;
+            let _ = state.events.send(CircleEvent::FileDeleted { path: rel });
+            continue;
+        }
 
         // Check the shared self_write_flag. If flush_to_disk set it, this event
         // was caused by a P2P or WS write — skip it to avoid a re-entrancy loop.

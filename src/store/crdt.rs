@@ -35,3 +35,7 @@ pub async fn restore(workspace: &Path, rel_path: &str, doc: &Arc<Doc>) -> bool {
     };
     doc.transact_mut_with("restore").apply_update(update).is_ok()
 }
+
+pub async fn delete(workspace: &Path, rel_path: &str) {
+    let _ = tokio::fs::remove_file(state_path(workspace, rel_path)).await;
+}
