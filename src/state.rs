@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use dashmap::DashMap;
 use tokio::sync::broadcast;
-use yrs::Doc;
-use crate::control::CircleEvent;
+use yrs::{Doc, Observable};
+use crate::control::{CHAT_KEY, ChatMessage, CircleEvent};
 
 pub const EVENT_CAPACITY: usize = 256;
 
@@ -46,6 +46,33 @@ impl AppState {
             }
         }).expect("observe control doc failed");
         std::mem::forget(sub);
+
+        // Observe chat array for P2P-delivered messages and fire SSE events.
+        // Local posts already fire events in post_chat(); this covers remote peers.
+        let chat_arr = control.get_or_insert_array(CHAT_KEY);
+        let events_for_chat = events_tx.clone();
+        let chat_sub = chat_arr.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::array::ArrayEvent| {
+            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+            if !is_p2p { return; }
+            for change in event.delta(txn) {
+                if let yrs::types::Change::Added(values) = change {
+                    for val in values {
+                        if let yrs::Out::Any(yrs::Any::String(s)) = val {
+                            if let Ok(msg) = serde_json::from_str::<ChatMessage>(&s) {
+                                let _ = events_for_chat.send(CircleEvent::MessagePosted { message: msg.clone() });
+                                for mention in &msg.mentions {
+                                    let _ = events_for_chat.send(CircleEvent::AgentMentioned {
+                                        agent_id: mention.clone(),
+                                        message: msg.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        std::mem::forget(chat_sub);
 
         Self {
             circle_id,
