@@ -10,7 +10,7 @@
 | Multi-circle daemon — `enochd` | Loads all enabled circles at startup; one P2P swarm per circle; hot-reload every 10s |
 | Circle lifecycle | `enoch disable/enable/leave`; `POST /circles/<id>/stop|start`; per-circle `CancellationToken` |
 | Workspace folders | `~/enochian/<name>/` per circle, configurable via `--dir` |
-| REST API | Tasks, locks, presence, members, events SSE, lifecycle |
+| REST API | Tasks, locks, presence, members, events SSE, lifecycle, files |
 | Yjs CRDT + file watcher | Local file changes sync into CRDT, broadcast to local WS clients |
 | WebSocket Yjs sync | Local editor/agent clients can sync documents over WS |
 | Name-based circle resolution | `--circle Work` resolves by exact name → prefix → UUID prefix |
@@ -18,11 +18,16 @@
 | PSK-enforced transport | `pnet` XSalsa20 applied at TCP layer — cross-circle connections rejected at handshake |
 | Live P2P file sync | Bidirectional y-sync over libp2p streams; mDNS auto-discovery; new files sync without reconnect |
 | File sync hardening | Startup preload; post-handshake full-state push; macOS atomic-save fix (`Name(Both)`); temp file filter; CRDT state persistence across restarts |
+| File deletion propagation | `all_deletes` broadcast; P2P sync propagates file removal across peers |
 | Self-write loop prevention | Shared per-path flags prevent flush_to_disk from triggering re-sync |
 | P2P echo prevention | Updates applied from peers use `"p2p"` origin; observer skips forwarding them back |
-| Live presence | Daemon writes hostname-based presence entry on start; 30s heartbeat; `enoch who` shows last-seen age |
+| P2P awareness relay | Cursor/presence awareness bytes forwarded between WS clients and across P2P peers via `all_awareness_updates` broadcast |
+| Live presence | Daemon writes hostname-based presence entry on start; 30s heartbeat; stale detection (>90s); `enoch who` shows last-seen age |
 | Admin & member management | Admin keypair signs member operations; `enoch member list/add/remove/promote`; daemon verifies signatures |
 | Chat | `enoch say` posts messages; `enoch chat [--follow]` reads/streams; `@mention` emits `AgentMentioned` event as agent wake signal |
+| Task SSE events from P2P | Control doc observer fires `TaskCreated/Claimed/Done` SSE events when task updates arrive via P2P sync |
+| Web frontend | React SPA: circle selector, presence panel, file tree, collaborative CodeMirror editor, task queue, chat |
+| Remote cursors | Yjs awareness in CodeMirror shows live cursor position and agent name label per connected peer |
 
 ---
 
@@ -208,8 +213,10 @@ Each peer tracks a `session_id` (incremented on every daemon start) and `last_co
 
 **Implementation (done):**
 - `src/store/crdt.rs` — CRDT state persistence and restore
-- `src/sync_yjs/watcher.rs` — startup preload, macOS `Name(Both)` fix, temp file filter
-- `src/network/sync.rs` — post-handshake full-state push
+- `src/store/fs.rs` — `flush_to_disk` saves CRDT state synchronously after file write (fixes race condition)
+- `src/sync_yjs/watcher.rs` — startup preload, offline-edit detection, macOS `Name(Both)` fix, temp file filter
+- `src/network/sync.rs` — post-handshake full-state push; file deletion propagation
+- `src/state.rs` — `all_deletes` broadcast for P2P file deletion; `all_awareness_updates` for P2P cursor relay
 
 **Tasks:**
 - [x] CRDT state persistence across restarts (`.enoch_crdt/`)
@@ -217,6 +224,8 @@ Each peer tracks a `session_id` (incremented on every daemon start) and `last_co
 - [x] Post-handshake full-state push
 - [x] macOS atomic-save fix (`Name(Both)` rename event)
 - [x] Temp/hidden file filter
+- [x] File deletion propagation via P2P (`all_deletes` broadcast + P2P sync handler)
+- [x] Fix CRDT/file race condition — `crdt::save` now awaited synchronously in `flush_to_disk` (not background spawn)
 - [ ] Session ID — increment on each daemon start, store in circle state
 - [ ] `last_connected_at` — updated on every swarm `ConnectionEstablished` event
 - [ ] Exchange session metadata on reconnect (via control doc or handshake extension)
@@ -295,39 +304,40 @@ The array is append-only by convention — edits are not supported. Deletes are 
 ---
 
 ### M10 — Frontend
-**Status: Planned**
+**Status: In Progress**
 
 A minimal web UI served by `enochd` itself (no separate build server). Targets local agent use: one browser tab per circle, showing files, tasks, presence, and chat.
 
-**Scope (first cut):**
-
-| Panel | Content |
-|-------|---------|
-| Sidebar | Circle selector, online members (presence) |
-| Files | Directory tree of workspace files; click to open in a Yjs-backed CodeMirror editor (collaborative) |
-| Tasks | Task list with claim/done actions |
-| Chat | Scrolling message log + send box |
-
-**Serving:**
-
-`enochd` serves the compiled SPA from `static/` via `tower-http::ServeDir` at `/app`. No separate dev server in production — `cargo build` bundles the assets. In development, Vite proxy forwards `/circles/` API calls to the daemon.
-
 **Tech stack:**
 - Vite + React + TypeScript
-- [y-codemirror.next](https://github.com/yjs/y-codemirror.next) for collaborative editing (connects to existing `/ws/yjs` endpoint)
+- [y-codemirror.next](https://github.com/yjs/y-codemirror.next) for collaborative editing (connects to `/ws/yjs`)
 - `yjs` + `y-protocols` for local CRDT binding
 - Tailwind CSS for styling
 
+**Implementation (done):**
+- `frontend/` — full Vite + React scaffold with Tailwind
+- `src/api/files.rs` — `GET /api/files` reads `state.docs` keys (always current, avoids filesystem scan race)
+- `frontend/src/components/EditorPanel.tsx` — CodeMirror 6 + `yCollab(ytext, awareness)`; custom `enochTheme`; remote cursor CSS
+- `frontend/src/lib/YjsProvider.ts` — custom y-protocols provider with WS reconnect; awareness relay guard; debug logging
+- `frontend/src/lib/agentColor.ts` — deterministic per-agent color from agent ID hash (7-color palette)
+- `frontend/src/components/RightPanel.tsx` — file tree, task queue (create/claim/done), presence list, chat
+- `frontend/src/components/ChatPanel.tsx` — scrolling message log + send box; SSE-backed live updates
+- `frontend/src/context/AppContext.tsx` — active circle, daemon status, SSE connection
+- `src/state.rs` — `awareness_updates` DashMap (atomic `entry().or_insert_with()`); `all_awareness_updates` broadcast for P2P relay
+
 **Tasks:**
-- [ ] `frontend/` Vite + React scaffold; `npm run build` outputs to `static/`
-- [ ] `enochd` serves `static/` at `/app` via `tower-http::ServeDir`
-- [ ] Circle selector — `GET /circles` to list active circles
-- [ ] Presence panel — poll `GET /api/who` every 30s
-- [ ] Task panel — list, claim, done
-- [ ] Chat panel — load history + SSE stream for live messages; send via `POST /api/chat`
-- [ ] File tree — list workspace files via a new `GET /api/files` endpoint
-- [ ] Collaborative editor — CodeMirror 6 + y-codemirror bound to `/ws/yjs`
+- [x] `frontend/` Vite + React scaffold; `npm run build` outputs to `static/`
+- [x] Circle selector — `GET /circles` to list active circles
+- [x] Presence panel — SSE-backed live presence; stale detection
+- [x] Task panel — list, create, claim, done; live updates via SSE
+- [x] Chat panel — load history + SSE stream; send via `POST /api/chat`
+- [x] File tree — `GET /api/files` reads from `state.docs`
+- [x] Collaborative editor — CodeMirror 6 + y-codemirror + `YjsProvider` bound to `/ws/yjs`
+- [x] Remote cursors — Yjs awareness relayed between WS clients and across P2P peers; name labels always visible
+- [x] Agent colors — deterministic per-agent palette, shared between editor cursors and presence panel
+- [ ] `enochd` serves `static/` at `/app` via `tower-http::ServeDir` (dev: Vite proxy only)
 - [ ] Production build step: `npm run build` before `cargo build --release`
+- [ ] `enoch open` command — open the UI for a circle in the default browser
 
 ---
 

@@ -7,6 +7,7 @@ interface AppContextValue {
   activeCircleId: string | null
   setActiveCircleId: (id: string) => void
   status: Status | null
+  reloadCircles: () => Promise<void>
 }
 
 const AppContext = createContext<AppContextValue>({
@@ -14,6 +15,7 @@ const AppContext = createContext<AppContextValue>({
   activeCircleId: null,
   setActiveCircleId: () => {},
   status: null,
+  reloadCircles: async () => {},
 })
 
 export function AppProvider({ children }: { children: ReactNode }) {
@@ -21,11 +23,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeCircleId, setActiveCircleIdState] = useState<string | null>(null)
   const [status, setStatus] = useState<Status | null>(null)
 
-  useEffect(() => {
-    getCircles().then(cs => {
+  const reloadCircles = useCallback(async () => {
+    try {
+      const cs = await getCircles()
       setCircles(cs)
-      if (cs.length > 0 && !activeCircleId) setActiveCircleIdState(cs[0].circle_id)
-    }).catch(() => {})
+      if (cs.length > 0 && !cs.find(c => c.circle_id === activeCircleId)) {
+        setActiveCircleIdState(cs[0].circle_id)
+      }
+    } catch {}
+  }, [activeCircleId])
+
+  useEffect(() => {
+    reloadCircles()
   }, [])
 
   const setActiveCircleId = useCallback((id: string) => {
@@ -39,7 +48,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [activeCircleId])
 
   return (
-    <AppContext.Provider value={{ circles, activeCircleId, setActiveCircleId, status }}>
+    <AppContext.Provider value={{ circles, activeCircleId, setActiveCircleId, status, reloadCircles }}>
       {children}
     </AppContext.Provider>
   )

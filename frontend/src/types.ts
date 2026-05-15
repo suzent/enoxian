@@ -1,6 +1,7 @@
 export interface Circle {
   circle_id: string
   circle_name: string
+  disabled?: boolean
 }
 
 export interface Status {

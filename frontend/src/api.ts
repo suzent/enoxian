@@ -34,6 +34,18 @@ export const doneTask = (id: string, taskId: string, agentId: string) =>
   post(`${api(id)}/done`, { task_id: taskId, agent_id: agentId })
 export const getFiles = (id: string) => get<string[]>(`${api(id)}/files`)
 
+export const initCircle = (name: string, dir?: string) => 
+  post<{status: string, circle_id?: string}>('/api/init', { name, dir })
+export const enterCircle = (target: string, secret?: string, peer?: string, dir?: string) => 
+  post<{status: string}>('/api/enter', { target, secret, peer, dir })
+export const inviteCircle = (id: string) => 
+  post<{invite_uri: string}>(`${api(id)}/invite`, {})
+export const enableCircle = (id: string) => 
+  post<{status: string}>(`${api(id)}/enable`, {})
+export const disableCircle = (id: string) => 
+  post<{status: string}>(`${api(id)}/disable`, {})
+export const leaveCircle = (id: string) => 
+  post<{status: string}>(`${api(id)}/leave`, {})
 export function chatStream(circleId: string): EventSource {
   return new EventSource(`${api(circleId)}/chat/stream`)
 }

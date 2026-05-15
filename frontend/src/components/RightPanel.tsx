@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import type { Presence, Task } from '../types'
-import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, eventStream } from '../api'
+import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, eventStream, inviteCircle } from '../api'
 import { useApp } from '../context/AppContext'
 import { agentColor } from '../lib/agentColor'
 
@@ -24,6 +24,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [newTaskTitle, setNewTaskTitle] = useState('')
   const [newTaskDesc, setNewTaskDesc] = useState('')
   const [creating, setCreating] = useState(false)
+  const [inviteUri, setInviteUri] = useState<string | null>(null)
 
   useEffect(() => {
     setPresence([])
@@ -91,11 +92,39 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   // Build a simple nested tree from flat paths
   const fileTree = buildTree(files)
 
+  const handleInvite = async () => {
+    if (!activeCircleId) return
+    try {
+      const res = await inviteCircle(activeCircleId)
+      setInviteUri(res.invite_uri)
+    } catch (err: any) {
+      alert(`Error generating invite: ${err.message}`)
+    }
+  }
+
   return (
     <aside className="flex flex-col border-l-2 border-obsidian bg-alabaster/85 z-10 overflow-hidden">
 
       {/* ── Presence ─────────────────────────────────────────────────────── */}
-      <div className="section-header">Structural Entities</div>
+      <div className="section-header flex justify-between items-center pr-3">
+        <span>Structural Entities</span>
+        <button onClick={handleInvite} className="text-[9px] font-bold font-mono hover:underline text-alabaster/70 hover:text-alabaster">[+] INVITE</button>
+      </div>
+      {inviteUri && (
+        <div className="px-4 py-3 border-b border-dashed border-obsidian/30 text-[11px] font-mono">
+          <div className="mb-1 text-slate font-bold">INVITE URI CREATED:</div>
+          <input 
+            readOnly 
+            value={inviteUri} 
+            onClick={e => { (e.target as HTMLInputElement).select(); navigator.clipboard.writeText(inviteUri) }}
+            className="w-full bg-obsidian text-alabaster px-2 py-1 outline-none text-[10px] cursor-pointer"
+            title="Click to copy"
+          />
+          <div className="mt-2 text-right">
+            <button onClick={() => setInviteUri(null)} className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold">CLOSE</button>
+          </div>
+        </div>
+      )}
       <div className="p-4 border-b border-dashed border-obsidian/30 flex flex-col gap-4 font-mono text-[11px]">
         {local.length > 0 && (
           <div className="flex flex-col gap-2">
