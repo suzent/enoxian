@@ -63,11 +63,10 @@ export class YjsProvider {
           this.onSyncCallback = undefined
         }
       } else if (msgType === MSG_AWARENESS) {
-        awarenessProtocol.applyAwarenessUpdate(
-          this.awareness,
-          decoding.readVarUint8Array(dec),
-          this,
-        )
+        const raw = decoding.readVarUint8Array(dec)
+        console.debug('[yjs] recv awareness', raw.length, 'bytes, states before:', this.awareness.getStates().size)
+        awarenessProtocol.applyAwarenessUpdate(this.awareness, raw, this)
+        console.debug('[yjs] recv awareness applied, states after:', this.awareness.getStates().size, [...this.awareness.getStates().entries()])
       }
     }
 
@@ -90,9 +89,11 @@ export class YjsProvider {
     const onAwareness = ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }) => {
       if (ws.readyState !== WebSocket.OPEN) return
       const changed = [...added, ...updated, ...removed]
+      const payload = awarenessProtocol.encodeAwarenessUpdate(this.awareness, changed)
+      console.debug('[yjs] send awareness', payload.length, 'bytes, clients:', changed)
       const enc = encoding.createEncoder()
       encoding.writeVarUint(enc, MSG_AWARENESS)
-      encoding.writeVarUint8Array(enc, awarenessProtocol.encodeAwarenessUpdate(this.awareness, changed))
+      encoding.writeVarUint8Array(enc, payload)
       ws.send(encoding.toUint8Array(enc))
     }
     this.awareness.on('update', onAwareness)

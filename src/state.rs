@@ -136,11 +136,9 @@ impl AppState {
 
     /// Get or create the awareness broadcast channel for a doc path.
     pub fn awareness_sender(&self, rel_path: &str) -> broadcast::Sender<Vec<u8>> {
-        if let Some(tx) = self.awareness_updates.get(rel_path) {
-            return tx.clone();
-        }
-        let (tx, _) = broadcast::channel::<Vec<u8>>(64);
-        self.awareness_updates.insert(rel_path.to_string(), tx.clone());
-        tx
+        self.awareness_updates
+            .entry(rel_path.to_string())
+            .or_insert_with(|| broadcast::channel::<Vec<u8>>(64).0)
+            .clone()
     }
 }

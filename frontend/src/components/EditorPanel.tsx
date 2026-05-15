@@ -82,6 +82,8 @@ const enochTheme = EditorView.theme({
     padding: '1px 4px',
     whiteSpace: 'nowrap',
     borderRadius: '0',
+    opacity: '1',
+    transition: 'none',
   },
 }, { dark: false })
 
