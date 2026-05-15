@@ -82,6 +82,12 @@ body {
   }
 }
 
+/* Allow cursor name labels (absolutely positioned, may paint outside scroll viewport)
+   to remain visible. overflow-clip-margin is Chrome/Firefox only; Safari ignores it. */
+.cm-scroller {
+  overflow-clip-margin: 2em;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
