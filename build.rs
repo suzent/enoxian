@@ -18,9 +18,11 @@ fn main() {
 
     println!("cargo:warning=Building frontend (npm run build)...");
 
+    let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
+
     // Install deps if node_modules is missing.
     if !frontend.join("node_modules").exists() {
-        let status = Command::new("npm")
+        let status = Command::new(npm)
             .args(["install"])
             .current_dir(&frontend)
             .status()
@@ -28,7 +30,7 @@ fn main() {
         assert!(status.success(), "npm install exited with {status}");
     }
 
-    let status = Command::new("npm")
+    let status = Command::new(npm)
         .args(["run", "build"])
         .current_dir(&frontend)
         .status()
