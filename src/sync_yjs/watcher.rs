@@ -21,14 +21,17 @@ pub async fn preload_workspace(state: &AppState, workspace: &PathBuf) {
         };
         while let Ok(Some(entry)) = rd.next_entry().await {
             let path = entry.path();
+            let rel = match path.strip_prefix(workspace) {
+                Ok(r) => r.to_string_lossy().replace('\\', "/"),
+                Err(_) => continue,
+            };
+            if is_ignored(&rel) {
+                continue;
+            }
+
             if path.is_dir() {
                 stack.push(path);
             } else {
-                let rel = match path.strip_prefix(workspace) {
-                    Ok(r) => r.to_string_lossy().replace('\\', "/"),
-                    Err(_) => continue,
-                };
-                if is_ignored(&rel) { continue; }
                 let contents = match tokio::fs::read_to_string(&path).await {
                     Ok(c) => c,
                     Err(_) => continue, // skip binary files
@@ -36,9 +39,10 @@ pub async fn preload_workspace(state: &AppState, workspace: &PathBuf) {
                 let doc = state.get_or_create_doc(&rel);
                 // Restore saved CRDT state first — preserves operation IDs from previous session
                 // so merging with peers after restart is idempotent (no content duplication).
-                crate::store::crdt::restore(&state.workspace, &rel, &doc).await;
+                let restored = crate::store::crdt::restore(&state.workspace, &rel, &doc).await;
                 let text = doc.get_or_insert_text(rel.as_str());
                 let current = { let txn = doc.transact(); text.get_string(&txn) };
+                let mut changed = false;
                 if current != contents {
                     // File was edited while daemon was offline — apply the diff.
                     // This creates new ops, but only happens for genuine offline edits.
@@ -46,8 +50,15 @@ pub async fn preload_workspace(state: &AppState, workspace: &PathBuf) {
                     let len = text.len(&txn);
                     if len > 0 { text.remove_range(&mut txn, 0, len); }
                     if !contents.is_empty() { text.insert(&mut txn, 0, &contents); }
+                    changed = true;
                 }
-                tracing::debug!("[preload] loaded '{rel}' (crdt restored: {})", current != contents);
+                if changed || !restored {
+                    // Persist the bootstrapped/offline-edited state immediately.
+                    // Without this, a restart can re-seed identical file text with
+                    // fresh Yjs operation IDs, which later merge as duplicate text.
+                    crate::store::crdt::save(&state.workspace, &rel, &doc).await;
+                }
+                tracing::debug!("[preload] loaded '{rel}' (crdt restored: {restored})");
             }
         }
     }
@@ -93,6 +104,7 @@ pub async fn spawn_watcher(state: AppState, workspace: PathBuf, token: Cancellat
 
 fn is_ignored(rel: &str) -> bool {
     let name = rel.split('/').last().unwrap_or(rel);
+    if rel.split('/').any(|part| part.starts_with('.')) { return true; }
     // Hidden files
     if name.starts_with('.') { return true; }
     // Editor temp/swap files
