@@ -35,6 +35,32 @@ export class YjsProvider {
     this.onStatusChange?.(status)
   }
 
+  private sendAwarenessUpdate(clientIds: number[], ws = this.ws) {
+    if (!ws || ws.readyState !== WebSocket.OPEN || clientIds.length === 0) return
+    const payload = awarenessProtocol.encodeAwarenessUpdate(this.awareness, clientIds)
+    const enc = encoding.createEncoder()
+    encoding.writeVarUint(enc, MSG_AWARENESS)
+    encoding.writeVarUint8Array(enc, payload)
+    ws.send(encoding.toUint8Array(enc))
+  }
+
+  private closeAfterBufferedSend(ws = this.ws) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      ws?.close()
+      return
+    }
+    const deadline = Date.now() + 150
+    const closeWhenFlushed = () => {
+      if (ws.readyState !== WebSocket.OPEN) return
+      if (ws.bufferedAmount === 0 || Date.now() >= deadline) {
+        ws.close()
+        return
+      }
+      window.setTimeout(closeWhenFlushed, 10)
+    }
+    closeWhenFlushed()
+  }
+
   private connect() {
     if (this.destroyed) return
     this.emitStatus('connecting')
@@ -105,13 +131,8 @@ export class YjsProvider {
 
     // Forward awareness changes to server
     const onAwareness = ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }) => {
-      if (ws.readyState !== WebSocket.OPEN) return
       const changed = [...added, ...updated, ...removed]
-      const payload = awarenessProtocol.encodeAwarenessUpdate(this.awareness, changed)
-      const enc = encoding.createEncoder()
-      encoding.writeVarUint(enc, MSG_AWARENESS)
-      encoding.writeVarUint8Array(enc, payload)
-      ws.send(encoding.toUint8Array(enc))
+      this.sendAwarenessUpdate(changed, ws)
     }
     this.awareness.on('update', onAwareness)
 
@@ -125,6 +146,6 @@ export class YjsProvider {
     this.destroyed = true
     awarenessProtocol.removeAwarenessStates(this.awareness, [this.doc.clientID], this)
     this.awareness.destroy()
-    this.ws?.close()
+    this.closeAfterBufferedSend()
   }
 }

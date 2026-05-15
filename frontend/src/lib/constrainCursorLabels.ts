@@ -37,19 +37,22 @@ export const constrainCursorLabels = ViewPlugin.fromClass(class {
       const caretRect = caret.getBoundingClientRect()
       const labelWidth = label.offsetWidth
 
-      // Ideal: label's right edge aligns with caret left edge (appears to the left of caret).
-      // This prevents right-edge overflow when the cursor is at the end of a line.
-      let x = caretRect.left - scrollerRect.left - labelWidth
+      const caretX = caretRect.left - scrollerRect.left
+
+      // Ideal viewport position: label's right edge aligns with the caret.
+      // The label itself is absolutely positioned inside the caret widget, so
+      // we clamp in scroller coordinates and convert back to caret-local left.
+      let viewportX = caretX - labelWidth
 
       // Clamp: don't go past left edge of scroller content area.
       const contentLeft = this.view.contentDOM.getBoundingClientRect().left - scrollerRect.left
-      if (x < contentLeft) x = contentLeft
+      if (viewportX < contentLeft) viewportX = contentLeft
 
       // Clamp: don't go past right edge of visible scroller.
       const maxX = scrollerRect.width - labelWidth
-      if (x > maxX) x = maxX
+      if (viewportX > maxX) viewportX = maxX
 
-      label.style.left = `${x}px`
+      label.style.left = `${viewportX - caretX}px`
       label.style.transform = 'translateY(-100%)'
     })
   }
