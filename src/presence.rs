@@ -72,6 +72,7 @@ fn is_legacy_presence_id(agent_id: &str, suffix: &str) -> bool {
         return false;
     }
     prefix == "unknown"
+        || prefix == "peer"
         || prefix.ends_with(".local")
         || hostname_candidates().iter().any(|host| prefix == host)
 }

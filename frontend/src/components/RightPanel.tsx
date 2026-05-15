@@ -188,14 +188,16 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 }
 
 function PresenceRow({ p }: { p: Presence }) {
-  const dot = p.status === 'online' ? '●' : p.status === 'idle' ? '◑' : '○'
+  const stale = Date.now() - new Date(p.last_seen).getTime() > 90_000
+  const status = stale && p.status === 'online' ? 'stale' : p.status
+  const dot = status === 'online' ? '●' : status === 'idle' || status === 'stale' ? '◑' : '○'
   const color = agentColor(p.agent_id)
   return (
     <div className="flex flex-col gap-0.5">
       <div className="flex justify-between items-baseline">
         <span className="font-bold">@{p.agent_id}</span>
         <div className="flex gap-2 items-baseline">
-          <span className="text-[9px] font-bold" style={{ color }}>{dot} {p.status.toUpperCase()}</span>
+          <span className="text-[9px] font-bold" style={{ color }}>{dot} {status.toUpperCase()}</span>
           <span className="text-[9px] text-slate">{age(p.last_seen)}</span>
         </div>
       </div>
