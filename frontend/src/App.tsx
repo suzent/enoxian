@@ -1,15 +1,21 @@
-import { useRef, useState, useCallback } from 'react'
+import { useRef, useState, useCallback, useEffect } from 'react'
 import { AppProvider } from './context/AppContext'
 import ThreeBackground, { type SceneHandle } from './components/ThreeBackground'
 import Header from './components/Header'
 import ChatPanel from './components/ChatPanel'
 import EditorPanel from './components/EditorPanel'
 import RightPanel from './components/RightPanel'
+import { useApp } from './context/AppContext'
 import './styles/globals.css'
 
 function Layout() {
   const sceneRef = useRef<SceneHandle>(null)
+  const { activeCircleId } = useApp()
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
+
+  useEffect(() => {
+    setSelectedFile(null)
+  }, [activeCircleId])
 
   const onMessage = useCallback(() => {
     sceneRef.current?.pulse(

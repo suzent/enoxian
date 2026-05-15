@@ -25,17 +25,25 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [creating, setCreating] = useState(false)
 
   useEffect(() => {
+    setPresence([])
+    setTasks([])
+    setFiles([])
     if (!activeCircleId) return
 
+    let cancelled = false
+
     const refresh = () => {
-      getWho(activeCircleId).then(setPresence).catch(() => {})
-      getTasks(activeCircleId).then(setTasks).catch(() => {})
-      getFiles(activeCircleId).then(setFiles).catch(e => console.error('[files]', e))
+      getWho(activeCircleId).then(data => { if (!cancelled) setPresence(data) }).catch(() => {})
+      getTasks(activeCircleId).then(data => { if (!cancelled) setTasks(data) }).catch(() => {})
+      getFiles(activeCircleId).then(data => { if (!cancelled) setFiles(data) }).catch(e => console.error('[files]', e))
     }
 
     refresh()
     const id = setInterval(refresh, 15_000)
-    return () => clearInterval(id)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
   }, [activeCircleId])
 
   const refreshTasks = () => {
