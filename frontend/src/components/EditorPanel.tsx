@@ -58,7 +58,7 @@ const enochTheme = EditorView.theme({
     display: 'inline',
     zIndex: '10',
   },
-  // Name label. Anchored so its bottom-right corner sits at the cursor caret.
+  // Initial position — constrainCursorLabels plugin overrides left/transform at runtime.
   '.cm-ySelectionInfo': {
     position: 'absolute',
     display: 'inline-block',
@@ -79,10 +79,6 @@ const enochTheme = EditorView.theme({
     opacity: '1',
     transition: 'none',
     zIndex: '200',
-    contain: 'paint',
-    willChange: 'transform, left',
-    backfaceVisibility: 'hidden',
-    WebkitFontSmoothing: 'antialiased',
   },
 }, { dark: false })
 
@@ -97,7 +93,6 @@ export default function EditorPanel({ filePath }: Props) {
   useEffect(() => {
     if (!editorRef.current || !filePath || !activeCircleId) return
 
-    // Tear down previous instance
     viewRef.current?.destroy()
     providerRef.current?.destroy()
     ydocRef.current?.destroy()

@@ -70,7 +70,6 @@ export class YjsProvider {
     this.ws = ws
 
     ws.onopen = () => {
-      // Send our SyncStep1
       const enc = encoding.createEncoder()
       encoding.writeVarUint(enc, MSG_SYNC)
       syncProtocol.writeSyncStep1(enc, this.doc)
@@ -118,7 +117,6 @@ export class YjsProvider {
       if (!this.destroyed) this.emitStatus('disconnected')
     }
 
-    // Forward local doc updates to server
     const onUpdate = (update: Uint8Array, origin: unknown) => {
       if (origin === this || ws.readyState !== WebSocket.OPEN) return
       const enc = encoding.createEncoder()
@@ -128,7 +126,6 @@ export class YjsProvider {
     }
     this.doc.on('update', onUpdate)
 
-    // Forward awareness changes to server
     const onAwareness = ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }) => {
       const changed = [...added, ...updated, ...removed]
       this.sendAwarenessUpdate(changed, ws)
