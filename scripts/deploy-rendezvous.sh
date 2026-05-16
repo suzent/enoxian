@@ -27,6 +27,7 @@ UPDATE_ONLY=false
 BUILD_ON_REMOTE=false
 LOCAL=false
 REPO="suzent/enochian"
+TOKEN="${GITHUB_TOKEN:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -35,12 +36,18 @@ while [[ $# -gt 0 ]]; do
         --build-on-remote) BUILD_ON_REMOTE=true; shift ;;
         --local)           LOCAL=true; shift ;;
         --update)          UPDATE_ONLY=true; shift ;;
+        --token)           TOKEN="$2"; shift 2 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ASSET="enochd-linux-$ARCH"
+
+# Load GITHUB_TOKEN from .env if not already set
+if [[ -z "$TOKEN" && -f "$REPO_DIR/.env" ]]; then
+    TOKEN=$(grep -E '^\s*GITHUB_TOKEN\s*=' "$REPO_DIR/.env" | head -1 | sed -E 's/^\s*GITHUB_TOKEN\s*=\s*["'"'"']?([^"'"'"'[:space:]]+)["'"'"']?/\1/')
+fi
 
 # ── Get binary ────────────────────────────────────────────────────────────────
 if $BUILD_ON_REMOTE; then
@@ -80,19 +87,27 @@ elif $LOCAL; then
 else
     # ── Download latest GitHub release (default) ─────────────────────────────
     echo "▶ Downloading latest release from github.com/$REPO..."
-    URL=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-        | grep "browser_download_url" \
-        | grep "$ASSET" \
-        | cut -d'"' -f4)
+    RELEASE_JSON=$(curl -fsSL \
+        ${TOKEN:+-H "Authorization: Bearer $TOKEN"} \
+        "https://api.github.com/repos/$REPO/releases/latest")
 
-    if [[ -z "$URL" ]]; then
+    ASSET_ID=$(echo "$RELEASE_JSON" | grep -A5 "\"name\": \"$ASSET\"" | grep '"id"' | head -1 | grep -oE '[0-9]+')
+    TAG=$(echo "$RELEASE_JSON" | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$ASSET_ID" ]]; then
         echo "Error: asset '$ASSET' not found in latest release."
         echo "Run the release workflow first, or use --build-on-remote."
         exit 1
     fi
 
-    echo "  Downloading: $URL"
-    ssh "$SSH_TARGET" "curl -fsSL '$URL' -o /tmp/enochd && chmod +x /tmp/enochd"
+    # Use API asset URL to avoid losing auth header on GitHub→S3 redirect
+    API_URL="https://api.github.com/repos/$REPO/releases/assets/$ASSET_ID"
+    echo "  $TAG: $ASSET"
+    if [[ -n "$TOKEN" ]]; then
+        ssh "$SSH_TARGET" "curl -fsSL -H 'Authorization: Bearer $TOKEN' -H 'Accept: application/octet-stream' '$API_URL' -o /tmp/enochd && chmod +x /tmp/enochd"
+    else
+        ssh "$SSH_TARGET" "curl -fsSL -H 'Accept: application/octet-stream' '$API_URL' -o /tmp/enochd && chmod +x /tmp/enochd"
+    fi
 fi
 
 # ── Install on the VPS ────────────────────────────────────────────────────────

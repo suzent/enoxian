@@ -18,12 +18,23 @@ param(
     [ValidateSet("x86_64","aarch64")][string]$Arch = "x86_64",
     [switch]$BuildOnRemote,
     [switch]$Local,
-    [switch]$Update
+    [switch]$Update,
+    [string]$Token = $env:GITHUB_TOKEN
 )
 
 $ErrorActionPreference = "Stop"
 $RepoDir = Split-Path $PSScriptRoot -Parent
 $Repo    = "suzent/enochian"
+
+# Load .env from repo root if token not already provided
+if (-not $Token) {
+    $EnvFile = Join-Path $RepoDir ".env"
+    if (Test-Path $EnvFile) {
+        Get-Content $EnvFile | Where-Object { $_ -match '^\s*GITHUB_TOKEN\s*=\s*(.+)' } | ForEach-Object {
+            $Token = $Matches[1].Trim().Trim('"').Trim("'")
+        }
+    }
+}
 $Asset   = "enochd-linux-$Arch"
 
 # ── Get binary ────────────────────────────────────────────────────────────────
@@ -96,13 +107,19 @@ cargo build --release --bin enochd --target $LinuxTarget 2>&1
 } else {
     # ── Download latest GitHub release (default) ──────────────────────────────
     Write-Host "▶ Downloading latest release from github.com/$Repo..."
-    $release = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest"
-    $url     = ($release.assets | Where-Object { $_.name -eq $Asset }).browser_download_url
-    if (-not $url) {
+    $headers = @{}
+    if ($Token) { $headers["Authorization"] = "Bearer $Token" }
+    $release  = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" -Headers $headers
+    $assetObj = $release.assets | Where-Object { $_.name -eq $Asset }
+    if (-not $assetObj) {
         throw "Asset '$Asset' not found in latest release. Run the release workflow first, or use -BuildOnRemote."
     }
-    Write-Host "  $($release.tag_name): $url"
-    ssh $Target "curl -fsSL '$url' -o /tmp/enochd && chmod +x /tmp/enochd"
+    # Use the API assets URL (not browser_download_url) so curl doesn't lose
+    # the auth header on the GitHub→S3 cross-domain redirect.
+    $apiUrl   = "https://api.github.com/repos/$Repo/releases/assets/$($assetObj.id)"
+    Write-Host "  $($release.tag_name): $($assetObj.name)"
+    $curlAuth = if ($Token) { "-H 'Authorization: Bearer $Token'" } else { "" }
+    ssh $Target "curl -fsSL $curlAuth -H 'Accept: application/octet-stream' '$apiUrl' -o /tmp/enochd && chmod +x /tmp/enochd"
     if ($LASTEXITCODE -ne 0) { throw "Download failed" }
 }
 
