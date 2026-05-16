@@ -15,6 +15,7 @@ export class YjsProvider {
   private destroyed = false
   private onSyncCallback: (() => void) | undefined
   private onStatusChange: ((status: YjsConnectionStatus) => void) | undefined
+  private awarenessHeartbeat: number | undefined
 
   constructor(
     private url: string,
@@ -42,38 +43,6 @@ export class YjsProvider {
     encoding.writeVarUint(enc, MSG_AWARENESS)
     encoding.writeVarUint8Array(enc, payload)
     ws.send(encoding.toUint8Array(enc))
-  }
-
-  private pruneDuplicateRemoteUsers() {
-    const latestByName = new Map<string, { clientId: number; lastUpdated: number }>()
-    const removals: number[] = []
-
-    this.awareness.getStates().forEach((state, clientId) => {
-      if (clientId === this.doc.clientID) return
-
-      const name = typeof state.user?.name === 'string' ? state.user.name : ''
-      if (!name) return
-
-      const meta = this.awareness.meta.get(clientId)
-      const lastUpdated = meta?.lastUpdated ?? 0
-      const current = latestByName.get(name)
-
-      if (!current) {
-        latestByName.set(name, { clientId, lastUpdated })
-        return
-      }
-
-      if (lastUpdated >= current.lastUpdated) {
-        removals.push(current.clientId)
-        latestByName.set(name, { clientId, lastUpdated })
-      } else {
-        removals.push(clientId)
-      }
-    })
-
-    if (removals.length > 0) {
-      awarenessProtocol.removeAwarenessStates(this.awareness, removals, this)
-    }
   }
 
   private closeAfterBufferedSend(ws = this.ws) {
@@ -108,13 +77,11 @@ export class YjsProvider {
       ws.send(encoding.toUint8Array(enc))
 
       // Send initial awareness
-      const aEnc = encoding.createEncoder()
-      encoding.writeVarUint(aEnc, MSG_AWARENESS)
-      encoding.writeVarUint8Array(
-        aEnc,
-        awarenessProtocol.encodeAwarenessUpdate(this.awareness, [this.doc.clientID]),
-      )
-      ws.send(encoding.toUint8Array(aEnc))
+      this.sendAwarenessUpdate([this.doc.clientID], ws)
+      if (this.awarenessHeartbeat !== undefined) window.clearInterval(this.awarenessHeartbeat)
+      this.awarenessHeartbeat = window.setInterval(() => {
+        this.sendAwarenessUpdate([this.doc.clientID], ws)
+      }, 10_000)
     }
 
     ws.onmessage = (e) => {
@@ -137,7 +104,6 @@ export class YjsProvider {
       } else if (msgType === MSG_AWARENESS) {
         const raw = decoding.readVarUint8Array(dec)
         awarenessProtocol.applyAwarenessUpdate(this.awareness, raw, this)
-        this.pruneDuplicateRemoteUsers()
       }
     }
 
@@ -172,11 +138,19 @@ export class YjsProvider {
     ws.addEventListener('close', () => {
       this.doc.off('update', onUpdate)
       this.awareness.off('update', onAwareness)
+      if (this.awarenessHeartbeat !== undefined) {
+        window.clearInterval(this.awarenessHeartbeat)
+        this.awarenessHeartbeat = undefined
+      }
     }, { once: true })
   }
 
   destroy() {
     this.destroyed = true
+    if (this.awarenessHeartbeat !== undefined) {
+      window.clearInterval(this.awarenessHeartbeat)
+      this.awarenessHeartbeat = undefined
+    }
     awarenessProtocol.removeAwarenessStates(this.awareness, [this.doc.clientID], this)
     this.awareness.destroy()
     this.closeAfterBufferedSend()

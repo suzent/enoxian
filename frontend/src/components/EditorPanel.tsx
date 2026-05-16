@@ -14,7 +14,6 @@ import { useApp } from '../context/AppContext'
 import { YjsProvider, type YjsConnectionStatus } from '../lib/YjsProvider'
 import { agentColor, agentColorLight } from '../lib/agentColor'
 import { constrainCursorLabels } from '../lib/constrainCursorLabels'
-import { textBoundRemoteSelections } from '../lib/textBoundRemoteSelections'
 
 interface Props {
   filePath: string | null
@@ -47,15 +46,8 @@ const enochTheme = EditorView.theme({
   '.cm-selectionBackground': { backgroundColor: 'rgba(17,17,17,0.12) !important' },
   '&.cm-focused .cm-selectionBackground': { backgroundColor: 'rgba(17,17,17,0.15) !important' },
   '.cm-scroller': { overflow: 'auto' },
-  // y-codemirror owns real-time remote carets. We only hide its full-width
-  // middle-line selection and redraw those middle lines as text-bound marks.
   '.cm-ySelection': { opacity: '1' },
-  '.cm-yLineSelection': {
-    backgroundColor: 'transparent !important',
-    margin: '0',
-    padding: '0',
-    opacity: '1',
-  },
+  '.cm-yLineSelection': { opacity: '1' },
   '.cm-ySelectionCaret': {
     position: 'relative',
     borderLeft: '2px solid',
@@ -66,7 +58,6 @@ const enochTheme = EditorView.theme({
     display: 'inline',
     zIndex: '10',
   },
-  '.cm-yTextRemoteSelection': { opacity: '1' },
   // Name label. Anchored so its bottom-right corner sits at the cursor caret.
   '.cm-ySelectionInfo': {
     position: 'absolute',
@@ -139,7 +130,6 @@ export default function EditorPanel({ filePath }: Props) {
         enochTheme,
         EditorView.lineWrapping,
         yCollab(ytext, awareness),
-        textBoundRemoteSelections,
         constrainCursorLabels,
       ],
     })
