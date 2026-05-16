@@ -3,11 +3,13 @@
 
 use anyhow::Result;
 use libp2p::{
-    futures::StreamExt,
-    identify, kad, mdns, noise, pnet, tcp, yamux,
-    swarm::{dial_opts::DialOpts, SwarmEvent},
-    Multiaddr, SwarmBuilder,
+    core::muxing::StreamMuxerBox,
+    dcutr, futures::StreamExt,
+    identify, kad, mdns, noise, pnet, quic, relay, rendezvous, tcp, yamux,
+    swarm::{dial_opts::{DialOpts, PeerCondition}, SwarmEvent},
+    Multiaddr, PeerId, SwarmBuilder,
 };
+use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -54,6 +56,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         config.admin_pubkey_hex.clone(),
         agent_id.clone(),
         session_id,
+        peer_id.to_string(),
     );
 
     let token = CancellationToken::new();
@@ -95,27 +98,51 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     let pnet_config = pnet::PnetConfig::new(pnet::PreSharedKey::new(psk_bytes));
     let keypair_clone = keypair.clone();
 
+    // relay::client::new produces the relay transport (for dialing circuits) and
+    // the relay client behaviour (for managing reservations).
+    let (relay_transport, relay_client_behaviour) = relay::client::new(peer_id);
+
     let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
         .with_tokio()
-        .with_other_transport(|key| {
-            use libp2p::{core::{muxing::StreamMuxerBox, upgrade}, Transport};
-            let noise = noise::Config::new(key)?;
-            let transport = tcp::tokio::Transport::new(tcp::Config::default())
+        .with_other_transport(move |key| {
+            use futures::future::Either;
+            use libp2p::{core::upgrade, Transport};
+
+            // TCP + PSK: used for LAN / direct connections within the circle.
+            let tcp = tcp::tokio::Transport::new(tcp::Config::default())
                 .and_then(move |s, _| pnet_config.handshake(s))
                 .upgrade(upgrade::Version::V1Lazy)
-                .authenticate(noise)
+                .authenticate(noise::Config::new(key)?)
                 .multiplex(yamux::Config::default())
                 .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
-            Ok(transport)
+
+            // Relay: used for circuit connections through a relay node.
+            // No PSK here — relay connections are already over an authenticated channel.
+            let relay = relay_transport
+                .upgrade(upgrade::Version::V1Lazy)
+                .authenticate(noise::Config::new(key)?)
+                .multiplex(yamux::Config::default())
+                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
+
+            // QUIC: no PSK — used for bootstrap/rendezvous server connections.
+            // Bootstrap servers don't share the circle PSK; they speak plain QUIC.
+            let quic_t = quic::tokio::Transport::new(quic::Config::new(key))
+                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
+
+            Ok(tcp.or_transport(relay).or_transport(quic_t).map(|e, _| match e {
+                Either::Left(Either::Left(x)) => x,
+                Either::Left(Either::Right(x)) => x,
+                Either::Right(x) => x,
+            }))
         })?
-        .with_behaviour(|key| {
-            let peer_id = key.public().to_peer_id();
+        .with_behaviour(move |key| {
+            let pid = key.public().to_peer_id();
             Ok(EnochBehaviour {
-                mdns: mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?,
+                mdns: mdns::tokio::Behaviour::new(mdns::Config::default(), pid)?,
                 kad: {
                     let mut kad = kad::Behaviour::new(
-                        peer_id,
-                        kad::store::MemoryStore::new(peer_id),
+                        pid,
+                        kad::store::MemoryStore::new(pid),
                     );
                     kad.set_mode(Some(kad::Mode::Server));
                     kad
@@ -126,6 +153,9 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 )),
                 ping: libp2p::ping::Behaviour::default(),
                 rendezvous: libp2p::rendezvous::client::Behaviour::new(keypair_clone),
+                relay_client: relay_client_behaviour,
+                relay: relay::Behaviour::new(pid, relay::Config::default()),
+                dcutr: dcutr::Behaviour::new(pid),
                 stream: stream_proto::Behaviour::new(),
             })
         })?
@@ -144,6 +174,47 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 let _ = swarm.dial(addr);
             }
             Err(e) => warn!("[{}] invalid peer addr '{}': {e}", config.circle_id, peer_str),
+        }
+    }
+
+    // ── Connect through relay nodes ───────────────────────────────────────────
+    // Listening on a p2p-circuit address causes libp2p to connect to the relay
+    // and request a reservation slot, making us reachable from any network.
+    for relay_str in &config.relay_addrs {
+        match relay_str.parse::<Multiaddr>() {
+            Ok(relay_addr) => {
+                let circuit_addr = relay_addr
+                    .clone()
+                    .with(libp2p::multiaddr::Protocol::P2pCircuit);
+                info!("[{}] reserving relay slot at {relay_addr}", config.circle_id);
+                if let Err(e) = swarm.listen_on(circuit_addr) {
+                    warn!("[{}] relay circuit listen failed: {e}", config.circle_id);
+                }
+            }
+            Err(e) => warn!("[{}] invalid relay addr '{}': {e}", config.circle_id, relay_str),
+        }
+    }
+
+    // ── Dial rendezvous servers (QUIC) ────────────────────────────────────────
+    // Rendezvous servers speak QUIC without PSK. After connecting we register
+    // under the circle UUID namespace and discover other members.
+    let rendezvous_peers: HashSet<PeerId> = config.rendezvous_addrs
+        .iter()
+        .filter_map(|s| {
+            let addr: Multiaddr = s.parse().ok()?;
+            addr.iter().find_map(|p| {
+                if let libp2p::multiaddr::Protocol::P2p(id) = p { Some(id) } else { None }
+            })
+        })
+        .collect();
+
+    for rdvz_str in &config.rendezvous_addrs {
+        match rdvz_str.parse::<Multiaddr>() {
+            Ok(addr) => {
+                info!("[{}] dialing rendezvous server {addr}", config.circle_id);
+                let _ = swarm.dial(addr);
+            }
+            Err(e) => warn!("[{}] invalid rendezvous addr '{}': {e}", config.circle_id, rdvz_str),
         }
     }
 
@@ -175,29 +246,80 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     let open_ctrl = swarm.behaviour().stream.new_control();
     let swarm_token = token.clone();
     let state_for_swarm = state.clone();
+    let rendezvous_namespace = rendezvous::Namespace::new(circle_id.clone())
+        .unwrap_or_else(|_| rendezvous::Namespace::from_static("enochian"));
 
     tokio::spawn(async move {
+        // Re-register with rendezvous servers every hour (TTL is 2h).
+        let mut reregister = tokio::time::interval(std::time::Duration::from_secs(3600));
+        reregister.tick().await; // skip the immediate first tick
+
         loop {
             tokio::select! {
                 _ = swarm_token.cancelled() => {
                     info!("[{}] circle stopped", circle_id);
                     break;
                 }
+                _ = reregister.tick() => {
+                    for &rdvz_peer in &rendezvous_peers {
+                        if swarm.is_connected(&rdvz_peer) {
+                            if let Err(e) = swarm.behaviour_mut().rendezvous.register(
+                                rendezvous_namespace.clone(), rdvz_peer, None,
+                            ) {
+                                warn!("[{}] rendezvous re-register: {e}", circle_id);
+                            }
+                        }
+                    }
+                }
                 event = swarm.select_next_some() => match event {
                     SwarmEvent::NewListenAddr { address, .. } => {
                         info!("[{}] P2P listening on {address}", circle_id);
+                        // Track non-loopback, non-unspecified, non-circuit listen addrs.
+                        // On a VPS these include the real public IP immediately at startup.
+                        if is_routable_listen_addr(&address) {
+                            if let Ok(mut addrs) = state_for_swarm.p2p_listen_addrs.write() {
+                                let s = address.to_string();
+                                if !addrs.contains(&s) { addrs.push(s); }
+                            }
+                        }
+                    }
+                    SwarmEvent::ExternalAddrConfirmed { address } => {
+                        info!("[{}] external address confirmed: {address}", circle_id);
+                        if let Ok(mut addrs) = state_for_swarm.p2p_external_addrs.write() {
+                            let s = address.to_string();
+                            if !addrs.contains(&s) { addrs.push(s); }
+                        }
+                    }
+                    SwarmEvent::ExternalAddrExpired { address } => {
+                        if let Ok(mut addrs) = state_for_swarm.p2p_external_addrs.write() {
+                            addrs.retain(|a| a != &address.to_string());
+                        }
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         info!("[{}] P2P connected: {peer_id} via {}", circle_id, endpoint.get_remote_address());
+                        // If this is a rendezvous server, register + discover immediately.
+                        if rendezvous_peers.contains(&peer_id) {
+                            if let Err(e) = swarm.behaviour_mut().rendezvous.register(
+                                rendezvous_namespace.clone(), peer_id, None,
+                            ) {
+                                warn!("[{}] rendezvous register at {peer_id}: {e}", circle_id);
+                            }
+                            swarm.behaviour_mut().rendezvous.discover(
+                                Some(rendezvous_namespace.clone()), None, None, peer_id,
+                            );
+                        }
                         if endpoint.is_dialer() {
-                            let mut ctrl = open_ctrl.clone();
-                            let s = state_for_swarm.clone();
-                            tokio::spawn(async move {
-                                match ctrl.open_stream(peer_id, sync::PROTOCOL).await {
-                                    Ok(stream) => sync::run_sync(peer_id, stream, s, true).await,
-                                    Err(e) => warn!("[sync] open_stream to {peer_id}: {e}"),
-                                }
-                            });
+                            // Don't open sync stream to rendezvous-only servers.
+                            if !rendezvous_peers.contains(&peer_id) {
+                                let mut ctrl = open_ctrl.clone();
+                                let s = state_for_swarm.clone();
+                                tokio::spawn(async move {
+                                    match ctrl.open_stream(peer_id, sync::PROTOCOL).await {
+                                        Ok(stream) => sync::run_sync(peer_id, stream, s, true).await,
+                                        Err(e) => warn!("[sync] open_stream to {peer_id}: {e}"),
+                                    }
+                                });
+                            }
                         }
                     }
                     SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
@@ -229,6 +351,43 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
                         }
                     }
+                    SwarmEvent::Behaviour(EnochEvent::Rendezvous(e)) => {
+                        use rendezvous::client::Event as RE;
+                        match e {
+                            RE::Registered { rendezvous_node, ttl, .. } => {
+                                info!("[{}] rendezvous registered at {rendezvous_node} (ttl={ttl}s)", circle_id);
+                            }
+                            RE::RegisterFailed { rendezvous_node, error, .. } => {
+                                warn!("[{}] rendezvous register failed at {rendezvous_node}: {error:?}", circle_id);
+                            }
+                            RE::Discovered { registrations, rendezvous_node, .. } => {
+                                info!("[{}] rendezvous discovered {} peers from {rendezvous_node}", circle_id, registrations.len());
+                                for reg in registrations {
+                                    let pid = reg.record.peer_id();
+                                    if pid == *swarm.local_peer_id() { continue; }
+                                    for addr in reg.record.addresses() {
+                                        swarm.behaviour_mut().kad.add_address(&pid, addr.clone());
+                                        let _ = swarm.dial(
+                                            DialOpts::peer_id(pid)
+                                                .addresses(vec![addr.clone()])
+                                                .condition(PeerCondition::DisconnectedAndNotDialing)
+                                                .build(),
+                                        );
+                                    }
+                                }
+                            }
+                            RE::DiscoverFailed { rendezvous_node, error, .. } => {
+                                warn!("[{}] rendezvous discover failed at {rendezvous_node}: {error:?}", circle_id);
+                            }
+                            _ => {}
+                        }
+                    }
+                    SwarmEvent::Behaviour(EnochEvent::RelayClient(e)) => {
+                        tracing::debug!("[{}] relay client: {e:?}", circle_id);
+                    }
+                    SwarmEvent::Behaviour(EnochEvent::Dcutr(e)) => {
+                        tracing::debug!("[{}] dcutr: {e:?}", circle_id);
+                    }
                     SwarmEvent::Behaviour(EnochEvent::Ping(e)) => {
                         tracing::debug!("[{}] Ping: {e:?}", circle_id);
                     }
@@ -243,4 +402,29 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
 
     daemon.insert_circle(config.circle_id.clone(), state, token);
     Ok(())
+}
+
+/// Returns true for listen addresses worth tracking for invite embedding:
+/// rejects loopback, unspecified, link-local, and p2p-circuit relay addresses.
+/// RFC1918 and Tailscale CGNAT addresses are kept — `enoch invite` sorts them
+/// after public IPs so a public address is preferred when available.
+fn is_routable_listen_addr(addr: &Multiaddr) -> bool {
+    use libp2p::multiaddr::Protocol;
+
+    if addr.to_string().contains("p2p-circuit") { return false; }
+
+    for proto in addr.iter() {
+        match proto {
+            Protocol::Ip4(ip) => {
+                if ip.is_loopback() || ip.is_unspecified() || ip.is_link_local() {
+                    return false;
+                }
+            }
+            Protocol::Ip6(ip) => {
+                if ip.is_loopback() || ip.is_unspecified() { return false; }
+            }
+            _ => {}
+        }
+    }
+    true
 }

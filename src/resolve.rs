@@ -78,6 +78,9 @@ mod tests {
             workspace_dir: String::new(),
             admin_pubkey_hex: String::new(),
             disabled: false,
+            peers: vec![],
+            relay_addrs: vec![],
+            rendezvous_addrs: vec![],
         }
     }
 

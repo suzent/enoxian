@@ -134,6 +134,8 @@ pub async fn generate_invite(
         expires_at,
         peer_addr: None,
         admin_pubkey_bytes,
+        relay_addr: None,
+        rendezvous_addr: None,
     });
 
     Json(json!({ "invite_uri": uri })).into_response()

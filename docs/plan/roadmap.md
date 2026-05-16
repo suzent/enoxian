@@ -30,6 +30,11 @@
 | Remote cursors | Yjs awareness in CodeMirror shows live cursor position and agent name label per connected peer |
 | `enoch open` | Opens the circle UI in the default browser (`http://127.0.0.1:36521/app`) |
 | Production build | `cargo build --release` automatically runs `npm run build` via `build.rs` |
+| WAN / circuit relay | Every node is a relay server + client; relay addr auto-embedded in invites; DCUtR for hole-punching |
+| Bootstrap rendezvous server | `enochd --bootstrap` — QUIC rendezvous + relay for both-behind-NAT; no PSK; stable keypair |
+| QUIC transport | PSK-free QUIC leg alongside PSK-TCP; circle members connect to bootstrap via QUIC |
+| Auto-embedded invites | `enoch invite` queries the daemon and auto-embeds peer addr, relay, and rendezvous — no manual flags |
+| P2P status in API | `GET /api/status` returns `p2p.peer_id`, `p2p.external_addrs`, `p2p.relay_addrs`, `p2p.rendezvous_addrs` |
 
 ---
 
@@ -45,7 +50,9 @@ See [security.md](../security.md) for the full threat model, including PSK seman
 - Kademlia DHT + rendezvous handles WAN peer discovery
 - The optional `--peer` in an invite is just a bootstrap hint — any online peer's address works
 
-**Anchor nodes** are regular `enochd` peers that happen to run 24/7 on a VPS. They act as relay, rendezvous point, and always-on presence for their circles. No special code — just a peer that's always reachable. Teams that need WAN or strong liveness guarantees deploy one; LAN-only teams don't need it.
+**Anchor nodes** are regular `enochd` peers that happen to run 24/7 on a VPS. They act as relay and always-on presence for their circles. No special code — just a peer that's always reachable. Teams that need WAN or strong liveness guarantees deploy one; LAN-only teams don't need it.
+
+**Bootstrap servers** run `enochd --bootstrap` and provide rendezvous + relay for any circle, without joining any of them. They hold no PSK and cannot read synced content. `enoch.suzent.com` is the shared public bootstrap for teams where no member has a public IP. A single bootstrap server serves all circles simultaneously.
 
 **Conflict model:** CRDT handles concurrent real-time edits perfectly. For offline edits (both peers disconnected simultaneously), conflict detection uses the persisted CRDT state as the common ancestor. If only one side diverged, the merge is clean. If both sides diverged, the loser's version is preserved as a conflict copy (`file.conflict.<peer>`) and the CRDT merge becomes the working file.
 
@@ -429,26 +436,56 @@ When a member is evicted:
 
 ---
 
-### M12 — Anchor Node & WAN  *(was M11)*
-**Status: Planned**
+### M12 — WAN Support (Circuit Relay + DCUtR + Bootstrap Rendezvous)
+**Status: Complete**
 
-An anchor node is a regular `enochd` peer running 24/7 on a VPS. It acts as relay, rendezvous point, and always-on presence for its circles — no special code, just a peer that's always reachable. Teams that need WAN connectivity or strong liveness guarantees deploy one; LAN-only teams don't need it.
+Every `enochd` node includes both a circuit relay server and relay client. Any node with a public IP can serve as relay. Peers behind NAT connect through a relay and DCUtR attempts a direct hole-punch. For the case where **no** peer has a public IP, `enochd --bootstrap` provides a public rendezvous + relay server.
 
 **Design:**
 
-- Anchor node runs `enochd` with `--anchor` flag, which enables circuit relay and rendezvous server behaviors
-- Invite links can embed the anchor's multiaddr as a bootstrap hint (`--relay <multiaddr>`)
-- Peers that can't reach each other directly (NAT, firewall) connect via the anchor as relay
-- Anchor node is just a peer — it holds the PSK, syncs files, maintains presence like any other member
+- Every `enochd` is simultaneously a relay server (can be used by others) and a relay client (can connect through others)
+- Invite links auto-embed relay, rendezvous, and peer addresses — `enoch invite` queries the daemon; no manual flags needed
+- Relay and rendezvous addresses propagate: once one member joins with a relay/rendezvous, future invites they generate include it automatically
+- The bootstrap server (`enochd --bootstrap`) speaks QUIC only (no PSK) — it is not a circle member and cannot read any content
+- Circle members connect to the bootstrap server via a separate QUIC transport leg (no PSK); direct circle-to-circle connections remain PSK-protected TCP
+
+**Transport stack (circle swarms):**
+
+```
+TCP + PSK (XSalsa20) + Noise + Yamux   →  /ip4/.../tcp/...          (circle peers)
+Circuit relay + Noise + Yamux           →  /ip4/.../tcp/.../p2p-circuit  (NAT traversal)
+QUIC (no PSK)                           →  /ip4/.../udp/.../quic-v1  (bootstrap server)
+```
+
+**Implementation:**
+- `Cargo.toml` — added `relay`, `dcutr`, `quic` to libp2p features
+- `src/network/behaviour.rs` — `relay_client::Behaviour`, `relay::Behaviour`, `dcutr::Behaviour`, `rendezvous::client::Behaviour` in `EnochBehaviour`
+- `src/network/bootstrap_behaviour.rs` — `BootstrapBehaviour`: `rendezvous::server::Behaviour` + `relay::Behaviour` + identify + ping + kad
+- `src/bootstrap.rs` — `run_bootstrap(port)`: generates/loads stable keypair at `~/.enochian/bootstrap.key`; QUIC listener; logs full multiaddr at startup
+- `src/config.rs` — `relay_addrs` and `rendezvous_addrs: Vec<String>` (serde-defaulted)
+- `src/state.rs` — `peer_id: String` and `p2p_external_addrs: Arc<RwLock<Vec<String>>>` added to `AppState`
+- `src/invite.rs` — `relay_addr` and `rendezvous_addr` extensions in invite binary format (backward-compatible)
+- `src/cli.rs` — `--relay`, `--rendezvous` flags on `InviteArgs`; `--bootstrap` flag on `DaemonCli`
+- `src/commands/invite.rs` — queries `GET /api/status` for live P2P info; auto-embeds peer/relay/rendezvous; explicit flags override
+- `src/commands/enter.rs` — saves `relay_addrs` and `rendezvous_addrs` from invite to `config.toml`
+- `src/api/status.rs` — `GET /api/status` returns `p2p` section: peer_id, external_addrs, relay_addrs, rendezvous_addrs
+- `src/lifecycle.rs` — QUIC transport wired alongside TCP+PSK; dials rendezvous servers on startup; registers namespace on connect; discovers peers; re-registers hourly; `ExternalAddrConfirmed` → `p2p_external_addrs`
+- `src/bin/enochd.rs` — `--bootstrap` flag routes to `bootstrap::run(port)`
 
 **Tasks:**
-- [ ] `--anchor` flag for `enochd` — enables `libp2p::relay::Behaviour` (circuit relay server)
-- [ ] Wire rendezvous server (`libp2p-rendezvous`) so anchor acts as meeting point for WAN peers
-- [ ] `enoch anchor` convenience command — generates a config with `--anchor` and prints multiaddr
-- [ ] `enoch invite --relay <multiaddr>` — embed relay address in invite URI for WAN circles
-- [ ] `enoch enter` reads relay address from invite and adds as bootstrap peer
-- [ ] Kademlia DHT enabled for WAN peer discovery (already in roadmap; anchor acts as bootstrap node)
-- [ ] Document anchor node VPS setup (minimal: any Linux box with a stable IP and open port)
+- [x] Add `relay`, `dcutr`, `quic` libp2p features
+- [x] `relay_client`, `relay`, `dcutr`, `rendezvous::client` behaviours in `EnochBehaviour`
+- [x] QUIC transport (no PSK) wired alongside TCP+PSK in lifecycle.rs
+- [x] `relay_addrs` and `rendezvous_addrs` in `CircleConfig`
+- [x] Extension 2 (`relay_addr`) and extension 3 (`rendezvous_addr`) in invite binary format
+- [x] `enoch invite` auto-embeds peer/relay/rendezvous from daemon state and config; explicit flags override
+- [x] `enoch enter` saves relay and rendezvous addresses to config
+- [x] Relay transport wired alongside TCP+PSK; `swarm.listen_on(<relay>/p2p-circuit)` on startup
+- [x] DCUtR — direct hole-punch after relay connection
+- [x] Rendezvous client — register + discover on connect; re-register every hour
+- [x] `enochd --bootstrap` — stable keypair; QUIC rendezvous server + relay server; no PSK; no circles
+- [x] `peer_id` and `p2p_external_addrs` in AppState; populated by `ExternalAddrConfirmed` events
+- [x] `GET /api/status` returns full `p2p` block
 
 ---
 

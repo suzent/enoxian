@@ -47,6 +47,8 @@ pub async fn run(args: InitArgs) -> Result<()> {
         admin_pubkey_hex:  admin_pubkey_hex.clone(),
         disabled:          false,
         peers:             vec![],
+        relay_addrs:       vec![],
+        rendezvous_addrs:  vec![],
     };
     config::save(&config)?;
 
@@ -65,6 +67,8 @@ pub async fn run(args: InitArgs) -> Result<()> {
         expires_at:  Utc::now() + ttl,
         peer_addr:   None,
         admin_pubkey_bytes,
+        relay_addr:  None,
+        rendezvous_addr: None,
     });
 
     println!("✦ Circle cast: {}", args.name);

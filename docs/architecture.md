@@ -4,11 +4,11 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                           enochd                            │
+│                     enochd (circle mode)                    │
 │                                                             │
 │  ┌─────────────┐   ┌────────────────────┐   ┌────────────┐  │
 │  │  libp2p     │   │   axum HTTP + WS   │   │   notify   │  │
-│  │  Swarm      │   │   :9090            │   │   watcher  │  │
+│  │  Swarm      │   │   :36521           │   │   watcher  │  │
 │  │             │   │                    │   │            │  │
 │  │  PSK/Noise  │   │  GET  /api/status  │   │  disk →    │  │
 │  │  Yamux      │   │  GET  /api/who     │   │  Y.Text    │  │
@@ -17,22 +17,29 @@
 │  │  Identify   │   │  POST /api/claim   │   │  disk      │  │
 │  │  Ping       │   │  POST /api/done    │   └────────────┘  │
 │  │  Rendezvous │   │  POST /api/bind    │                   │
-│  │  Stream     │   │  POST /api/release │   ┌────────────┐  │
-│  │  :random    │   │  GET  /api/events  │   │  AppState  │  │
-│  └─────────────┘   │  WS   /ws/yjs      │   │            │  │
-│         │          └────────────────────┘   │ docs       │  │
-│         │                   │               │ Arc<Doc>×N │  │
-│  /enochian/sync      HTTP / WS              │            │  │
-│  y-sync protocol     reqwest                │ control    │  │
-│  (live, M3)                                 │ Arc<Doc>   │  │
+│  │  Relay/DCUtR│   │  POST /api/release │   ┌────────────┐  │
+│  │  QUIC (no   │   │  GET  /api/events  │   │  AppState  │  │
+│  │   PSK)      │   │  WS   /ws/yjs      │   │            │  │
+│  │  :random    │   └────────────────────┘   │ docs       │  │
+│  └─────────────┘           │               │ Arc<Doc>×N │  │
+│         │                   │               │            │  │
+│  PSK TCP: circle peers      HTTP / WS       │ control    │  │
+│  QUIC: bootstrap server     reqwest         │ Arc<Doc>   │  │
+│  /enochian/sync                             │            │  │
+│  y-sync protocol                            │ peer_id    │  │
+│  (live, M3)                                 │ ext_addrs  │  │
 │         │                   │               │            │  │
 └─────────────────────────────────────────────────────────────┘
           │                   │
           ▼                   ▼
-  ┌──────────────┐   ┌──────────────────┐
-  │  enochd peer │   │    enoch CLI     │
-  │  (other node)│   │  or AI agent     │
-  └──────────────┘   └──────────────────┘
+  ┌──────────────┐   ┌──────────────────┐   ┌──────────────────┐
+  │  enochd peer │   │    enoch CLI     │   │ enochd           │
+  │  (other node)│   │  or AI agent     │   │ --bootstrap      │
+  └──────────────┘   └──────────────────┘   │ (QUIC only,      │
+                                             │ no PSK,          │
+                                             │ rendezvous +     │
+                                             │ relay server)    │
+                                             └──────────────────┘
 ```
 
 ---
@@ -41,9 +48,9 @@
 
 | Component | Source | Responsibility |
 |-----------|--------|----------------|
-| `AppState` | `src/state.rs` | Central shared state; `Clone` is cheap (all `Arc`) |
+| `AppState` | `src/state.rs` | Central shared state; `Clone` is cheap (all `Arc`). Includes `peer_id` and `p2p_external_addrs`. |
 | REST/WS router | `src/api/mod.rs` | Builds the axum `Router`, wires state |
-| Status handler | `src/api/status.rs` | `GET /api/status` |
+| Status handler | `src/api/status.rs` | `GET /api/status` — includes `p2p` section: peer_id, external_addrs, listen_addrs, relay_addrs, rendezvous_addrs |
 | Who handler | `src/api/who.rs` | `GET /api/who` — reads presence Y.Map |
 | Tasks handler | `src/api/tasks.rs` | `GET/POST /api/tasks` — reads/writes tasks Y.Map |
 | Lock handler | `src/api/lock.rs` | bind, release, claim, done |
@@ -55,7 +62,9 @@
 | Control types | `src/control/mod.rs` | Task, LockEntry, Presence, CircleEvent structs |
 | FS lock | `src/control/fs_lock.rs` | `set_readonly()` — chmod wrapper |
 | P2P sync | `src/network/sync.rs` | `/enochian/sync/1.0.0` stream handler; 3-phase handshake + continuous update exchange |
-| P2P behaviour | `src/network/behaviour.rs` | `EnochBehaviour` combining all libp2p behaviours |
+| P2P behaviour | `src/network/behaviour.rs` | `EnochBehaviour` combining all libp2p behaviours (mDNS, Kad, Identify, Ping, Rendezvous client, RelayClient, Relay, DCUtR, Stream) |
+| Bootstrap behaviour | `src/network/bootstrap_behaviour.rs` | `BootstrapBehaviour` for `enochd --bootstrap`: Rendezvous server + Relay + Identify + Ping + Kad |
+| Bootstrap server | `src/bootstrap.rs` | `enochd --bootstrap` — QUIC-only rendezvous + relay node; no PSK; no circles |
 | Serve command | `src/commands/serve.rs` | Main daemon loop; one swarm per circle + axum HTTP server |
 | CLI commands | `src/commands/*.rs` | `reqwest` calls to the REST API |
 | CLI definitions | `src/cli.rs` | `clap` arg structs for both binaries |
@@ -72,6 +81,18 @@ pub struct AppState {
     pub circle_id:   String,
     pub circle_name: String,
     pub workspace:   PathBuf,
+
+    /// This node's libp2p peer ID (string form).
+    pub peer_id:     String,
+
+    /// Externally-confirmed TCP multiaddrs, populated by SwarmEvent::ExternalAddrConfirmed.
+    /// Used by `enoch invite` to auto-embed a connectable peer address.
+    pub p2p_external_addrs: Arc<RwLock<Vec<String>>>,
+
+    /// Local listen multiaddrs (non-loopback, non-unspecified, non-circuit).
+    /// On a VPS these include the real public IP immediately at startup, before any peer
+    /// connects to confirm via Identify. Used as fallback in `enoch invite`.
+    pub p2p_listen_addrs: Arc<RwLock<Vec<String>>>,
 
     /// File docs. Key = relative path with forward slashes.
     pub docs:        Arc<DashMap<String, Arc<Doc>>>,
@@ -101,6 +122,7 @@ pub struct AppState {
 - `doc_updates` broadcast: `observe_update_v1` fires synchronously on `TransactionMut` drop, sends raw update bytes. WS handlers subscribe and forward.
 - `all_updates` broadcast: same observer also sends `(path, bytes)` to this channel, but only for locally-originated updates (origin ≠ `"p2p"`). P2P sync tasks subscribe here to forward to peers without echoing received updates back.
 - `self_write_flags` in `AppState`: both the file watcher and `flush_to_disk` reference the same flag map so the suppress-self-write handshake works across tasks.
+- `p2p_external_addrs`: a plain `std::sync::RwLock` (not async) because writes are rare events (address confirmation) and reads are short (status endpoint only).
 - Observer lifetime: the `Subscription` returned by `observe_update_v1` is kept alive via `std::mem::forget` — dropping it would silently unregister the observer.
 
 ---
@@ -224,11 +246,29 @@ src/
 ├── config.rs                    # config.toml load/save
 ├── crypto.rs                    # Keypair generation + hex encoding
 ├── lib.rs                       # Crate root
+├── bootstrap.rs                 # enochd --bootstrap server (QUIC rendezvous + relay)
 ├── network/
 │   ├── behaviour.rs             # EnochBehaviour + EnochEvent (libp2p)
+│   ├── bootstrap_behaviour.rs   # BootstrapBehaviour + BootstrapEvent (--bootstrap mode)
 │   └── sync.rs                  # /enochian/sync/1.0.0 — y-sync over libp2p Stream
 └── state.rs                     # AppState
 ```
+
+---
+
+## Transport Stack
+
+Each circle swarm uses three transport legs combined via `or_transport`:
+
+| Transport | Multiaddr pattern | PSK | Purpose |
+|-----------|-------------------|-----|---------|
+| TCP + PSK (XSalsa20) + Noise + Yamux | `/ip4/.../tcp/...` | ✅ required | Direct connections between circle members on LAN or WAN |
+| Circuit relay (Noise + Yamux, no PSK) | `/ip4/.../tcp/.../p2p/.../p2p-circuit` | ❌ | Inbound relay circuits for peers behind NAT |
+| QUIC (no PSK) | `/ip4/.../udp/.../quic-v1` | ❌ | Connections to bootstrap/rendezvous servers |
+
+The PSK is transport-level: it runs before Noise. Bootstrap servers do not know any circle's PSK, so they are unreachable over the PSK-TCP leg. Circle members reach them exclusively over QUIC.
+
+The bootstrap server (`enochd --bootstrap`) runs **QUIC only** — it never participates in a circle and holds no PSK.
 
 ---
 
@@ -238,7 +278,7 @@ src/
 |-------|---------|------|
 | `tokio` | 1 | Async runtime |
 | `axum` | 0.8 | HTTP + WebSocket server |
-| `libp2p` | 0.56 | P2P transport and protocols |
+| `libp2p` | 0.56 | P2P transport and protocols (tcp, quic, pnet, noise, yamux, mdns, kad, identify, ping, rendezvous, relay, dcutr) |
 | `libp2p-stream` | 0.4.0-alpha | Custom stream protocol (`/enochian/sync/1.0.0`) |
 | `tokio-util` | 0.7 | `FuturesAsyncReadCompatExt` — bridges libp2p Stream to tokio AsyncRead/Write |
 | `yrs` | 0.26 | Yjs CRDT (Y.Doc, Y.Text, Y.Map, Y.Array) |

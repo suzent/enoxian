@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use libp2p::{
-    futures::StreamExt,
-    identify, noise, pnet, tcp, yamux,
+    dcutr, futures::StreamExt,
+    identify, noise, pnet, relay, tcp, yamux,
     swarm::SwarmEvent,
     Multiaddr, SwarmBuilder,
 };
@@ -19,7 +19,7 @@ use crate::{
 
 pub async fn run(args: EnterArgs) -> Result<()> {
     // ── Step 1: Resolve credentials from invite URI or legacy flags ───────────
-    let (circle_id, circle_name, psk_hex, peer_from_invite, admin_pubkey_hex) = if args.target.starts_with("enochian://") {
+    let (circle_id, circle_name, psk_hex, peer_from_invite, relay_from_invite, rendezvous_from_invite, admin_pubkey_hex) = if args.target.starts_with("enochian://") {
         let payload = invite::decode(&args.target)?;
         invite::check_expiry(&payload)?;
 
@@ -31,12 +31,12 @@ pub async fn run(args: EnterArgs) -> Result<()> {
             .as_deref()
             .map(hex::encode)
             .unwrap_or_default();
-        (payload.circle_id, name, psk_hex, payload.peer_addr, admin_pubkey_hex)
+        (payload.circle_id, name, psk_hex, payload.peer_addr, payload.relay_addr, payload.rendezvous_addr, admin_pubkey_hex)
     } else {
         let secret = args.secret.as_deref()
             .context("--secret is required when target is a Circle ID (or pass an enochian:// invite)")?;
         let circle_id = args.target.clone();
-        (circle_id.clone(), circle_id.clone(), secret.to_string(), None, String::new())
+        (circle_id.clone(), circle_id.clone(), secret.to_string(), None, None, None, String::new())
     };
 
     let peer = args.peer.or(peer_from_invite);
@@ -75,6 +75,12 @@ pub async fn run(args: EnterArgs) -> Result<()> {
     tokio::fs::create_dir_all(&workspace_dir).await
         .with_context(|| format!("failed to create workspace {}", workspace_dir.display()))?;
 
+    // --rendezvous on CLI takes precedence over the invite-embedded address.
+    let rendezvous_addrs = args.rendezvous
+        .or(rendezvous_from_invite)
+        .into_iter()
+        .collect::<Vec<_>>();
+
     let circle_config = CircleConfig {
         circle_id:         circle_id.clone(),
         circle_name:       circle_name.clone(),
@@ -84,6 +90,8 @@ pub async fn run(args: EnterArgs) -> Result<()> {
         admin_pubkey_hex,
         disabled:          false,
         peers:             peer.as_deref().map(|p| vec![p.to_string()]).unwrap_or_default(),
+        relay_addrs:       relay_from_invite.into_iter().collect(),
+        rendezvous_addrs,
     };
     config::save(&circle_config).context("failed to save circle config")?;
 
@@ -108,6 +116,9 @@ pub async fn run(args: EnterArgs) -> Result<()> {
     let keypair_clone = keypair.clone();
 
     use libp2p::kad;
+    let peer_id = keypair.public().to_peer_id();
+    let (_, relay_client) = relay::client::new(peer_id);
+
     let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
         .with_tokio()
         .with_other_transport(|key| {
@@ -122,19 +133,22 @@ pub async fn run(args: EnterArgs) -> Result<()> {
             Ok(transport)
         })?
         .with_behaviour(|key| {
-            let peer_id = key.public().to_peer_id();
+            let pid = key.public().to_peer_id();
             Ok(EnochBehaviour {
                 mdns: libp2p::mdns::tokio::Behaviour::new(
                     libp2p::mdns::Config { ttl: std::time::Duration::from_secs(1), ..Default::default() },
-                    peer_id,
+                    pid,
                 )?,
-                kad: kad::Behaviour::new(peer_id, kad::store::MemoryStore::new(peer_id)),
+                kad: kad::Behaviour::new(pid, kad::store::MemoryStore::new(pid)),
                 identify: identify::Behaviour::new(identify::Config::new(
                     "/enochian/1.0.0".to_string(),
                     key.public(),
                 )),
                 ping: libp2p::ping::Behaviour::default(),
                 rendezvous: libp2p::rendezvous::client::Behaviour::new(keypair_clone),
+                relay_client,
+                relay: relay::Behaviour::new(pid, relay::Config::default()),
+                dcutr: dcutr::Behaviour::new(pid),
                 stream: stream_proto::Behaviour::new(),
             })
         })?

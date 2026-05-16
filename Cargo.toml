@@ -22,9 +22,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util
 
 # P2P
 libp2p = { version = "0.56", features = [
-    "tcp", "websocket", "dns", "noise", "yamux",
+    "tcp", "websocket", "dns", "quic", "noise", "yamux",
     "ed25519", "mdns", "kad", "identify", "ping",
-    "rendezvous", "pnet", "macros", "tokio",
+    "rendezvous", "relay", "dcutr", "pnet", "macros", "tokio",
 ] }
 tokio-util = { version = "0.7", features = ["compat"] }
 

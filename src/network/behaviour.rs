@@ -1,4 +1,4 @@
-use libp2p::{identify, kad, mdns, ping, rendezvous, swarm::NetworkBehaviour};
+use libp2p::{dcutr, identify, kad, mdns, ping, relay, rendezvous, swarm::NetworkBehaviour};
 use libp2p_stream as stream;
 
 #[derive(NetworkBehaviour)]
@@ -9,6 +9,9 @@ pub struct EnochBehaviour {
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
     pub rendezvous: rendezvous::client::Behaviour,
+    pub relay_client: relay::client::Behaviour,
+    pub relay: relay::Behaviour,
+    pub dcutr: dcutr::Behaviour,
     pub stream: stream::Behaviour,
 }
 
@@ -19,6 +22,9 @@ pub enum EnochEvent {
     Identify(identify::Event),
     Ping(ping::Event),
     Rendezvous(rendezvous::client::Event),
+    RelayClient(relay::client::Event),
+    Relay(relay::Event),
+    Dcutr(dcutr::Event),
     /// stream::Behaviour emits no user events (ToSwarm = ())
     Stream,
 }
@@ -41,6 +47,18 @@ impl From<ping::Event> for EnochEvent {
 
 impl From<rendezvous::client::Event> for EnochEvent {
     fn from(e: rendezvous::client::Event) -> Self { Self::Rendezvous(e) }
+}
+
+impl From<relay::client::Event> for EnochEvent {
+    fn from(e: relay::client::Event) -> Self { Self::RelayClient(e) }
+}
+
+impl From<relay::Event> for EnochEvent {
+    fn from(e: relay::Event) -> Self { Self::Relay(e) }
+}
+
+impl From<dcutr::Event> for EnochEvent {
+    fn from(e: dcutr::Event) -> Self { Self::Dcutr(e) }
 }
 
 impl From<()> for EnochEvent {

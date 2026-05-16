@@ -34,7 +34,13 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         AgentCommands::Init(args)   => enochian::commands::init::run(args).await,
         AgentCommands::Enter(args)  => enochian::commands::enter::run(args).await,
-        AgentCommands::Invite(args) => enochian::commands::invite::run(args).await,
+        AgentCommands::Invite(args) => {
+            let configs = enochian::config::load_all()?;
+            let cfg = enochian::resolve::resolve(&args.circle, &configs)
+                .map_err(|_| anyhow::anyhow!("circle '{}' not found — run `enoch circles` to list known circles", args.circle))?;
+            let api_base = format!("{}/circles/{}/api", root, cfg.circle_id);
+            enochian::commands::invite::run(args, &client, &api_base).await
+        }
         AgentCommands::Circles      => enochian::commands::circles::run(&client, &root, cli.json).await,
         AgentCommands::Open         => enochian::commands::open::run(&root).map_err(Into::into),
         AgentCommands::Start { port } => enochian::commands::start::run(port).await,

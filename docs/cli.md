@@ -30,7 +30,7 @@ enoch start [--port <PORT>]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--port` | `9090` | Port for the HTTP/WS server |
+| `--port` | `36521` | Port for the HTTP/WS server |
 
 Finds the `enochd` binary next to itself first, then falls back to `~/.cargo/bin/enochd`.
 
@@ -43,6 +43,32 @@ Stop the running daemon gracefully. All circles are cancelled before exit.
 ```bash
 enoch stop
 ```
+
+---
+
+## Bootstrap server (`enochd --bootstrap`)
+
+Run `enochd` in bootstrap mode: a public rendezvous + relay node that circle members can use for peer discovery when both sides are behind NAT. The bootstrap server does not join any circle and holds no PSK.
+
+```bash
+enochd --bootstrap [--port <PORT>]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port` | `36521` | UDP port for the QUIC listener |
+
+On first start, a stable Ed25519 keypair is generated at `~/.enochian/bootstrap.key`. The peer ID is stable across restarts. The startup log prints:
+
+```
+Bootstrap listening on /ip4/0.0.0.0/udp/4001/quic-v1
+Rendezvous + relay address for circle members:
+  /ip4/0.0.0.0/udp/4001/quic-v1/p2p/<PEER_ID>
+```
+
+Replace `0.0.0.0` with the server's public IP. Give that full multiaddr to circle members via `enoch invite --rendezvous <addr>`.
+
+**What the bootstrap server learns:** only libp2p peer IDs and the circle UUID used as the rendezvous namespace. It cannot read any circle content.
 
 ---
 
@@ -112,32 +138,40 @@ Join a Circle using an invite link.
 ```bash
 enoch enter enochian://v1/CRxkUjpNaBcDeFgH...
 enoch enter enochian://v1/... --dir ~/projects/shared
+enoch enter enochian://v1/... --rendezvous /ip4/1.2.3.4/udp/4001/quic-v1/p2p/<id>
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--dir` | `~/enochian/<name>` | Workspace directory for this circle |
 | `--peer` | — | Override the peer address embedded in the invite |
-| `--rendezvous` | — | WAN rendezvous server multiaddr |
+| `--rendezvous` | — | Override or add a rendezvous/bootstrap server address (saved to config for future use) |
 
 - Same circle (same UUID) → "Already a member", exits cleanly
 - Same name, different circle → workspace auto-suffixed (`MyCircle-d4e2e7`)
 - Expired invite → rejected immediately
+- Relay and rendezvous addresses from the invite are saved to `config.toml` automatically and used by future `enochd` starts
 
 ---
 
 ### `invite`
 
-Generate a new invite link for an existing circle.
+Generate a new invite link for an existing circle. When the daemon is running, connectivity addresses are **auto-detected** and embedded — no flags needed in most cases.
 
 ```bash
-enoch invite <CIRCLE> [--ttl <DURATION>] [--peer <MULTIADDR>]
+enoch invite <CIRCLE> [--ttl <DURATION>] [--peer <MULTIADDR>] [--relay <MULTIADDR>] [--rendezvous <MULTIADDR>]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--ttl` | `7d` | How long the invite is valid |
-| `--peer` | — | Embed a peer multiaddr for WAN connections |
+| `--peer` | auto | Direct peer multiaddr (e.g. `/ip4/1.2.3.4/tcp/36521`). Auto-detected from daemon's confirmed external address if not specified. |
+| `--relay` | auto | Relay node multiaddr for NAT traversal (e.g. `/ip4/1.2.3.4/tcp/4001/p2p/<peer_id>`). Auto-populated from your `relay_addrs` config if not specified. |
+| `--rendezvous` | auto | Bootstrap/rendezvous server multiaddr for both-behind-NAT (e.g. `/ip4/1.2.3.4/udp/4001/quic-v1/p2p/<peer_id>`). Auto-populated from your `rendezvous_addrs` config if not specified. |
+
+The command prints the embedded addresses so the inviter knows what will be used. If the daemon is not running, the invite is generated without connectivity data and only works over LAN mDNS.
+
+Once one member joins via relay or bootstrap, those addresses are saved in their config and forwarded automatically in every invite they generate.
 
 ---
 

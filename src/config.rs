@@ -23,6 +23,14 @@ pub struct CircleConfig {
     /// peers in addition to mDNS discovery.
     #[serde(default)]
     pub peers: Vec<String>,
+    /// Circuit relay multiaddrs. On startup we connect to each relay and listen
+    /// on a p2p-circuit address so peers behind NAT can reach us.
+    #[serde(default)]
+    pub relay_addrs: Vec<String>,
+    /// Rendezvous server multiaddrs (QUIC). On startup we dial these, register
+    /// our circle namespace, and discover other members via rendezvous.
+    #[serde(default)]
+    pub rendezvous_addrs: Vec<String>,
 }
 
 pub fn enochian_dir() -> Result<PathBuf> {

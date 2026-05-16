@@ -1,0 +1,131 @@
+//! Bootstrap server mode (`enochd --bootstrap`).
+//!
+//! Runs a public rendezvous + circuit-relay node that circle members can use
+//! for WAN peer discovery.  The server holds no PSK and joins no circle.
+//! It speaks QUIC (no PSK) — circle members connect to it via QUIC and
+//! register under their circle UUID namespace.
+//!
+//! # Setup (enoch.suzent.com)
+//!
+//! 1. On the server: `enochd --bootstrap --port 4001`
+//!    Copy the printed peer ID from the log.
+//! 2. Share the multiaddr with circle members:
+//!    `/ip4/<PUBLIC_IP>/udp/4001/quic-v1/p2p/<PEER_ID>`
+//! 3. Members pass it via `enoch enter <invite> --rendezvous <addr>`
+//!    or embed it in invites with `enoch invite --rendezvous <addr>`.
+
+use anyhow::{Context, Result};
+use libp2p::{
+    futures::StreamExt,
+    identify, kad, relay, rendezvous,
+    swarm::SwarmEvent,
+    Multiaddr, SwarmBuilder,
+};
+use tracing::info;
+
+use crate::{
+    config::enochian_dir,
+    crypto::{generate_keypair, keypair_from_hex, keypair_to_hex},
+    network::bootstrap_behaviour::{BootstrapBehaviour, BootstrapEvent},
+};
+
+pub async fn run(port: u16) -> Result<()> {
+    let keypair = load_or_create_keypair()?;
+    let peer_id = keypair.public().to_peer_id();
+
+    info!("Bootstrap server starting");
+    info!("  PeerID : {peer_id}");
+    info!("  Share once you see the QUIC listen address below.");
+
+    let mut swarm = SwarmBuilder::with_existing_identity(keypair)
+        .with_tokio()
+        .with_quic()
+        .with_behaviour(|key| {
+            let pid = key.public().to_peer_id();
+            Ok(BootstrapBehaviour {
+                rendezvous: rendezvous::server::Behaviour::new(
+                    rendezvous::server::Config::default()
+                        .with_max_ttl(2 * 3600)
+                        .with_min_ttl(60),
+                ),
+                relay: relay::Behaviour::new(pid, relay::Config::default()),
+                identify: identify::Behaviour::new(identify::Config::new(
+                    "/enochian-bootstrap/1.0.0".to_string(),
+                    key.public(),
+                )),
+                ping: libp2p::ping::Behaviour::default(),
+                kad: {
+                    let mut k = kad::Behaviour::new(pid, kad::store::MemoryStore::new(pid));
+                    k.set_mode(Some(kad::Mode::Server));
+                    k
+                },
+            })
+        })?
+        .build();
+
+    let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/udp/{port}/quic-v1").parse()?;
+    swarm.listen_on(listen_addr)?;
+
+    loop {
+        match swarm.select_next_some().await {
+            SwarmEvent::NewListenAddr { address, .. } => {
+                info!("Bootstrap listening on {address}");
+                info!("  Rendezvous + relay address for circle members:");
+                info!("    {address}/p2p/{peer_id}");
+            }
+            SwarmEvent::ConnectionEstablished { peer_id: remote, endpoint, .. } => {
+                info!("[bootstrap] peer connected: {remote} via {}", endpoint.get_remote_address());
+            }
+            SwarmEvent::ConnectionClosed { peer_id: remote, cause, .. } => {
+                info!("[bootstrap] peer disconnected: {remote}: {cause:?}");
+            }
+            SwarmEvent::Behaviour(BootstrapEvent::Rendezvous(e)) => {
+                use rendezvous::server::Event;
+                match &e {
+                    Event::PeerRegistered { peer, registration } => {
+                        info!("[rendezvous] registered: {peer} ns={}", registration.namespace);
+                    }
+                    Event::PeerUnregistered { peer, namespace } => {
+                        info!("[rendezvous] unregistered: {peer} ns={namespace}");
+                    }
+                    Event::DiscoverServed { enquirer, registrations } => {
+                        info!("[rendezvous] served {} registrations to {enquirer}", registrations.len());
+                    }
+                    _ => tracing::debug!("[rendezvous] {e:?}"),
+                }
+            }
+            SwarmEvent::Behaviour(BootstrapEvent::Relay(e)) => {
+                tracing::debug!("[relay] {e:?}");
+            }
+            SwarmEvent::Behaviour(BootstrapEvent::Identify(identify::Event::Received {
+                peer_id: remote, info, ..
+            })) => {
+                for addr in &info.listen_addrs {
+                    swarm.behaviour_mut().kad.add_address(&remote, addr.clone());
+                }
+            }
+            SwarmEvent::OutgoingConnectionError { error, .. } => {
+                tracing::debug!("[bootstrap] outgoing error: {error}");
+            }
+            _ => {}
+        }
+    }
+}
+
+fn load_or_create_keypair() -> Result<libp2p::identity::Keypair> {
+    let dir = enochian_dir()?;
+    std::fs::create_dir_all(&dir).context("failed to create ~/.enochian")?;
+    let path = dir.join("bootstrap.key");
+    if path.exists() {
+        let hex = std::fs::read_to_string(&path)
+            .context("failed to read bootstrap.key")?;
+        keypair_from_hex(hex.trim())
+    } else {
+        let keypair = generate_keypair();
+        let hex = keypair_to_hex(&keypair)?;
+        std::fs::write(&path, &hex)
+            .context("failed to write bootstrap.key")?;
+        info!("Generated new bootstrap keypair → {}", path.display());
+        Ok(keypair)
+    }
+}

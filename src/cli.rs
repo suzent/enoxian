@@ -8,6 +8,12 @@ pub struct DaemonCli {
     /// Port to listen on
     #[arg(long, default_value = "36521")]
     pub port: u16,
+
+    /// Run as a public bootstrap server (rendezvous + relay, no circles).
+    /// Generates a stable keypair at ~/.enochian/bootstrap.key on first run.
+    /// Circle members connect via QUIC — no PSK required.
+    #[arg(long)]
+    pub bootstrap: bool,
 }
 
 // ── Agent CLI ──────────────────────────────────────────────────────────────
@@ -190,6 +196,15 @@ pub struct InviteArgs {
     /// Embed a peer multiaddr so invitees can connect without mDNS (e.g. /ip4/1.2.3.4/tcp/9091)
     #[arg(long)]
     pub peer: Option<String>,
+
+    /// Embed a relay multiaddr for WAN connectivity (e.g. /ip4/1.2.3.4/tcp/4001/p2p/<peer_id>)
+    #[arg(long)]
+    pub relay: Option<String>,
+
+    /// Embed a rendezvous server multiaddr for automatic peer discovery
+    /// (e.g. /ip4/1.2.3.4/udp/4001/quic-v1/p2p/<peer_id>)
+    #[arg(long)]
+    pub rendezvous: Option<String>,
 }
 
 #[derive(Parser)]

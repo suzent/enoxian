@@ -11,5 +11,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = DaemonCli::parse();
-    enochian::commands::serve::run(ServeArgs { port: cli.port }).await
+    if cli.bootstrap {
+        enochian::bootstrap::run(cli.port).await
+    } else {
+        enochian::commands::serve::run(ServeArgs { port: cli.port }).await
+    }
 }

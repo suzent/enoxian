@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicBool;
 use dashmap::DashMap;
 use tokio::sync::broadcast;
@@ -20,6 +20,15 @@ pub struct AppState {
     pub agent_id: String,
     /// Monotonically increasing counter, incremented on every daemon start.
     pub session_id: u64,
+    /// This node's libp2p peer ID.
+    pub peer_id: String,
+    /// Externally-confirmed TCP multiaddrs for this node (populated by Identify / ExternalAddrConfirmed).
+    /// Used by `enoch invite` to auto-embed a connectable peer address.
+    pub p2p_external_addrs: Arc<RwLock<Vec<String>>>,
+    /// Local listen multiaddrs (non-loopback, non-unspecified, non-circuit).
+    /// On a VPS with a public IP these include the real address immediately at startup,
+    /// before any peer connects to confirm via Identify. Used as fallback for `enoch invite`.
+    pub p2p_listen_addrs: Arc<RwLock<Vec<String>>>,
     /// File docs. Key = relative path with forward slashes.
     pub docs: Arc<DashMap<String, Arc<Doc>>>,
     /// __control__ coordination document
@@ -44,7 +53,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, circle_dir: PathBuf, admin_pubkey_hex: String, agent_id: String, session_id: u64) -> Self {
+    pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, circle_dir: PathBuf, admin_pubkey_hex: String, agent_id: String, session_id: u64, peer_id: String) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_awareness_tx, _) = broadcast::channel(EVENT_CAPACITY);
@@ -141,6 +150,9 @@ impl AppState {
             admin_pubkey_hex,
             agent_id,
             session_id,
+            peer_id,
+            p2p_external_addrs: Arc::new(RwLock::new(Vec::new())),
+            p2p_listen_addrs: Arc::new(RwLock::new(Vec::new())),
             docs: Arc::new(DashMap::new()),
             control,
             doc_updates: Arc::new(DashMap::new()),
