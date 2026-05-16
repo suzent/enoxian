@@ -33,17 +33,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install musl toolchain (x86_64)
+      - name: Install musl-tools (x86_64)
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get install -y musl-tools
 
-      - name: Install musl cross-compiler (aarch64)
+      - name: Install Zig + cargo-zigbuild (aarch64)
         if: matrix.target == 'aarch64-unknown-linux-musl'
         run: |
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          wget -q https://musl.cc/aarch64-linux-musl-cross.tgz
-          tar -xf aarch64-linux-musl-cross.tgz -C /usr/local
-          echo "/usr/local/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
+          pip install ziglang
+          cargo install cargo-zigbuild
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -55,10 +53,13 @@ jobs:
           key: ${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ matrix.target }}-cargo-
 
-      - name: Build
+      - name: Build (x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
         run: cargo build --release --bin enochd --target ${{ matrix.target }}
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
+
+      - name: Build (aarch64 via zigbuild)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: cargo zigbuild --release --bin enochd --target ${{ matrix.target }}
 
       - name: Rename binary
         run: cp target/${{ matrix.target }}/release/enochd ${{ matrix.asset }}
