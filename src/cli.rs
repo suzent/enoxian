@@ -197,12 +197,12 @@ pub struct InviteArgs {
     #[arg(long)]
     pub peer: Option<String>,
 
-    /// Embed a relay multiaddr for WAN connectivity (e.g. /ip4/1.2.3.4/tcp/4001/p2p/<peer_id>)
+    /// Embed a relay multiaddr for WAN connectivity (e.g. /ip4/1.2.3.4/tcp/36521/p2p/<peer_id>)
     #[arg(long)]
     pub relay: Option<String>,
 
     /// Embed a rendezvous server multiaddr for automatic peer discovery
-    /// (e.g. /ip4/1.2.3.4/udp/4001/quic-v1/p2p/<peer_id>)
+    /// (e.g. /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<peer_id>)
     #[arg(long)]
     pub rendezvous: Option<String>,
 }

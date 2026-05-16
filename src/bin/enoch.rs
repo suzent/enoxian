@@ -33,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         AgentCommands::Init(args)   => enochian::commands::init::run(args).await,
-        AgentCommands::Enter(args)  => enochian::commands::enter::run(args).await,
+        AgentCommands::Enter(args)  => enochian::commands::enter::run(args, &client).await,
         AgentCommands::Invite(args) => {
             let configs = enochian::config::load_all()?;
             let cfg = enochian::resolve::resolve(&args.circle, &configs)

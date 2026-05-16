@@ -7,14 +7,15 @@
 //!
 //! # Setup (enoch.suzent.com)
 //!
-//! 1. On the server: `enochd --bootstrap --port 4001`
+//! 1. On the server: `enochd --bootstrap --port 36521`
 //!    Copy the printed peer ID from the log.
 //! 2. Share the multiaddr with circle members:
-//!    `/ip4/<PUBLIC_IP>/udp/4001/quic-v1/p2p/<PEER_ID>`
+//!    `/ip4/<PUBLIC_IP>/udp/36521/quic-v1/p2p/<PEER_ID>`
 //! 3. Members pass it via `enoch enter <invite> --rendezvous <addr>`
 //!    or embed it in invites with `enoch invite --rendezvous <addr>`.
 
 use anyhow::{Context, Result};
+use axum::{extract::State, routing::get, Json, Router};
 use libp2p::{
     futures::StreamExt,
     identify, kad, relay, rendezvous,
@@ -32,9 +33,11 @@ use crate::{
 pub async fn run(port: u16) -> Result<()> {
     let keypair = load_or_create_keypair()?;
     let peer_id = keypair.public().to_peer_id();
+    let peer_id_str = peer_id.to_string();
 
     info!("Bootstrap server starting");
     info!("  PeerID : {peer_id}");
+    info!("  HTTP   : http://0.0.0.0:{port}/peer-id  (for enoch CLI auto-resolution)");
     info!("  Share once you see the QUIC listen address below.");
 
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
@@ -66,12 +69,27 @@ pub async fn run(port: u16) -> Result<()> {
     let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/udp/{port}/quic-v1").parse()?;
     swarm.listen_on(listen_addr)?;
 
+    // ── HTTP server: GET /peer-id — allows `enoch` CLI to auto-resolve the ──────
+    // full multiaddr without the operator having to copy-paste the peer ID.
+    // Runs on TCP:<port> alongside QUIC on UDP:<port> — no conflict.
+    let app = Router::new()
+        .route("/peer-id", get(peer_id_handler))
+        .with_state(peer_id_str.clone());
+    let http_addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::bind(http_addr).await
+            .expect("failed to bind HTTP listener");
+        axum::serve(listener, app).await
+            .expect("HTTP server error");
+    });
+
     loop {
         match swarm.select_next_some().await {
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!("Bootstrap listening on {address}");
                 info!("  Rendezvous + relay address for circle members:");
                 info!("    {address}/p2p/{peer_id}");
+                info!("  Or just run: enoch invite <circle> --rendezvous <hostname>");
             }
             SwarmEvent::ConnectionEstablished { peer_id: remote, endpoint, .. } => {
                 info!("[bootstrap] peer connected: {remote} via {}", endpoint.get_remote_address());
@@ -110,6 +128,10 @@ pub async fn run(port: u16) -> Result<()> {
             _ => {}
         }
     }
+}
+
+async fn peer_id_handler(State(peer_id): State<String>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "peer_id": peer_id }))
 }
 
 fn load_or_create_keypair() -> Result<libp2p::identity::Keypair> {

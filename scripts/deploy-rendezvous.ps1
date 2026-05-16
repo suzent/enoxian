@@ -1,0 +1,129 @@
+# Deploy enochd to a Linux VPS as a rendezvous server.
+#
+# Build modes (in order of preference):
+#   default          Download latest release binary from GitHub (fastest, no build needed)
+#   -BuildOnRemote   Pipe source into Docker on the VPS and build there
+#   -Local           Cross-compile locally using cross (Docker) or WSL2
+#
+# Usage:
+#   .\scripts\deploy-rendezvous.ps1 user@host [-Port N] [-BuildOnRemote] [-Local] [-Update]
+#
+# Examples:
+#   .\scripts\deploy-rendezvous.ps1 root@sg.example.com
+#   .\scripts\deploy-rendezvous.ps1 root@sg.example.com -Update
+#   .\scripts\deploy-rendezvous.ps1 root@sg.example.com -BuildOnRemote
+param(
+    [Parameter(Mandatory)][string]$Target,
+    [int]$Port = 36521,
+    [ValidateSet("x86_64","aarch64")][string]$Arch = "x86_64",
+    [switch]$BuildOnRemote,
+    [switch]$Local,
+    [switch]$Update
+)
+
+$ErrorActionPreference = "Stop"
+$RepoDir = Split-Path $PSScriptRoot -Parent
+$Repo    = "suzent/enochian"
+$Asset   = "enochd-linux-$Arch"
+
+# ── Get binary ────────────────────────────────────────────────────────────────
+if ($BuildOnRemote) {
+    # ── Build inside Docker on the VPS ───────────────────────────────────────
+    Write-Host "▶ Packing source..."
+    $TarFile = Join-Path $env:TEMP "enochian-src.tar.gz"
+    tar -czf $TarFile `
+        --exclude=".git" --exclude="target" --exclude="node_modules" `
+        -C $RepoDir .
+    if ($LASTEXITCODE -ne 0) { throw "tar failed" }
+
+    Write-Host "▶ Building on remote via Docker (piping source)..."
+    Get-Content $TarFile -AsByteStream | ssh $Target @"
+docker run --rm -i \
+    -v enochian-cargo-cache:/usr/local/cargo/registry \
+    -v enochian-out:/out \
+    rust:alpine \
+    sh -c 'apk add --no-cache musl-dev && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --release --bin enochd && cp target/release/enochd /out/enochd'
+"@
+    if ($LASTEXITCODE -ne 0) { throw "Remote build failed" }
+
+    ssh $Target "docker run --rm -v enochian-out:/out busybox cp /out/enochd /tmp/enochd && chmod +x /tmp/enochd"
+    if ($LASTEXITCODE -ne 0) { throw "Failed to extract binary from Docker volume" }
+
+} elseif ($Local) {
+    # ── Cross-compile locally ─────────────────────────────────────────────────
+    $LinuxTarget = "$Arch-unknown-linux-musl"
+    $BinaryPath  = Join-Path $RepoDir "target\$LinuxTarget\release\enochd"
+
+    $useCross = $null -ne (Get-Command cross -ErrorAction SilentlyContinue)
+    $useWsl   = $null -ne (Get-Command wsl   -ErrorAction SilentlyContinue)
+
+    Write-Host "▶ Building enochd for Linux ($LinuxTarget)..."
+    Push-Location $RepoDir
+
+    if ($useCross) {
+        Write-Host "  Using: cross (Docker)"
+        cross build --release --bin enochd --target $LinuxTarget
+        if ($LASTEXITCODE -ne 0) { throw "cross build failed" }
+    } elseif ($useWsl) {
+        Write-Host "  Using: WSL2"
+        $wslRepoDir = (wsl wslpath ($RepoDir.Replace('\','/'))).Trim()
+        $tmpScript  = Join-Path $env:TEMP "enoch-wsl-build.sh"
+        @"
+#!/usr/bin/env bash
+set -eo pipefail
+command -v musl-gcc &>/dev/null || sudo apt-get install -y -q build-essential musl-tools
+. "`$HOME/.cargo/env"
+rustup target add $LinuxTarget
+cd "$wslRepoDir"
+cargo build --release --bin enochd --target $LinuxTarget 2>&1
+"@ | Set-Content -Encoding utf8 $tmpScript
+        $wslTmp = (wsl wslpath ($tmpScript.Replace('\','/'))).Trim()
+        wsl bash $wslTmp
+        if ($LASTEXITCODE -ne 0) { throw "WSL build failed" }
+    } else {
+        Pop-Location
+        Write-Host "No local build tool found. Use default (GitHub release) or -BuildOnRemote."
+        throw "No build method available"
+    }
+
+    Pop-Location
+    if (-not (Test-Path $BinaryPath)) { throw "Binary not found at $BinaryPath" }
+    $size = (Get-Item $BinaryPath).Length / 1MB
+    Write-Host "  Built: $BinaryPath ($([math]::Round($size,1)) MB)"
+    scp $BinaryPath "${Target}:/tmp/enochd"
+    if ($LASTEXITCODE -ne 0) { throw "scp failed" }
+
+} else {
+    # ── Download latest GitHub release (default) ──────────────────────────────
+    Write-Host "▶ Downloading latest release from github.com/$Repo..."
+    $release = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest"
+    $url     = ($release.assets | Where-Object { $_.name -eq $Asset }).browser_download_url
+    if (-not $url) {
+        throw "Asset '$Asset' not found in latest release. Run the release workflow first, or use -BuildOnRemote."
+    }
+    Write-Host "  $($release.tag_name): $url"
+    ssh $Target "curl -fsSL '$url' -o /tmp/enochd && chmod +x /tmp/enochd"
+    if ($LASTEXITCODE -ne 0) { throw "Download failed" }
+}
+
+# ── Install on the VPS ────────────────────────────────────────────────────────
+if ($Update) {
+    Write-Host "▶ Updating binary and restarting service..."
+    ssh $Target @'
+set -e
+cp /tmp/enochd /usr/local/bin/enochd
+chmod +x /usr/local/bin/enochd
+systemctl restart enochd-bootstrap
+sleep 1
+systemctl is-active enochd-bootstrap && echo "✦ Service restarted" \
+    || { journalctl -u enochd-bootstrap -n 10 --no-pager; exit 1; }
+'@
+} else {
+    Write-Host "▶ Running setup on $Target..."
+    $SetupScript = Join-Path $PSScriptRoot "setup-rendezvous.sh"
+    scp $SetupScript "${Target}:/tmp/setup-rendezvous.sh"
+    if ($LASTEXITCODE -ne 0) { throw "scp of setup script failed" }
+    ssh $Target "bash /tmp/setup-rendezvous.sh --port $Port"
+}
+
+if ($LASTEXITCODE -ne 0) { throw "Remote setup failed" }

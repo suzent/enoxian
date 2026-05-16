@@ -11,13 +11,14 @@ use libp2p_stream as stream_proto;
 
 use crate::{
     cli::EnterArgs,
+    commands::rendezvous as rdvz,
     config::{self, CircleConfig, resolve_workspace_dir},
     crypto::{generate_keypair, keypair_to_hex, psk_from_hex},
     invite,
     network::behaviour::{EnochBehaviour, EnochEvent},
 };
 
-pub async fn run(args: EnterArgs) -> Result<()> {
+pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
     // ── Step 1: Resolve credentials from invite URI or legacy flags ───────────
     let (circle_id, circle_name, psk_hex, peer_from_invite, relay_from_invite, rendezvous_from_invite, admin_pubkey_hex) = if args.target.starts_with("enochian://") {
         let payload = invite::decode(&args.target)?;
@@ -76,7 +77,13 @@ pub async fn run(args: EnterArgs) -> Result<()> {
         .with_context(|| format!("failed to create workspace {}", workspace_dir.display()))?;
 
     // --rendezvous on CLI takes precedence over the invite-embedded address.
-    let rendezvous_addrs = args.rendezvous
+    // Short forms like "enoch.suzent.com" are auto-resolved to full multiaddrs.
+    let cli_rendezvous = match args.rendezvous {
+        Some(ref s) => Some(rdvz::resolve(s, client).await
+            .with_context(|| format!("could not resolve rendezvous server '{s}'"))?),
+        None => None,
+    };
+    let rendezvous_addrs = cli_rendezvous
         .or(rendezvous_from_invite)
         .into_iter()
         .collect::<Vec<_>>();

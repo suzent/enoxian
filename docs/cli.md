@@ -61,9 +61,9 @@ enochd --bootstrap [--port <PORT>]
 On first start, a stable Ed25519 keypair is generated at `~/.enochian/bootstrap.key`. The peer ID is stable across restarts. The startup log prints:
 
 ```
-Bootstrap listening on /ip4/0.0.0.0/udp/4001/quic-v1
+Bootstrap listening on /ip4/0.0.0.0/udp/36521/quic-v1
 Rendezvous + relay address for circle members:
-  /ip4/0.0.0.0/udp/4001/quic-v1/p2p/<PEER_ID>
+  /ip4/0.0.0.0/udp/36521/quic-v1/p2p/<PEER_ID>
 ```
 
 Replace `0.0.0.0` with the server's public IP. Give that full multiaddr to circle members via `enoch invite --rendezvous <addr>`.
@@ -138,7 +138,7 @@ Join a Circle using an invite link.
 ```bash
 enoch enter enochian://v1/CRxkUjpNaBcDeFgH...
 enoch enter enochian://v1/... --dir ~/projects/shared
-enoch enter enochian://v1/... --rendezvous /ip4/1.2.3.4/udp/4001/quic-v1/p2p/<id>
+enoch enter enochian://v1/... --rendezvous /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<id>
 ```
 
 | Flag | Default | Description |
@@ -166,8 +166,8 @@ enoch invite <CIRCLE> [--ttl <DURATION>] [--peer <MULTIADDR>] [--relay <MULTIADD
 |------|---------|-------------|
 | `--ttl` | `7d` | How long the invite is valid |
 | `--peer` | auto | Direct peer multiaddr (e.g. `/ip4/1.2.3.4/tcp/36521`). Auto-detected from daemon's confirmed external address if not specified. |
-| `--relay` | auto | Relay node multiaddr for NAT traversal (e.g. `/ip4/1.2.3.4/tcp/4001/p2p/<peer_id>`). Auto-populated from your `relay_addrs` config if not specified. |
-| `--rendezvous` | auto | Bootstrap/rendezvous server multiaddr for both-behind-NAT (e.g. `/ip4/1.2.3.4/udp/4001/quic-v1/p2p/<peer_id>`). Auto-populated from your `rendezvous_addrs` config if not specified. |
+| `--relay` | auto | Relay node multiaddr for NAT traversal (e.g. `/ip4/1.2.3.4/tcp/36521/p2p/<peer_id>`). Auto-populated from your `relay_addrs` config if not specified. |
+| `--rendezvous` | auto | Bootstrap/rendezvous server multiaddr for both-behind-NAT (e.g. `/ip4/1.2.3.4/udp/36521/quic-v1/p2p/<peer_id>`). Auto-populated from your `rendezvous_addrs` config if not specified. |
 
 The command prints the embedded addresses so the inviter knows what will be used. If the daemon is not running, the invite is generated without connectivity data and only works over LAN mDNS.
 

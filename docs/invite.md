@@ -46,9 +46,9 @@ Extensions use a u16 big-endian length prefix. Old decoders that don't know abou
 | ext1 | u16 BE | Admin public key length (0 = absent) |
 | ext1+2 | len | Admin public key (Ed25519, protobuf-encoded) |
 | ext2 | u16 BE | Relay addr length (0 = absent) |
-| ext2+2 | len | Relay multiaddr (UTF-8, TCP — e.g. `/ip4/1.2.3.4/tcp/4001/p2p/<id>`) |
+| ext2+2 | len | Relay multiaddr (UTF-8, TCP — e.g. `/ip4/1.2.3.4/tcp/36521/p2p/<id>`) |
 | ext3 | u16 BE | Rendezvous addr length (0 = absent) |
-| ext3+2 | len | Rendezvous server multiaddr (UTF-8, QUIC — e.g. `/ip4/1.2.3.4/udp/4001/quic-v1/p2p/<id>`) |
+| ext3+2 | len | Rendezvous server multiaddr (UTF-8, QUIC — e.g. `/ip4/1.2.3.4/udp/36521/quic-v1/p2p/<id>`) |
 
 ---
 
@@ -76,8 +76,8 @@ Output:
   Embedded connectivity:
     peer-id   : 12D3KooWabc...
     peer      : /ip4/203.0.113.10/tcp/36521
-    relay     : /ip4/5.6.7.8/tcp/4001/p2p/12D3KooWxyz...
-    rendezvous: /ip4/1.2.3.4/udp/4001/quic-v1/p2p/12D3KooWrdv...
+    relay     : /ip4/5.6.7.8/tcp/36521/p2p/12D3KooWxyz...
+    rendezvous: /ip4/1.2.3.4/udp/36521/quic-v1/p2p/12D3KooWrdv...
 
   Join with: enoch enter "<invite>"
 ```
@@ -139,12 +139,12 @@ When a rendezvous multiaddr is embedded in an invite:
 
 ```bash
 # On the VPS:
-enochd --bootstrap --port 4001
+enochd --bootstrap --port 36521
 
 # Startup log shows:
-#   Bootstrap listening on /ip4/0.0.0.0/udp/4001/quic-v1
+#   Bootstrap listening on /ip4/0.0.0.0/udp/36521/quic-v1
 #   Rendezvous + relay address for circle members:
-#     /ip4/0.0.0.0/udp/4001/quic-v1/p2p/<PEER_ID>
+#     /ip4/0.0.0.0/udp/36521/quic-v1/p2p/<PEER_ID>
 ```
 
 Replace `0.0.0.0` with the server's public IP. The keypair is stored in `~/.enochian/bootstrap.key` and is stable across restarts — the peer ID never changes.
@@ -153,7 +153,7 @@ Replace `0.0.0.0` with the server's public IP. The keypair is stored in `~/.enoc
 
 ```bash
 # Generate invite with rendezvous embedded:
-enoch invite MyCircle --rendezvous /ip4/1.2.3.4/udp/4001/quic-v1/p2p/<ID>
+enoch invite MyCircle --rendezvous /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<ID>
 
 # Once any member has joined with --rendezvous, future invites auto-embed it:
 enoch invite MyCircle   # rendezvous addr is auto-detected from config

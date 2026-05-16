@@ -78,7 +78,8 @@ pub async fn enter_circle(
         dir: payload.dir.map(std::path::PathBuf::from),
     };
 
-    match enter::run(args).await {
+    let http_client = reqwest::Client::new();
+    match enter::run(args, &http_client).await {
         Ok(_) => {
             if let Some(id) = circle_id_hint {
                 if let Ok(cfg) = config::load(&id) {

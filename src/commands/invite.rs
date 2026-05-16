@@ -3,6 +3,7 @@ use chrono::Utc;
 
 use crate::{
     cli::InviteArgs,
+    commands::rendezvous as rdvz,
     config::{circle_dir, load_all},
     crypto::keypair_from_hex,
     invite::{self, InvitePayload},
@@ -44,8 +45,13 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
     // they can forward that same relay to the people they invite.
     let relay_addr = args.relay.clone().or_else(|| config.relay_addrs.first().cloned());
 
-    // rendezvous_addr: from circle config (saved at `enoch enter` or via --rendezvous).
-    let rendezvous_addr = args.rendezvous.clone().or_else(|| config.rendezvous_addrs.first().cloned());
+    // rendezvous_addr: explicit flag (auto-resolved) > saved in circle config.
+    let cli_rendezvous = match args.rendezvous {
+        Some(ref s) => Some(rdvz::resolve(s, client).await
+            .with_context(|| format!("could not resolve rendezvous server '{s}'"))?),
+        None => None,
+    };
+    let rendezvous_addr = cli_rendezvous.or_else(|| config.rendezvous_addrs.first().cloned());
 
     // Embed admin pubkey if admin.key is present (only on admin machines)
     let admin_pubkey_bytes = try_load_admin_pubkey(&config.circle_id);
