@@ -10,11 +10,17 @@ pub async fn get_status(
         Some(s) => s,
         None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
     };
+    let workspace = state.workspace.clone();
+    let conflicts = tokio::task::spawn_blocking(move || {
+        crate::store::conflicts::scan_conflicts(&workspace)
+    }).await.unwrap_or_default();
+
     Json(json!({
         "circle_id":   state.circle_id,
         "circle_name": state.circle_name,
         "workspace":   state.workspace.to_string_lossy(),
         "agent_id":    state.agent_id,
         "docs":        state.docs.len(),
+        "conflicts":   conflicts,
     })).into_response()
 }

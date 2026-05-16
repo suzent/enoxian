@@ -113,6 +113,8 @@ fn is_ignored(rel: &str) -> bool {
     if name.ends_with(".tmp") { return true; }
     // Sublime Text safe-write: test.txt.sb-<hex>-<random>
     if name.contains(".sb-") { return true; }
+    // Conflict copies written by the sync engine: file.txt.conflict.agent-id
+    if name.contains(".conflict.") { return true; }
     // Vim temp files (numeric names like 4913)
     if name.chars().all(|c| c.is_ascii_digit()) { return true; }
     false

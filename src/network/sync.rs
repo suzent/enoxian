@@ -8,14 +8,15 @@
 /// Framing: [4-byte path len][path UTF-8][4-byte data len][y-sync bytes]
 use anyhow::Result;
 use libp2p::{PeerId, Stream, StreamProtocol};
+use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use yrs::sync::protocol::{Message, SyncMessage};
 use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
-use yrs::{encoding::read::Cursor, ReadTxn, StateVector, Transact, Update};
+use yrs::{encoding::read::Cursor, GetString, ReadTxn, StateVector, Transact, Update};
 
 use crate::state::AppState;
 
@@ -179,6 +180,36 @@ fn all_doc_paths(state: &AppState) -> Vec<String> {
     paths
 }
 
+/// Returns true if both sides have operations the other side doesn't have —
+/// i.e., both edited independently while offline (genuine divergence).
+fn sv_has_divergence(our_sv_bytes: &[u8], their_sv_bytes: &[u8]) -> bool {
+    let our_sv = StateVector::decode_v1(our_sv_bytes).unwrap_or_default();
+    let their_sv = StateVector::decode_v1(their_sv_bytes).unwrap_or_default();
+    // They have a client or clock we haven't seen yet.
+    let they_have_new = their_sv.iter().any(|(client, &their_clock)| {
+        our_sv.get(client) < their_clock
+    });
+    // We have a client or clock they haven't seen yet.
+    let we_have_new = our_sv.iter().any(|(client, &our_clock)| {
+        their_sv.get(client) < our_clock
+    });
+    they_have_new && we_have_new
+}
+
+/// Write a conflict copy of `rel_path` to `<rel_path>.conflict.<agent_id>`.
+/// The content is the pre-merge version — captured before the CRDT merge is applied.
+async fn write_conflict_copy(state: &AppState, rel_path: &str, content: &str) {
+    let conflict_rel = crate::store::conflicts::conflict_rel_path(rel_path, &state.agent_id);
+    let full_path = state
+        .workspace
+        .join(conflict_rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+    if let Some(parent) = full_path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    let _ = tokio::fs::write(&full_path, content).await;
+    info!("[sync] conflict copy saved: {rel_path} → {conflict_rel}");
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 pub async fn run_sync(peer_id: PeerId, stream: Stream, state: AppState, is_initiator: bool) {
@@ -232,6 +263,27 @@ async fn sync_inner(
     crate::store::session::record_peer(&state.circle_dir, &peer_id_str, peer_session_id, now).await;
     tracing::info!("[sync] {peer_id}: session {peer_session_id} (ours: {})", state.session_id);
 
+    // ── Pre-merge snapshot ────────────────────────────────────────────────────
+    //
+    // Capture each file doc's state vector and text content BEFORE any peer
+    // updates are applied. The state vector is used to detect divergence; the
+    // content is used as the conflict copy source. This must happen before the
+    // handshake so that the initiator (which applies SyncStep2 before receiving
+    // the responder's SyncStep1) still has access to the pre-merge state.
+
+    let pre_merge: HashMap<String, (Vec<u8>, String)> = state
+        .docs
+        .iter()
+        .map(|entry| {
+            let path = entry.key().clone();
+            let doc = entry.value();
+            let sv = doc.transact().state_vector().encode_v1();
+            let text = doc.get_or_insert_text(&*path);
+            let content = text.get_string(&doc.transact());
+            (path, (sv, content))
+        })
+        .collect();
+
     // ── Handshake ─────────────────────────────────────────────────────────────
 
     if is_initiator {
@@ -251,12 +303,22 @@ async fn sync_inner(
             }
         }
 
-        // Read responder's SyncStep1 count + messages, send SyncStep2 for each
+        // Read responder's SyncStep1 count + messages, send SyncStep2 for each.
+        // SyncStep2 was already applied above, so we use the pre-merge snapshot
+        // for divergence detection rather than the (already merged) current state.
         let their_count = read_u32(&mut rx).await? as usize;
         for _ in 0..their_count {
             let (path, data) = read_frame(&mut rx).await?;
-            if let IncomingEvent::ResyncRequest { sv, .. } = parse_frame(path.clone(), &data) {
-                let sv = StateVector::decode_v1(&sv)?;
+            if let IncomingEvent::ResyncRequest { sv: their_sv_bytes, .. } = parse_frame(path.clone(), &data) {
+                // Conflict detection: compare responder's sv against our PRE-MERGE sv.
+                if path != "__control__" {
+                    if let Some((our_pre_sv, our_pre_content)) = pre_merge.get(&path) {
+                        if sv_has_divergence(our_pre_sv, &their_sv_bytes) {
+                            write_conflict_copy(state, &path, our_pre_content).await;
+                        }
+                    }
+                }
+                let sv = StateVector::decode_v1(&their_sv_bytes)?;
                 let doc = if path == "__control__" { state.control.clone() } else { state.get_or_create_doc(&path) };
                 let diff = doc.transact().encode_diff_v1(&sv);
                 write_frame(&mut tx, &path, &encode_sync(Message::Sync(SyncMessage::SyncStep2(diff)))).await?;
@@ -267,8 +329,16 @@ async fn sync_inner(
         let their_count = read_u32(&mut rx).await? as usize;
         for _ in 0..their_count {
             let (path, data) = read_frame(&mut rx).await?;
-            if let IncomingEvent::ResyncRequest { sv, .. } = parse_frame(path.clone(), &data) {
-                let sv = StateVector::decode_v1(&sv)?;
+            if let IncomingEvent::ResyncRequest { sv: their_sv_bytes, .. } = parse_frame(path.clone(), &data) {
+                // Conflict detection: check before any update is applied to our CRDT.
+                if path != "__control__" {
+                    if let Some((our_sv_bytes, our_content)) = pre_merge.get(&path) {
+                        if sv_has_divergence(our_sv_bytes, &their_sv_bytes) {
+                            write_conflict_copy(state, &path, our_content).await;
+                        }
+                    }
+                }
+                let sv = StateVector::decode_v1(&their_sv_bytes)?;
                 let doc = if path == "__control__" { state.control.clone() } else { state.get_or_create_doc(&path) };
                 let diff = doc.transact().encode_diff_v1(&sv);
                 write_frame(&mut tx, &path, &encode_sync(Message::Sync(SyncMessage::SyncStep2(diff)))).await?;

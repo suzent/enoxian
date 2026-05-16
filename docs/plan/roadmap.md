@@ -28,7 +28,7 @@
 | Task SSE events from P2P | Control doc observer fires `TaskCreated/Claimed/Done` SSE events when task updates arrive via P2P sync |
 | Web frontend | React SPA: circle selector, presence panel, file tree, collaborative CodeMirror editor, task queue, chat; served from `enochd` at `/app` |
 | Remote cursors | Yjs awareness in CodeMirror shows live cursor position and agent name label per connected peer |
-| `enoch open` | Opens the circle UI in the default browser (`http://127.0.0.1:9090/app`) |
+| `enoch open` | Opens the circle UI in the default browser (`http://127.0.0.1:36521/app`) |
 | Production build | `cargo build --release` automatically runs `npm run build` via `build.rs` |
 
 ---
@@ -195,7 +195,7 @@ Admin keypair is generated at `enoch init` and stored in `admin.key`. The public
 ---
 
 ### M8 — File sync hardening
-**Status: In Progress**
+**Status: Complete**
 
 Robust conflict detection and circle liveness tracking. The CRDT handles real-time concurrent edits perfectly; this milestone handles the offline-edit case where both peers diverge from a common ancestor while disconnected.
 
@@ -216,9 +216,12 @@ Each peer tracks a `session_id` (incremented on every daemon start) and `last_co
 **Implementation (done):**
 - `src/store/crdt.rs` — CRDT state persistence and restore
 - `src/store/fs.rs` — `flush_to_disk` saves CRDT state synchronously after file write (fixes race condition)
-- `src/sync_yjs/watcher.rs` — startup preload, offline-edit detection, macOS `Name(Both)` fix, temp file filter
-- `src/network/sync.rs` — post-handshake full-state push; file deletion propagation
+- `src/store/conflicts.rs` — `conflict_rel_path()`, `scan_conflicts()` (workspace walk for `*.conflict.*` files)
+- `src/sync_yjs/watcher.rs` — startup preload, offline-edit detection, macOS `Name(Both)` fix, temp file filter; `.conflict.` files ignored
+- `src/network/sync.rs` — post-handshake full-state push; file deletion propagation; `sv_has_divergence()` + `write_conflict_copy()`; pre-merge snapshot; conflict detection in both initiator and responder handshake paths
 - `src/state.rs` — `all_deletes` broadcast for P2P file deletion; `all_awareness_updates` for P2P cursor relay
+- `src/api/status.rs` — `/status` includes `conflicts: [...]` array from workspace scan
+- `src/commands/status.rs` — `enoch status` prints conflict list
 
 **Tasks:**
 - [x] CRDT state persistence across restarts (`.enoch_crdt/`)
@@ -231,9 +234,9 @@ Each peer tracks a `session_id` (incremented on every daemon start) and `last_co
 - [x] Session ID — `store/session.rs`; incremented on every daemon start, stored in `~/.enochian/circles/<id>/session_id`; held in `AppState`
 - [x] `last_connected_at` — recorded per-peer on every sync handshake in `~/.enochian/circles/<id>/peers/<peer_id>`
 - [x] Exchange session metadata on reconnect — `\0session` frame exchanged before CRDT handshake; both sides log each other's session ID
-- [ ] Conflict detection — compare both sides' CRDT state against common ancestor (persisted state)
-- [ ] Conflict copy — when both sides diverged, write `<file>.conflict.<agent_id>` and keep CRDT merge as working file
-- [ ] `enoch status` shows unresolved conflict files in the workspace
+- [x] Conflict detection — state vector divergence check (`sv_has_divergence`) in P2P handshake; both initiator and responder paths covered using pre-merge snapshot
+- [x] Conflict copy — `<file>.conflict.<agent_id>` written before CRDT merge is applied; watcher ignores these files; `store/conflicts.rs`
+- [x] `enoch status` shows unresolved conflict files in the workspace (scanned from workspace dir; `/status` API + CLI display)
 
 **Planned: Binary file dual-track sync**
 
@@ -320,8 +323,10 @@ A minimal web UI served by `enochd` itself (no separate build server). Targets l
 - `frontend/` — full Vite + React scaffold with Tailwind
 - `src/api/files.rs` — `GET /api/files` reads `state.docs` keys (always current, avoids filesystem scan race)
 - `frontend/src/components/EditorPanel.tsx` — CodeMirror 6 + `yCollab(ytext, awareness)`; custom `enochTheme`; remote cursor CSS
-- `frontend/src/lib/YjsProvider.ts` — custom y-protocols provider with WS reconnect; awareness relay guard; debug logging
+- `frontend/src/lib/YjsProvider.ts` — custom y-protocols provider with WS reconnect; deferred `connect()` to fix initial awareness race; `YjsConnectionStatus` ('connecting'|'synced'|'disconnected') callback
 - `frontend/src/lib/agentColor.ts` — deterministic per-agent color from agent ID hash (7-color palette)
+- `frontend/src/lib/constrainCursorLabels.ts` — CodeMirror `ViewPlugin` that repositions `.cm-ySelectionInfo` labels via `getBoundingClientRect()` clamping so they stay within the scroller on all browsers and cursor positions
+- `frontend/src/lib/textBoundRemoteSelections.ts` — CodeMirror extension that prevents remote selection highlights from leaking outside the actual text content area
 - `frontend/src/components/RightPanel.tsx` — file tree, task queue (create/claim/done), presence list, chat
 - `frontend/src/components/ChatPanel.tsx` — scrolling message log + send box; SSE-backed live updates
 - `frontend/src/context/AppContext.tsx` — active circle, daemon status, SSE connection
@@ -335,11 +340,12 @@ A minimal web UI served by `enochd` itself (no separate build server). Targets l
 - [x] Chat panel — load history + SSE stream; send via `POST /api/chat`
 - [x] File tree — `GET /api/files` reads from `state.docs`
 - [x] Collaborative editor — CodeMirror 6 + y-codemirror + `YjsProvider` bound to `/ws/yjs`
-- [x] Remote cursors — Yjs awareness relayed between WS clients and across P2P peers; name labels always visible
+- [x] Remote cursors — Yjs awareness relayed between WS clients and across P2P peers; name labels clamped inside scroller via `constrainCursorLabels` ViewPlugin (all browsers/positions); remote selections clipped to text bounds
+- [x] Connection status — `YjsConnectionStatus` ('connecting'|'synced'|'disconnected') shown in editor header
 - [x] Agent colors — deterministic per-agent palette, shared between editor cursors and presence panel
 - [x] `enochd` serves `static/` at `/app` via `tower-http::ServeDir` (dev: Vite proxy only)
 - [x] Production build step — `build.rs` runs `npm run build` automatically on `cargo build --release`
-- [x] `enoch open` — opens `http://127.0.0.1:9090/app` in the default browser
+- [x] `enoch open` — opens `http://127.0.0.1:36521/app` in the default browser
 
 ---
 
