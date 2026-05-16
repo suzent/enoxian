@@ -46,6 +46,7 @@ pub async fn run(args: InitArgs) -> Result<()> {
         workspace_dir:     workspace_dir.to_string_lossy().into_owned(),
         admin_pubkey_hex:  admin_pubkey_hex.clone(),
         disabled:          false,
+        peers:             vec![],
     };
     config::save(&config)?;
 

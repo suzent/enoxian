@@ -83,6 +83,7 @@ pub async fn run(args: EnterArgs) -> Result<()> {
         workspace_dir:     workspace_dir.to_string_lossy().into_owned(),
         admin_pubkey_hex,
         disabled:          false,
+        peers:             peer.as_deref().map(|p| vec![p.to_string()]).unwrap_or_default(),
     };
     config::save(&circle_config).context("failed to save circle config")?;
 

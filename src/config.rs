@@ -19,6 +19,10 @@ pub struct CircleConfig {
     /// If true, enochd skips this circle at startup and does not start its swarm.
     #[serde(default)]
     pub disabled: bool,
+    /// Known peer multiaddrs (e.g. from invite). Dialed on startup as bootstrap
+    /// peers in addition to mDNS discovery.
+    #[serde(default)]
+    pub peers: Vec<String>,
 }
 
 pub fn enochian_dir() -> Result<PathBuf> {

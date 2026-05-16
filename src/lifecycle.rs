@@ -134,6 +134,19 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     let p2p_addr: Multiaddr = "/ip4/0.0.0.0/tcp/0".parse().unwrap();
     swarm.listen_on(p2p_addr)?;
 
+    // ── Dial bootstrap peers from config ──────────────────────────────────────
+    // Peer addresses saved at `enoch enter` time (from invite). This ensures
+    // connectivity even when mDNS is unavailable (different subnets, firewalls).
+    for peer_str in &config.peers {
+        match peer_str.parse::<Multiaddr>() {
+            Ok(addr) => {
+                info!("[{}] dialing bootstrap peer {addr}", config.circle_id);
+                let _ = swarm.dial(addr);
+            }
+            Err(e) => warn!("[{}] invalid peer addr '{}': {e}", config.circle_id, peer_str),
+        }
+    }
+
     // ── Accept incoming sync streams ──────────────────────────────────────────
     let mut stream_control = swarm.behaviour().stream.new_control();
     let state_for_accept = state.clone();

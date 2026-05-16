@@ -31,7 +31,7 @@ pub struct EnterReq {
 }
 
 pub async fn init_circle(
-    State(_daemon): State<DaemonState>,
+    State(daemon): State<DaemonState>,
     Json(payload): Json<InitReq>,
 ) -> impl IntoResponse {
     let args = InitArgs {
@@ -42,10 +42,15 @@ pub async fn init_circle(
 
     match init::run(args).await {
         Ok(_) => {
-            // Find the newly created circle
             if let Ok(configs) = config::load_all() {
-                if let Some(c) = configs.iter().find(|c| c.circle_name == payload.name) {
-                    return Json(json!({ "status": "ok", "circle_id": c.circle_id })).into_response();
+                if let Some(c) = configs.into_iter().find(|c| c.circle_name == payload.name) {
+                    let circle_id = c.circle_id.clone();
+                    if !daemon.is_active(&circle_id) {
+                        if let Err(e) = crate::lifecycle::spawn_circle(c, daemon).await {
+                            tracing::warn!("[api] init_circle spawn failed: {e}");
+                        }
+                    }
+                    return Json(json!({ "status": "ok", "circle_id": circle_id })).into_response();
                 }
             }
             Json(json!({ "status": "ok" })).into_response()
@@ -55,9 +60,16 @@ pub async fn init_circle(
 }
 
 pub async fn enter_circle(
-    State(_daemon): State<DaemonState>,
+    State(daemon): State<DaemonState>,
     Json(payload): Json<EnterReq>,
 ) -> impl IntoResponse {
+    // Extract circle_id from invite URI before running, so we can spawn it afterward.
+    let circle_id_hint = if payload.target.starts_with("enochian://") {
+        crate::invite::decode(&payload.target).ok().map(|p| p.circle_id)
+    } else {
+        Some(payload.target.clone())
+    };
+
     let args = EnterArgs {
         target: payload.target,
         secret: payload.secret,
@@ -67,7 +79,18 @@ pub async fn enter_circle(
     };
 
     match enter::run(args).await {
-        Ok(_) => Json(json!({ "status": "ok" })).into_response(),
+        Ok(_) => {
+            if let Some(id) = circle_id_hint {
+                if let Ok(cfg) = config::load(&id) {
+                    if !daemon.is_active(&id) {
+                        if let Err(e) = crate::lifecycle::spawn_circle(cfg, daemon).await {
+                            tracing::warn!("[api] enter_circle spawn failed: {e}");
+                        }
+                    }
+                }
+            }
+            Json(json!({ "status": "ok" })).into_response()
+        }
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }
