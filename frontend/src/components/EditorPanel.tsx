@@ -47,8 +47,15 @@ const enochTheme = EditorView.theme({
   '.cm-selectionBackground': { backgroundColor: 'rgba(17,17,17,0.12) !important' },
   '&.cm-focused .cm-selectionBackground': { backgroundColor: 'rgba(17,17,17,0.15) !important' },
   '.cm-scroller': { overflow: 'auto' },
-  // Remote cursor caret — z-index ensures the whole widget (including label)
-  // stacks above the selection mark decorations (.cm-ySelection backgrounds).
+  // y-codemirror owns real-time remote carets. We only hide its full-width
+  // middle-line selection and redraw those middle lines as text-bound marks.
+  '.cm-ySelection': { opacity: '1' },
+  '.cm-yLineSelection': {
+    backgroundColor: 'transparent !important',
+    margin: '0',
+    padding: '0',
+    opacity: '1',
+  },
   '.cm-ySelectionCaret': {
     position: 'relative',
     borderLeft: '2px solid',
@@ -59,20 +66,8 @@ const enochTheme = EditorView.theme({
     display: 'inline',
     zIndex: '10',
   },
-  // Remote selection highlight. y-codemirror already encodes alpha in the
-  // inline background color, so extra opacity makes multi-line edges lighter.
-  '.cm-ySelection': { opacity: '1' },
-  '.cm-yLineSelection': {
-    backgroundColor: 'transparent !important',
-    margin: '0',
-    padding: '0',
-    opacity: '1',
-  },
+  '.cm-yTextRemoteSelection': { opacity: '1' },
   // Name label. Anchored so its bottom-right corner sits at the cursor caret.
-  // translateX(-100%) keeps the label inside the editor when the cursor is near
-  // the right edge (avoids horizontal clip). translateY(-100%) lifts it above
-  // the current line. `left: 0` is the cursor's x; the full transform shifts
-  // the label left by its own width so it never overflows the right boundary.
   '.cm-ySelectionInfo': {
     position: 'absolute',
     display: 'inline-block',

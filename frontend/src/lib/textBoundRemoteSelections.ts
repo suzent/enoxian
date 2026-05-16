@@ -1,4 +1,4 @@
-import { RangeSetBuilder } from '@codemirror/state'
+import type { Range } from '@codemirror/state'
 import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate } from '@codemirror/view'
 import * as Y from 'yjs'
 import { ySyncFacet } from 'y-codemirror.next'
@@ -48,7 +48,7 @@ export const textBoundRemoteSelections = ViewPlugin.fromClass(class {
     const conf = this.view.state.facet(ySyncFacet)
     const ytext = conf.ytext
     const ydoc = ytext.doc as Y.Doc
-    const ranges: Array<{ from: number; to: number; decoration: Decoration }> = []
+    const ranges: Array<Range<Decoration>> = []
 
     conf.awareness?.getStates().forEach((state: RemoteState, clientId: number) => {
       if (clientId === conf.awareness.doc.clientID) return
@@ -64,31 +64,26 @@ export const textBoundRemoteSelections = ViewPlugin.fromClass(class {
       const end = Math.max(anchor.index, head.index)
       if (start === end) return
 
+      const color = state.user?.color ?? '#30bced'
+      const colorLight = state.user?.colorLight ?? `${color}33`
+      const selection = Decoration.mark({
+        attributes: { style: `background-color: ${colorLight}` },
+        class: 'cm-yTextRemoteSelection',
+      })
+
       const startLine = this.view.state.doc.lineAt(start)
       const endLine = this.view.state.doc.lineAt(end)
       if (startLine.number === endLine.number) return
 
-      const color = state.user?.color ?? '#30bced'
-      const colorLight = state.user?.colorLight ?? `${color}33`
-      const decoration = Decoration.mark({
-        attributes: { style: `background-color: ${colorLight}` },
-        class: 'cm-ySelection cm-yTextLineSelection',
-      })
-
       for (let lineNo = startLine.number + 1; lineNo < endLine.number; lineNo++) {
         const line = this.view.state.doc.line(lineNo)
         if (line.from < line.to) {
-          ranges.push({ from: line.from, to: line.to, decoration })
+          ranges.push(selection.range(line.from, line.to))
         }
       }
     })
 
-    ranges.sort((a, b) => a.from - b.from || a.to - b.to)
-    const builder = new RangeSetBuilder<Decoration>()
-    for (const range of ranges) {
-      builder.add(range.from, range.to, range.decoration)
-    }
-    return builder.finish()
+    return Decoration.set(ranges, true)
   }
 }, {
   decorations: value => value.decorations,

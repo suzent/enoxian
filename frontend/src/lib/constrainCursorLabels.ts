@@ -1,14 +1,13 @@
 import { EditorView, ViewPlugin, ViewUpdate } from '@codemirror/view'
 
 /**
- * Repositions `.cm-ySelectionInfo` labels so they stay within the editor's
+ * Repositions remote cursor labels so they stay within the editor's
  * visible scroll area regardless of where the cursor caret sits.
  *
- * y-codemirror.next places carets as inline widgets; their labels are
- * `position:absolute` children. Because the scroller clips painted content
- * that goes outside its bounds, labels near the left/right/top edges get
- * truncated. This plugin runs after each render and clamps each label's
- * horizontal position so it never overflows.
+ * The labels are `position:absolute` children of inline caret widgets. Because
+ * the scroller clips painted content that goes outside its bounds, labels near
+ * the left/right/top edges get truncated. This plugin runs after each render
+ * and clamps each label's horizontal position so it never overflows.
  */
 export const constrainCursorLabels = ViewPlugin.fromClass(class {
   private lastSignature = ''

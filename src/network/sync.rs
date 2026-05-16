@@ -10,7 +10,7 @@ use anyhow::Result;
 use libp2p::{PeerId, Stream, StreamProtocol};
 use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{debug, info, warn};
 use yrs::sync::protocol::{Message, SyncMessage};
@@ -55,6 +55,34 @@ async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<(String, Vec<u
 async fn write_u32<W: AsyncWriteExt + Unpin>(w: &mut W, n: u32) -> Result<()> {
     w.write_all(&n.to_be_bytes()).await?;
     w.flush().await?;
+    Ok(())
+}
+
+async fn write_awareness_frame<W: AsyncWriteExt + Unpin>(
+    w: &mut W,
+    path: &str,
+    data: &[u8],
+) -> Result<()> {
+    let path = format!("{AWARENESS_PATH_PREFIX}{path}");
+    write_frame(w, &path, data).await
+}
+
+async fn flush_pending_awareness<W: AsyncWriteExt + Unpin>(
+    w: &mut W,
+    rx: &mut tokio::sync::broadcast::Receiver<(String, Vec<u8>)>,
+    peer_id: PeerId,
+) -> Result<()> {
+    loop {
+        match rx.try_recv() {
+            Ok((path, data)) => write_awareness_frame(w, &path, &data).await?,
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Lagged(n)) => {
+                debug!("[sync] lagged {n} awareness updates to {peer_id}");
+                continue;
+            }
+            Err(TryRecvError::Closed) => break,
+        }
+    }
     Ok(())
 }
 
@@ -228,6 +256,7 @@ async fn sync_inner(
     let (mut rx, mut tx) = tokio::io::split(compat);
 
     let my_paths = all_doc_paths(state);
+    let mut all_awareness_rx = state.all_awareness_updates.subscribe();
 
     // ── Session exchange ──────────────────────────────────────────────────────
     //
@@ -364,6 +393,12 @@ async fn sync_inner(
 
     tracing::info!("[sync] handshake complete with {peer_id}");
 
+    // Subscribe to awareness before the handshake, then flush anything that
+    // happened while CRDT/session/conflict setup was running. Otherwise cursor
+    // frames produced during the handshake are lost because awareness is
+    // ephemeral and broadcast receivers only see events after subscription.
+    flush_pending_awareness(&mut tx, &mut all_awareness_rx, peer_id).await?;
+
     // ── Post-handshake catch-up ───────────────────────────────────────────────
     //
     // The handshake only covers docs that were open on BOTH sides at the moment
@@ -376,6 +411,7 @@ async fn sync_inner(
         let msg = full_state_update(state, &path);
         write_frame(&mut tx, &path, &msg).await?;
     }
+    flush_pending_awareness(&mut tx, &mut all_awareness_rx, peer_id).await?;
 
     // ── Continuous exchange ───────────────────────────────────────────────────
     //
@@ -413,7 +449,6 @@ async fn sync_inner(
     });
 
     let mut all_rx = state.all_updates.subscribe();
-    let mut all_awareness_rx = state.all_awareness_updates.subscribe();
     let mut all_deletes_rx = state.all_deletes.subscribe();
 
     loop {
@@ -467,8 +502,7 @@ async fn sync_inner(
             result = all_awareness_rx.recv() => {
                 match result {
                     Ok((path, data)) => {
-                        let path = format!("{AWARENESS_PATH_PREFIX}{path}");
-                        write_frame(&mut tx, &path, &data).await?;
+                        write_awareness_frame(&mut tx, &path, &data).await?;
                     }
                     Err(RecvError::Lagged(n)) => {
                         // Awareness is ephemeral. If we drop cursor frames, the
