@@ -10,6 +10,7 @@ export default defineConfig({
         target: 'http://127.0.0.1:36521',
         ws: true,
       },
+      '/api': 'http://127.0.0.1:36521',
       '/shutdown': 'http://127.0.0.1:36521',
     },
   },
