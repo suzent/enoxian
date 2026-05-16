@@ -36,7 +36,7 @@ $new = switch ($Part) {
 Write-Host "▶ Bumping $current → $new"
 
 # ── Update Cargo.toml ─────────────────────────────────────────────────────────
-$updated = $content -replace '(^version\s*=\s*)"[^"]*"', "`${1}`"$new`""
+$updated = $content -replace '(?m)(^version\s*=\s*)"[^"]*"', "`${1}`"$new`""
 Set-Content $CargoToml $updated -NoNewline
 
 # ── cargo check to update Cargo.lock ─────────────────────────────────────────
