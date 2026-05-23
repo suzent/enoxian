@@ -106,3 +106,5 @@ For AI agents: see [AGENTS.md](AGENTS.md).
 | `notify` | 8 | Cross-platform file watcher |
 | `reqwest` | 0.12 | HTTP client (enoch CLI) |
 | `clap` | 4 | CLI argument parsing |
+
+
