@@ -89,6 +89,34 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         .into_iter()
         .collect::<Vec<_>>();
 
+    // ── Build bootstrap peer list ─────────────────────────────────────────────
+    // Start with the direct peer address from the invite (public IP or confirmed
+    // external addr). Also derive the inviter's relay circuit address from the
+    // relay addr + inviter peer ID (extracted from admin_pubkey_bytes) — this gives
+    // a WAN-reachable bootstrap address that survives rendezvous being offline.
+    let mut bootstrap_peers: Vec<String> =
+        peer.as_deref().map(|p| vec![p.to_string()]).unwrap_or_default();
+
+    if let (Some(ref relay_str), false) = (&relay_from_invite, admin_pubkey_hex.is_empty()) {
+        // admin_pubkey_hex is hex-encoded protobuf of the inviter's public key.
+        // Use it to derive their peer ID and construct their relay circuit address.
+        if let Ok(pubkey_bytes) = hex::decode(&admin_pubkey_hex) {
+            if let Ok(pubkey) = libp2p::identity::PublicKey::try_decode_protobuf(&pubkey_bytes) {
+                let inviter_peer_id = pubkey.to_peer_id();
+                if let Ok(relay_addr) = relay_str.parse::<Multiaddr>() {
+                    let circuit = relay_addr
+                        .with(libp2p::multiaddr::Protocol::P2pCircuit)
+                        .with(libp2p::multiaddr::Protocol::P2p(inviter_peer_id));
+                    let circuit_str = circuit.to_string();
+                    // Don't duplicate if peer_addr was already the circuit address.
+                    if !bootstrap_peers.contains(&circuit_str) {
+                        bootstrap_peers.push(circuit_str);
+                    }
+                }
+            }
+        }
+    }
+
     let circle_config = CircleConfig {
         circle_id:         circle_id.clone(),
         circle_name:       circle_name.clone(),
@@ -97,7 +125,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         workspace_dir:     workspace_dir.to_string_lossy().into_owned(),
         admin_pubkey_hex,
         disabled:          false,
-        peers:             peer.as_deref().map(|p| vec![p.to_string()]).unwrap_or_default(),
+        peers:             bootstrap_peers,
         relay_addrs:       relay_from_invite.into_iter().collect(),
         rendezvous_addrs,
         join_policy:       crate::config::JoinPolicy::default(),

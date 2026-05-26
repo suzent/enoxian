@@ -354,8 +354,13 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         })?
         .build();
 
-    let p2p_addr: Multiaddr = "/ip4/0.0.0.0/tcp/0".parse().unwrap();
-    swarm.listen_on(p2p_addr)?;
+    // Listen on both TCP (PSK-protected, for LAN and relay) and QUIC (UDP,
+    // for direct WAN connections and UDP hole punching via DCUtR).
+    // QUIC does not carry the PSK but noise + application-layer CRDT encryption
+    // keep circle data private. The ExternalAddrConfirmed event on the QUIC port
+    // gives us a real public address to embed in invites even behind NAT.
+    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse::<Multiaddr>()?)?;
+    swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse::<Multiaddr>()?)?;
 
     // ── Dial bootstrap peers from config ──────────────────────────────────────
     // Peer addresses saved at `enoch enter` time (from invite). This ensures
@@ -373,6 +378,13 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     // ── Connect through relay nodes ───────────────────────────────────────────
     // Listening on a p2p-circuit address causes libp2p to connect to the relay
     // and request a reservation slot, making us reachable from any network.
+    //
+    // Configured relays are reserved immediately. If none are configured we fall
+    // back to the DEFAULT_RELAY server resolved in the background — this is the
+    // WAN fallback between rendezvous (discovery) and LAN-only (mDNS).
+    let (relay_tx, mut relay_rx) = tokio::sync::mpsc::channel::<Multiaddr>(4);
+
+    let mut reserved_any_relay = false;
     for relay_str in &config.relay_addrs {
         match relay_str.parse::<Multiaddr>() {
             Ok(relay_addr) => {
@@ -382,10 +394,31 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 info!("[{}] reserving relay slot at {relay_addr}", config.circle_id);
                 if let Err(e) = swarm.listen_on(circuit_addr) {
                     warn!("[{}] relay circuit listen failed: {e}", config.circle_id);
+                } else {
+                    reserved_any_relay = true;
                 }
             }
             Err(e) => warn!("[{}] invalid relay addr '{}': {e}", config.circle_id, relay_str),
         }
+    }
+
+    // If no relay configured, resolve the default relay server in the background
+    // (WAN fallback — peers behind NAT stay reachable even without rendezvous).
+    if !reserved_any_relay && crate::defaults::DEFAULT_RELAY.is_some() {
+        let tx = relay_tx.clone();
+        let cid = config.circle_id.clone();
+        tokio::spawn(async move {
+            match crate::commands::rendezvous::resolve_default_relay().await {
+                Some(addr_str) => match addr_str.parse::<Multiaddr>() {
+                    Ok(addr) => {
+                        info!("[{cid}] resolved default relay: {addr_str}");
+                        let _ = tx.send(addr).await;
+                    }
+                    Err(e) => warn!("[{cid}] invalid resolved relay addr: {e}"),
+                },
+                None => warn!("[{cid}] default relay unreachable — no WAN relay fallback"),
+            }
+        });
     }
 
     // ── Dial rendezvous servers (QUIC) ────────────────────────────────────────
@@ -493,6 +526,18 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         rendezvous_peers.write().unwrap().insert(peer_id);
                         info!("[{}] dialing background-resolved rendezvous: {addr}", circle_id);
                         let _ = swarm.dial(addr);
+                    }
+                }
+                // Background-resolved relay address arrived — reserve circuit slot (WAN fallback).
+                item = relay_rx.recv() => {
+                    if let Some(relay_addr) = item {
+                        let circuit_addr = relay_addr
+                            .clone()
+                            .with(libp2p::multiaddr::Protocol::P2pCircuit);
+                        info!("[{}] reserving background-resolved relay slot: {relay_addr}", circle_id);
+                        if let Err(e) = swarm.listen_on(circuit_addr) {
+                            warn!("[{}] relay circuit listen failed: {e}", circle_id);
+                        }
                     }
                 }
                 _ = reregister.tick() => {

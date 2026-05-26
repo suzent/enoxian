@@ -56,6 +56,26 @@ pub async fn resolve_default() -> Option<String> {
     resolve(host, &client).await.ok()
 }
 
+/// Resolve the default relay server defined in `crate::defaults::DEFAULT_RELAY`.
+/// Returns `None` if the constant is unset or the server cannot be reached (non-fatal).
+///
+/// If `DEFAULT_RELAY` and `DEFAULT_RENDEZVOUS` point to the same host the result
+/// is identical — we reuse the same `/peer-id` fetch so both share the same
+/// resolved multiaddr.
+pub async fn resolve_default_relay() -> Option<String> {
+    let host = crate::defaults::DEFAULT_RELAY?;
+    // Optimization: if the relay host equals the rendezvous host we can skip a
+    // second HTTP round-trip and just reuse resolve_default()'s result.
+    if crate::defaults::DEFAULT_RENDEZVOUS == Some(host) {
+        return resolve_default().await;
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+    resolve(host, &client).await.ok()
+}
+
 fn split_host_port(input: &str, default_port: u16) -> (String, u16) {
     // Handle host:port
     if let Some(colon) = input.rfind(':') {

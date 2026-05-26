@@ -131,9 +131,11 @@ pub async fn generate_invite(
         .map(|k| k.public().encode_protobuf());
 
     // ── Auto-embed best peer address from live P2P state ──────────────────────
-    // Priority: ExternalAddrConfirmed (confirmed by a peer via Identify)
-    //           > best routable listen addr (public IP > Tailscale > RFC1918)
-    // Falls back to None (LAN-only via mDNS) if daemon is down or has no addrs yet.
+    // Priority:
+    //   1. ExternalAddrConfirmed (confirmed by a peer via Identify) — most reliable for WAN
+    //   2. Best routable listen addr (public IP > Tailscale > RFC1918)
+    //   3. Relay circuit address (relay_addr/p2p-circuit/p2p/OUR_PEER_ID) — works
+    //      for NAT'd peers with a relay reservation; joiner dials us via relay.
     let peer_addr = daemon.get(&circle_id).and_then(|state| {
         // Try external first (confirmed by a remote peer — most reliable for WAN)
         let ext = state.p2p_external_addrs.read().ok()?.first().cloned();
@@ -143,8 +145,33 @@ pub async fn generate_invite(
         best_connectable_addr(listen.as_slice()).map(String::from)
     });
 
-    // relay_addr: from saved config.
-    let relay_addr = config.relay_addrs.into_iter().next();
+    // relay_addr: from saved config, or fall back to the default relay server
+    // so invites are usable for WAN NAT traversal even without manual configuration.
+    // Resolved first so it can also serve as the peer_addr fallback below.
+    let relay_addr = if let Some(saved) = config.relay_addrs.into_iter().next() {
+        Some(saved)
+    } else {
+        crate::commands::rendezvous::resolve_default_relay().await
+    };
+
+    // If no direct/external address is available (NAT'd peer, daemon just started),
+    // derive our relay circuit address from relay_addr + our keypair's peer ID.
+    // This is deterministic and reachable: the joiner dials us through the relay.
+    let peer_addr = if peer_addr.is_none() {
+        relay_addr.as_deref()
+            .and_then(|relay_str| relay_str.parse::<libp2p::Multiaddr>().ok())
+            .and_then(|relay_maddr| {
+                keypair_from_hex(&config.keypair_proto_hex).ok().map(|kp| {
+                    let my_peer_id = kp.public().to_peer_id();
+                    relay_maddr
+                        .with(libp2p::multiaddr::Protocol::P2pCircuit)
+                        .with(libp2p::multiaddr::Protocol::P2p(my_peer_id))
+                        .to_string()
+                })
+            })
+    } else {
+        peer_addr
+    };
 
     // rendezvous_addr: from saved config, or fall back to the default server
     // (enochian.com) so invites are WAN-capable even without manual configuration.
