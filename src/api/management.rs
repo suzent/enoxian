@@ -20,6 +20,8 @@ use crate::{
 pub struct InitReq {
     pub name: String,
     pub dir: Option<String>,
+    pub owner: Option<String>,
+    pub join_policy: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -28,6 +30,7 @@ pub struct EnterReq {
     pub secret: Option<String>,
     pub peer: Option<String>,
     pub dir: Option<String>,
+    pub owner: Option<String>,
 }
 
 pub async fn init_circle(
@@ -38,8 +41,8 @@ pub async fn init_circle(
         name: payload.name.clone(),
         ttl: "7d".to_string(),
         dir: payload.dir.map(std::path::PathBuf::from),
-        owner: None,
-        join_policy: "auto".to_string(),
+        owner: payload.owner.clone(),
+        join_policy: payload.join_policy.clone().unwrap_or_else(|| "auto".to_string()),
     };
 
     match init::run(args).await {
@@ -78,7 +81,7 @@ pub async fn enter_circle(
         peer: payload.peer,
         rendezvous: None,
         dir: payload.dir.map(std::path::PathBuf::from),
-        owner: None,
+        owner: payload.owner,
     };
 
     let http_client = reqwest::Client::new();
@@ -100,16 +103,12 @@ pub async fn enter_circle(
 }
 
 pub async fn generate_invite(
+    State(daemon): State<DaemonState>,
     Path(circle_id): Path<String>,
 ) -> impl IntoResponse {
-    let configs = match config::load_all() {
+    let config = match config::load(&circle_id) {
         Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
-    };
-    
-    let config = match configs.into_iter().find(|c| c.circle_id == circle_id) {
-        Some(c) => c,
-        None => return (StatusCode::NOT_FOUND, Json(json!({ "error": "circle not found" }))).into_response(),
+        Err(_) => return (StatusCode::NOT_FOUND, Json(json!({ "error": "circle not found" }))).into_response(),
     };
 
     let psk_bytes = match hex::decode(&config.psk_hex) {
@@ -131,18 +130,69 @@ pub async fn generate_invite(
         .and_then(|h| keypair_from_hex(h.trim()).ok())
         .map(|k| k.public().encode_protobuf());
 
+    // ── Auto-embed best peer address from live P2P state ──────────────────────
+    // Priority: ExternalAddrConfirmed (confirmed by a peer via Identify)
+    //           > best routable listen addr (public IP > Tailscale > RFC1918)
+    // Falls back to None (LAN-only via mDNS) if daemon is down or has no addrs yet.
+    let peer_addr = daemon.get(&circle_id).and_then(|state| {
+        // Try external first (confirmed by a remote peer — most reliable for WAN)
+        let ext = state.p2p_external_addrs.read().ok()?.first().cloned();
+        if ext.is_some() { return ext; }
+        // Fall back to best listen addr
+        let listen = state.p2p_listen_addrs.read().ok()?;
+        best_connectable_addr(listen.as_slice()).map(String::from)
+    });
+
+    // relay_addr and rendezvous_addr: from saved config (set when the admin
+    // joined via a relay/rendezvous invite themselves).
+    let relay_addr = config.relay_addrs.into_iter().next();
+    let rendezvous_addr = config.rendezvous_addrs.into_iter().next();
+
     let uri = invite::encode(&InvitePayload {
         circle_id: config.circle_id.clone(),
         psk_bytes: psk,
         circle_name: Some(config.circle_name.clone()),
         expires_at,
-        peer_addr: None,
+        peer_addr: peer_addr.clone(),
         admin_pubkey_bytes,
-        relay_addr: None,
-        rendezvous_addr: None,
+        relay_addr: relay_addr.clone(),
+        rendezvous_addr: rendezvous_addr.clone(),
     });
 
-    Json(json!({ "invite_uri": uri })).into_response()
+    Json(json!({
+        "invite_uri": uri,
+        // Tell the frontend what was embedded so it can show a connectivity hint
+        "connectivity": {
+            "peer_addr": peer_addr,
+            "relay_addr": relay_addr,
+            "rendezvous_addr": rendezvous_addr,
+        }
+    })).into_response()
+}
+
+/// Pick the best listen addr for embedding in an invite.
+/// Prefers public IPs > Tailscale CGNAT (100.64/10) > RFC1918. Skips loopback / circuit addrs.
+fn best_connectable_addr(addrs: &[String]) -> Option<&str> {
+    fn rank(addr: &str) -> u8 {
+        if addr.contains("/p2p-circuit") { return 5; }
+        let ip_str = match addr.strip_prefix("/ip4/").and_then(|s| s.split('/').next()) {
+            Some(s) => s,
+            None => return 5,
+        };
+        let ip: std::net::Ipv4Addr = match ip_str.parse() {
+            Ok(ip) => ip,
+            Err(_) => return 5,
+        };
+        if ip.is_loopback() || ip.is_unspecified() { return 4; }
+        if ip.is_private() || ip.is_link_local() { return 3; }
+        let o = ip.octets();
+        if o[0] == 100 && (64..=127).contains(&o[1]) { return 2; } // Tailscale
+        1 // public IP
+    }
+    addrs.iter()
+        .filter(|a| rank(a) < 4)
+        .min_by_key(|a| rank(a))
+        .map(String::as_str)
 }
 
 pub async fn enable_circle(

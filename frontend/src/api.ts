@@ -50,7 +50,7 @@ export const initCircle = (name: string, owner?: string, joinPolicy?: string, di
 export const enterCircle = (target: string, owner?: string, secret?: string, peer?: string, dir?: string) =>
   post<{status: string}>('/api/enter', { target, owner, secret, peer, dir })
 export const inviteCircle = (id: string) =>
-  post<{invite_uri: string}>(`${api(id)}/invite`, {})
+  post<{invite_uri: string, connectivity: {peer_addr: string|null, relay_addr: string|null, rendezvous_addr: string|null}}>(`${api(id)}/invite`, {})
 export const enableCircle = (id: string) =>
   post<{status: string}>(`${api(id)}/enable`, {})
 export const disableCircle = (id: string) =>
