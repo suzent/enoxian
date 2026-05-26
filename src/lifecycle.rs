@@ -392,45 +392,57 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     // Rendezvous servers speak QUIC without PSK. After connecting we register
     // under the circle UUID namespace and discover other members.
     //
-    // If no rendezvous is configured for this circle, fall back to the default
-    // server defined in `crate::defaults::DEFAULT_RENDEZVOUS` (e.g. enochian.com).
-    // This ensures cross-internet connectivity works out of the box without any
-    // per-circle configuration.
-    let effective_rendezvous: Vec<String> = if config.rendezvous_addrs.is_empty() {
-        match crate::commands::rendezvous::resolve_default().await {
-            Some(addr) => {
-                info!("[{}] using default rendezvous {addr}", config.circle_id);
-                vec![addr]
-            }
-            None => {
-                if crate::defaults::DEFAULT_RENDEZVOUS.is_some() {
-                    warn!("[{}] default rendezvous unreachable — LAN-only mode", config.circle_id);
-                }
-                vec![]
-            }
-        }
-    } else {
-        config.rendezvous_addrs.clone()
-    };
+    // Configured rendezvous addrs are dialed immediately (synchronous path).
+    // If none are configured, the default server (DEFAULT_RENDEZVOUS) is resolved
+    // in a background task so spawn_circle returns without blocking on a network
+    // call — this prevents api/enter from timing out when the server is unreachable.
+    //
+    // The channel rdvz_tx/rdvz_rx lets the background task inject the resolved
+    // address into the running swarm event loop.
+    let rendezvous_peers: std::sync::Arc<std::sync::RwLock<HashSet<PeerId>>> =
+        std::sync::Arc::new(std::sync::RwLock::new(HashSet::new()));
 
-    let rendezvous_peers: HashSet<PeerId> = effective_rendezvous
-        .iter()
-        .filter_map(|s| {
-            let addr: Multiaddr = s.parse().ok()?;
-            addr.iter().find_map(|p| {
-                if let libp2p::multiaddr::Protocol::P2p(id) = p { Some(id) } else { None }
-            })
-        })
-        .collect();
+    let (rdvz_tx, mut rdvz_rx) = tokio::sync::mpsc::channel::<(Multiaddr, PeerId)>(4);
 
-    for rdvz_str in &effective_rendezvous {
+    // Dial any explicitly-configured rendezvous servers right now.
+    for rdvz_str in &config.rendezvous_addrs {
         match rdvz_str.parse::<Multiaddr>() {
             Ok(addr) => {
+                if let Some(pid) = addr.iter().find_map(|p| {
+                    if let libp2p::multiaddr::Protocol::P2p(id) = p { Some(id) } else { None }
+                }) {
+                    rendezvous_peers.write().unwrap().insert(pid);
+                }
                 info!("[{}] dialing rendezvous server {addr}", config.circle_id);
                 let _ = swarm.dial(addr);
             }
             Err(e) => warn!("[{}] invalid rendezvous addr '{}': {e}", config.circle_id, rdvz_str),
         }
+    }
+
+    // If no rendezvous configured, resolve the default server in the background.
+    if config.rendezvous_addrs.is_empty() && crate::defaults::DEFAULT_RENDEZVOUS.is_some() {
+        let tx = rdvz_tx.clone();
+        let cid = config.circle_id.clone();
+        tokio::spawn(async move {
+            match crate::commands::rendezvous::resolve_default().await {
+                Some(addr_str) => match addr_str.parse::<Multiaddr>() {
+                    Ok(addr) => {
+                        let peer_id = addr.iter().find_map(|p| {
+                            if let libp2p::multiaddr::Protocol::P2p(id) = p { Some(id) } else { None }
+                        });
+                        if let Some(pid) = peer_id {
+                            info!("[{cid}] resolved default rendezvous: {addr_str}");
+                            let _ = tx.send((addr, pid)).await;
+                        } else {
+                            warn!("[{cid}] default rendezvous addr has no peer ID: {addr_str}");
+                        }
+                    }
+                    Err(e) => warn!("[{cid}] invalid resolved rendezvous addr: {e}"),
+                },
+                None => warn!("[{cid}] default rendezvous unreachable — LAN-only mode"),
+            }
+        });
     }
 
     // ── Accept incoming sync streams ──────────────────────────────────────────
@@ -475,8 +487,16 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     info!("[{}] circle stopped", circle_id);
                     break;
                 }
+                // Background-resolved rendezvous address arrived (e.g. default server).
+                item = rdvz_rx.recv() => {
+                    if let Some((addr, peer_id)) = item {
+                        rendezvous_peers.write().unwrap().insert(peer_id);
+                        info!("[{}] dialing background-resolved rendezvous: {addr}", circle_id);
+                        let _ = swarm.dial(addr);
+                    }
+                }
                 _ = reregister.tick() => {
-                    for &rdvz_peer in &rendezvous_peers {
+                    for &rdvz_peer in &*rendezvous_peers.read().unwrap() {
                         if swarm.is_connected(&rdvz_peer) {
                             if let Err(e) = swarm.behaviour_mut().rendezvous.register(
                                 rendezvous_namespace.clone(), rdvz_peer, None,
@@ -513,7 +533,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         info!("[{}] P2P connected: {peer_id} via {}", circle_id, endpoint.get_remote_address());
                         // If this is a rendezvous server, register + discover immediately.
-                        if rendezvous_peers.contains(&peer_id) {
+                        if rendezvous_peers.read().unwrap().contains(&peer_id) {
                             if let Err(e) = swarm.behaviour_mut().rendezvous.register(
                                 rendezvous_namespace.clone(), peer_id, None,
                             ) {
@@ -525,7 +545,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         }
                         if endpoint.is_dialer() {
                             // Don't open sync stream to rendezvous-only servers.
-                            if !rendezvous_peers.contains(&peer_id) {
+                            if !rendezvous_peers.read().unwrap().contains(&peer_id) {
                                 let mut ctrl = open_ctrl.clone();
                                 let s = state_for_swarm.clone();
                                 tokio::spawn(async move {
