@@ -21,7 +21,7 @@
 │  │  QUIC (no   │   │  GET  /api/events  │   │  AppState  │  │
 │  │   PSK)      │   │  WS   /ws/yjs      │   │            │  │
 │  │  :random    │   └────────────────────┘   │ docs       │  │
-│  └─────────────┘           │               │ Arc<Doc>×N │  │
+│  └─────────────┘            │               │ Arc<Doc>×N │  │
 │         │                   │               │            │  │
 │  PSK TCP: circle peers      HTTP / WS       │ control    │  │
 │  QUIC: bootstrap server     reqwest         │ Arc<Doc>   │  │
@@ -36,10 +36,10 @@
   │  enochd peer │   │    enoch CLI     │   │ enochd           │
   │  (other node)│   │  or AI agent     │   │ --bootstrap      │
   └──────────────┘   └──────────────────┘   │ (QUIC only,      │
-                                             │ no PSK,          │
-                                             │ rendezvous +     │
-                                             │ relay server)    │
-                                             └──────────────────┘
+                                            │ no PSK,          │
+                                            │ rendezvous +     │
+                                            │ relay server)    │
+                                            └──────────────────┘
 ```
 
 ---

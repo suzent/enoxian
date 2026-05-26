@@ -13,11 +13,14 @@ use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use yrs::{Array, Observable};
+
 use crate::{
-    config::{self, CircleConfig},
-    control::{MemberEntry, MemberRole, MEMBER_LIST_KEY},
+    config::{self, CircleConfig, JoinPolicy},
+    control::{MemberEntry, MemberRole, MLS_KEY_PACKAGES_KEY, MLS_OWNER_CLAIMS_KEY, MLS_PENDING_KEY, MLS_WELCOMES_KEY, MLS_COMMITS_KEY, MlsCommitEntry, OwnerClaim, PendingEntry, MEMBER_LIST_KEY},
     crypto::{keypair_from_hex, psk_from_hex},
     daemon::DaemonState,
+    mls::{MlsGroupManager, MlsIdentity, SharedMlsState},
     network::{
         behaviour::{EnochBehaviour, EnochEvent},
         sync,
@@ -27,6 +30,15 @@ use crate::{
     sync_yjs::watcher::spawn_watcher,
 };
 use libp2p_stream as stream_proto;
+
+/// Non-async shim with a concrete return type so that `rotate_psk_and_restart`
+/// can call `spawn_circle` without creating an opaque-type inference cycle.
+fn spawn_circle_boxed(
+    config: CircleConfig,
+    daemon: DaemonState,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
+    Box::pin(spawn_circle(config, daemon))
+}
 
 pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<()> {
     let keypair = keypair_from_hex(&config.keypair_proto_hex)?;
@@ -46,20 +58,54 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     );
 
     let agent_id = presence::local_agent_id(&peer_id);
-    let circle_dir = config::circle_dir(&config.circle_id)?;
-    let session_id = crate::store::session::next_session_id(&circle_dir).await;
+    let cdir = config::circle_dir(&config.circle_id)?;
+    let session_id = crate::store::session::next_session_id(&cdir).await;
+
+    let mls_identity = MlsIdentity::load_or_generate(&cdir, &peer_id.to_string())?;
+    let mls_group = MlsGroupManager::load(&mls_identity, &cdir)?;
+    let mls = crate::mls::new_mls_state(mls_identity, mls_group);
+
     let state = AppState::new(
         config.circle_id.clone(),
         config.circle_name.clone(),
         workspace.clone(),
-        circle_dir,
+        cdir.clone(),
         config.admin_pubkey_hex.clone(),
         agent_id.clone(),
         session_id,
         peer_id.to_string(),
+        config.join_policy.clone(),
+        config.owner.clone(),
+        mls.clone(),
     );
 
     let token = CancellationToken::new();
+
+    // Publish MLS key package
+    {
+        use yrs::{Map, Transact};
+        let kp_bytes = {
+            let mls_locked = mls.blocking_lock();
+            mls_locked.identity.generate_key_package()?
+        };
+        let kp_hex = hex::encode(&kp_bytes);
+        let kp_map = state.control.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+        let mut txn = state.control.transact_mut();
+        kp_map.insert(&mut txn, peer_id.to_string().as_str(), kp_hex.as_str());
+    }
+
+    // Sign and publish owner claim
+    {
+        use yrs::{Map, Transact};
+        let owner_claim_msg = format!("owner:{}", config.owner);
+        let owner_sig = keypair.sign(owner_claim_msg.as_bytes()).map(hex::encode).unwrap_or_default();
+        let claim = OwnerClaim { owner: config.owner.clone(), sig: owner_sig };
+        if let Ok(json_str) = serde_json::to_string(&claim) {
+            let claims_map = state.control.get_or_insert_map(MLS_OWNER_CLAIMS_KEY);
+            let mut txn = state.control.transact_mut();
+            claims_map.insert(&mut txn, peer_id.to_string().as_str(), json_str.as_str());
+        }
+    }
 
     // Auto-register local peer in the member list so `enoch member list` shows all participants.
     // Only writes if no entry exists yet — preserves explicit removals across restarts.
@@ -79,6 +125,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             let signature = keypair.sign(msg.as_bytes()).map(hex::encode).unwrap_or_default();
             let entry = MemberEntry {
                 peer_id: peer_id.to_string(),
+                owner: config.owner.clone(),
                 agent_id: agent_id.clone(),
                 role,
                 added_at: chrono::Utc::now(),
@@ -88,7 +135,114 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 let mut txn = state.control.transact_mut();
                 map.insert(&mut txn, peer_id.to_string().as_str(), json_str.as_str());
             }
+
+            // Write pending entry if not in member list
+            let pending_entry = PendingEntry {
+                peer_id: peer_id.to_string(),
+                owner: config.owner.clone(),
+                agent_id: agent_id.clone(),
+                owner_sig: {
+                    let owner_claim_msg = format!("owner:{}", config.owner);
+                    keypair.sign(owner_claim_msg.as_bytes()).map(hex::encode).unwrap_or_default()
+                },
+                requested_at: chrono::Utc::now(),
+            };
+            if let Ok(json_str) = serde_json::to_string(&pending_entry) {
+                let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
+                let mut txn = state.control.transact_mut();
+                pending_map.insert(&mut txn, peer_id.to_string().as_str(), json_str.as_str());
+            }
         }
+    }
+
+    // If admin and auto join policy, observe pending map
+    let is_admin = cdir.join("admin.key").exists();
+    if is_admin && config.join_policy == JoinPolicy::Auto {
+        let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
+        let state_for_pending = state.clone();
+        let mls_for_pending = mls.clone();
+        let pending_sub = pending_map.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+            if !is_p2p { return; }
+            for (key, change) in event.keys(txn) {
+                if let yrs::types::EntryChange::Inserted(_) = change {
+                    let peer_id_str = key.to_string();
+                    let s = state_for_pending.clone();
+                    let m = mls_for_pending.clone();
+                    tokio::spawn(async move {
+                        auto_approve(peer_id_str, s, m).await;
+                    });
+                }
+            }
+        });
+        std::mem::forget(pending_sub);
+    }
+
+    // ── Welcome consumer ─────────────────────────────────────────────────────
+    // Joiner: watch mls_welcomes for our own peer_id appearing (P2P-delivered).
+    // Also handles the offline-approval case — initial full P2P sync fires the
+    // observer for all pre-existing map entries.
+    {
+        let has_group = mls.blocking_lock().group.is_some();
+        if !has_group {
+            let welcomes_map = state.control.get_or_insert_map(MLS_WELCOMES_KEY);
+            let our_peer_id_str = peer_id.to_string();
+            let mls_w = mls.clone();
+            let state_w = state.clone();
+            let daemon_w = daemon.clone();
+            let circle_id_w = config.circle_id.clone();
+            let welcome_sub = welcomes_map.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+                use yrs::types::EntryChange;
+                for (key, change) in event.keys(txn) {
+                    if key.as_ref() != our_peer_id_str.as_str() { continue; }
+                    if let EntryChange::Inserted(yrs::Out::Any(yrs::Any::String(s))) = change {
+                        let welcome_hex = s.to_string();
+                        let mls = mls_w.clone();
+                        let state = state_w.clone();
+                        let daemon = daemon_w.clone();
+                        let circle_id = circle_id_w.clone();
+                        tokio::spawn(async move {
+                            consume_welcome(welcome_hex, mls, state, daemon, circle_id).await;
+                        });
+                    }
+                }
+            });
+            std::mem::forget(welcome_sub);
+        }
+    }
+
+    // ── Commit watcher ────────────────────────────────────────────────────────
+    // All peers: watch mls_commits for new entries and apply them to stay in
+    // sync with epoch advances. PSK rotates after each epoch change.
+    {
+        use yrs::types::Change;
+        let commits_arr = state.control.get_or_insert_array(MLS_COMMITS_KEY);
+        let mls_c = mls.clone();
+        let state_c = state.clone();
+        let daemon_c = daemon.clone();
+        let circle_id_c = config.circle_id.clone();
+        let commits_sub = commits_arr.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::array::ArrayEvent| {
+            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+            if !is_p2p { return; }
+            for change in event.delta(txn) {
+                if let Change::Added(values) = change {
+                    for val in values {
+                        if let yrs::Out::Any(yrs::Any::String(s)) = val {
+                            if let Ok(entry) = serde_json::from_str::<MlsCommitEntry>(&s) {
+                                let mls = mls_c.clone();
+                                let state = state_c.clone();
+                                let daemon = daemon_c.clone();
+                                let circle_id = circle_id_c.clone();
+                                tokio::spawn(async move {
+                                    apply_commit_entry(entry, mls, state, daemon, circle_id).await;
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        std::mem::forget(commits_sub);
     }
 
     spawn_watcher(state.clone(), workspace, token.clone()).await?;
@@ -402,6 +556,237 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
 
     daemon.insert_circle(config.circle_id.clone(), state, token);
     Ok(())
+}
+
+async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::SharedMlsState) {
+    use yrs::{Map, Out, Any, Transact};
+
+    let kp_hex = {
+        let kp_map = state.control.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+        let txn = state.control.transact();
+        match kp_map.get(&txn, peer_id_str.as_str()) {
+            Some(Out::Any(Any::String(s))) => s.to_string(),
+            _ => return,
+        }
+    };
+
+    let kp_bytes = match hex::decode(&kp_hex) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+
+    let result = {
+        let mut mls_locked = mls.lock().await;
+        let identity_ptr = &mls_locked.identity as *const _;
+        let group = match mls_locked.group.as_mut() {
+            Some(g) => g,
+            None => return,
+        };
+        let identity = unsafe { &*identity_ptr };
+        group.add_member(identity, &kp_bytes)
+    };
+
+    let (commit_bytes, welcome_bytes, ratchet_tree_bytes) = match result {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+
+    let welcome_hex = hex::encode(&welcome_bytes);
+    let commit_hex = hex::encode(&commit_bytes);
+    let ratchet_hex = hex::encode(&ratchet_tree_bytes);
+
+    {
+        let welcomes_map = state.control.get_or_insert_map(MLS_WELCOMES_KEY);
+        let mut txn = state.control.transact_mut();
+        welcomes_map.insert(&mut txn, peer_id_str.as_str(), welcome_hex.as_str());
+    }
+
+    {
+        let commits_arr = state.control.get_or_insert_array(MLS_COMMITS_KEY);
+        let mls_locked = mls.lock().await;
+        let epoch = mls_locked.group.as_ref().map(|g| g.epoch()).unwrap_or(0);
+        let entry = MlsCommitEntry {
+            epoch,
+            data_hex: commit_hex,
+            sender_peer_id: state.peer_id.clone(),
+            ratchet_tree_hex: ratchet_hex,
+        };
+        if let Ok(json_str) = serde_json::to_string(&entry) {
+            let mut txn = state.control.transact_mut();
+            commits_arr.push_back(&mut txn, json_str.as_str());
+        }
+    }
+
+    {
+        let member_map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
+        let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
+        let pending_entry: Option<PendingEntry> = {
+            let txn = state.control.transact();
+            pending_map.get(&txn, peer_id_str.as_str()).and_then(|v| {
+                if let Out::Any(Any::String(s)) = v {
+                    serde_json::from_str(&s).ok()
+                } else {
+                    None
+                }
+            })
+        };
+        let (owner, agent_id) = pending_entry
+            .map(|p| (p.owner, p.agent_id))
+            .unwrap_or_default();
+        let msg = format!("add:{}:member:owner:{}", peer_id_str, owner);
+        let entry = MemberEntry {
+            peer_id: peer_id_str.clone(),
+            owner,
+            agent_id,
+            role: MemberRole::Member,
+            added_at: chrono::Utc::now(),
+            signature: msg,
+        };
+        if let Ok(json_str) = serde_json::to_string(&entry) {
+            let mut txn = state.control.transact_mut();
+            member_map.insert(&mut txn, peer_id_str.as_str(), json_str.as_str());
+            pending_map.remove(&mut txn, peer_id_str.as_str());
+        }
+    }
+
+    {
+        let mls_locked = mls.lock().await;
+        if let Some(group) = &mls_locked.group {
+            let _ = group.save(&mls_locked.identity, &state.circle_dir);
+        }
+    }
+
+    let _ = state.events.send(crate::control::CircleEvent::MemberAdded { peer_id: peer_id_str });
+}
+
+// ── PSK rotation helpers ──────────────────────────────────────────────────────
+
+/// Called by the joiner when mls_welcomes[our_peer_id] arrives via P2P sync.
+async fn consume_welcome(
+    welcome_hex: String,
+    mls: SharedMlsState,
+    state: AppState,
+    daemon: DaemonState,
+    circle_id: String,
+) {
+    let welcome_bytes = match hex::decode(&welcome_hex) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+
+    let new_psk = {
+        let mut mls_locked = mls.lock().await;
+        // Skip if we already joined (race: observer fires twice).
+        if mls_locked.group.is_some() { return; }
+        let identity_ptr = &mls_locked.identity as *const MlsIdentity;
+        let identity = unsafe { &*identity_ptr };
+        // ratchet_tree_bytes is None because use_ratchet_tree_extension is enabled —
+        // the ratchet tree is embedded inside the Welcome bytes.
+        let group = match MlsGroupManager::join_from_welcome(identity, &welcome_bytes, None) {
+            Ok(g) => g,
+            Err(e) => { warn!("[mls] join_from_welcome failed: {e}"); return; }
+        };
+        let psk = match group.epoch_psk(identity) {
+            Ok(p) => p,
+            Err(e) => { warn!("[mls] epoch_psk after welcome failed: {e}"); return; }
+        };
+        let _ = group.save(identity, &state.circle_dir);
+        mls_locked.group = Some(group);
+        info!("[mls] joined group via Welcome — epoch PSK derived, rotating transport PSK");
+        psk
+    };
+
+    rotate_psk_and_restart(&circle_id, new_psk, daemon).await;
+}
+
+/// Called for every new MlsCommitEntry that arrives from a peer.
+/// Skips commits already applied (epoch < current), skips our own commits,
+/// and does nothing if the group becomes inactive (we were removed — we'll
+/// be locked out naturally when others rotate to the new PSK).
+async fn apply_commit_entry(
+    entry: MlsCommitEntry,
+    mls: SharedMlsState,
+    state: AppState,
+    daemon: DaemonState,
+    circle_id: String,
+) {
+    // Don't apply commits we ourselves produced.
+    if entry.sender_peer_id == state.peer_id { return; }
+
+    let commit_bytes = match hex::decode(&entry.data_hex) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+
+    let maybe_psk = {
+        let mut mls_locked = mls.lock().await;
+        // Take raw pointer to identity before the mutable group borrow.
+        let identity_ptr = &mls_locked.identity as *const MlsIdentity;
+        let identity = unsafe { &*identity_ptr };
+        let group = match mls_locked.group.as_mut() {
+            Some(g) => g,
+            None => return, // not in group yet — will consume via Welcome path
+        };
+        let current_epoch = group.epoch();
+        // Commit at epoch N advances us from epoch N → N+1.
+        // Skip if we're already past this epoch.
+        if entry.epoch < current_epoch { return; }
+
+        match group.apply_commit(identity, &commit_bytes) {
+            Ok(()) => {}
+            Err(e) => { warn!("[mls] apply_commit (epoch {}): {e}", entry.epoch); return; }
+        }
+
+        // Derive new PSK. If this fails we were likely removed — skip rotation
+        // and let the PSK mismatch handle disconnection naturally.
+        match group.epoch_psk(identity) {
+            Ok(psk) => {
+                let _ = group.save(identity, &state.circle_dir);
+                info!("[mls] applied Commit epoch {} → {} — rotating PSK", entry.epoch, group.epoch());
+                Some(psk)
+            }
+            Err(_) => {
+                info!("[mls] applied Commit that removed us — awaiting PSK mismatch disconnect");
+                None
+            }
+        }
+    };
+
+    if let Some(new_psk) = maybe_psk {
+        rotate_psk_and_restart(&circle_id, new_psk, daemon).await;
+    }
+}
+
+/// Saves the new PSK to config.toml, then stops and restarts the circle so
+/// the swarm rebuilds its transport with the new pnet key.
+async fn rotate_psk_and_restart(circle_id: &str, new_psk: [u8; 32], daemon: DaemonState) {
+    let mut cfg = match config::load(circle_id) {
+        Ok(c) => c,
+        Err(e) => { warn!("[mls] rotate_psk: config load failed: {e}"); return; }
+    };
+    cfg.psk_hex = hex::encode(new_psk);
+    if let Err(e) = config::save(&cfg) {
+        warn!("[mls] rotate_psk: config save failed: {e}");
+        return;
+    }
+    info!("[mls] PSK rotated for circle {circle_id} — restarting swarm");
+
+    let id = circle_id.to_string();
+    tokio::spawn(async move {
+        daemon.stop_circle(&id);
+        // Brief pause so the old swarm tasks finish draining before we rebuild.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        match config::load(&id) {
+            Ok(new_cfg) if !new_cfg.disabled => {
+                // spawn_circle_boxed has a concrete return type, breaking the
+                // opaque-type cycle between spawn_circle and rotate_psk_and_restart.
+                if let Err(e) = spawn_circle_boxed(new_cfg, daemon).await {
+                    warn!("[mls] rotate_psk: respawn failed: {e}");
+                }
+            }
+            _ => {}
+        }
+    });
 }
 
 /// Returns true for listen addresses worth tracking for invite embedding:

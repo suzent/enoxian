@@ -2,6 +2,20 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum JoinPolicy {
+    #[default]
+    Auto,
+    Manual,
+}
+
+impl std::fmt::Display for JoinPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self { Self::Auto => write!(f, "auto"), Self::Manual => write!(f, "manual") }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CircleConfig {
     pub circle_id: String,
@@ -31,6 +45,10 @@ pub struct CircleConfig {
     /// our circle namespace, and discover other members via rendezvous.
     #[serde(default)]
     pub rendezvous_addrs: Vec<String>,
+    #[serde(default)]
+    pub join_policy: JoinPolicy,
+    #[serde(default)]
+    pub owner: String,
 }
 
 pub fn enochian_dir() -> Result<PathBuf> {

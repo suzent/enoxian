@@ -138,11 +138,32 @@ pub enum MemberAction {
         /// Role: member (default) or admin
         #[arg(long, default_value = "member")]
         role: String,
+        /// Human owner of this peer, e.g. "alice". Defaults to agent_id reported by the peer.
+        #[arg(long)]
+        owner: Option<String>,
+        /// Agent identifier for this peer, e.g. "alice-suzent". Defaults to owner.
+        #[arg(long)]
+        agent_id: Option<String>,
     },
     /// Remove a member (auto-signs with admin.key if present)
     Remove { peer_id: String },
     /// Promote a member to admin (auto-signs with admin.key if present)
     Promote { peer_id: String },
+    /// List pending join requests
+    Pending,
+    /// Approve a pending member (auto-signs with admin.key)
+    Approve {
+        peer_id: String,
+        #[arg(long, default_value = "member")]
+        role: String,
+        /// Override the claimed owner name
+        #[arg(long)]
+        owner: Option<String>,
+    },
+    /// Reject a pending member
+    Reject { peer_id: String },
+    /// Remove all peers owned by a given owner
+    RemoveByOwner { owner: String },
 }
 
 // ── Shared arg structs ─────────────────────────────────────────────────────
@@ -160,6 +181,12 @@ pub struct InitArgs {
     /// Workspace directory (default: ~/enochian/<name>)
     #[arg(long)]
     pub dir: Option<std::path::PathBuf>,
+
+    #[arg(long)]
+    pub owner: Option<String>,
+
+    #[arg(long, default_value = "auto")]
+    pub join_policy: String,
 }
 
 #[derive(Parser)]
@@ -182,6 +209,9 @@ pub struct EnterArgs {
     /// Workspace directory (default: ~/enochian/<circle-name>)
     #[arg(long)]
     pub dir: Option<std::path::PathBuf>,
+
+    #[arg(long)]
+    pub owner: Option<String>,
 }
 
 #[derive(Parser)]

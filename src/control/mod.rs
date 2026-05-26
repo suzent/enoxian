@@ -10,6 +10,45 @@ pub const PRESENCE_KEY: &str = "presence";
 pub const MEMBER_LIST_KEY: &str = "member_list";
 pub const CHAT_KEY: &str = "chat";
 
+// ── MLS delivery-service keys (M11) ───────────────────────────────────────
+// Stored in the __control__ Yjs map; replicated to all peers via CRDT sync.
+
+/// Map[peer_id → hex(KeyPackage TLS bytes)] — each peer publishes on daemon start.
+pub const MLS_KEY_PACKAGES_KEY: &str = "mls_key_packages";
+/// Map[peer_id → hex(Welcome TLS bytes)] — admin stores after `member add`.
+pub const MLS_WELCOMES_KEY: &str = "mls_welcomes";
+/// Array[MlsCommitEntry] — every Commit stored so offline members can catch up.
+pub const MLS_COMMITS_KEY: &str = "mls_commits";
+/// Map[peer_id → PendingEntry JSON] — peers waiting for admin approval.
+pub const MLS_PENDING_KEY: &str = "mls_pending";
+/// Map[peer_id → OwnerClaim JSON] — self-signed owner name claims.
+pub const MLS_OWNER_CLAIMS_KEY: &str = "mls_owner_claims";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnerClaim {
+    pub owner: String,
+    /// hex(sign(peer_keypair, "owner:{owner}"))
+    pub sig: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingEntry {
+    pub peer_id: String,
+    pub owner: String,
+    pub agent_id: String,
+    /// hex(sign(peer_keypair, "owner:{owner}"))
+    pub owner_sig: String,
+    pub requested_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MlsCommitEntry {
+    pub epoch: u64,
+    pub data_hex: String,
+    pub sender_peer_id: String,
+    pub ratchet_tree_hex: String,
+}
+
 // ── Lock ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +135,10 @@ impl std::fmt::Display for MemberRole {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemberEntry {
     pub peer_id: String,
+    /// Human owner — groups machines belonging to the same person (e.g. "alice").
+    /// Multiple peer_ids with the same owner = same user on different machines.
+    pub owner: String,
+    /// Specific agent running on this peer (e.g. "alice", "alice-suzent", "claude-code").
     pub agent_id: String,
     pub role: MemberRole,
     pub added_at: DateTime<Utc>,

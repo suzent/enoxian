@@ -50,10 +50,13 @@ pub struct AppState {
     /// Per-path flag: set to true before flush_to_disk writes, cleared by watcher on receipt.
     /// Shared between the file watcher and flush_to_disk so they operate on the same flag.
     pub self_write_flags: Arc<DashMap<String, Arc<AtomicBool>>>,
+    pub join_policy: crate::config::JoinPolicy,
+    pub owner: String,
+    pub mls: crate::mls::SharedMlsState,
 }
 
 impl AppState {
-    pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, circle_dir: PathBuf, admin_pubkey_hex: String, agent_id: String, session_id: u64, peer_id: String) -> Self {
+    pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, circle_dir: PathBuf, admin_pubkey_hex: String, agent_id: String, session_id: u64, peer_id: String, join_policy: crate::config::JoinPolicy, owner: String, mls: crate::mls::SharedMlsState) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_awareness_tx, _) = broadcast::channel(EVENT_CAPACITY);
@@ -162,6 +165,9 @@ impl AppState {
             all_deletes: all_deletes_tx,
             events: events_tx,
             self_write_flags: Arc::new(DashMap::new()),
+            join_policy,
+            owner,
+            mls,
         }
     }
 

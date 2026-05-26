@@ -48,6 +48,9 @@ pub fn router(daemon: DaemonState) -> Router {
         .route("/circles/{circle_id}/members",         get(members::list_members).post(members::add_member))
         .route("/circles/{circle_id}/members/remove",  post(members::remove_member))
         .route("/circles/{circle_id}/members/promote", post(members::promote_member))
+        .route("/circles/{circle_id}/members/pending", get(members::list_pending))
+        .route("/circles/{circle_id}/members/approve", post(members::approve_member))
+        .route("/circles/{circle_id}/members/reject",  post(members::reject_member))
         // M7 management
         .route("/api/init", post(management::init_circle))
         .route("/api/enter", post(management::enter_circle))

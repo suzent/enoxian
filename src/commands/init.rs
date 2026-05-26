@@ -7,6 +7,7 @@ use crate::{
     config::{self, circle_dir, default_workspace_dir, CircleConfig},
     crypto::{generate_keypair, generate_psk, keypair_to_hex},
     invite::{self, InvitePayload},
+    mls::{MlsGroupManager, MlsIdentity},
 };
 
 pub async fn run(args: InitArgs) -> Result<()> {
@@ -38,6 +39,13 @@ pub async fn run(args: InitArgs) -> Result<()> {
     let admin_pubkey_hex = hex::encode(admin_keypair.public().encode_protobuf());
     let admin_privkey_hex = keypair_to_hex(&admin_keypair)?;
 
+    let peer_id_str = peer_id.to_string();
+    let owner = args.owner.unwrap_or_else(|| peer_id_str.clone());
+    let join_policy = match args.join_policy.to_lowercase().as_str() {
+        "manual" => crate::config::JoinPolicy::Manual,
+        _ => crate::config::JoinPolicy::Auto,
+    };
+
     let config = CircleConfig {
         circle_id:         circle_id.clone(),
         circle_name:       args.name.clone(),
@@ -49,6 +57,8 @@ pub async fn run(args: InitArgs) -> Result<()> {
         peers:             vec![],
         relay_addrs:       vec![],
         rendezvous_addrs:  vec![],
+        join_policy,
+        owner,
     };
     config::save(&config)?;
 
@@ -56,6 +66,15 @@ pub async fn run(args: InitArgs) -> Result<()> {
     let admin_key_path = circle_dir(&circle_id)?.join("admin.key");
     std::fs::write(&admin_key_path, &admin_privkey_hex)
         .map_err(|e| anyhow::anyhow!("failed to write admin.key: {e}"))?;
+
+    // ── Bootstrap MLS group (M11) ─────────────────────────────────────────────
+    // Creator starts a single-member MLS group. Other members join via Welcome
+    // messages distributed through the control doc (mls_welcomes).
+    let cdir = circle_dir(&circle_id)?;
+    let mls_identity = MlsIdentity::generate(&peer_id.to_string())?;
+    mls_identity.save(&cdir)?;
+    let _mls_group = MlsGroupManager::create(&mls_identity)?;
+    // Group state persistence (Phase 2) will save/restore across restarts.
 
     // ── Generate invite ───────────────────────────────────────────────────────
     let ttl = invite::parse_ttl(&args.ttl)?;

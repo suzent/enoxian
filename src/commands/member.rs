@@ -62,22 +62,28 @@ pub async fn run(
                     for m in members {
                         let peer = m["peer_id"].as_str().unwrap_or("?");
                         let role = m["role"].as_str().unwrap_or("member");
+                        let owner = m["owner"].as_str().unwrap_or("");
                         let agent = m["agent_id"].as_str().unwrap_or("");
-                        if agent.is_empty() {
-                            println!("  [{role}] {peer}");
-                        } else {
-                            println!("  [{role}] {peer}  ({agent})");
-                        }
+                        let label = match (owner, agent) {
+                            ("", "") => String::new(),
+                            (o, "") => format!("  owner={o}"),
+                            ("", a) => format!("  agent={a}"),
+                            (o, a) if o == a => format!("  {o}"),
+                            (o, a) => format!("  {o} / {a}"),
+                        };
+                        println!("  [{role}] {peer}{label}");
                     }
                 }
             }
         }
 
-        MemberAction::Add { peer_id, role } => {
+        MemberAction::Add { peer_id, role, owner, agent_id } => {
             let sig = sign_admin(&cfg.circle_id, format!("add:{peer_id}:{role}").as_bytes())?;
             let body = serde_json::json!({
                 "peer_id": peer_id,
                 "role": role,
+                "owner": owner,
+                "agent_id": agent_id,
                 "admin_signature": sig,
             });
             let resp = client.post(&base).json(&body).send().await
@@ -110,7 +116,7 @@ pub async fn run(
 
         MemberAction::Promote { peer_id } => {
             let peer_id = resolve_peer_id(client, &base, &peer_id).await?;
-            let sig = sign_admin(&cfg.circle_id, format!("add:{peer_id}:admin").as_bytes())?;
+            let sig = sign_admin(&cfg.circle_id, format!("add:{peer_id}:admin:owner:").as_bytes())?;
             let body = serde_json::json!({
                 "peer_id": peer_id,
                 "admin_signature": sig,
@@ -123,6 +129,105 @@ pub async fn run(
                 println!("{}", serde_json::to_string_pretty(&val)?);
             } else {
                 println!("✦ {}", val["status"].as_str().unwrap_or("done"));
+            }
+        }
+
+        MemberAction::Pending => {
+            let url = format!("{base}/pending");
+            let resp = client.get(&url).send().await
+                .context("failed to reach daemon — is enochd running?")?;
+            let val: serde_json::Value = resp.json().await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&val)?);
+            } else {
+                let members = val.as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+                if members.is_empty() {
+                    println!("(no pending requests)");
+                } else {
+                    for m in members {
+                        let peer = m["peer_id"].as_str().unwrap_or("?");
+                        let owner = m["owner"].as_str().unwrap_or("");
+                        let agent = m["agent_id"].as_str().unwrap_or("");
+                        println!("  [pending] {peer}  owner={owner}  agent={agent}");
+                    }
+                }
+            }
+        }
+
+        MemberAction::Approve { peer_id, role, owner } => {
+            let effective_owner = if let Some(o) = owner {
+                o
+            } else {
+                let url = format!("{base}/pending");
+                let resp = client.get(&url).send().await
+                    .context("failed to reach daemon")?;
+                let val: serde_json::Value = resp.json().await?;
+                val.as_array()
+                    .and_then(|arr| arr.iter().find(|m| m["peer_id"].as_str() == Some(&peer_id)))
+                    .and_then(|m| m["owner"].as_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let sig = sign_admin(&cfg.circle_id, format!("add:{peer_id}:{role}:owner:{effective_owner}").as_bytes())?;
+            let body = serde_json::json!({
+                "peer_id": peer_id,
+                "role": role,
+                "owner": effective_owner,
+                "admin_signature": sig,
+            });
+            let url = format!("{base}/approve");
+            let resp = client.post(&url).json(&body).send().await
+                .context("failed to reach daemon")?;
+            let val: serde_json::Value = resp.json().await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&val)?);
+            } else {
+                println!("✦ {}", val["status"].as_str().unwrap_or("done"));
+            }
+        }
+
+        MemberAction::Reject { peer_id } => {
+            let sig = sign_admin(&cfg.circle_id, format!("reject:{peer_id}").as_bytes())?;
+            let body = serde_json::json!({
+                "peer_id": peer_id,
+                "admin_signature": sig,
+            });
+            let url = format!("{base}/reject");
+            let resp = client.post(&url).json(&body).send().await
+                .context("failed to reach daemon")?;
+            let val: serde_json::Value = resp.json().await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&val)?);
+            } else {
+                println!("✦ {}", val["status"].as_str().unwrap_or("done"));
+            }
+        }
+
+        MemberAction::RemoveByOwner { owner } => {
+            let resp = client.get(&base).send().await
+                .context("failed to reach daemon — is enochd running?")?;
+            let val: serde_json::Value = resp.json().await?;
+            let peer_ids: Vec<String> = val.as_array()
+                .map(|arr| arr.iter()
+                    .filter(|m| m["owner"].as_str() == Some(&owner))
+                    .filter_map(|m| m["peer_id"].as_str().map(|s| s.to_string()))
+                    .collect())
+                .unwrap_or_default();
+            for pid in peer_ids {
+                let sig = sign_admin(&cfg.circle_id, format!("remove:{pid}").as_bytes())?;
+                let body = serde_json::json!({
+                    "peer_id": pid,
+                    "admin_signature": sig,
+                });
+                let url = format!("{base}/remove");
+                let resp = client.post(&url).json(&body).send().await
+                    .context("failed to reach daemon")?;
+                let val: serde_json::Value = resp.json().await?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&val)?);
+                } else {
+                    println!("✦ removed {pid}: {}", val["status"].as_str().unwrap_or("done"));
+                }
             }
         }
     }

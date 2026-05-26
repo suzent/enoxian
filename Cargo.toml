@@ -70,3 +70,10 @@ notify = "8"
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
 libp2p-stream = "0.4.0-alpha"
 open = "5"
+
+# M11 — MLS group key management (RFC 9420)
+openmls = "0.8"
+openmls_basic_credential = { version = "0.5", features = ["clonable"] }
+openmls_rust_crypto = "0.5"
+openmls_traits = "0.5"
+tls_codec = "0.4"

@@ -82,6 +82,7 @@ All docs are in the [`docs/`](docs/) folder:
 
 | Doc | Description |
 |-----|-------------|
+| [docs/overview.md](docs/overview.md) | **Start here** — intuitive walkthrough with diagrams |
 | [docs/getting-started.md](docs/getting-started.md) | Build, initialize, first commands |
 | [docs/concepts.md](docs/concepts.md) | Circle, Agent, Document, Control Doc |
 | [docs/cli.md](docs/cli.md) | Full `enoch` command reference |

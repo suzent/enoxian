@@ -12,9 +12,10 @@ use libp2p_stream as stream_proto;
 use crate::{
     cli::EnterArgs,
     commands::rendezvous as rdvz,
-    config::{self, CircleConfig, resolve_workspace_dir},
+    config::{self, circle_dir, CircleConfig, resolve_workspace_dir},
     crypto::{generate_keypair, keypair_to_hex, psk_from_hex},
     invite,
+    mls::MlsIdentity,
     network::behaviour::{EnochBehaviour, EnochEvent},
 };
 
@@ -99,8 +100,17 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         peers:             peer.as_deref().map(|p| vec![p.to_string()]).unwrap_or_default(),
         relay_addrs:       relay_from_invite.into_iter().collect(),
         rendezvous_addrs,
+        join_policy:       crate::config::JoinPolicy::default(),
+        owner:             args.owner.unwrap_or_default(),
     };
     config::save(&circle_config).context("failed to save circle config")?;
+
+    // ── Generate MLS identity (M11) ───────────────────────────────────────────
+    // Joiner creates their identity now; admin will send a Welcome via the
+    // control doc (mls_welcomes) after running `enoch member add`.
+    let cdir = circle_dir(&circle_id)?;
+    let mls_identity = MlsIdentity::generate(&peer_id.to_string())?;
+    mls_identity.save(&cdir)?;
 
     println!("  Workspace : {}", workspace_dir.display());
     println!("  Config    → ~/.enochian/circles/{circle_id}/config.toml");

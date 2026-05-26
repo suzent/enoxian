@@ -38,6 +38,8 @@ pub async fn init_circle(
         name: payload.name.clone(),
         ttl: "7d".to_string(),
         dir: payload.dir.map(std::path::PathBuf::from),
+        owner: None,
+        join_policy: "auto".to_string(),
     };
 
     match init::run(args).await {
@@ -76,6 +78,7 @@ pub async fn enter_circle(
         peer: payload.peer,
         rendezvous: None,
         dir: payload.dir.map(std::path::PathBuf::from),
+        owner: None,
     };
 
     let http_client = reqwest::Client::new();
