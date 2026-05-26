@@ -143,10 +143,16 @@ pub async fn generate_invite(
         best_connectable_addr(listen.as_slice()).map(String::from)
     });
 
-    // relay_addr and rendezvous_addr: from saved config (set when the admin
-    // joined via a relay/rendezvous invite themselves).
+    // relay_addr: from saved config.
     let relay_addr = config.relay_addrs.into_iter().next();
-    let rendezvous_addr = config.rendezvous_addrs.into_iter().next();
+
+    // rendezvous_addr: from saved config, or fall back to the default server
+    // (enochian.com) so invites are WAN-capable even without manual configuration.
+    let rendezvous_addr = if let Some(saved) = config.rendezvous_addrs.into_iter().next() {
+        Some(saved)
+    } else {
+        crate::commands::rendezvous::resolve_default().await
+    };
 
     let uri = invite::encode(&InvitePayload {
         circle_id: config.circle_id.clone(),

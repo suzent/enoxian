@@ -391,7 +391,29 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     // ── Dial rendezvous servers (QUIC) ────────────────────────────────────────
     // Rendezvous servers speak QUIC without PSK. After connecting we register
     // under the circle UUID namespace and discover other members.
-    let rendezvous_peers: HashSet<PeerId> = config.rendezvous_addrs
+    //
+    // If no rendezvous is configured for this circle, fall back to the default
+    // server defined in `crate::defaults::DEFAULT_RENDEZVOUS` (e.g. enochian.com).
+    // This ensures cross-internet connectivity works out of the box without any
+    // per-circle configuration.
+    let effective_rendezvous: Vec<String> = if config.rendezvous_addrs.is_empty() {
+        match crate::commands::rendezvous::resolve_default().await {
+            Some(addr) => {
+                info!("[{}] using default rendezvous {addr}", config.circle_id);
+                vec![addr]
+            }
+            None => {
+                if crate::defaults::DEFAULT_RENDEZVOUS.is_some() {
+                    warn!("[{}] default rendezvous unreachable — LAN-only mode", config.circle_id);
+                }
+                vec![]
+            }
+        }
+    } else {
+        config.rendezvous_addrs.clone()
+    };
+
+    let rendezvous_peers: HashSet<PeerId> = effective_rendezvous
         .iter()
         .filter_map(|s| {
             let addr: Multiaddr = s.parse().ok()?;
@@ -401,7 +423,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         })
         .collect();
 
-    for rdvz_str in &config.rendezvous_addrs {
+    for rdvz_str in &effective_rendezvous {
         match rdvz_str.parse::<Multiaddr>() {
             Ok(addr) => {
                 info!("[{}] dialing rendezvous server {addr}", config.circle_id);

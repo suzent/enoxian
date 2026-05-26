@@ -45,6 +45,17 @@ pub async fn resolve(input: &str, client: &reqwest::Client) -> Result<String> {
     Ok(multiaddr)
 }
 
+/// Resolve the default rendezvous server defined in `crate::defaults::DEFAULT_RENDEZVOUS`.
+/// Returns `None` if the constant is unset or the server cannot be reached (non-fatal).
+pub async fn resolve_default() -> Option<String> {
+    let host = crate::defaults::DEFAULT_RENDEZVOUS?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+    resolve(host, &client).await.ok()
+}
+
 fn split_host_port(input: &str, default_port: u16) -> (String, u16) {
     // Handle host:port
     if let Some(colon) = input.rfind(':') {
