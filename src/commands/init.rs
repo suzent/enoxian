@@ -73,8 +73,9 @@ pub async fn run(args: InitArgs) -> Result<()> {
     let cdir = circle_dir(&circle_id)?;
     let mls_identity = MlsIdentity::generate(&peer_id.to_string())?;
     mls_identity.save(&cdir)?;
-    let _mls_group = MlsGroupManager::create(&mls_identity)?;
-    // Group state persistence (Phase 2) will save/restore across restarts.
+    let mls_group = MlsGroupManager::create(&mls_identity)?;
+    mls_group.save(&mls_identity, &cdir)
+        .map_err(|e| anyhow::anyhow!("failed to save MLS group: {e}"))?;
 
     // ── Generate invite ───────────────────────────────────────────────────────
     let ttl = invite::parse_ttl(&args.ttl)?;

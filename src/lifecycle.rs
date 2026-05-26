@@ -117,10 +117,8 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             matches!(map.get(&txn, peer_id.to_string().as_str()), Some(Out::Any(Any::String(_))))
         };
         if !already_registered {
-            let role = config::circle_dir(&config.circle_id)
-                .ok()
-                .map(|d| if d.join("admin.key").exists() { MemberRole::Admin } else { MemberRole::Member })
-                .unwrap_or(MemberRole::Member);
+            let is_local_admin = cdir.join("admin.key").exists();
+            let role = if is_local_admin { MemberRole::Admin } else { MemberRole::Member };
             let msg = format!("add:{}:{}", peer_id, role);
             let signature = keypair.sign(msg.as_bytes()).map(hex::encode).unwrap_or_default();
             let entry = MemberEntry {
@@ -136,22 +134,63 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 map.insert(&mut txn, peer_id.to_string().as_str(), json_str.as_str());
             }
 
-            // Write pending entry if not in member list
-            let pending_entry = PendingEntry {
-                peer_id: peer_id.to_string(),
-                owner: config.owner.clone(),
-                agent_id: agent_id.clone(),
-                owner_sig: {
-                    let owner_claim_msg = format!("owner:{}", config.owner);
-                    keypair.sign(owner_claim_msg.as_bytes()).map(hex::encode).unwrap_or_default()
-                },
-                requested_at: chrono::Utc::now(),
-            };
-            if let Ok(json_str) = serde_json::to_string(&pending_entry) {
-                let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
-                let mut txn = state.control.transact_mut();
-                pending_map.insert(&mut txn, peer_id.to_string().as_str(), json_str.as_str());
+            // Admins never queue themselves as pending — they bootstrap the MLS group.
+            // Non-admins write a pending entry so the admin can issue a Welcome.
+            if !is_local_admin {
+                let pending_entry = PendingEntry {
+                    peer_id: peer_id.to_string(),
+                    owner: config.owner.clone(),
+                    agent_id: agent_id.clone(),
+                    owner_sig: {
+                        let owner_claim_msg = format!("owner:{}", config.owner);
+                        keypair.sign(owner_claim_msg.as_bytes()).map(hex::encode).unwrap_or_default()
+                    },
+                    requested_at: chrono::Utc::now(),
+                };
+                if let Ok(json_str) = serde_json::to_string(&pending_entry) {
+                    let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
+                    let mut txn = state.control.transact_mut();
+                    pending_map.insert(&mut txn, peer_id.to_string().as_str(), json_str.as_str());
+                }
             }
+        }
+
+        // If admin has no MLS group (e.g. circle predates M11 or group.json was lost),
+        // bootstrap it now — admin is always leaf 0.
+        let is_local_admin = cdir.join("admin.key").exists();
+        if is_local_admin {
+            let mut mls_locked = mls.lock().await;
+            if mls_locked.group.is_none() {
+                match MlsGroupManager::create(&mls_locked.identity) {
+                    Ok(group) => {
+                        if let Err(e) = group.save(&mls_locked.identity, &cdir) {
+                            warn!("[mls] auto-bootstrap: failed to save group: {e}");
+                        } else {
+                            info!("[mls] auto-bootstrapped MLS group for pre-M11 circle");
+                        }
+                        mls_locked.group = Some(group);
+                    }
+                    Err(e) => warn!("[mls] auto-bootstrap: failed to create group: {e}"),
+                }
+            }
+        }
+    }
+
+    // Admin: remove any stale pending entry for ourselves (left by a previous run
+    // before this logic existed, or from a race during first boot).
+    let is_admin = cdir.join("admin.key").exists();
+    if is_admin {
+        use yrs::{Map, Transact};
+        let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
+        let self_peer_str = peer_id.to_string();
+        let has_self_pending = {
+            use yrs::Out;
+            let txn = state.control.transact();
+            matches!(pending_map.get(&txn, self_peer_str.as_str()), Some(Out::Any(_)))
+        };
+        if has_self_pending {
+            let mut txn = state.control.transact_mut();
+            pending_map.remove(&mut txn, self_peer_str.as_str());
         }
     }
 
