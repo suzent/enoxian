@@ -12,6 +12,20 @@ export interface Status {
   docs: number
 }
 
+export interface Member {
+  peer_id: string
+  owner: string
+  agent_id: string
+  role: 'admin' | 'member'
+}
+
+export interface PendingEntry {
+  peer_id: string
+  owner: string
+  agent_id: string
+  requested_at: number
+}
+
 export interface Presence {
   agent_id: string
   status: 'online' | 'idle' | 'offline'

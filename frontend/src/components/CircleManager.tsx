@@ -9,7 +9,10 @@ export default function CircleManager() {
 
   // Form states
   const [initName, setInitName] = useState('')
+  const [initOwner, setInitOwner] = useState('')
+  const [initJoinPolicy, setInitJoinPolicy] = useState<'auto' | 'manual'>('auto')
   const [enterTarget, setEnterTarget] = useState('')
+  const [enterOwner, setEnterOwner] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
 
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
@@ -18,11 +21,13 @@ export default function CircleManager() {
     e.preventDefault()
     setErrorMsg('')
     try {
-      const res = await initCircle(initName)
+      const res = await initCircle(initName, initOwner || undefined, initJoinPolicy)
       await reloadCircles()
       if (res.circle_id) setActiveCircleId(res.circle_id)
       setModal(null)
       setInitName('')
+      setInitOwner('')
+      setInitJoinPolicy('auto')
     } catch (err: any) {
       setErrorMsg(err.message)
     }
@@ -32,10 +37,11 @@ export default function CircleManager() {
     e.preventDefault()
     setErrorMsg('')
     try {
-      await enterCircle(enterTarget)
+      await enterCircle(enterTarget, enterOwner || undefined)
       await reloadCircles()
       setModal(null)
       setEnterTarget('')
+      setEnterOwner('')
     } catch (err: any) {
       setErrorMsg(err.message)
     }
@@ -163,7 +169,7 @@ export default function CircleManager() {
               <form onSubmit={handleInit}>
                 <h2 className="text-[14px] font-bold mb-4 border-b-2 border-obsidian pb-2">INIT NEW CIRCLE</h2>
                 {errorMsg && <div className="text-red-600 mb-2 font-bold bg-red-100 p-2 border border-red-600">{errorMsg}</div>}
-                <div className="mb-6">
+                <div className="mb-4">
                   <label className="block text-slate font-bold mb-1 tracking-widest">CIRCLE NAME</label>
                   <input
                     type="text"
@@ -173,6 +179,43 @@ export default function CircleManager() {
                     className="w-full border-2 border-obsidian bg-transparent px-3 py-2 outline-none focus:bg-obsidian/5 font-bold"
                     placeholder="e.g. project-alpha"
                   />
+                </div>
+                <div className="mb-4">
+                  <label className="block text-slate font-bold mb-1 tracking-widest">
+                    YOUR NAME <span className="font-normal text-obsidian/40">(OWNER)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={initOwner}
+                    onChange={e => setInitOwner(e.target.value)}
+                    className="w-full border-2 border-obsidian bg-transparent px-3 py-2 outline-none focus:bg-obsidian/5 font-bold"
+                    placeholder="e.g. alice"
+                  />
+                  <p className="text-[9px] text-slate mt-1">
+                    IDENTIFIES YOU ACROSS ALL YOUR MACHINES. FIRST-COME-FIRST-SERVE — CRYPTOGRAPHICALLY BOUND.
+                  </p>
+                </div>
+                <div className="mb-6">
+                  <label className="block text-slate font-bold mb-1 tracking-widest">JOIN POLICY</label>
+                  <div className="flex gap-2">
+                    {(['auto', 'manual'] as const).map(p => (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => setInitJoinPolicy(p)}
+                        className={`flex-1 py-2 border-2 border-obsidian font-bold transition-colors ${
+                          initJoinPolicy === p ? 'bg-obsidian text-alabaster' : 'bg-transparent hover:bg-obsidian/5'
+                        }`}
+                      >
+                        {p.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[9px] text-slate mt-1">
+                    {initJoinPolicy === 'auto'
+                      ? 'NEW MEMBERS ARE APPROVED AUTOMATICALLY.'
+                      : 'NEW MEMBERS WAIT FOR YOUR EXPLICIT APPROVAL.'}
+                  </p>
                 </div>
                 <button type="submit" className="w-full bg-obsidian text-alabaster py-3 font-bold hover:bg-slate transition-colors border-2 border-obsidian shadow-[2px_2px_0px_#111] active:translate-y-px active:translate-x-px active:shadow-none">
                   CREATE CIRCLE
@@ -184,7 +227,7 @@ export default function CircleManager() {
               <form onSubmit={handleEnter}>
                 <h2 className="text-[14px] font-bold mb-4 border-b-2 border-obsidian pb-2">ENTER CIRCLE</h2>
                 {errorMsg && <div className="text-red-600 mb-2 font-bold bg-red-100 p-2 border border-red-600">{errorMsg}</div>}
-                <div className="mb-6">
+                <div className="mb-4">
                   <label className="block text-slate font-bold mb-1 tracking-widest">INVITE URI</label>
                   <textarea
                     required
@@ -193,6 +236,21 @@ export default function CircleManager() {
                     className="w-full border-2 border-obsidian bg-transparent px-3 py-2 outline-none focus:bg-obsidian/5 h-24 resize-none font-bold"
                     placeholder="enochian://..."
                   />
+                </div>
+                <div className="mb-6">
+                  <label className="block text-slate font-bold mb-1 tracking-widest">
+                    YOUR NAME <span className="font-normal text-obsidian/40">(OWNER)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={enterOwner}
+                    onChange={e => setEnterOwner(e.target.value)}
+                    className="w-full border-2 border-obsidian bg-transparent px-3 py-2 outline-none focus:bg-obsidian/5 font-bold"
+                    placeholder="e.g. bob"
+                  />
+                  <p className="text-[9px] text-slate mt-1">
+                    CLAIMED FIRST-COME-FIRST-SERVE. LEAVE BLANK TO USE YOUR PEER ID.
+                  </p>
                 </div>
                 <button type="submit" className="w-full bg-obsidian text-alabaster py-3 font-bold hover:bg-slate transition-colors border-2 border-obsidian shadow-[2px_2px_0px_#111] active:translate-y-px active:translate-x-px active:shadow-none">
                   JOIN CIRCLE

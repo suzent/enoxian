@@ -1,4 +1,4 @@
-import type { Circle, Status, Presence, ChatMessage, Task } from './types'
+import type { Circle, Status, Presence, ChatMessage, Task, Member, PendingEntry } from './types'
 
 const api = (circleId: string) => `/circles/${circleId}/api`
 
@@ -18,6 +18,7 @@ async function post<T>(url: string, body: unknown): Promise<T> {
   return res.json()
 }
 
+
 export const getCircles = () => get<Circle[]>('/circles')
 export const getStatus = (id: string) => get<Status>(`${api(id)}/status`)
 export const getWho = (id: string) => get<Presence[]>(`${api(id)}/who`)
@@ -34,17 +35,27 @@ export const doneTask = (id: string, taskId: string, agentId: string) =>
   post(`${api(id)}/done`, { task_id: taskId, agent_id: agentId })
 export const getFiles = (id: string) => get<string[]>(`${api(id)}/files`)
 
-export const initCircle = (name: string, dir?: string) => 
-  post<{status: string, circle_id?: string}>('/api/init', { name, dir })
-export const enterCircle = (target: string, secret?: string, peer?: string, dir?: string) => 
-  post<{status: string}>('/api/enter', { target, secret, peer, dir })
-export const inviteCircle = (id: string) => 
+// ── Member management (M11) ──────────────────────────────────────────────────
+export const getMembers = (id: string) => get<Member[]>(`/circles/${id}/members`)
+export const getPending = (id: string) => get<PendingEntry[]>(`/circles/${id}/members/pending`)
+export const approveMember = (id: string, peerId: string, role: string, owner: string, adminSig: string) =>
+  post<{status: string}>(`/circles/${id}/members/approve`, { peer_id: peerId, role, owner, admin_signature: adminSig })
+export const rejectMember = (id: string, peerId: string, adminSig: string) =>
+  post<{status: string}>(`/circles/${id}/members/reject`, { peer_id: peerId, admin_signature: adminSig })
+export const removeMember = (id: string, peerId: string, adminSig: string) =>
+  post<{status: string}>(`/circles/${id}/members/remove`, { peer_id: peerId, admin_signature: adminSig })
+
+export const initCircle = (name: string, owner?: string, joinPolicy?: string, dir?: string) =>
+  post<{status: string, circle_id?: string}>('/api/init', { name, owner, join_policy: joinPolicy, dir })
+export const enterCircle = (target: string, owner?: string, secret?: string, peer?: string, dir?: string) =>
+  post<{status: string}>('/api/enter', { target, owner, secret, peer, dir })
+export const inviteCircle = (id: string) =>
   post<{invite_uri: string}>(`${api(id)}/invite`, {})
-export const enableCircle = (id: string) => 
+export const enableCircle = (id: string) =>
   post<{status: string}>(`${api(id)}/enable`, {})
-export const disableCircle = (id: string) => 
+export const disableCircle = (id: string) =>
   post<{status: string}>(`${api(id)}/disable`, {})
-export const leaveCircle = (id: string) => 
+export const leaveCircle = (id: string) =>
   post<{status: string}>(`${api(id)}/leave`, {})
 export function chatStream(circleId: string): EventSource {
   return new EventSource(`${api(circleId)}/chat/stream`)

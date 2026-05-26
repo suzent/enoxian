@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { Presence, Task } from '../types'
-import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, eventStream, inviteCircle } from '../api'
+import type { Presence, Task, Member, PendingEntry } from '../types'
+import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember } from '../api'
 import { useApp } from '../context/AppContext'
 import { agentColor } from '../lib/agentColor'
 
@@ -21,10 +21,13 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [presence, setPresence] = useState<Presence[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [files, setFiles] = useState<string[]>([])
+  const [members, setMembers] = useState<Member[]>([])
+  const [pending, setPending] = useState<PendingEntry[]>([])
   const [newTaskTitle, setNewTaskTitle] = useState('')
   const [newTaskDesc, setNewTaskDesc] = useState('')
   const [creating, setCreating] = useState(false)
   const [inviteUri, setInviteUri] = useState<string | null>(null)
+  const [memberActionError, setMemberActionError] = useState<string | null>(null)
   const selectedFileRef = useRef<string | null>(selectedFile)
 
   useEffect(() => {
@@ -35,6 +38,8 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     setPresence([])
     setTasks([])
     setFiles([])
+    setMembers([])
+    setPending([])
     if (!activeCircleId) return
 
     let cancelled = false
@@ -48,6 +53,11 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 
     const refreshPresence = () => {
       getWho(activeCircleId).then(data => { if (!cancelled) setPresence(data) }).catch(() => {})
+    }
+
+    const refreshMembers = () => {
+      getMembers(activeCircleId).then(data => { if (!cancelled) setMembers(data) }).catch(() => {})
+      getPending(activeCircleId).then(data => { if (!cancelled) setPending(data) }).catch(() => {})
     }
 
     const refreshTasks = () => {
@@ -107,6 +117,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
       refreshPresence()
       refreshTasks()
       refreshFiles()
+      refreshMembers()
     }
 
     refresh()
@@ -127,6 +138,9 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
         }
         if (data.type === 'task_created' || data.type === 'task_claimed' || data.type === 'task_done') {
           scheduleTasksRefresh()
+        }
+        if (data.type === 'member_joined' || data.type === 'member_removed' || data.type === 'member_pending') {
+          refreshMembers()
         }
       } catch {}
     })
@@ -149,6 +163,53 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     createTask(activeCircleId, title, newTaskDesc.trim(), status.agent_id)
       .then(() => { setNewTaskTitle(''); setNewTaskDesc(''); setCreating(false); refreshTasks() })
       .catch(() => {})
+  }
+
+  // Determine if the current user is admin
+  const isAdmin = members.some(m => m.agent_id === status?.agent_id && m.role === 'admin')
+    || members.some(m => m.peer_id && m.role === 'admin' && m.agent_id === status?.agent_id)
+
+  const refreshMembers = useCallback(() => {
+    if (!activeCircleId) return
+    getMembers(activeCircleId).then(setMembers).catch(() => {})
+    getPending(activeCircleId).then(setPending).catch(() => {})
+  }, [activeCircleId])
+
+  const handleApprove = async (peerId: string, owner: string) => {
+    if (!activeCircleId) return
+    setMemberActionError(null)
+    try {
+      // The frontend can't sign with admin.key (server-side only).
+      // We call the approve endpoint; the daemon validates the admin key itself
+      // when the request carries no sig — only works in "api mode" where daemon
+      // auto-signs if it holds admin.key.
+      await approveMember(activeCircleId, peerId, 'member', owner, '')
+      refreshMembers()
+    } catch (err: any) {
+      setMemberActionError(`approve failed: ${err.message}`)
+    }
+  }
+
+  const handleReject = async (peerId: string) => {
+    if (!activeCircleId) return
+    setMemberActionError(null)
+    try {
+      await rejectMember(activeCircleId, peerId, '')
+      refreshMembers()
+    } catch (err: any) {
+      setMemberActionError(`reject failed: ${err.message}`)
+    }
+  }
+
+  const handleRemove = async (peerId: string) => {
+    if (!activeCircleId) return
+    setMemberActionError(null)
+    try {
+      await removeMember(activeCircleId, peerId, '')
+      refreshMembers()
+    } catch (err: any) {
+      setMemberActionError(`remove failed: ${err.message}`)
+    }
   }
 
   const local = presence.filter(p => p.agent_id === status?.agent_id)
@@ -214,6 +275,89 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
           </div>
         )}
         {presence.length === 0 && <div className="text-slate">NO ENTITIES DETECTED</div>}
+      </div>
+
+      {/* ── Members ──────────────────────────────────────────────────────── */}
+      <div className="section-header border-t-2 border-obsidian">
+        Circle Members
+        {pending.length > 0 && (
+          <span className="ml-2 bg-red-600 text-alabaster text-[9px] font-bold px-1.5 py-0.5">
+            {pending.length} PENDING
+          </span>
+        )}
+      </div>
+
+      {/* Pending approval queue — only visible when there are requests */}
+      {pending.length > 0 && (
+        <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px]">
+          <div className="group-label text-red-600">AWAITING APPROVAL</div>
+          {memberActionError && (
+            <div className="text-red-600 text-[9px] font-bold bg-red-50 border border-red-400 px-2 py-1">
+              {memberActionError}
+            </div>
+          )}
+          {pending.map(p => (
+            <div key={p.peer_id} className="flex flex-col gap-1 pb-2 border-b border-dashed border-obsidian/20 last:border-0">
+              <div className="flex justify-between items-start gap-1">
+                <div className="flex flex-col min-w-0">
+                  <span className="font-bold truncate">{p.owner || p.agent_id}</span>
+                  <span className="text-[9px] text-slate font-mono truncate" title={p.peer_id}>
+                    {p.peer_id.slice(0, 20)}…
+                  </span>
+                </div>
+              </div>
+              {isAdmin && (
+                <div className="flex gap-1 mt-0.5">
+                  <button
+                    onClick={() => handleApprove(p.peer_id, p.owner)}
+                    className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold"
+                  >
+                    APPROVE
+                  </button>
+                  <button
+                    onClick={() => handleReject(p.peer_id)}
+                    className="text-[9px] border border-red-600 text-red-600 px-2 py-0.5 hover:bg-red-600 hover:text-alabaster font-bold"
+                  >
+                    REJECT
+                  </button>
+                </div>
+              )}
+              {!isAdmin && (
+                <div className="text-[9px] text-slate">WAITING FOR ADMIN APPROVAL</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Member list */}
+      <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px] max-h-[180px] overflow-y-auto">
+        {members.length === 0 && <div className="text-slate">NO MEMBERS INDEXED</div>}
+        {members.map(m => {
+          const isSelf = m.agent_id === status?.agent_id
+          const label = m.owner && m.owner !== m.agent_id ? `${m.owner} / ${m.agent_id}` : (m.owner || m.agent_id)
+          return (
+            <div key={m.peer_id} className="flex justify-between items-center gap-2 pb-1 border-b border-dashed border-obsidian/20 last:border-0">
+              <div className="flex flex-col min-w-0">
+                <span className={`font-bold truncate ${isSelf ? 'text-obsidian' : ''}`}>
+                  {label}{isSelf ? ' ✦' : ''}
+                </span>
+                <span className={`text-[9px] font-mono ${m.role === 'admin' ? 'text-obsidian font-bold' : 'text-slate'}`}>
+                  {m.role.toUpperCase()}
+                </span>
+              </div>
+              {isAdmin && !isSelf && (
+                <button
+                  onClick={() => handleRemove(m.peer_id)}
+                  className="shrink-0 text-[9px] text-slate hover:text-red-600 font-bold px-1"
+                  title={`Remove ${label}`}
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          )
+        })}
       </div>
 
       {/* ── Tasks ────────────────────────────────────────────────────────── */}

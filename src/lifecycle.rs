@@ -85,7 +85,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     {
         use yrs::{Map, Transact};
         let kp_bytes = {
-            let mls_locked = mls.blocking_lock();
+            let mls_locked = mls.lock().await;
             mls_locked.identity.generate_key_package()?
         };
         let kp_hex = hex::encode(&kp_bytes);
@@ -183,7 +183,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     // Also handles the offline-approval case — initial full P2P sync fires the
     // observer for all pre-existing map entries.
     {
-        let has_group = mls.blocking_lock().group.is_some();
+        let has_group = mls.lock().await.group.is_some();
         if !has_group {
             let welcomes_map = state.control.get_or_insert_map(MLS_WELCOMES_KEY);
             let our_peer_id_str = peer_id.to_string();
