@@ -5,10 +5,7 @@ use tracing::{info, warn};
 use crate::{api, cli::ServeArgs, config, daemon::DaemonState, lifecycle};
 
 pub async fn run(args: ServeArgs) -> Result<()> {
-    let all_configs = config::load_all().context("failed to load circle configs")?;
-    if all_configs.is_empty() {
-        anyhow::bail!("no circles found — run `enoch init` to create one");
-    }
+    let all_configs = config::load_all().unwrap_or_default();
 
     let active: Vec<_> = all_configs.iter().filter(|c| !c.disabled).collect();
     info!(
@@ -16,11 +13,16 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         all_configs.len(),
         active.len()
     );
+    if all_configs.is_empty() {
+        info!("No circles yet — waiting for `enoch init` or POST /api/init via the frontend.");
+    }
 
     let daemon = DaemonState::new();
 
     for config in active {
-        lifecycle::spawn_circle(config.clone(), daemon.clone()).await?;
+        if let Err(e) = lifecycle::spawn_circle(config.clone(), daemon.clone()).await {
+            warn!("Failed to start circle '{}': {e}", config.circle_name);
+        }
     }
 
     // Hot-reload: periodically check for new circles added while daemon is running.
