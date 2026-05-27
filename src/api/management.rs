@@ -51,8 +51,14 @@ pub async fn init_circle(
                 if let Some(c) = configs.into_iter().find(|c| c.circle_name == payload.name) {
                     let circle_id = c.circle_id.clone();
                     if !daemon.is_active(&circle_id) {
-                        if let Err(e) = crate::lifecycle::spawn_circle(c, daemon).await {
-                            tracing::warn!("[api] init_circle spawn failed: {e}");
+                        // Run in a separate task so a panic inside spawn_circle becomes a
+                        // JoinError rather than propagating to the handler as a 500.
+                        // We still await the handle so the circle is registered before we
+                        // respond — the frontend's reloadCircles() will see it immediately.
+                        match tokio::spawn(crate::lifecycle::spawn_circle(c, daemon)).await {
+                            Ok(Err(e)) => tracing::warn!("[api] init_circle spawn failed: {e}"),
+                            Err(e)     => tracing::warn!("[api] init_circle spawn panicked: {e}"),
+                            Ok(Ok(())) => {}
                         }
                     }
                     return Json(json!({ "status": "ok", "circle_id": circle_id })).into_response();
@@ -93,8 +99,10 @@ pub async fn enter_circle(
             if let Some(id) = circle_id_hint {
                 if let Ok(cfg) = config::load(&id) {
                     if !daemon.is_active(&id) {
-                        if let Err(e) = crate::lifecycle::spawn_circle(cfg, daemon).await {
-                            tracing::warn!("[api] enter_circle spawn failed: {e}");
+                        match tokio::spawn(crate::lifecycle::spawn_circle(cfg, daemon)).await {
+                            Ok(Err(e)) => tracing::warn!("[api] enter_circle spawn failed: {e}"),
+                            Err(e)     => tracing::warn!("[api] enter_circle spawn panicked: {e}"),
+                            Ok(Ok(())) => {}
                         }
                     }
                 }
