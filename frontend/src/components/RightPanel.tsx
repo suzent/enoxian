@@ -42,6 +42,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [creating, setCreating] = useState(false)
   const [inviteUri, setInviteUri] = useState<string | null>(null)
   const [inviteConnectivity, setInviteConnectivity] = useState<{peer_addr: string|null, relay_addr: string|null, rendezvous_addr: string|null} | null>(null)
+  const [inviteCopied, setInviteCopied] = useState(false)
   const [memberActionError, setMemberActionError] = useState<string | null>(null)
   const selectedFileRef = useRef<string | null>(selectedFile)
 
@@ -264,45 +265,57 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
       </div>
       {inviteUri && (
         <div className="px-4 py-3 border-b border-dashed border-obsidian/30 text-[11px] font-mono">
-          <div className="mb-1 text-slate font-bold">INVITE URI CREATED:</div>
-          <input 
-            readOnly 
-            value={inviteUri} 
-            onClick={e => { (e.target as HTMLInputElement).select(); navigator.clipboard.writeText(inviteUri) }}
-            className="w-full bg-obsidian text-alabaster px-2 py-1 outline-none text-[10px] cursor-pointer"
-            title="Click to copy"
-          />
-          {inviteConnectivity && (
-            <div className="mt-2 pt-2 border-t border-dashed border-obsidian/30">
-              <div className="text-[9px] font-bold mb-1">
-                {inviteConnectivity.peer_addr || inviteConnectivity.relay_addr || inviteConnectivity.rendezvous_addr
-                  ? '✦ WAN-READY — EMBEDDED:'
-                  : '⚠ LAN-ONLY — NO PUBLIC ADDRESS YET'}
+          {/* Truncated URI + copy button */}
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-slate text-[9px] font-bold shrink-0">INVITE</span>
+            <span
+              className="flex-1 min-w-0 bg-obsidian/8 border border-obsidian/30 px-2 py-1 text-[10px] truncate text-obsidian/70 select-none"
+              title={inviteUri}
+            >
+              {inviteUri.slice(0, 24)}···{inviteUri.slice(-6)}
+            </span>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(inviteUri)
+                setInviteCopied(true)
+                setTimeout(() => setInviteCopied(false), 2000)
+              }}
+              className={`shrink-0 text-[9px] px-2 py-1 border font-bold transition-colors ${
+                inviteCopied
+                  ? 'bg-obsidian text-alabaster border-obsidian'
+                  : 'border-obsidian hover:bg-obsidian hover:text-alabaster'
+              }`}
+            >
+              {inviteCopied ? 'COPIED ✓' : 'COPY'}
+            </button>
+          </div>
+
+          {/* Connectivity summary */}
+          {inviteConnectivity && (() => {
+            const wan = inviteConnectivity.peer_addr || inviteConnectivity.relay_addr || inviteConnectivity.rendezvous_addr
+            const tags: string[] = []
+            if (inviteConnectivity.peer_addr) tags.push('DIRECT')
+            if (inviteConnectivity.relay_addr) tags.push('RELAY')
+            if (inviteConnectivity.rendezvous_addr) tags.push('RDVZ')
+            return (
+              <div className="flex items-center gap-2 text-[9px]">
+                <span className={`font-bold ${wan ? 'text-obsidian' : 'text-slate'}`}>
+                  {wan ? '✦ WAN' : '⚠ LAN-ONLY'}
+                </span>
+                {tags.map(t => (
+                  <span key={t} className="border border-obsidian/40 px-1 text-slate">{t}</span>
+                ))}
               </div>
-              {inviteConnectivity.peer_addr && (
-                <div className="text-[9px] text-slate truncate" title={inviteConnectivity.peer_addr}>
-                  PEER: {inviteConnectivity.peer_addr}
-                </div>
-              )}
-              {inviteConnectivity.relay_addr && (
-                <div className="text-[9px] text-slate truncate" title={inviteConnectivity.relay_addr}>
-                  RELAY: {inviteConnectivity.relay_addr}
-                </div>
-              )}
-              {inviteConnectivity.rendezvous_addr && (
-                <div className="text-[9px] text-slate truncate" title={inviteConnectivity.rendezvous_addr}>
-                  RDVZ: {inviteConnectivity.rendezvous_addr}
-                </div>
-              )}
-              {!inviteConnectivity.peer_addr && !inviteConnectivity.relay_addr && !inviteConnectivity.rendezvous_addr && (
-                <div className="text-[9px] text-slate">
-                  JOINEE MUST BE ON THE SAME LAN, OR YOU NEED TO CONFIGURE A RELAY/RENDEZVOUS SERVER.
-                </div>
-              )}
-            </div>
-          )}
+            )
+          })()}
+
           <div className="mt-2 text-right">
-            <button onClick={() => { setInviteUri(null); setInviteConnectivity(null) }} className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold">CLOSE</button>
+            <button
+              onClick={() => { setInviteUri(null); setInviteConnectivity(null); setInviteCopied(false) }}
+              className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold"
+            >
+              CLOSE
+            </button>
           </div>
         </div>
       )}

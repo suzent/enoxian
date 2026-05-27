@@ -37,7 +37,7 @@ export default function CircleManager() {
     e.preventDefault()
     setErrorMsg('')
     try {
-      await enterCircle(enterTarget, enterOwner || undefined)
+      await enterCircle(enterTarget.trim(), enterOwner || undefined)
       await reloadCircles()
       setModal(null)
       setEnterTarget('')
@@ -232,7 +232,11 @@ export default function CircleManager() {
                   <textarea
                     required
                     value={enterTarget}
-                    onChange={e => setEnterTarget(e.target.value)}
+                    onChange={e => setEnterTarget(e.target.value.trim())}
+                    onPaste={e => {
+                      e.preventDefault()
+                      setEnterTarget(e.clipboardData.getData('text').trim())
+                    }}
                     className="w-full border-2 border-obsidian bg-transparent px-3 py-2 outline-none focus:bg-obsidian/5 h-24 resize-none font-bold"
                     placeholder="enochian://..."
                   />
