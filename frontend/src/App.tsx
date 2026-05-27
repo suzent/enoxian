@@ -32,8 +32,7 @@ function Layout() {
     <>
       <ThreeBackground ref={sceneRef} />
 
-      <div className="relative z-10 h-screen grid"
-           style={{ gridTemplateColumns: '320px 1fr 300px', gridTemplateRows: '60px 1fr' }}>
+      <div className="app-shell relative z-10 grid">
         <Header />
         <ChatPanel onMessage={onMessage} />
         <EditorPanel filePath={selectedFile} />

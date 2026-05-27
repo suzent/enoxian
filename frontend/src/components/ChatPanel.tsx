@@ -104,7 +104,7 @@ export default function ChatPanel({ onMessage }: Props) {
   }
 
   return (
-    <aside className="flex flex-col border-r-2 border-obsidian bg-alabaster/85 z-10 overflow-hidden">
+    <aside className="app-chat-panel flex min-h-0 flex-col border-r-2 border-obsidian bg-alabaster/85 z-10 overflow-hidden">
       <div className="section-header">Terminal Log</div>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 flex flex-col gap-4 font-mono text-[11px] min-w-0">
@@ -117,13 +117,13 @@ export default function ChatPanel({ onMessage }: Props) {
         <div ref={bottomRef} />
       </div>
 
-      <div className="border-t-2 border-obsidian p-4 flex gap-2 bg-alabaster">
+      <div className="border-t-2 border-obsidian p-4 flex flex-wrap gap-2 bg-alabaster">
         <input
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && send()}
           placeholder="Inject command..."
-          className="flex-1 bg-transparent border border-obsidian font-mono text-[11px] px-2 py-2
+          className="min-w-[160px] flex-1 bg-transparent border border-obsidian font-mono text-[11px] px-2 py-2
                      text-obsidian placeholder:text-slate focus:outline-none focus:bg-obsidian/5"
         />
         <button onClick={send} className="enoch-btn">EXEC</button>

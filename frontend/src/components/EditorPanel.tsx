@@ -141,7 +141,7 @@ export default function EditorPanel({ filePath }: Props) {
 
   if (!filePath) {
     return (
-      <main className="flex items-center justify-center z-10 bg-transparent">
+      <main className="app-editor-panel flex min-h-0 items-center justify-center z-10 bg-transparent p-4">
         <div className="border-2 border-obsidian bg-alabaster p-10 font-mono text-[11px] text-slate
                         shadow-[12px_12px_0px_rgba(17,17,17,0.12)] max-w-sm w-full text-center">
           <div className="text-obsidian font-bold mb-2 text-[13px]">NO ARTIFACT SELECTED</div>
@@ -152,18 +152,17 @@ export default function EditorPanel({ filePath }: Props) {
   }
 
   return (
-    <main className="flex flex-col items-center justify-center z-10 bg-transparent p-8 overflow-hidden">
-      <div className="border-2 border-obsidian bg-alabaster w-full max-w-3xl flex flex-col
-                      shadow-[20px_20px_0px_rgba(17,17,17,0.13)]"
-           style={{ maxHeight: 'calc(100vh - 140px)' }}>
+    <main className="app-editor-panel flex min-h-0 flex-col items-center justify-center z-10 bg-transparent p-8 overflow-hidden">
+      <div className="editor-frame border-2 border-obsidian bg-alabaster w-full max-w-3xl flex min-h-0 flex-col
+                      shadow-[20px_20px_0px_rgba(17,17,17,0.13)]">
         <div className="flex justify-between items-center px-4 py-3 border-b-2 border-obsidian
-                        font-mono text-[10px] font-bold uppercase bg-alabaster">
-          <span>{filePath}</span>
+                        gap-3 font-mono text-[10px] font-bold uppercase bg-alabaster">
+          <span className="min-w-0 truncate" title={filePath}>{filePath}</span>
           <span className={`text-[9px] ${connectionStatus === 'synced' ? 'text-obsidian' : 'text-slate'}`}>
             {connectionStatus === 'synced' ? '◉ SYNCED' : connectionStatus === 'connecting' ? '◎ CONNECTING...' : '○ OFFLINE'}
           </span>
         </div>
-        <div ref={editorRef} className="flex-1 overflow-auto bg-transparent" />
+        <div ref={editorRef} className="min-h-0 flex-1 overflow-auto bg-transparent" />
       </div>
     </main>
   )

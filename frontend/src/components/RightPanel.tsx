@@ -241,7 +241,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   }
 
   return (
-    <aside className="flex flex-col border-l-2 border-obsidian bg-alabaster/85 z-10 overflow-hidden">
+    <aside className="app-right-panel flex min-h-0 flex-col border-l-2 border-obsidian bg-alabaster/85 z-10 overflow-hidden">
 
       {/* ── Presence ─────────────────────────────────────────────────────── */}
       <div className="section-header flex justify-between items-center pr-3">

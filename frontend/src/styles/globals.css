@@ -29,6 +29,52 @@ html, body, #root {
   text-shadow: 0 0 0.8px rgba(17, 17, 17, 0.35);
 }
 
+button,
+input,
+textarea,
+select {
+  max-width: 100%;
+}
+
+.app-shell {
+  height: 100dvh;
+  min-height: 0;
+  grid-template-areas:
+    "header header header"
+    "chat editor right";
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr) minmax(260px, 300px);
+  grid-template-rows: minmax(60px, auto) minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.app-header {
+  grid-area: header;
+}
+
+.app-chat-panel {
+  grid-area: chat;
+}
+
+.app-editor-panel {
+  grid-area: editor;
+}
+
+.app-right-panel {
+  grid-area: right;
+}
+
+.editor-frame {
+  height: min(100%, calc(100dvh - 140px));
+}
+
+.cm-editor {
+  height: 100%;
+}
+
+.cm-scroller {
+  min-height: 0;
+}
+
 /* Grain overlay */
 body::after {
   content: '';
@@ -96,4 +142,155 @@ body {
 select option {
   background: var(--bg-alabaster);
   color: var(--fg-obsidian);
+}
+
+@media (max-width: 1180px) {
+  .app-shell {
+    grid-template-areas:
+      "header header"
+      "chat editor"
+      "right right";
+    grid-template-columns: minmax(240px, 34vw) minmax(0, 1fr);
+    grid-template-rows: minmax(60px, auto) minmax(420px, 1fr) minmax(300px, 38dvh);
+    overflow: auto;
+  }
+
+  .app-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding-bottom: 12px;
+    padding-top: 12px;
+  }
+
+  .header-status {
+    flex: 1 1 320px;
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .app-right-panel {
+    border-left: 0;
+    border-top: 2px solid var(--fg-obsidian);
+  }
+
+  .editor-frame {
+    height: 100%;
+    max-width: none;
+  }
+}
+
+@media (max-width: 760px) {
+  html, body, #root {
+    overflow: auto;
+  }
+
+  .app-shell {
+    min-height: 100dvh;
+    height: auto;
+    grid-template-areas:
+      "header"
+      "editor"
+      "chat"
+      "right";
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(420px, 56dvh) minmax(280px, 36dvh) minmax(420px, auto);
+  }
+
+  .app-header {
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  .app-header > div:first-child {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .header-status {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    gap: 10px 16px;
+    line-height: 1.35;
+  }
+
+  .circle-manager {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .circle-controls {
+    flex: 1 1 100%;
+  }
+
+  .circle-select {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .circle-state {
+    width: auto;
+    min-width: 96px;
+  }
+
+  .circle-state span:last-child {
+    display: none;
+  }
+
+  .circle-leave {
+    margin-left: 0;
+    padding-left: 0;
+  }
+
+  .circle-menu {
+    left: 0;
+    right: 0;
+    width: min(100vw - 24px, 320px);
+  }
+
+  .app-chat-panel {
+    border-right: 0;
+    border-top: 2px solid var(--fg-obsidian);
+  }
+
+  .app-editor-panel {
+    padding: 14px;
+  }
+
+  .app-right-panel {
+    min-height: 420px;
+  }
+
+  .editor-frame {
+    box-shadow: 10px 10px 0 rgba(17, 17, 17, 0.13);
+  }
+}
+
+@media (max-width: 480px) {
+  .section-header {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .app-shell {
+    grid-template-rows: auto minmax(380px, 58dvh) minmax(260px, 34dvh) minmax(380px, auto);
+  }
+
+  .app-editor-panel {
+    padding: 10px;
+  }
+
+  .editor-frame {
+    box-shadow: 6px 6px 0 rgba(17, 17, 17, 0.13);
+  }
+
+  .cm-content {
+    padding: 14px 12px !important;
+  }
+
+  .circle-modal {
+    padding: 18px;
+    box-shadow: 4px 4px 0 #111;
+  }
 }
