@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use libp2p::{
+    core::muxing::StreamMuxerBox,
     dcutr, futures::StreamExt,
-    identify, noise, pnet, relay, tcp, yamux,
+    identify, noise, pnet, quic, relay, tcp, yamux,
     swarm::SwarmEvent,
     Multiaddr, SwarmBuilder,
 };
@@ -162,20 +163,42 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
 
     use libp2p::kad;
     let peer_id = keypair.public().to_peer_id();
-    let (_, relay_client) = relay::client::new(peer_id);
+
+    // relay::client::new returns a (transport, behaviour) pair linked by a channel.
+    // Both MUST be included in the swarm — dropping the transport while keeping the
+    // behaviour causes a panic when the behaviour is polled ("unreachable code").
+    let (relay_transport, relay_client) = relay::client::new(peer_id);
 
     let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
         .with_tokio()
-        .with_other_transport(|key| {
-            use libp2p::{core::{muxing::StreamMuxerBox, upgrade}, Transport};
-            let noise = noise::Config::new(key)?;
-            let transport = tcp::tokio::Transport::new(tcp::Config::default())
+        .with_other_transport(move |key| {
+            use futures::future::Either;
+            use libp2p::{core::upgrade, Transport};
+
+            // TCP + PSK: for direct circle-peer connections.
+            let tcp = tcp::tokio::Transport::new(tcp::Config::default())
                 .and_then(move |s, _| pnet_config.handshake(s))
                 .upgrade(upgrade::Version::V1Lazy)
-                .authenticate(noise)
+                .authenticate(noise::Config::new(key)?)
                 .multiplex(yamux::Config::default())
                 .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
-            Ok(transport)
+
+            // Relay: for circuit addresses (invite peer_addr may be a relay circuit).
+            let relay = relay_transport
+                .upgrade(upgrade::Version::V1Lazy)
+                .authenticate(noise::Config::new(key)?)
+                .multiplex(yamux::Config::default())
+                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
+
+            // QUIC: invite peer_addr may also be a QUIC address.
+            let quic_t = quic::tokio::Transport::new(quic::Config::new(key))
+                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
+
+            Ok(tcp.or_transport(relay).or_transport(quic_t).map(|e, _| match e {
+                Either::Left(Either::Left(x)) => x,
+                Either::Left(Either::Right(x)) => x,
+                Either::Right(x) => x,
+            }))
         })?
         .with_behaviour(|key| {
             let pid = key.public().to_peer_id();
