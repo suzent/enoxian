@@ -9,9 +9,13 @@ use crate::state::AppState;
 
 /// Derive a stable, human-readable agent ID from a custom agent name and peer_id.
 ///
-/// `ENOCHIAN_AGENT_ID` can be any short user/agent name (`codex`, `cursor`,
-/// `alice`, ...). If unset, we default to `human`. The peer suffix keeps names
-/// unique across machines while allowing multiple agents on one machine.
+/// Resolution order:
+///   1. `ENOCHIAN_AGENT_ID` env var — explicit override (`codex`, `cursor`, `alice`, …)
+///   2. System hostname — auto-detected, stripped of `.local` (macOS) / domain suffixes
+///   3. `"device"` — last-resort fallback if hostname is unavailable
+///
+/// The peer suffix (-XXXXXXXX) keeps names unique across machines so two
+/// `MacBook-Pro` devices appear as `MacBook-Pro-Kj4R` and `MacBook-Pro-Ab9F`.
 pub fn local_agent_id(peer_id: &PeerId) -> String {
     let peer_str = peer_id.to_string();
     let short = &peer_str[peer_str.len().saturating_sub(8)..];
@@ -19,12 +23,28 @@ pub fn local_agent_id(peer_id: &PeerId) -> String {
         .ok()
         .map(|s| sanitize_agent_name(&s))
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "human".to_string());
+        .or_else(|| {
+            hostname_candidates()
+                .into_iter()
+                .next()
+                .map(|h| sanitize_agent_name(&strip_domain_suffix(&h)))
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| "device".to_string());
     if agent.ends_with(short) {
         agent
     } else {
         format!("{agent}-{short}")
     }
+}
+
+/// Strip trailing domain/mDNS suffixes so `MacBook-Pro.local` → `MacBook-Pro`.
+fn strip_domain_suffix(hostname: &str) -> String {
+    hostname
+        .split('.')
+        .next()
+        .unwrap_or(hostname)
+        .to_string()
 }
 
 fn sanitize_agent_name(raw: &str) -> String {

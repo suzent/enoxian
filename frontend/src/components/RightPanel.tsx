@@ -16,18 +16,18 @@ function age(isoStr: string) {
   return `${Math.floor(secs / 3600)}h ago`
 }
 
-/** Strip the 9-char peer suffix from auto-generated agent IDs.
- *  "human-Kj4RQm48" → "human",  "cursor-Ab12Cd34" → "cursor"
+/** Shorten the auto-generated peer suffix from 8 → 4 chars.
+ *  "human-Kj4RQm48" → "human-Kj4R"
  *  Custom names that don't match the pattern are returned as-is. */
-function stripPeerSuffix(agentId: string): string {
-  return agentId.replace(/-[A-Za-z0-9]{8}$/, '') || agentId
+function shortenAgentId(agentId: string): string {
+  return agentId.replace(/-([A-Za-z0-9]{4})[A-Za-z0-9]{4}$/, '-$1') || agentId
 }
 
 /** Best human-readable label for a peer.
- *  Priority: explicit owner name → base agent name → raw agent id */
+ *  Priority: explicit owner name → shortened agent id */
 function peerLabel(owner: string, agentId: string): string {
   if (owner?.trim()) return owner.trim()
-  return stripPeerSuffix(agentId) || agentId
+  return shortenAgentId(agentId) || agentId
 }
 
 export default function RightPanel({ onFileSelect, selectedFile }: Props) {
@@ -383,8 +383,8 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
         {members.map(m => {
           const isSelf = m.agent_id === status?.agent_id
           const name = peerLabel(m.owner, m.agent_id)
-          // Only show agent_id as subtitle if it adds info beyond the display name
-          const subtitle = stripPeerSuffix(m.agent_id) !== name ? stripPeerSuffix(m.agent_id) : null
+          // Show the shortened agent_id as subtitle only when owner overrides it
+          const subtitle = m.owner?.trim() ? shortenAgentId(m.agent_id) : null
           return (
             <div key={m.peer_id} className="flex justify-between items-center gap-2 pb-1 border-b border-dashed border-obsidian/20 last:border-0">
               <div className="flex flex-col min-w-0">
@@ -498,7 +498,7 @@ function PresenceRow({ p }: { p: Presence }) {
   return (
     <div className="flex flex-col gap-0.5">
       <div className="flex justify-between items-baseline">
-        <span className="font-bold" title={p.agent_id}>@{stripPeerSuffix(p.agent_id)}</span>
+        <span className="font-bold" title={p.agent_id}>@{shortenAgentId(p.agent_id)}</span>
         <div className="flex gap-2 items-baseline">
           <span className="text-[9px] font-bold" style={{ color }}>{dot} {status.toUpperCase()}</span>
           <span className="text-[9px] text-slate">{age(p.last_seen)}</span>
