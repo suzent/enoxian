@@ -145,6 +145,14 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
     println!("  Config    → ~/.enochian/circles/{circle_id}/config.toml");
 
     // ── Step 4: Optionally verify connectivity to the invite peer ─────────────
+    // Skipped when called from the daemon API (no_verify=true): the API spawns
+    // the circle's P2P swarm which handles connectivity in the background.
+    // Blocking the HTTP handler for up to 10s is undesirable and caused 500s.
+    if args.no_verify {
+        println!("  Config saved. Circle will connect when the daemon starts.");
+        return Ok(());
+    }
+
     let Some(peer_addr_str) = peer else {
         println!();
         println!("  No peer address in invite. Start the daemon to connect via mDNS:");

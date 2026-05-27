@@ -212,6 +212,12 @@ pub struct EnterArgs {
 
     #[arg(long)]
     pub owner: Option<String>,
+
+    /// Skip the 10-second connectivity verification step.
+    /// Set automatically when called from the daemon API — the daemon's P2P
+    /// swarm handles connectivity; blocking the HTTP handler is not desirable.
+    #[arg(skip)]
+    pub no_verify: bool,
 }
 
 #[derive(Parser)]

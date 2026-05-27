@@ -82,6 +82,9 @@ pub async fn enter_circle(
         rendezvous: None,
         dir: payload.dir.map(std::path::PathBuf::from),
         owner: payload.owner,
+        // Skip the 10-second connectivity verification step — the daemon's P2P
+        // swarm spawned below handles connectivity in the background.
+        no_verify: true,
     };
 
     let http_client = reqwest::Client::new();
