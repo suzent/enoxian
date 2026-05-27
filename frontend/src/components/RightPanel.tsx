@@ -16,6 +16,20 @@ function age(isoStr: string) {
   return `${Math.floor(secs / 3600)}h ago`
 }
 
+/** Strip the 9-char peer suffix from auto-generated agent IDs.
+ *  "human-Kj4RQm48" → "human",  "cursor-Ab12Cd34" → "cursor"
+ *  Custom names that don't match the pattern are returned as-is. */
+function stripPeerSuffix(agentId: string): string {
+  return agentId.replace(/-[A-Za-z0-9]{8}$/, '') || agentId
+}
+
+/** Best human-readable label for a peer.
+ *  Priority: explicit owner name → base agent name → raw agent id */
+function peerLabel(owner: string, agentId: string): string {
+  if (owner?.trim()) return owner.trim()
+  return stripPeerSuffix(agentId) || agentId
+}
+
 export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const { activeCircleId, status } = useApp()
   const [presence, setPresence] = useState<Presence[]>([])
@@ -331,13 +345,16 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
             <div key={p.peer_id} className="flex flex-col gap-1 pb-2 border-b border-dashed border-obsidian/20 last:border-0">
               <div className="flex justify-between items-start gap-1">
                 <div className="flex flex-col min-w-0">
-                  <span className="font-bold truncate">{p.owner || p.agent_id}</span>
+                  <span className="font-bold truncate" title={p.agent_id}>
+                    {peerLabel(p.owner, p.agent_id)}
+                  </span>
                   <span className="text-[9px] text-slate font-mono truncate" title={p.peer_id}>
-                    {p.peer_id.slice(0, 20)}…
+                    {p.peer_id.slice(-12)}
                   </span>
                 </div>
+                <span className="text-[9px] text-slate shrink-0">{age(p.requested_at.toString())}</span>
               </div>
-              {isAdmin && (
+              {isAdmin ? (
                 <div className="flex gap-1 mt-0.5">
                   <button
                     onClick={() => handleApprove(p.peer_id, p.owner)}
@@ -352,9 +369,8 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
                     REJECT
                   </button>
                 </div>
-              )}
-              {!isAdmin && (
-                <div className="text-[9px] text-slate">WAITING FOR ADMIN APPROVAL</div>
+              ) : (
+                <div className="text-[9px] text-slate/60">PENDING APPROVAL</div>
               )}
             </div>
           ))}
@@ -366,22 +382,24 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
         {members.length === 0 && <div className="text-slate">NO MEMBERS INDEXED</div>}
         {members.map(m => {
           const isSelf = m.agent_id === status?.agent_id
-          const label = m.owner && m.owner !== m.agent_id ? `${m.owner} / ${m.agent_id}` : (m.owner || m.agent_id)
+          const name = peerLabel(m.owner, m.agent_id)
+          // Only show agent_id as subtitle if it adds info beyond the display name
+          const subtitle = stripPeerSuffix(m.agent_id) !== name ? stripPeerSuffix(m.agent_id) : null
           return (
             <div key={m.peer_id} className="flex justify-between items-center gap-2 pb-1 border-b border-dashed border-obsidian/20 last:border-0">
               <div className="flex flex-col min-w-0">
-                <span className={`font-bold truncate ${isSelf ? 'text-obsidian' : ''}`}>
-                  {label}{isSelf ? ' ✦' : ''}
+                <span className={`font-bold truncate ${isSelf ? 'text-obsidian' : ''}`} title={m.agent_id}>
+                  {name}{isSelf ? ' ✦' : ''}
                 </span>
                 <span className={`text-[9px] font-mono ${m.role === 'admin' ? 'text-obsidian font-bold' : 'text-slate'}`}>
-                  {m.role.toUpperCase()}
+                  {m.role.toUpperCase()}{subtitle ? ` · ${subtitle}` : ''}
                 </span>
               </div>
               {isAdmin && !isSelf && (
                 <button
                   onClick={() => handleRemove(m.peer_id)}
                   className="shrink-0 text-[9px] text-slate hover:text-red-600 font-bold px-1"
-                  title={`Remove ${label}`}
+                  title={`Remove ${name}`}
                 >
                   ×
                 </button>
@@ -480,7 +498,7 @@ function PresenceRow({ p }: { p: Presence }) {
   return (
     <div className="flex flex-col gap-0.5">
       <div className="flex justify-between items-baseline">
-        <span className="font-bold">@{p.agent_id}</span>
+        <span className="font-bold" title={p.agent_id}>@{stripPeerSuffix(p.agent_id)}</span>
         <div className="flex gap-2 items-baseline">
           <span className="text-[9px] font-bold" style={{ color }}>{dot} {status.toUpperCase()}</span>
           <span className="text-[9px] text-slate">{age(p.last_seen)}</span>

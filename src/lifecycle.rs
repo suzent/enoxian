@@ -176,22 +176,54 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         }
     }
 
-    // Admin: remove any stale pending entry for ourselves (left by a previous run
-    // before this logic existed, or from a race during first boot).
+    // Admin: remove any stale pending entry for ourselves.
+    //
+    // There are TWO moments a stale entry can appear:
+    //   1. It is already in the local Yjs doc at startup (e.g. written by an old
+    //      binary before this guard existed). → Caught by the synchronous check below.
+    //   2. It arrives via P2P sync AFTER startup (the remote peer's CRDT contains the
+    //      entry and it replicates to us). → Caught by the observer below.
+    //
+    // Both cases must be handled; the observer alone misses case 1 because observers
+    // only fire for new mutations, not for state already present at observe() time.
     let is_admin = cdir.join("admin.key").exists();
     if is_admin {
         use yrs::{Map, Transact};
         let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
         let self_peer_str = peer_id.to_string();
-        let has_self_pending = {
+
+        // Case 1: already present locally.
+        {
             use yrs::Out;
             let txn = state.control.transact();
-            matches!(pending_map.get(&txn, self_peer_str.as_str()), Some(Out::Any(_)))
-        };
-        if has_self_pending {
-            let mut txn = state.control.transact_mut();
-            pending_map.remove(&mut txn, self_peer_str.as_str());
+            if matches!(pending_map.get(&txn, self_peer_str.as_str()), Some(Out::Any(_))) {
+                drop(txn);
+                let mut txn = state.control.transact_mut();
+                pending_map.remove(&mut txn, self_peer_str.as_str());
+            }
         }
+
+        // Case 2: arrives later via P2P sync. Observe and evict immediately.
+        let state_for_self_evict = state.clone();
+        let self_evict_sub = pending_map.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+            if !is_p2p { return; }
+            for (key, change) in event.keys(txn) {
+                if key.as_ref() != self_peer_str.as_str() { continue; }
+                if let yrs::types::EntryChange::Inserted(_) = change {
+                    // Our own peer ID was just inserted by a remote — remove it.
+                    let s = state_for_self_evict.clone();
+                    let peer_str = self_peer_str.clone();
+                    tokio::spawn(async move {
+                        use yrs::{Map, Transact};
+                        let pm = s.control.get_or_insert_map(MLS_PENDING_KEY);
+                        let mut txn = s.control.transact_mut();
+                        pm.remove(&mut txn, peer_str.as_str());
+                    });
+                }
+            }
+        });
+        std::mem::forget(self_evict_sub);
     }
 
     // If admin and auto join policy, observe pending map
