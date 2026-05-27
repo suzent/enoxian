@@ -153,6 +153,23 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     pending_map.insert(&mut txn, peer_id.to_string().as_str(), json_str.as_str());
                 }
             }
+        } else {
+            // Already registered in member list — clean up any stale pending entry
+            // that may have persisted from the first join (written before approval).
+            // This handles the restart case: CRDT retained the old pending entry even
+            // though we're already a member.
+            use yrs::Out;
+            let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
+            let self_key = peer_id.to_string();
+            {
+                let txn = state.control.transact();
+                if matches!(pending_map.get(&txn, self_key.as_str()), Some(Out::Any(_))) {
+                    drop(txn);
+                    let mut txn = state.control.transact_mut();
+                    pending_map.remove(&mut txn, self_key.as_str());
+                    info!("[member] removed stale pending entry for self (already a member)");
+                }
+            }
         }
 
         // If admin has no MLS group (e.g. circle predates M11 or group.json was lost),
@@ -224,6 +241,39 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             }
         });
         std::mem::forget(self_evict_sub);
+    }
+
+    // Non-admin: observe member list for our own peer ID appearing (runtime approval
+    // delivered via P2P sync). When the admin approves us, they write our entry into
+    // the member list; the observer fires and we remove our own pending entry so it
+    // stops showing us as "pending" in the UI.
+    {
+        let is_local_admin = cdir.join("admin.key").exists();
+        if !is_local_admin {
+            let member_map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
+            let self_peer_str = peer_id.to_string();
+            let state_for_approval = state.clone();
+            let approval_sub = member_map.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                if !is_p2p { return; }
+                for (key, change) in event.keys(txn) {
+                    if key.as_ref() != self_peer_str.as_str() { continue; }
+                    if let yrs::types::EntryChange::Inserted(_) = change {
+                        // Admin just wrote our member entry via P2P sync — remove our pending entry.
+                        let s = state_for_approval.clone();
+                        let peer_str = self_peer_str.clone();
+                        tokio::spawn(async move {
+                            use yrs::{Map, Transact as _};
+                            let pm = s.control.get_or_insert_map(MLS_PENDING_KEY);
+                            let mut txn = s.control.transact_mut();
+                            pm.remove(&mut txn, peer_str.as_str());
+                            tracing::info!("[member] removed pending entry after P2P approval");
+                        });
+                    }
+                }
+            });
+            std::mem::forget(approval_sub);
+        }
     }
 
     // If admin and auto join policy, observe pending map
