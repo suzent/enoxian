@@ -7,7 +7,7 @@
 | Circle creation — `enoch init` | Generates keypair + PSK + admin keypair; prints invite link with embedded admin pubkey |
 | Invite links — `enochian://v1/<b64>` | No-quote shell-safe URI, expiry enforced, admin pubkey embedded |
 | Join — `enoch enter` | Saves config + admin pubkey, workspace created, conflict handling |
-| Multi-circle daemon — `enochd` | Loads all enabled circles at startup; one P2P swarm per circle; hot-reload every 10s |
+| Multi-circle daemon — `enochd` | Loads all enabled circles at startup; one P2P swarm per circle; hot-reload every 10s; starts HTTP server even with zero circles |
 | Circle lifecycle | `enoch disable/enable/leave`; `POST /circles/<id>/stop|start`; per-circle `CancellationToken` |
 | Workspace folders | `~/enochian/<name>/` per circle, configurable via `--dir` |
 | REST API | Tasks, locks, presence, members, events SSE, lifecycle, files |
@@ -22,18 +22,19 @@
 | Self-write loop prevention | Shared per-path flags prevent flush_to_disk from triggering re-sync |
 | P2P echo prevention | Updates applied from peers use `"p2p"` origin; observer skips forwarding them back |
 | P2P awareness relay | Cursor/presence awareness bytes forwarded between WS clients and across P2P peers via `all_awareness_updates` broadcast |
-| Live presence | Daemon writes hostname-based presence entry on start; 30s heartbeat; stale detection (>90s); `enoch who` shows last-seen age |
-| Admin & member management | Admin keypair signs member operations; `enoch member list/add/remove/promote`; daemon verifies signatures |
+| Live presence | Hostname-based agent_id (strips `.local`); 30s heartbeat; immediate OFFLINE on disconnect/shutdown; stale detection (>90s); `enoch who` shows last-seen age |
+| Admin & member management | Admin keypair signs member operations; daemon auto-signs when `admin.key` present; `enoch member list/add/remove/promote/pending/approve/reject`; pending queue; ghost-entry cleanup on rejoin |
+| MLS group key management (partial) | Group created at init; KeyPackages generated on join; Welcome messages delivered via Yjs; commit watcher; pending/approve/reject workflow in frontend |
 | Chat | `enoch say` posts messages; `enoch chat [--follow]` reads/streams; `@mention` emits `AgentMentioned` event as agent wake signal |
 | Task SSE events from P2P | Control doc observer fires `TaskCreated/Claimed/Done` SSE events when task updates arrive via P2P sync |
-| Web frontend | React SPA: circle selector, presence panel, file tree, collaborative CodeMirror editor, task queue, chat; served from `enochd` at `/app` |
+| Web frontend | React SPA: circle selector, presence panel, file tree, collaborative CodeMirror editor, task queue, chat, member management; served from `enochd` at `/app` |
 | Remote cursors | Yjs awareness in CodeMirror shows live cursor position and agent name label per connected peer |
 | `enoch open` | Opens the circle UI in the default browser (`http://127.0.0.1:36521/app`) |
 | Production build | `cargo build --release` automatically runs `npm run build` via `build.rs` |
-| WAN / circuit relay | Every node is a relay server + client; relay addr auto-embedded in invites; DCUtR for hole-punching |
+| WAN / circuit relay | Every node is relay server + client; relay circuit addr auto-derived and embedded in invites; DCUtR hole-punching; non-blocking background relay/rendezvous resolution |
 | Bootstrap rendezvous server | `enochd --bootstrap` — QUIC rendezvous + relay for both-behind-NAT; no PSK; stable keypair |
 | QUIC transport | PSK-free QUIC leg alongside PSK-TCP; circle members connect to bootstrap via QUIC |
-| Auto-embedded invites | `enoch invite` queries the daemon and auto-embeds peer addr, relay, and rendezvous — no manual flags |
+| Auto-embedded invites | `enoch invite` queries the daemon and auto-embeds peer addr, relay, and rendezvous — no manual flags; relay circuit addr as fallback when no direct IP available |
 | P2P status in API | `GET /api/status` returns `p2p.peer_id`, `p2p.external_addrs`, `p2p.relay_addrs`, `p2p.rendezvous_addrs` |
 
 ---
@@ -139,10 +140,11 @@ All circles load at daemon startup; individual circles can be stopped, started, 
 ### M5 — Presence
 **Status: Complete**
 
-On startup, each daemon writes a `Presence` entry (`agent_id = <custom-agent-or-human>-shortpeerid`, status=online, last_seen=now) to the control doc's `presence` Y.Map. The custom prefix comes from `ENOCHIAN_AGENT_ID`; if unset, it defaults to `human`. A 30-second heartbeat task refreshes `last_seen`. The control doc observer now forwards updates to `all_updates` so presence changes sync live to P2P peers. `enoch who` shows last-seen age and marks agents stale if their heartbeat is > 90s old.
+On startup, each daemon writes a `Presence` entry (`agent_id = <hostname>-shortpeerid`, status=online, last_seen=now) to the control doc's `presence` Y.Map. The agent ID prefix uses the system hostname (stripping `.local` on macOS), falling back to `ENOCHIAN_AGENT_ID` env var or `"device"`. A 30-second heartbeat task refreshes `last_seen`. On clean shutdown, `OFFLINE` is written before the swarm drops so connected peers receive it immediately. On abrupt disconnect, the observing peer writes `OFFLINE` for the lost peer when the last P2P connection closes (`ConnectionClosed { num_established: 0 }`).
 
 **Implementation:**
-- `src/presence.rs` — `local_agent_id()`, `spawn_presence()`, heartbeat loop
+- `src/presence.rs` — `local_agent_id()` (hostname → strip `.local` → peer suffix), `spawn_presence()`, heartbeat loop, `write_offline()`
+- `src/lifecycle.rs` — `ConnectionClosed` handler calls `presence::write_offline` for the disconnected peer's agent_id; clean-shutdown path writes OFFLINE before breaking swarm loop
 - `src/state.rs` — control doc observer wired into `all_updates`
 - `src/commands/who.rs` — last-seen age display, stale detection
 
@@ -150,6 +152,9 @@ On startup, each daemon writes a `Presence` entry (`agent_id = <custom-agent-or-
 - [x] Write presence entry (agent ID, hostname, timestamp) on daemon start
 - [x] Refresh presence heartbeat every 30s via a tokio interval task
 - [x] `enoch who` displays live agents with last-seen time
+- [x] Hostname-based agent_id (strips `.local`/domain suffix); `ENOCHIAN_AGENT_ID` override
+- [x] Immediate OFFLINE on clean shutdown (written before swarm drops)
+- [x] Immediate OFFLINE on abrupt disconnect (written by observing peer on `ConnectionClosed`)
 
 ---
 
@@ -159,18 +164,19 @@ See [admin.md](admin.md) for the full design.
 
 **Status: Complete**
 
-Admin keypair is generated at `enoch init` and stored in `admin.key`. The public key is embedded in invite URIs so joining peers save it automatically. Member operations (add, remove, promote) require an admin signature verified by the daemon; the CLI auto-signs from `admin.key` when present.
+Admin keypair is generated at `enoch init` and stored in `admin.key`. The public key is embedded in invite URIs so joining peers save it automatically. Member operations (add, remove, promote, approve, reject) require an admin signature; the daemon auto-signs from `admin.key` when a request arrives from the frontend with no signature provided.
 
-> ⚠ **Security note:** The member list is a directory, not an access gate. Removing a peer from the list stops them from auto-registering on restart but does not revoke their PSK — they can still connect and sync, or rejoin with a fresh keypair. True access revocation requires PSK rotation (planned M11). See [security.md](../security.md) for the full threat model.
+> ⚠ **Security note:** The member list is a directory, not an access gate. Removing a peer from the list stops them from auto-registering on restart but does not revoke their PSK — they can still connect and sync, or rejoin with a fresh keypair. True access revocation requires MLS epoch rotation (M11). See [security.md](../security.md) for the full threat model.
 
 **Implementation:**
 - `src/invite.rs` — extended binary format: optional admin pubkey appended as u16-length-prefixed bytes (backward-compatible)
 - `src/commands/init.rs` — generates admin keypair; saves `admin.key`; embeds pubkey in initial invite
 - `src/commands/invite.rs` — loads `admin.key` if present, embeds pubkey in invite
 - `src/commands/enter.rs` — extracts `admin_pubkey_hex` from invite, saves to `config.toml`
-- `src/api/members.rs` — `list_members`, `add_member`, `remove_member`, `promote_member`; all mutating ops verify admin signature via `libp2p::identity::PublicKey::verify`
-- `src/commands/member.rs` — `enoch member list/add/remove/promote`; auto-signs with `admin.key`
-- `src/control/mod.rs` — `MemberEntry`, `MemberRole`, `MEMBER_LIST_KEY`, `MemberAdded`/`MemberRemoved` events
+- `src/api/members.rs` — `list_members`, `add_member`, `remove_member`, `promote_member`, `list_pending`, `approve_member`, `reject_member`; all mutating ops verify admin signature; `resolve_admin_sig()` auto-signs with local `admin.key` when frontend omits signature
+- `src/commands/member.rs` — `enoch member list/add/remove/promote/pending/approve/reject`; auto-signs with `admin.key`
+- `src/control/mod.rs` — `MemberEntry`, `MemberRole`, `PendingEntry`, `MEMBER_LIST_KEY`, `MLS_PENDING_KEY`, `MemberAdded`/`MemberRemoved` events
+- `src/lifecycle.rs` — auto-registration on startup; stale pending cleanup on restart (already-registered path); ghost-entry eviction (same `agent_id`, different `peer_id` — leave/rejoin); non-admin member-list observer removes own pending on P2P approval; admin self-evict observer removes own pending if synced from remote
 
 **Tasks:**
 - [x] Admin keypair generated at `enoch init`, stored as `admin.key`
@@ -183,7 +189,16 @@ Admin keypair is generated at `enoch init` and stored in `admin.key`. The public
 - [x] `enoch member promote <peer-id>` — promote to admin
 - [x] Daemon verifies admin signature on all member write operations
 - [x] Auto-registration — each peer writes its own member entry to the CRDT on daemon start (role=Admin if `admin.key` present, Member otherwise); skips if entry already exists so explicit removals persist across restarts
-- [x] Peer ID prefix/suffix resolution in `member remove` and `member promote` (short suffix from `enoch member list` accepted directly)
+- [x] Peer ID prefix/suffix resolution in `member remove` and `member promote`
+- [x] Pending queue — non-admins write a `PendingEntry` on first join; `enoch member pending` lists them
+- [x] `enoch member approve/reject <peer-id>` — admin approves or rejects pending entries
+- [x] Frontend approve/reject UI — admin sees pending queue with APPROVE/REJECT buttons; device name shown
+- [x] Daemon auto-sign — API handlers call `resolve_admin_sig()` so frontend can approve without shipping the private key to the browser
+- [x] Stale pending cleanup — on restart, already-registered peers remove their own stale pending entry
+- [x] Ghost-entry eviction — on rejoin (new keypair, same device), stale member entries matching the same `agent_id` are removed before inserting the new entry
+- [x] Non-admin approval observer — member-list Yrs observer removes own pending entry when admin writes their member entry via P2P sync
+- [x] Admin self-evict observer — admin's own pending entry (if any) is removed immediately, both at startup and on P2P arrival
+- [x] Device name shown in member and pending lists alongside owner name
 
 ---
 
@@ -393,7 +408,7 @@ Yjs is the right CRDT for high-frequency text sequences (code files, chat). For 
 ---
 
 ### M11 — Access Revocation via MLS (RFC 9420)
-**Status: Planned**
+**Status: In Progress**
 
 True revocation requires changing the group key when a member is removed. Rather than rolling a custom PSK rotation scheme, ENOCHIAN will adopt **IETF MLS (RFC 9420)** — the international standard for group key management in decentralised systems, implemented in Rust by [`openmls`](https://github.com/openmls/openmls).
 
@@ -422,16 +437,24 @@ When a member is evicted:
 4. The evicted peer's key material is cryptographically useless for all future epochs
 5. Even if they rejoin with a new keypair, they don't have a valid MLS KeyPackage for the new epoch — connection is rejected at the application layer, not just the member list
 
+**Implementation (done):**
+- `src/mls.rs` — `MlsIdentity` (generated per-peer on join, persisted in circle config dir), `MlsGroupManager` (create group, add member, apply commit/welcome)
+- `src/lifecycle.rs` — admin bootstraps MLS group on startup if not present; KeyPackage written to `mls_key_packages` Y.Map; owner claim signed and written to `mls_owner_claims` Y.Map; Welcome consumer observer (fires when admin writes Welcome to `mls_welcomes`); commit watcher (applies incoming MLS commits to stay in sync)
+- `src/api/members.rs` — `approve_member` loads joiner's KeyPackage, calls `group.add_member()`, distributes commit to `mls_commits` array and Welcome to `mls_welcomes` map; saves updated group state
+
 **Tasks:**
-- [ ] Add `openmls` and `openmls_rust_crypto` dependencies
-- [ ] MLS group creation at `enoch init` — group state stored in circle config dir
-- [ ] KeyPackage generation and distribution on `enoch enter` — joining peer uploads their KeyPackage
+- [x] Add `openmls` and `openmls_rust_crypto` dependencies
+- [x] MLS group creation at `enoch init` — group state stored in circle config dir (`group.json`)
+- [x] `MlsIdentity` generation on `enoch enter` — persisted in `~/.enochian/circles/<id>/`
+- [x] KeyPackage written to `mls_key_packages` Y.Map on daemon start — available for admin to use when approving
+- [x] `approve_member` API: load KeyPackage → `group.add_member()` → distribute commit + Welcome via Yjs
+- [x] Welcome consumer — joiner's daemon watches `mls_welcomes` for their peer_id and applies the Welcome to join the MLS group
+- [x] Commit watcher — all peers apply incoming MLS commits from `mls_commits` array to advance their epoch
+- [x] Pending member queue with approve/reject workflow wired into MLS
 - [ ] Encrypt CRDT sync updates with the current MLS epoch key
 - [ ] `enoch member remove` issues a MLS `Remove` + `Commit`, distributes new epoch to remaining members
-- [ ] Offline KeyPackage store — members who were offline receive pending commits when they reconnect
-- [ ] `enoch member add` issues a MLS `Add` proposal (replacing current auto-registration for new peers)
+- [ ] Offline member catch-up — peers who were offline receive pending commits on reconnect
 - [ ] Sync-level rejection — peers presenting an outdated epoch key are refused
-- [ ] Existing PSK invite links remain valid for transport admission; MLS KeyPackage is the revocation gate
 - [ ] Update `docs/security.md` with the MLS threat model
 
 ---
@@ -486,6 +509,10 @@ QUIC (no PSK)                           →  /ip4/.../udp/.../quic-v1  (bootstra
 - [x] `enochd --bootstrap` — stable keypair; QUIC rendezvous server + relay server; no PSK; no circles
 - [x] `peer_id` and `p2p_external_addrs` in AppState; populated by `ExternalAddrConfirmed` events
 - [x] `GET /api/status` returns full `p2p` block
+- [x] Non-blocking background rendezvous + relay resolution — default server resolved in background task, injected into running swarm via mpsc channel; never blocks `spawn_circle`
+- [x] Relay circuit addr as peer_addr fallback in invites — when no external/direct addr available, derive `relay/p2p-circuit/p2p/MY_PEER_ID` from keypair + relay addr
+- [x] `api/enter` fix — `no_verify: true` skips 10s connectivity swarm when called from HTTP handler; `tokio::spawn` isolates panics as `JoinError`
+- [x] Daemon starts HTTP server even with zero circles (removed bail on empty config)
 
 ---
 
