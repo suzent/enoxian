@@ -2,14 +2,16 @@
 
 ## Layers of protection
 
-ENOCHIAN uses two independent security layers:
+ENOCHIAN applies four independent security layers in sequence. Each layer rejects peers that fail its check before passing control to the next.
 
 | Layer | Mechanism | What it proves |
 |-------|-----------|----------------|
-| **Transport** | PSK (XSalsa20 via `pnet`) | You hold the circle secret |
+| **Transport** | PSK (XSalsa20 via `pnet`) | You hold the current circle secret |
 | **Identity** | Noise + Ed25519 keypair | You own the private key behind this peer ID |
+| **Sync gate** | `mls_removed` tombstone | You have not been explicitly evicted |
+| **Epoch key** | MLS epoch → PSK derivation | You are a current member with an up-to-date epoch key |
 
-Both layers are applied on every connection before any data is exchanged.
+Each layer is independent. Failing any layer drops the peer before the next is reached.
 
 ---
 
@@ -44,14 +46,17 @@ The security boundary is the **MLS group** + **PSK**.
 Behaviour on `enoch member remove <peer>`:
 
 1. Admin issues an MLS `Remove` + `Commit` for the peer's leaf node
-2. The commit is broadcast via the `mls_commits` CRDT array to all remaining members
-3. Each remaining member applies the commit, advancing their MLS epoch
-4. A new PSK is derived from the new epoch key material using `export_secret("enochian-psk", ...)`
-5. The admin immediately rotates the circle's pnet PSK to the new value and restarts their swarm
-6. Remaining members see the commit and do the same via the commit-watcher observer
-7. The removed peer's MLS state is at the old epoch — they cannot derive the new PSK and fail the pnet handshake on reconnect
-8. The peer's entry is removed from the CRDT member list; any pending/welcome/key-package entries are also cleaned up
-9. The peer's presence entry is written as Offline
+2. The peer's entry is removed from the CRDT member list; a tombstone entry is written to the `mls_removed` CRDT map (atomically in the same CRDT transaction)
+3. The commit is broadcast via the `mls_commits` CRDT array to all remaining members
+4. Each remaining member applies the commit, advancing their MLS epoch
+5. A new PSK is derived from the new epoch key material using `export_secret("enochian-psk", ...)`
+6. The admin immediately rotates the circle's pnet PSK to the new value and restarts their swarm
+7. Remaining members see the commit via the commit-watcher observer and do the same
+8. Any pending/welcome/key-package entries are cleaned up; the peer's presence entry is written as Offline
+9. The removed peer's MLS state is at the old epoch — they cannot derive the new PSK and fail the pnet handshake on reconnect
+
+**The tombstone closes the rotation window:**
+Between steps 2 and 6 (member removed from CRDT but PSK not yet rotated), the removed peer could briefly still hold a valid PSK. The sync gate in `src/network/sync.rs` checks the `mls_removed` tombstone at the top of every sync session — before any CRDT data is exchanged — and rejects tombstoned peers immediately. The tombstone propagates to all peers as part of the same CRDT update that removes the member entry.
 
 ---
 

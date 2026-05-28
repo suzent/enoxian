@@ -23,6 +23,10 @@ pub const MLS_COMMITS_KEY: &str = "mls_commits";
 pub const MLS_PENDING_KEY: &str = "mls_pending";
 /// Map[peer_id → OwnerClaim JSON] — self-signed owner name claims.
 pub const MLS_OWNER_CLAIMS_KEY: &str = "mls_owner_claims";
+/// Map[peer_id → RFC-3339 timestamp] — peers that have been explicitly removed.
+/// Used as a sync-level gate: removed peers are rejected before any CRDT data
+/// is exchanged, even during the brief window before PSK rotation completes.
+pub const MLS_REMOVED_KEY: &str = "mls_removed";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnerClaim {

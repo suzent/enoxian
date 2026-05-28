@@ -426,8 +426,9 @@ The existing PSK (via `libp2p::pnet`) is kept as a coarse transport-layer admiss
 TCP
 └── pnet (PSK, XSalsa20)     ← coarse gate: "are you in this circle?"
     └── Noise (identity)     ← peer authentication
-        └── MLS epoch → PSK  ← fine gate: "are you still a member?"
-            └── CRDT sync    ← content (workspace files, chat, tasks)
+        └── sync gate        ← tombstone check: "were you explicitly removed?"
+            └── MLS epoch → PSK  ← key gate: "do you have the current epoch key?"
+                └── CRDT sync    ← content (workspace files, chat, tasks)
 ```
 
 When a member is evicted:
@@ -442,7 +443,9 @@ When a member is evicted:
 - `src/mls/group.rs` — `MlsGroupManager`: `create`, `join_from_welcome`, `add_member`, `remove_member`, `apply_commit`, `epoch_psk`, `leaf_index_for_peer`, `save`/`load`
 - `src/mls/identity.rs` — `MlsIdentity`: Ed25519-based credential, signer, provider; persisted in circle config dir
 - `src/lifecycle.rs` — admin bootstraps MLS group on startup; KeyPackage written to `mls_key_packages`; Welcome consumer observer; **serial commit watcher** (mpsc channel + single consumer task — prevents race conditions on MLS mutex when multiple commits arrive in one P2P batch); `rotate_psk_and_restart` rotates `config.psk_hex` and restarts the circle swarm
-- `src/api/members.rs` — `approve_member`: load KeyPackage → `group.add_member()` → distribute commit + Welcome; `remove_member`: `group.remove_member()` → distribute Remove commit → `rotate_psk_and_restart` in background task; cleans up key package, welcome, and pending entries
+- `src/api/members.rs` — `approve_member`: load KeyPackage → `group.add_member()` → distribute commit + Welcome; `remove_member`: `group.remove_member()` → distribute Remove commit → writes tombstone → `rotate_psk_and_restart` in background task; cleans up key package, welcome, and pending entries
+- `src/network/sync.rs` — membership gate at the top of `sync_inner`: checks `mls_removed` tombstone; rejects evicted peers before any CRDT data is exchanged, even during the brief window between member removal and PSK rotation completing
+- `src/control/mod.rs` — `MLS_REMOVED_KEY`: `Map[peer_id → RFC-3339 timestamp]` — CRDT-replicated tombstone set
 
 **Tasks:**
 - [x] Add `openmls` and `openmls_rust_crypto` dependencies
@@ -456,7 +459,8 @@ When a member is evicted:
 - [x] `remove_member` API: `group.remove_member()` → Remove commit broadcast → `rotate_psk_and_restart`; evicts all auxiliary CRDT keys; writes peer offline
 - [x] `rotate_psk_and_restart` — saves new PSK to config, stops circle, restarts with new pnet key
 - [x] Serial commit processing — `mpsc::unbounded_channel` serialises concurrent commit arrivals; prevents MLS mutex races and double-PSK-rotation on batch sync
-- [x] `docs/security.md` updated with MLS threat model, TreeKEM explanation, epoch → PSK derivation chain, commit propagation, and attacker capability tables
+- [x] Sync-level tombstone gate — `mls_removed` CRDT map; `remove_member` writes peer_id tombstone; `sync_inner` rejects tombstoned peers before any data exchange; closes the PSK-rotation window
+- [x] `docs/security.md` updated with MLS threat model, TreeKEM explanation, epoch → PSK derivation chain, commit propagation, tombstone gate design, and attacker capability tables
 
 ---
 

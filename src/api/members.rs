@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::json;
 use yrs::{Any, Array, Map, MapRef, Out, Transact};
 
-use crate::control::{CircleEvent, MemberEntry, MemberRole, MlsCommitEntry, PendingEntry, MEMBER_LIST_KEY, MLS_KEY_PACKAGES_KEY, MLS_PENDING_KEY, MLS_WELCOMES_KEY, MLS_COMMITS_KEY};
+use crate::control::{CircleEvent, MemberEntry, MemberRole, MlsCommitEntry, PendingEntry, MEMBER_LIST_KEY, MLS_COMMITS_KEY, MLS_KEY_PACKAGES_KEY, MLS_PENDING_KEY, MLS_REMOVED_KEY, MLS_WELCOMES_KEY};
 use crate::daemon::DaemonState;
 use crate::lifecycle::rotate_psk_and_restart;
 
@@ -199,17 +199,24 @@ pub async fn remove_member(
         })
     };
 
-    // Remove from CRDT member list and clean up auxiliary keys.
+    // Remove from CRDT member list, clean up auxiliary keys, and write tombstone.
+    // The tombstone (mls_removed map) is the sync-level gate: sync.rs rejects any
+    // peer found here before exchanging CRDT data, even during the brief window
+    // before PSK rotation completes.  All changes go in one transaction so peers
+    // receiving the CRDT update see a consistent state.
     {
         let member_map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
         let kp_map: MapRef = state.control.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
         let welcome_map: MapRef = state.control.get_or_insert_map(MLS_WELCOMES_KEY);
         let pending_map: MapRef = state.control.get_or_insert_map(MLS_PENDING_KEY);
+        let removed_map: MapRef = state.control.get_or_insert_map(MLS_REMOVED_KEY);
+        let removed_at = Utc::now().to_rfc3339();
         let mut txn = state.control.transact_mut();
         member_map.remove(&mut txn, req.peer_id.as_str());
         kp_map.remove(&mut txn, req.peer_id.as_str());
         welcome_map.remove(&mut txn, req.peer_id.as_str());
         pending_map.remove(&mut txn, req.peer_id.as_str());
+        removed_map.insert(&mut txn, req.peer_id.as_str(), removed_at.as_str());
     }
 
     // Mark the evicted peer as offline in presence.

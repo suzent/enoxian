@@ -16,8 +16,9 @@ use tracing::{debug, info, warn};
 use yrs::sync::protocol::{Message, SyncMessage};
 use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
-use yrs::{encoding::read::Cursor, GetString, ReadTxn, StateVector, Transact, Update};
+use yrs::{encoding::read::Cursor, Any, GetString, Map, Out, ReadTxn, StateVector, Transact, Update};
 
+use crate::control::MLS_REMOVED_KEY;
 use crate::state::AppState;
 
 pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enochian/sync/1.0.0");
@@ -252,6 +253,50 @@ async fn sync_inner(
     state: &AppState,
     is_initiator: bool,
 ) -> Result<()> {
+    // ── Membership gate ────────────────────────────────────────────────────────
+    //
+    // After PSK + Noise, a peer is cryptographically authenticated but not yet
+    // authorised.  Before exchanging any CRDT data, check the tombstone set.
+    //
+    // Design rationale — why tombstone rather than allowlist:
+    //
+    //   "Not in member_list" is ambiguous: it could mean "fresh joiner" (allow)
+    //   or "evicted peer" (reject).  Fresh joiners must be allowed to sync the
+    //   control doc to deliver their KeyPackage to the admin — so checking for
+    //   presence in member_list would break the join flow.
+    //
+    //   The tombstone set (mls_removed) is unambiguous: only peers that have been
+    //   explicitly evicted via remove_member appear here.  Everyone else — fresh
+    //   joiners, pending peers, members — is correctly allowed through.
+    //
+    // Why PSK rotation is still the primary barrier:
+    //
+    //   After remove_member, the admin rotates the PSK.  The evicted peer holds
+    //   the old PSK and fails the pnet XSalsa20 handshake on reconnect — they
+    //   never reach this function.  The tombstone gate closes the narrow window
+    //   between "entry removed from CRDT" and "PSK rotation completes".
+    //
+    // Persistence note:
+    //
+    //   The control doc is not persisted to disk; the tombstone is only live in
+    //   the current daemon session.  This is safe because:
+    //   - After admin restart the daemon loads the NEW PSK from config.toml.
+    //   - The evicted peer still has the OLD PSK → pnet handshake fails → they
+    //     cannot reach sync_inner even before the tombstone is re-synced.
+    {
+        let peer_str = peer_id.to_string();
+        let removed_map = state.control.get_or_insert_map(MLS_REMOVED_KEY);
+        let txn = state.control.transact();
+        let is_removed = matches!(
+            removed_map.get(&txn, peer_str.as_str()),
+            Some(Out::Any(Any::String(_)))
+        );
+        if is_removed {
+            warn!("[sync] rejected {peer_id}: explicitly removed from this circle");
+            return Err(anyhow::anyhow!("peer rejected: removed from circle"));
+        }
+    }
+
     let compat = stream.compat();
     let (mut rx, mut tx) = tokio::io::split(compat);
 
