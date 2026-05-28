@@ -362,7 +362,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
                     {peerLabel(p.owner, p.agent_id)}
                   </span>
                   <span className="text-[9px] text-slate font-mono truncate" title={p.peer_id}>
-                    {p.peer_id.slice(-12)}
+                    {shortenAgentId(p.agent_id)}
                   </span>
                 </div>
                 <span className="text-[9px] text-slate shrink-0">{age(p.requested_at.toString())}</span>
@@ -396,8 +396,9 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
         {members.map(m => {
           const isSelf = m.agent_id === status?.agent_id
           const name = peerLabel(m.owner, m.agent_id)
-          // Show the shortened agent_id as subtitle only when owner overrides it
-          const subtitle = m.owner?.trim() ? shortenAgentId(m.agent_id) : null
+          // Always show device name as subtitle; omit only if it would duplicate the primary label
+          const deviceLabel = shortenAgentId(m.agent_id)
+          const subtitle = deviceLabel !== name ? deviceLabel : null
           return (
             <div key={m.peer_id} className="flex justify-between items-center gap-2 pb-1 border-b border-dashed border-obsidian/20 last:border-0">
               <div className="flex flex-col min-w-0">
