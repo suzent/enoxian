@@ -129,6 +129,43 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 added_at: chrono::Utc::now(),
                 signature,
             };
+
+            // Before inserting, evict any stale entries for this same device (same
+            // agent_id, different peer_id). This happens when the user leaves and
+            // rejoins: a new keypair is generated each time, leaving ghost entries.
+            {
+                use yrs::Out;
+                let stale_keys: Vec<String> = {
+                    let txn = state.control.transact();
+                    map.iter(&txn)
+                        .filter_map(|(key, val)| {
+                            if key == peer_id.to_string().as_str() { return None; }
+                            if let Out::Any(yrs::Any::String(s)) = val {
+                                if let Ok(m) = serde_json::from_str::<MemberEntry>(&s) {
+                                    if m.agent_id == agent_id {
+                                        return Some(key.to_string());
+                                    }
+                                }
+                            }
+                            None
+                        })
+                        .collect()
+                };
+                if !stale_keys.is_empty() {
+                    let mut txn = state.control.transact_mut();
+                    for key in &stale_keys {
+                        map.remove(&mut txn, key.as_str());
+                    }
+                    // Also remove their pending entries
+                    let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
+                    let mut txn = state.control.transact_mut();
+                    for key in &stale_keys {
+                        pending_map.remove(&mut txn, key.as_str());
+                    }
+                    info!("[member] evicted {} stale entr(ies) for device '{agent_id}' (device rejoined)", stale_keys.len());
+                }
+            }
+
             if let Ok(json_str) = serde_json::to_string(&entry) {
                 let mut txn = state.control.transact_mut();
                 map.insert(&mut txn, peer_id.to_string().as_str(), json_str.as_str());
@@ -600,6 +637,9 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             tokio::select! {
                 _ = swarm_token.cancelled() => {
                     info!("[{}] circle stopped", circle_id);
+                    // Write OFFLINE before dropping the swarm so connected peers
+                    // receive the CRDT update over the still-open connections.
+                    presence::write_offline(&state_for_swarm, &state_for_swarm.agent_id);
                     break;
                 }
                 // Background-resolved rendezvous address arrived (e.g. default server).
@@ -684,8 +724,25 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             }
                         }
                     }
-                    SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
+                    SwarmEvent::ConnectionClosed { peer_id, cause, num_established, .. } => {
                         info!("[{}] P2P disconnected: {peer_id}: {cause:?}", circle_id);
+                        // When the last connection to this peer closes, immediately mark
+                        // them offline in the shared presence CRDT so all peers see it
+                        // right away — no need to wait for the heartbeat to time out.
+                        if num_established == 0 {
+                            use yrs::{Map, Out, Any, Transact};
+                            let member_map = state_for_swarm.control.get_or_insert_map(MEMBER_LIST_KEY);
+                            let txn = state_for_swarm.control.transact();
+                            let agent_id_for_peer = member_map
+                                .get(&txn, peer_id.to_string().as_str())
+                                .and_then(|v| if let Out::Any(Any::String(s)) = v {
+                                    serde_json::from_str::<MemberEntry>(&s).ok().map(|m| m.agent_id)
+                                } else { None });
+                            drop(txn);
+                            if let Some(agent_id) = agent_id_for_peer {
+                                presence::write_offline(&state_for_swarm, &agent_id);
+                            }
+                        }
                     }
                     SwarmEvent::Behaviour(EnochEvent::Mdns(mdns::Event::Discovered(peers))) => {
                         for (peer_id, addr) in peers {

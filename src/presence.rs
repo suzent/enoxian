@@ -164,6 +164,12 @@ pub fn clear_current_file_if_matches(state: &AppState, current_file: &str) {
     }
 }
 
+/// Immediately mark a remote peer offline (called when their P2P connection drops).
+/// Safe to call from any peer — the write is idempotent and CRDT-merged.
+pub fn write_offline(state: &AppState, agent_id: &str) {
+    write_presence_with_file(state, agent_id, AgentStatus::Offline, None);
+}
+
 /// Write the initial presence entry and spawn the 30-second heartbeat task.
 pub fn spawn_presence(state: AppState, agent_id: String, token: CancellationToken) {
     write_presence(&state, &agent_id, AgentStatus::Online);
