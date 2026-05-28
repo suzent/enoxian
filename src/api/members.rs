@@ -58,8 +58,13 @@ pub async fn add_member(
     let owner = req.owner.unwrap_or_else(|| agent_id.clone());
 
     // Verify admin signature of "add:{peer_id}:{role}:owner:{owner}"
+    // If frontend omits the signature, auto-sign with the local admin.key.
     let msg = format!("add:{}:{}:owner:{}", req.peer_id, role, owner);
-    if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &req.admin_signature) {
+    let sig = match resolve_admin_sig(&circle_id, msg.as_bytes(), &req.admin_signature) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::FORBIDDEN, Json(json!({"error": format!("admin signature required: {e}")}))).into_response(),
+    };
+    if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &sig) {
         return (StatusCode::FORBIDDEN, Json(json!({"error": format!("invalid admin signature: {e}")}))).into_response();
     }
 
@@ -85,7 +90,7 @@ pub async fn add_member(
         agent_id,
         role,
         added_at: Utc::now(),
-        signature: req.admin_signature,
+        signature: sig,
     };
     let Ok(json_str) = serde_json::to_string(&entry) else {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "serialize failed"}))).into_response();
@@ -118,7 +123,11 @@ pub async fn remove_member(
     };
 
     let msg = format!("remove:{}", req.peer_id);
-    if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &req.admin_signature) {
+    let sig = match resolve_admin_sig(&circle_id, msg.as_bytes(), &req.admin_signature) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::FORBIDDEN, Json(json!({"error": format!("admin signature required: {e}")}))).into_response(),
+    };
+    if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &sig) {
         return (StatusCode::FORBIDDEN, Json(json!({"error": format!("invalid admin signature: {e}")}))).into_response();
     }
 
@@ -160,7 +169,11 @@ pub async fn promote_member(
         }).unwrap_or_default()
     };
     let msg = format!("add:{}:admin:owner:{}", req.peer_id, existing_owner);
-    if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &req.admin_signature) {
+    let sig = match resolve_admin_sig(&circle_id, msg.as_bytes(), &req.admin_signature) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::FORBIDDEN, Json(json!({"error": format!("admin signature required: {e}")}))).into_response(),
+    };
+    if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &sig) {
         return (StatusCode::FORBIDDEN, Json(json!({"error": format!("invalid admin signature: {e}")}))).into_response();
     }
 
@@ -181,7 +194,7 @@ pub async fn promote_member(
         agent_id: prev_agent_id,
         role: MemberRole::Admin,
         added_at: Utc::now(),
-        signature: req.admin_signature,
+        signature: sig,
     };
     let Ok(json_str) = serde_json::to_string(&entry) else {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "serialize failed"}))).into_response();
@@ -242,7 +255,11 @@ pub async fn approve_member(
     };
 
     let msg = format!("add:{}:{}:owner:{}", req.peer_id, role, req.owner);
-    if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &req.admin_signature) {
+    let sig = match resolve_admin_sig(&circle_id, msg.as_bytes(), &req.admin_signature) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::FORBIDDEN, Json(json!({"error": format!("admin signature required: {e}")}))).into_response(),
+    };
+    if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &sig) {
         return (StatusCode::FORBIDDEN, Json(json!({"error": format!("invalid admin signature: {e}")}))).into_response();
     }
 
@@ -338,7 +355,7 @@ pub async fn approve_member(
         agent_id,
         role,
         added_at: Utc::now(),
-        signature: req.admin_signature,
+        signature: sig,
     };
     let Ok(json_str) = serde_json::to_string(&entry) else {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "serialize failed"}))).into_response();
@@ -381,7 +398,11 @@ pub async fn reject_member(
     };
 
     let msg = format!("reject:{}", req.peer_id);
-    if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &req.admin_signature) {
+    let sig = match resolve_admin_sig(&circle_id, msg.as_bytes(), &req.admin_signature) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::FORBIDDEN, Json(json!({"error": format!("admin signature required: {e}")}))).into_response(),
+    };
+    if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &sig) {
         return (StatusCode::FORBIDDEN, Json(json!({"error": format!("invalid admin signature: {e}")}))).into_response();
     }
 
@@ -406,4 +427,26 @@ fn verify_admin_sig(admin_pubkey_hex: &str, msg: &[u8], sig_hex: &str) -> anyhow
         anyhow::bail!("signature mismatch");
     }
     Ok(())
+}
+
+/// When the frontend omits admin_signature (empty string), try to sign using the
+/// daemon's local admin.key for this circle.  Returns the hex signature on success,
+/// or an error if admin.key is not present (i.e. this machine is not the admin).
+fn local_admin_sign(circle_id: &str, msg: &[u8]) -> anyhow::Result<String> {
+    use crate::{config::circle_dir, crypto::keypair_from_hex};
+    let key_path = circle_dir(circle_id)?.join("admin.key");
+    let hex_str = std::fs::read_to_string(&key_path)
+        .map_err(|_| anyhow::anyhow!("not admin: admin.key not found for this circle"))?;
+    let kp = keypair_from_hex(hex_str.trim())?;
+    let sig = kp.sign(msg).map_err(|e| anyhow::anyhow!("signing failed: {e}"))?;
+    Ok(hex::encode(sig))
+}
+
+/// Resolve the admin signature: use the provided one if non-empty, otherwise
+/// auto-sign with the local admin.key.  Returns Err if neither is available.
+fn resolve_admin_sig(circle_id: &str, msg: &[u8], provided: &str) -> anyhow::Result<String> {
+    if !provided.is_empty() {
+        return Ok(provided.to_string());
+    }
+    local_admin_sign(circle_id, msg)
 }
