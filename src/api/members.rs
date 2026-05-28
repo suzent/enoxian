@@ -6,6 +6,7 @@ use yrs::{Any, Array, Map, MapRef, Out, Transact};
 
 use crate::control::{CircleEvent, MemberEntry, MemberRole, MlsCommitEntry, PendingEntry, MEMBER_LIST_KEY, MLS_KEY_PACKAGES_KEY, MLS_PENDING_KEY, MLS_WELCOMES_KEY, MLS_COMMITS_KEY};
 use crate::daemon::DaemonState;
+use crate::lifecycle::rotate_psk_and_restart;
 
 pub async fn list_members(
     State(daemon): State<DaemonState>,
@@ -118,13 +119,117 @@ pub async fn remove_member(
         return (StatusCode::FORBIDDEN, Json(json!({"error": format!("invalid admin signature: {e}")}))).into_response();
     }
 
+    // Issue MLS Remove commit so all remaining members advance their epoch,
+    // deriving a new PSK that the evicted peer cannot compute.
+    //
+    // Phase 1: all MLS operations under the lock → produce owned results.
+    // Phase 2: CRDT writes and disk save outside the lock.
+    struct MlsRemoveOut {
+        commit_bytes: Vec<u8>,
+        psk: [u8; 32],
+        epoch: u64,
+    }
+    let mls_out: Option<MlsRemoveOut> = {
+        let mut mls_locked = state.mls.blocking_lock();
+        // Safety: identity lives inside the MutexGuard; both are only accessed
+        // within this block, so the raw-pointer cast is safe.
+        let identity_ptr = &mls_locked.identity as *const _;
+        let identity = unsafe { &*identity_ptr };
+        match mls_locked.group.as_mut() {
+            None => None, // no MLS group — CRDT-only removal
+            Some(group) => {
+                match group.leaf_index_for_peer(&req.peer_id) {
+                    None => None, // peer never joined MLS; evict from CRDT only
+                    Some(leaf_idx) => {
+                        let commit_bytes = match group.remove_member(identity, leaf_idx) {
+                            Ok(b) => b,
+                            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("MLS remove_member failed: {e}")}))).into_response(),
+                        };
+                        let psk = match group.epoch_psk(identity) {
+                            Ok(p) => p,
+                            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("MLS epoch_psk failed: {e}")}))).into_response(),
+                        };
+                        let epoch = group.epoch();
+                        Some(MlsRemoveOut { commit_bytes, psk, epoch })
+                    }
+                }
+            }
+        }
+        // mls_locked drops here
+    };
+
+    // Phase 2: broadcast commit + save group (outside the MLS lock).
+    let new_psk: Option<[u8; 32]> = if let Some(out) = mls_out {
+        // Broadcast the Remove commit to remaining members via the CRDT.
+        let entry = MlsCommitEntry {
+            epoch: out.epoch,
+            data_hex: hex::encode(&out.commit_bytes),
+            sender_peer_id: state.peer_id.clone(),
+            ratchet_tree_hex: String::new(), // not needed for Remove commits
+        };
+        if let Ok(json_str) = serde_json::to_string(&entry) {
+            let commits_arr = state.control.get_or_insert_array(MLS_COMMITS_KEY);
+            let mut txn = state.control.transact_mut();
+            commits_arr.push_back(&mut txn, json_str.as_str());
+        }
+
+        // Persist the updated MLS group to disk.
+        {
+            let mls_locked = state.mls.blocking_lock();
+            if let Some(group) = &mls_locked.group {
+                let _ = group.save(&mls_locked.identity, &state.circle_dir);
+            }
+        }
+
+        Some(out.psk)
+    } else {
+        None
+    };
+
+    // Read the agent_id before removing the member entry (needed for presence update).
+    let evicted_agent_id: Option<String> = {
+        let member_map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
+        let txn = state.control.transact();
+        member_map.get(&txn, req.peer_id.as_str()).and_then(|v| {
+            if let Out::Any(Any::String(s)) = v {
+                serde_json::from_str::<MemberEntry>(&s).ok().map(|e| e.agent_id)
+            } else {
+                None
+            }
+        })
+    };
+
+    // Remove from CRDT member list and clean up auxiliary keys.
     {
-        let map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
+        let member_map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
+        let kp_map: MapRef = state.control.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+        let welcome_map: MapRef = state.control.get_or_insert_map(MLS_WELCOMES_KEY);
+        let pending_map: MapRef = state.control.get_or_insert_map(MLS_PENDING_KEY);
         let mut txn = state.control.transact_mut();
-        map.remove(&mut txn, req.peer_id.as_str());
+        member_map.remove(&mut txn, req.peer_id.as_str());
+        kp_map.remove(&mut txn, req.peer_id.as_str());
+        welcome_map.remove(&mut txn, req.peer_id.as_str());
+        pending_map.remove(&mut txn, req.peer_id.as_str());
+    }
+
+    // Mark the evicted peer as offline in presence.
+    if let Some(agent_id) = &evicted_agent_id {
+        crate::presence::write_offline(&state, agent_id);
     }
 
     let _ = state.events.send(CircleEvent::MemberRemoved { peer_id: req.peer_id.clone() });
+
+    // Rotate the admin's own PSK now that the MLS epoch has advanced.
+    // This restarts the swarm with the new key; the evicted peer will fail
+    // the pnet handshake with the old key.
+    if let Some(psk) = new_psk {
+        let cid = circle_id.clone();
+        let d = daemon.clone();
+        tokio::spawn(async move {
+            rotate_psk_and_restart(&cid, psk, d).await;
+        });
+    }
+
     Json(json!({"status": "removed", "peer_id": req.peer_id})).into_response()
 }
 

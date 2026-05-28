@@ -372,13 +372,16 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     // ── Commit watcher ────────────────────────────────────────────────────────
     // All peers: watch mls_commits for new entries and apply them to stay in
     // sync with epoch advances. PSK rotates after each epoch change.
+    //
+    // Commits are fed through a serial channel to prevent concurrent MLS
+    // operations from racing — multiple commits arriving in a single P2P sync
+    // batch would otherwise spawn concurrent tasks fighting over the mutex and
+    // calling rotate_psk_and_restart simultaneously.
     {
         use yrs::types::Change;
+        let (commit_tx, mut commit_rx) =
+            tokio::sync::mpsc::unbounded_channel::<MlsCommitEntry>();
         let commits_arr = state.control.get_or_insert_array(MLS_COMMITS_KEY);
-        let mls_c = mls.clone();
-        let state_c = state.clone();
-        let daemon_c = daemon.clone();
-        let circle_id_c = config.circle_id.clone();
         let commits_sub = commits_arr.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::array::ArrayEvent| {
             let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
             if !is_p2p { return; }
@@ -387,13 +390,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     for val in values {
                         if let yrs::Out::Any(yrs::Any::String(s)) = val {
                             if let Ok(entry) = serde_json::from_str::<MlsCommitEntry>(&s) {
-                                let mls = mls_c.clone();
-                                let state = state_c.clone();
-                                let daemon = daemon_c.clone();
-                                let circle_id = circle_id_c.clone();
-                                tokio::spawn(async move {
-                                    apply_commit_entry(entry, mls, state, daemon, circle_id).await;
-                                });
+                                let _ = commit_tx.send(entry);
                             }
                         }
                     }
@@ -401,6 +398,23 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             }
         });
         std::mem::forget(commits_sub);
+
+        let mls_c = mls.clone();
+        let state_c = state.clone();
+        let daemon_c = daemon.clone();
+        let circle_id_c = config.circle_id.clone();
+        let token_c = token.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = token_c.cancelled() => break,
+                    entry = commit_rx.recv() => match entry {
+                        Some(e) => apply_commit_entry(e, mls_c.clone(), state_c.clone(), daemon_c.clone(), circle_id_c.clone()).await,
+                        None => break,
+                    },
+                }
+            }
+        });
     }
 
     spawn_watcher(state.clone(), workspace, token.clone()).await?;
@@ -1024,7 +1038,7 @@ async fn apply_commit_entry(
 
 /// Saves the new PSK to config.toml, then stops and restarts the circle so
 /// the swarm rebuilds its transport with the new pnet key.
-async fn rotate_psk_and_restart(circle_id: &str, new_psk: [u8; 32], daemon: DaemonState) {
+pub async fn rotate_psk_and_restart(circle_id: &str, new_psk: [u8; 32], daemon: DaemonState) {
     let mut cfg = match config::load(circle_id) {
         Ok(c) => c,
         Err(e) => { warn!("[mls] rotate_psk: config load failed: {e}"); return; }

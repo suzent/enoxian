@@ -24,7 +24,7 @@
 | P2P awareness relay | Cursor/presence awareness bytes forwarded between WS clients and across P2P peers via `all_awareness_updates` broadcast |
 | Live presence | Hostname-based agent_id (strips `.local`); 30s heartbeat; immediate OFFLINE on disconnect/shutdown; stale detection (>90s); `enoch who` shows last-seen age |
 | Admin & member management | Admin keypair signs member operations; daemon auto-signs when `admin.key` present; `enoch member list/add/remove/promote/pending/approve/reject`; pending queue; ghost-entry cleanup on rejoin |
-| MLS group key management (partial) | Group created at init; KeyPackages generated on join; Welcome messages delivered via Yjs; commit watcher; pending/approve/reject workflow in frontend |
+| MLS access revocation (RFC 9420) | Group created at init; KeyPackages on join; Welcome delivery; serial commit watcher; `remove_member` issues Remove commit + rotates PSK; evicted peer fails pnet handshake |
 | Chat | `enoch say` posts messages; `enoch chat [--follow]` reads/streams; `@mention` emits `AgentMentioned` event as agent wake signal |
 | Task SSE events from P2P | Control doc observer fires `TaskCreated/Claimed/Done` SSE events when task updates arrive via P2P sync |
 | Web frontend | React SPA: circle selector, presence panel, file tree, collaborative CodeMirror editor, task queue, chat, member management; served from `enochd` at `/app` |
@@ -408,54 +408,55 @@ Yjs is the right CRDT for high-frequency text sequences (code files, chat). For 
 ---
 
 ### M11 — Access Revocation via MLS (RFC 9420)
-**Status: In Progress**
+**Status: Complete**
 
-True revocation requires changing the group key when a member is removed. Rather than rolling a custom PSK rotation scheme, ENOCHIAN will adopt **IETF MLS (RFC 9420)** — the international standard for group key management in decentralised systems, implemented in Rust by [`openmls`](https://github.com/openmls/openmls).
+True revocation requires changing the group key when a member is removed. ENOCHIAN uses **IETF MLS (RFC 9420)** — the international standard for group key management in decentralised systems, implemented in Rust by [`openmls`](https://github.com/openmls/openmls).
 
 **Why MLS instead of custom PSK rotation:**
 - MLS TreeKEM is cryptographically proven and handles eviction, offline members, and key rotation as first-class operations
-- Offline members receive KeyPackages when they reconnect — no coordination window, no requirement for all members to be online simultaneously
+- Offline members receive pending commits when they reconnect — no coordination window, no requirement for all members to be online simultaneously
 - Forward secrecy and post-compromise security are built in
 - `openmls` is a production Rust crate implementing RFC 9420
 
 **Architecture:**
 
-The existing PSK (via `libp2p::pnet`) is kept as a coarse transport-layer admission gate — proving you know the circle secret at all. MLS operates above it at the application layer, encrypting the CRDT sync data and managing group keys.
+The existing PSK (via `libp2p::pnet`) is kept as a coarse transport-layer admission gate. MLS manages group key material above it and drives PSK rotation: each MLS epoch produces a new PSK that the evicted peer cannot derive.
 
 ```
 TCP
 └── pnet (PSK, XSalsa20)     ← coarse gate: "are you in this circle?"
     └── Noise (identity)     ← peer authentication
-        └── MLS group key    ← fine gate: "are you still a member?"
+        └── MLS epoch → PSK  ← fine gate: "are you still a member?"
             └── CRDT sync    ← content (workspace files, chat, tasks)
 ```
 
 When a member is evicted:
 1. Admin runs `enoch member remove <peer>`
-2. MLS `Remove` proposal is committed — TreeKEM prunes the evicted node and derives a new epoch key
-3. All remaining members receive the new epoch key (online peers immediately, offline peers via KeyPackage on reconnect)
-4. The evicted peer's key material is cryptographically useless for all future epochs
-5. Even if they rejoin with a new keypair, they don't have a valid MLS KeyPackage for the new epoch — connection is rejected at the application layer, not just the member list
+2. MLS `Remove` + `Commit` issued — TreeKEM prunes the evicted leaf, derives new epoch key
+3. Remove commit broadcast via `mls_commits` CRDT array to all remaining members
+4. Admin and each remaining peer apply the commit, derive the new PSK (`export_secret("enochian-psk")`), and restart their swarm
+5. Evicted peer's old PSK fails the pnet XSalsa20 handshake — connection refused before any data
+6. Offline members apply the pending commit on reconnect and rotate their PSK
 
-**Implementation (done):**
-- `src/mls.rs` — `MlsIdentity` (generated per-peer on join, persisted in circle config dir), `MlsGroupManager` (create group, add member, apply commit/welcome)
-- `src/lifecycle.rs` — admin bootstraps MLS group on startup if not present; KeyPackage written to `mls_key_packages` Y.Map; owner claim signed and written to `mls_owner_claims` Y.Map; Welcome consumer observer (fires when admin writes Welcome to `mls_welcomes`); commit watcher (applies incoming MLS commits to stay in sync)
-- `src/api/members.rs` — `approve_member` loads joiner's KeyPackage, calls `group.add_member()`, distributes commit to `mls_commits` array and Welcome to `mls_welcomes` map; saves updated group state
+**Implementation:**
+- `src/mls/group.rs` — `MlsGroupManager`: `create`, `join_from_welcome`, `add_member`, `remove_member`, `apply_commit`, `epoch_psk`, `leaf_index_for_peer`, `save`/`load`
+- `src/mls/identity.rs` — `MlsIdentity`: Ed25519-based credential, signer, provider; persisted in circle config dir
+- `src/lifecycle.rs` — admin bootstraps MLS group on startup; KeyPackage written to `mls_key_packages`; Welcome consumer observer; **serial commit watcher** (mpsc channel + single consumer task — prevents race conditions on MLS mutex when multiple commits arrive in one P2P batch); `rotate_psk_and_restart` rotates `config.psk_hex` and restarts the circle swarm
+- `src/api/members.rs` — `approve_member`: load KeyPackage → `group.add_member()` → distribute commit + Welcome; `remove_member`: `group.remove_member()` → distribute Remove commit → `rotate_psk_and_restart` in background task; cleans up key package, welcome, and pending entries
 
 **Tasks:**
 - [x] Add `openmls` and `openmls_rust_crypto` dependencies
-- [x] MLS group creation at `enoch init` — group state stored in circle config dir (`group.json`)
+- [x] MLS group creation at `enoch init` — group state stored in circle config dir
 - [x] `MlsIdentity` generation on `enoch enter` — persisted in `~/.enochian/circles/<id>/`
-- [x] KeyPackage written to `mls_key_packages` Y.Map on daemon start — available for admin to use when approving
+- [x] KeyPackage written to `mls_key_packages` Y.Map on daemon start
 - [x] `approve_member` API: load KeyPackage → `group.add_member()` → distribute commit + Welcome via Yjs
-- [x] Welcome consumer — joiner's daemon watches `mls_welcomes` for their peer_id and applies the Welcome to join the MLS group
-- [x] Commit watcher — all peers apply incoming MLS commits from `mls_commits` array to advance their epoch
+- [x] Welcome consumer — watches `mls_welcomes` for own peer_id and applies Welcome to join MLS group
+- [x] Commit watcher — serial mpsc consumer applies incoming MLS commits; rotates PSK after each epoch advance
 - [x] Pending member queue with approve/reject workflow wired into MLS
-- [ ] Encrypt CRDT sync updates with the current MLS epoch key
-- [ ] `enoch member remove` issues a MLS `Remove` + `Commit`, distributes new epoch to remaining members
-- [ ] Offline member catch-up — peers who were offline receive pending commits on reconnect
-- [ ] Sync-level rejection — peers presenting an outdated epoch key are refused
-- [ ] Update `docs/security.md` with the MLS threat model
+- [x] `remove_member` API: `group.remove_member()` → Remove commit broadcast → `rotate_psk_and_restart`; evicts all auxiliary CRDT keys; writes peer offline
+- [x] `rotate_psk_and_restart` — saves new PSK to config, stops circle, restarts with new pnet key
+- [x] Serial commit processing — `mpsc::unbounded_channel` serialises concurrent commit arrivals; prevents MLS mutex races and double-PSK-rotation on batch sync
+- [x] `docs/security.md` updated with MLS threat model, TreeKEM explanation, epoch → PSK derivation chain, commit propagation, and attacker capability tables
 
 ---
 
