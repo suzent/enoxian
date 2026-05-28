@@ -68,21 +68,8 @@ pub async fn add_member(
         return (StatusCode::FORBIDDEN, Json(json!({"error": format!("invalid admin signature: {e}")}))).into_response();
     }
 
-    // Owner uniqueness check
-    {
-        let map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
-        let txn = state.control.transact();
-        for (key, val) in map.iter(&txn) {
-            if key == req.peer_id.as_str() { continue; }
-            if let Out::Any(Any::String(s)) = val {
-                if let Ok(m) = serde_json::from_str::<MemberEntry>(&s) {
-                    if m.owner == owner {
-                        return (StatusCode::CONFLICT, Json(json!({"error": format!("owner '{}' already registered", owner)}))).into_response();
-                    }
-                }
-            }
-        }
-    }
+    // Note: owner names are per-person, not per-device. The same person can have
+    // multiple devices with the same owner name; peer_id is the unique identifier.
 
     let entry = MemberEntry {
         peer_id: req.peer_id.clone(),
@@ -261,22 +248,6 @@ pub async fn approve_member(
     };
     if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &sig) {
         return (StatusCode::FORBIDDEN, Json(json!({"error": format!("invalid admin signature: {e}")}))).into_response();
-    }
-
-    // Owner uniqueness check
-    {
-        let map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
-        let txn = state.control.transact();
-        for (key, val) in map.iter(&txn) {
-            if key == req.peer_id.as_str() { continue; }
-            if let Out::Any(Any::String(s)) = val {
-                if let Ok(m) = serde_json::from_str::<MemberEntry>(&s) {
-                    if m.owner == req.owner {
-                        return (StatusCode::CONFLICT, Json(json!({"error": format!("owner '{}' already registered", req.owner)}))).into_response();
-                    }
-                }
-            }
-        }
     }
 
     // Load key package
