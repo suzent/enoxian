@@ -3,14 +3,14 @@ use clap::{Parser, Subcommand};
 // ── Daemon CLI ─────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "enochd", about = "ENOCHIAN daemon — serves all known Circles over HTTP/P2P")]
+#[command(name = "enoxd", about = "enoxian daemon — serves all known Circles over HTTP/P2P")]
 pub struct DaemonCli {
     /// Port to listen on
     #[arg(long, default_value = "36521")]
     pub port: u16,
 
     /// Run as a public bootstrap server (rendezvous + relay, no circles).
-    /// Generates a stable keypair at ~/.enochian/bootstrap.key on first run.
+    /// Generates a stable keypair at ~/.enoxian/bootstrap.key on first run.
     /// Circle members connect via QUIC — no PSK required.
     #[arg(long)]
     pub bootstrap: bool,
@@ -19,14 +19,14 @@ pub struct DaemonCli {
 // ── Agent CLI ──────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "enoch", about = "ENOCHIAN agent CLI — collaborate inside a Circle")]
+#[command(name = "enox", about = "enoxian agent CLI — collaborate inside a Circle")]
 pub struct AgentCli {
     /// Output raw JSON (machine-readable)
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Circle name or ID prefix to target (overrides ENOCHIAN_CIRCLE)
-    #[arg(long, global = true, env = "ENOCHIAN_CIRCLE")]
+    /// Circle name or ID prefix to target (overrides enoxian_CIRCLE)
+    #[arg(long, global = true, env = "enoxian_CIRCLE")]
     pub circle: Option<String>,
 
     #[command(subcommand)]
@@ -99,21 +99,21 @@ pub enum AgentCommands {
     },
     /// Open the Circle UI in the default browser
     Open,
-    /// Start the enochd daemon in the background
+    /// Start the enoxd daemon in the background
     Start {
         /// Port to listen on
         #[arg(long, default_value = "36521")]
         port: u16,
     },
-    /// Stop the running enochd daemon
+    /// Stop the running enoxd daemon
     Stop,
-    /// Update enoch and enochd to the latest version
+    /// Update enox and enoxd to the latest version
     Update {
         /// Build from source instead of downloading a release binary.
         /// Use this during development.
         #[arg(long)]
         dev: bool,
-        /// Path to the enochian source directory (saved after first use)
+        /// Path to the enoxian source directory (saved after first use)
         #[arg(long)]
         src: Option<std::path::PathBuf>,
         /// Skip git pull (just rebuild)
@@ -178,7 +178,7 @@ pub struct InitArgs {
     #[arg(long, default_value = "7d")]
     pub ttl: String,
 
-    /// Workspace directory (default: ~/enochian/<name>)
+    /// Workspace directory (default: ~/enoxian/<name>)
     #[arg(long)]
     pub dir: Option<std::path::PathBuf>,
 
@@ -191,7 +191,7 @@ pub struct InitArgs {
 
 #[derive(Parser)]
 pub struct EnterArgs {
-    /// enochian:// invite URI  — OR —  a Circle ID (requires --secret)
+    /// enoxian:// invite URI  — OR —  a Circle ID (requires --secret)
     pub target: String,
 
     /// Pre-shared key (hex) — required when target is a raw Circle ID
@@ -206,7 +206,7 @@ pub struct EnterArgs {
     #[arg(long)]
     pub rendezvous: Option<String>,
 
-    /// Workspace directory (default: ~/enochian/<circle-name>)
+    /// Workspace directory (default: ~/enoxian/<circle-name>)
     #[arg(long)]
     pub dir: Option<std::path::PathBuf>,
 

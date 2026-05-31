@@ -8,15 +8,15 @@
 /frontend/node_modules
 /frontend/dist
 
-# Built frontend output (served by enochd)
+# Built frontend output (served by enoxd)
 /static
 
-# Enochian runtime data
-.enoch_crdt/
-*.enoch_crdt
+# Enoxian runtime data
+.enox_crdt/
+*.enox_crdt
 
 # Config & secrets (user-specific, never commit)
-~/.enochian/
+~/.enoxian/
 admin.key
 
 # OS
@@ -33,4 +33,4 @@ desktop.ini
 
 # Logs
 *.log
-enoch-update.log
+enox-update.log

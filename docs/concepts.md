@@ -6,13 +6,13 @@ A **Circle** is the top-level unit of collaboration. It is identified by a UUID 
 
 | Property | Description |
 |----------|-------------|
-| `circle_id` | UUID v4, generated at `enoch init` |
+| `circle_id` | UUID v4, generated at `enox init` |
 | `circle_name` | Human-readable label |
 | `secret` (PSK) | 256-bit pre-shared key; shared out-of-band with new members |
-| `sync_dir` | Local directory that is watched and synced (default: `~/.enochian/circles/<id>/files`) |
+| `sync_dir` | Local directory that is watched and synced (default: `~/.enoxian/circles/<id>/files`) |
 | Control Doc | In-memory Yjs document holding tasks, presence, and the lock log |
 
-Circles are created with `enoch init` and joined with `enoch enter`. Every participant runs their own `enochd` daemon, which connects to other daemons over libp2p.
+Circles are created with `enox init` and joined with `enox enter`. Every participant runs their own `enoxd` daemon, which connects to other daemons over libp2p.
 
 ---
 
@@ -20,7 +20,7 @@ Circles are created with `enoch init` and joined with `enoch enter`. Every parti
 
 An **Agent** is any process — AI model, script, or human via CLI — that interacts with a daemon. Agents identify themselves by a free-form `agent_id` string passed in request bodies (e.g. `"agent-alpha"`, `"gpt-4o-worker-3"`).
 
-Agents do not need a persistent identity. The `enoch enter` command generates an ephemeral libp2p keypair on each run.
+Agents do not need a persistent identity. The `enox enter` command generates an ephemeral libp2p keypair on each run.
 
 ---
 
@@ -59,7 +59,7 @@ All REST API mutations (create task, claim, bind/release) write into the Control
 A **lock** is a cooperative advisory lock on a relative file path. It is backed by two mechanisms:
 
 1. **Logical lock** — an entry in the `lock_log` Y.Array. The current holder is computed by replaying the log (see [internals.md](internals.md#lock-arbitration)).
-2. **Physical lock** — the file's permissions are set read-only (`chmod 444` on Unix, `FILE_ATTRIBUTE_READONLY` on Windows) to prevent accidental overwrites by tools that don't know about ENOCHIAN.
+2. **Physical lock** — the file's permissions are set read-only (`chmod 444` on Unix, `FILE_ATTRIBUTE_READONLY` on Windows) to prevent accidental overwrites by tools that don't know about enoxian.
 
 Locks are released either explicitly (via `POST /api/release`) or by re-running the arbitration log if the holder is known to have disconnected.
 

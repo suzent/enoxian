@@ -2,10 +2,10 @@
 
 ## Overview
 
-Circles are joined via `enochian://` invite URIs — single strings that encode everything needed to authenticate and connect.
+Circles are joined via `enoxian://` invite URIs — single strings that encode everything needed to authenticate and connect.
 
 ```
-enochian://v1/CRxkUjpNaBcDeFgH...
+enoxian://v1/CRxkUjpNaBcDeFgH...
 ```
 
 A link encodes:
@@ -23,7 +23,7 @@ The URI has no query string — it is safe to paste in any shell without quoting
 
 ## Binary format
 
-The opaque payload is a variable-length byte array encoded as base64url (no padding), prefixed with `enochian://v1/`.
+The opaque payload is a variable-length byte array encoded as base64url (no padding), prefixed with `enoxian://v1/`.
 
 ### Fixed header (58 bytes minimum)
 
@@ -54,24 +54,24 @@ Extensions use a u16 big-endian length prefix. Old decoders that don't know abou
 
 ## Generating invites
 
-**At circle creation** — `enoch init` always prints a 7-day invite:
+**At circle creation** — `enox init` always prints a 7-day invite:
 
 ```bash
-enoch init --name "MyCircle"
-enoch init --name "MyCircle" --ttl 24h   # shorter window
+enox init --name "MyCircle"
+enox init --name "MyCircle" --ttl 24h   # shorter window
 ```
 
-**On demand** — `enoch invite` queries the running daemon and auto-embeds everything it finds:
+**On demand** — `enox invite` queries the running daemon and auto-embeds everything it finds:
 
 ```bash
-enoch invite MyCircle
+enox invite MyCircle
 ```
 
 Output:
 ```
 ✦ Invite for 'MyCircle' (valid 7d):
 
-  enochian://v1/CRxkUjpNaBcDeFgH...
+  enoxian://v1/CRxkUjpNaBcDeFgH...
 
   Embedded connectivity:
     peer-id   : 12D3KooWabc...
@@ -79,7 +79,7 @@ Output:
     relay     : /ip4/5.6.7.8/tcp/36521/p2p/12D3KooWxyz...
     rendezvous: /ip4/1.2.3.4/udp/36521/quic-v1/p2p/12D3KooWrdv...
 
-  Join with: enoch enter "<invite>"
+  Join with: enox enter "<invite>"
 ```
 
 Address selection — each field is populated automatically; explicit flags override:
@@ -90,7 +90,7 @@ Address selection — each field is populated automatically; explicit flags over
 | `relay_addr` | First entry in your `relay_addrs` config (saved when you joined via relay) | `--relay` |
 | `rendezvous_addr` | First entry in your `rendezvous_addrs` config (saved when you joined via bootstrap) | `--rendezvous` |
 
-If the daemon isn't running when you call `enoch invite`, the invite is generated without connectivity data and a tip is printed. Relay and rendezvous addresses still work because they're read from `config.toml` directly.
+If the daemon isn't running when you call `enox invite`, the invite is generated without connectivity data and a tip is printed. Relay and rendezvous addresses still work because they're read from `config.toml` directly.
 
 Generating a new invite does **not** invalidate old ones — it just produces a different link with a new expiry. To invalidate all outstanding invites, rotate the PSK (planned M11).
 
@@ -100,46 +100,46 @@ Generating a new invite does **not** invalidate old ones — it just produces a 
 
 When a relay multiaddr is embedded in an invite:
 
-1. `enoch enter` saves the relay address to `relay_addrs` in the circle's `config.toml`
-2. On the next `enochd` start, the node calls `swarm.listen_on(<relay>/p2p-circuit)` which reserves a slot on the relay
+1. `enox enter` saves the relay address to `relay_addrs` in the circle's `config.toml`
+2. On the next `enoxd` start, the node calls `swarm.listen_on(<relay>/p2p-circuit)` which reserves a slot on the relay
 3. The node is now reachable from any network through the relay, even behind NAT or strict firewall
 4. When two peers both reach each other through the relay, DCUtR (Direct Connection Upgrade through Relay) attempts a direct hole-punch — the relay is only used for coordination, not ongoing traffic
 
-The relay node is any regular `enochd` peer with a public IP address. It holds the PSK and is a full circle member. No special mode is required — relay server behaviour is enabled in every `enochd` instance.
+The relay node is any regular `enoxd` peer with a public IP address. It holds the PSK and is a full circle member. No special mode is required — relay server behaviour is enabled in every `enoxd` instance.
 
 Relay addresses **propagate automatically**: once a member joins via relay, that relay address is saved in their config and will be forwarded in every invite they generate. New members don't need to know the relay address upfront.
 
 **Getting the relay multiaddr:**
 
 ```
-enoch invite MyCircle
+enox invite MyCircle
 # shows: peer: /ip4/203.0.113.10/tcp/36521
 # relay multiaddr: /ip4/203.0.113.10/tcp/36521/p2p/<peer_id>
 ```
 
-The peer ID and listening port are printed by `enoch invite` when the daemon is running.
+The peer ID and listening port are printed by `enox invite` when the daemon is running.
 
 ---
 
 ## WAN invites with bootstrap server (`--rendezvous`)
 
-For the case where **no** circle member has a public IP, the bootstrap server (`enochd --bootstrap`) acts as a rendezvous point. Circle members connect to it via QUIC (no PSK), register under their circle UUID namespace, and discover each other.
+For the case where **no** circle member has a public IP, the bootstrap server (`enoxd --bootstrap`) acts as a rendezvous point. Circle members connect to it via QUIC (no PSK), register under their circle UUID namespace, and discover each other.
 
 The bootstrap server is not a circle member — it holds no PSK and cannot read synced content.
 
 When a rendezvous multiaddr is embedded in an invite:
 
-1. `enoch enter` saves it to `rendezvous_addrs` in `config.toml`
-2. On `enochd` start, the circle swarm dials the bootstrap server over QUIC
+1. `enox enter` saves it to `rendezvous_addrs` in `config.toml`
+2. On `enoxd` start, the circle swarm dials the bootstrap server over QUIC
 3. It registers under namespace = circle UUID; TTL = 2h (refreshed hourly)
 4. It discovers other members registered under the same namespace and dials them
 5. Direct PSK-TCP connections are established between discovered members
 
-**Setting up `enoch.suzent.com`:**
+**Setting up `enox.suzent.com`:**
 
 ```bash
 # On the VPS:
-enochd --bootstrap --port 36521
+enoxd --bootstrap --port 36521
 
 # Startup log shows:
 #   Bootstrap listening on /ip4/0.0.0.0/udp/36521/quic-v1
@@ -147,23 +147,23 @@ enochd --bootstrap --port 36521
 #     /ip4/0.0.0.0/udp/36521/quic-v1/p2p/<PEER_ID>
 ```
 
-Replace `0.0.0.0` with the server's public IP. The keypair is stored in `~/.enochian/bootstrap.key` and is stable across restarts — the peer ID never changes.
+Replace `0.0.0.0` with the server's public IP. The keypair is stored in `~/.enoxian/bootstrap.key` and is stable across restarts — the peer ID never changes.
 
 **Using the bootstrap server:**
 
 ```bash
 # Generate invite with rendezvous embedded:
-enoch invite MyCircle --rendezvous /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<ID>
+enox invite MyCircle --rendezvous /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<ID>
 
 # Once any member has joined with --rendezvous, future invites auto-embed it:
-enoch invite MyCircle   # rendezvous addr is auto-detected from config
+enox invite MyCircle   # rendezvous addr is auto-detected from config
 ```
 
 ---
 
 ## Expiry enforcement
 
-Expiry is enforced **client-side** in `enoch enter`. Before dialing the network, the CLI checks `Utc::now() > expires_at` and exits with an error if the invite has lapsed:
+Expiry is enforced **client-side** in `enox enter`. Before dialing the network, the CLI checks `Utc::now() > expires_at` and exits with an error if the invite has lapsed:
 
 ```
 Error: invite expired 2h ago (at 2026-05-13 12:00 UTC)
@@ -172,7 +172,7 @@ Error: invite expired 2h ago (at 2026-05-13 12:00 UTC)
 This means:
 - Expired links cannot be used to accidentally join
 - An agent that is already connected is not affected by expiry — only new joins are gated
-- A malicious agent with a copy of the PSK can still connect if they bypass `enoch enter` (the PSK is not time-limited at the P2P layer)
+- A malicious agent with a copy of the PSK can still connect if they bypass `enox enter` (the PSK is not time-limited at the P2P layer)
 
 A future approval-gate feature will enforce membership server-side inside the daemon.
 
@@ -187,10 +187,10 @@ A future approval-gate feature will enforce membership server-side inside the da
 | Opaque — PSK not visible in plain text | ✅ (base64url encoded) |
 | Works offline / without a server | ✅ |
 | WAN connectivity via relay | ✅ (circuit relay + DCUtR) |
-| WAN connectivity via bootstrap rendezvous | ✅ (`enochd --bootstrap` — both behind NAT) |
+| WAN connectivity via bootstrap rendezvous | ✅ (`enoxd --bootstrap` — both behind NAT) |
 | Relay traffic encrypted end-to-end | ✅ (relay forwards Noise-encrypted bytes; cannot read content) |
 | Bootstrap server learns nothing about content | ✅ (only knows peer IDs and circle UUIDs) |
-| Connectivity auto-embedded by daemon | ✅ (`enoch invite` queries daemon, no manual flags needed) |
+| Connectivity auto-embedded by daemon | ✅ (`enox invite` queries daemon, no manual flags needed) |
 | Revocable per-agent | ❌ (PSK rotation only — planned M11) |
 | Server-enforced expiry | ❌ (planned — approval gate) |
 | One-time use | ❌ (reusable for the TTL window) |

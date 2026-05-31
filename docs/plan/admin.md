@@ -2,7 +2,7 @@
 
 ## Why the current model is unsafe
 
-ENOCHIAN currently uses a single shared PSK as the only membership credential. This means:
+enoxian currently uses a single shared PSK as the only membership credential. This means:
 
 - **No invite gating** — any peer can generate a valid invite (they all hold the PSK)
 - **No revocation** — removing a member requires rotating the PSK and manually re-distributing the new secret to every remaining member out-of-band
@@ -39,14 +39,14 @@ Circle
 
 ### Invite flow (with admin)
 
-1. Admin runs `enoch invite MyCircle` — invite is signed with admin private key
-2. Joiner runs `enoch enter <uri>` — verifies admin signature before saving config
+1. Admin runs `enox invite MyCircle` — invite is signed with admin private key
+2. Joiner runs `enox enter <uri>` — verifies admin signature before saving config
 3. On connect, joiner's peer ID is checked against the member list
 4. If not in the list → connection refused
 
 ### Revocation flow
 
-1. Admin runs `enoch member remove <peer-id>`
+1. Admin runs `enox member remove <peer-id>`
 2. Admin signs updated member list (without the revoked peer)
 3. Updated list propagates via CRDT to all peers
 4. All peers refuse future connections from the removed peer ID
@@ -58,7 +58,7 @@ The removed peer's existing connections may linger briefly until they reconnect.
 The admin private key is stored separately from the node keypair:
 
 ```
-~/.enochian/circles/<id>/
+~/.enoxian/circles/<id>/
   config.toml       — node keypair, PSK, workspace_dir
   admin.key         — admin private key (only on admin machines)
 ```
@@ -86,16 +86,16 @@ member_role       = "member"  # this node's role: admin | member | observer
 
 ```bash
 # List all members
-enoch member list
+enox member list
 
 # Remove a member (admin only)
-enoch member remove <peer-id>
+enox member remove <peer-id>
 
 # Promote to admin (admin only)
-enoch member add-admin <peer-id>
+enox member add-admin <peer-id>
 
 # Change a member's role
-enoch member set-role <peer-id> observer
+enox member set-role <peer-id> observer
 ```
 
 ---
@@ -104,7 +104,7 @@ enoch member set-role <peer-id> observer
 
 Circles created before M6 use the PSK-only model. Migration:
 
-1. Admin runs `enoch upgrade-circle MyCircle` (generates admin keypair, signs current member list)
+1. Admin runs `enox upgrade-circle MyCircle` (generates admin keypair, signs current member list)
 2. All peers update via CRDT sync
 3. New connections require member list check
 
@@ -114,14 +114,14 @@ Old clients (without M6) can still connect via PSK — but their writes may be r
 
 ## Implementation tasks
 
-- [ ] Generate admin keypair at `enoch init`, store in `admin.key`
+- [ ] Generate admin keypair at `enox init`, store in `admin.key`
 - [ ] Store `admin_pubkey_hex` in `config.toml`
 - [ ] Sign member list entries with admin key
-- [ ] `enoch enter` — verify admin signature on invite, add self to pending member list
+- [ ] `enox enter` — verify admin signature on invite, add self to pending member list
 - [ ] On `ConnectionEstablished` — verify peer is in member list, disconnect if not
-- [ ] `enoch member list` command
-- [ ] `enoch member remove` command (admin only)
-- [ ] `enoch member add-admin` command (admin only)
-- [ ] `enoch member set-role` command (admin only)
+- [ ] `enox member list` command
+- [ ] `enox member remove` command (admin only)
+- [ ] `enox member add-admin` command (admin only)
+- [ ] `enox member set-role` command (admin only)
 - [ ] Observer enforcement — reject CRDT writes from observer peers
-- [ ] `enoch upgrade-circle` migration command
+- [ ] `enox upgrade-circle` migration command

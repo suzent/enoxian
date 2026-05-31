@@ -1,19 +1,19 @@
 [package]
-name = "enochian"
+name = "enoxian"
 version = "0.1.4"
 edition = "2021"
 rust-version = "1.83.0"
 
 [[bin]]
-name = "enochd"
-path = "src/bin/enochd.rs"
+name = "enoxd"
+path = "src/bin/enoxd.rs"
 
 [[bin]]
-name = "enoch"
-path = "src/bin/enoch.rs"
+name = "enox"
+path = "src/bin/enox.rs"
 
 [lib]
-name = "enochian"
+name = "enoxian"
 path = "src/lib.rs"
 
 [dependencies]
@@ -66,7 +66,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 # Phase 1 — File watcher
 notify = "8"
 
-# Phase 2 — enoch HTTP client
+# Phase 2 — enox HTTP client
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
 libp2p-stream = "0.4.0-alpha"
 open = "5"

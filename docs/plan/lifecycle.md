@@ -5,7 +5,7 @@
 All circles load at daemon startup and run until the daemon is killed. There is no way to:
 - Temporarily pause a circle without deleting it
 - Leave a circle permanently
-- Toggle individual circles while `enochd` is running
+- Toggle individual circles while `enoxd` is running
 
 ## Operations
 
@@ -16,10 +16,10 @@ Stops the circle's P2P swarm and file watcher. Config and workspace files are pr
 Use case: a project you're not actively working on, or a circle you want to stop syncing without leaving.
 
 ```bash
-enoch disable MyCircle
-# ◆ MyCircle paused. Run `enoch enable MyCircle` to resume.
+enox disable MyCircle
+# ◆ MyCircle paused. Run `enox enable MyCircle` to resume.
 
-enoch enable MyCircle
+enox enable MyCircle
 # ◆ MyCircle resumed.
 ```
 
@@ -28,17 +28,17 @@ enoch enable MyCircle
 Removes the circle config from this machine. The workspace directory is left intact by default (files are yours). Other peers are unaffected — they keep the circle.
 
 ```bash
-enoch leave MyCircle
+enox leave MyCircle
 # Are you sure you want to leave 'MyCircle'? [y/N] y
-# ◆ Left MyCircle. Workspace kept at ~/enochian/MyCircle
-# To also remove the workspace: rm -rf ~/enochian/MyCircle
+# ◆ Left MyCircle. Workspace kept at ~/enoxian/MyCircle
+# To also remove the workspace: rm -rf ~/enoxian/MyCircle
 ```
 
 This is irreversible locally. To rejoin, you need a new invite from another member.
 
 ### Runtime start/stop (no daemon restart)
 
-`enoch disable` and `enoch enable` call the daemon API to take effect immediately without restarting `enochd`. The `disabled` flag in config persists the state across restarts.
+`enox disable` and `enox enable` call the daemon API to take effect immediately without restarting `enoxd`. The `disabled` flag in config persists the state across restarts.
 
 ---
 
@@ -51,38 +51,38 @@ circle_id         = "8e563c41-..."
 circle_name       = "MyCircle"
 psk_hex           = "d2d89de6..."
 keypair_proto_hex = "0802..."
-workspace_dir     = "/Users/suzy/enochian/MyCircle"
+workspace_dir     = "/Users/suzy/enoxian/MyCircle"
 disabled          = true          # optional, default false
 ```
 
-`enochd` skips circles where `disabled = true` at startup.
+`enoxd` skips circles where `disabled = true` at startup.
 
 ---
 
 ## CLI changes
 
-### `enoch disable <CIRCLE>`
+### `enox disable <CIRCLE>`
 1. Resolve circle by name/prefix
-2. Set `disabled = true` in `~/.enochian/circles/<id>/config.toml`
+2. Set `disabled = true` in `~/.enoxian/circles/<id>/config.toml`
 3. Call `POST /circles/<id>/stop` if daemon is running (graceful — not an error if daemon is down)
 
-### `enoch enable <CIRCLE>`
+### `enox enable <CIRCLE>`
 1. Resolve circle (including disabled ones — load_all must return them)
 2. Clear `disabled` flag in config
 3. Call `POST /circles/<id>/start` if daemon is running
 
-### `enoch leave <CIRCLE>`
+### `enox leave <CIRCLE>`
 1. Resolve circle
 2. Print confirmation prompt (skip with `--yes`)
 3. Call `POST /circles/<id>/stop` if daemon is running
-4. Delete `~/.enochian/circles/<id>/` directory
+4. Delete `~/.enoxian/circles/<id>/` directory
 5. Print workspace path — do NOT delete workspace (user's files)
 
-### `enoch circles` output
+### `enox circles` output
 
 ```
-  MyCircle    — 8e563c41-...   ~/enochian/MyCircle
-  WorkProject — 2a3b4c5d-...  ~/enochian/WorkProject  [paused]
+  MyCircle    — 8e563c41-...   ~/enoxian/MyCircle
+  WorkProject — 2a3b4c5d-...  ~/enoxian/WorkProject  [paused]
 ```
 
 ---
@@ -110,7 +110,7 @@ Returns 409 if the circle is already running.
 ### 1. `src/config.rs`
 - [ ] Add `disabled: bool` field with `#[serde(default)]`
 - [ ] `load_all()` returns all circles including disabled ones
-- [ ] Add `load_all_active()` that filters out disabled ones — used by `enochd` startup
+- [ ] Add `load_all_active()` that filters out disabled ones — used by `enoxd` startup
 
 ### 2. `src/commands/serve.rs`
 - [ ] Use `load_all_active()` instead of `load_all()` at startup
@@ -143,7 +143,7 @@ Returns 409 if the circle is already running.
 ### 10. `src/commands/circles.rs`
 - [ ] Show `[paused]` marker for disabled circles
 
-### 11. `src/bin/enoch.rs`
+### 11. `src/bin/enox.rs`
 - [ ] Wire up Disable, Enable, Leave commands
 
 ### 12. Docs

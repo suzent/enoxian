@@ -97,10 +97,10 @@ Events are distributed via a `tokio::sync::broadcast` channel (capacity 256). Th
 - **No replay** — clients that connect late do not receive past events.
 - **Drop on lag** — a slow consumer that falls more than 256 events behind will miss events without error.
 
-### Consuming with `enoch watch`
+### Consuming with `enox watch`
 
 ```bash
-enoch watch
+enox watch
 # ◆ Watching circle events (Ctrl+C to stop)...
 #   [task_created]  {"type":"task_created","task_id":"..."}
 ```

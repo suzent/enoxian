@@ -15,7 +15,7 @@ pub async fn run(args: InitArgs) -> Result<()> {
     let existing = config::load_all()?;
     if existing.iter().any(|c| c.circle_name == args.name) {
         bail!(
-            "a circle named '{}' already exists — run `enoch circles` to list existing circles, or choose a different name",
+            "a circle named '{}' already exists — run `enox circles` to list existing circles, or choose a different name",
             args.name
         );
     }
@@ -99,7 +99,7 @@ pub async fn run(args: InitArgs) -> Result<()> {
     println!("  invite    : {invite_uri}");
     println!();
     println!("  Share the invite link to let peers join (valid for {}).", args.ttl);
-    println!("  Generate a new link anytime: enoch invite \"{}\"", args.name);
+    println!("  Generate a new link anytime: enox invite \"{}\"", args.name);
 
     Ok(())
 }

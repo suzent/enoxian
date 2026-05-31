@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy enochd to a Linux VPS as a rendezvous server.
+# Deploy enoxd to a Linux VPS as a rendezvous server.
 #
 # Build modes (in order of preference):
 #   default           Download latest release binary from GitHub (fastest)
@@ -26,7 +26,7 @@ ARCH="x86_64"
 UPDATE_ONLY=false
 BUILD_ON_REMOTE=false
 LOCAL=false
-REPO="suzent/enochian"
+REPO="suzent/enoxian"
 TOKEN="${GITHUB_TOKEN:-}"
 
 while [[ $# -gt 0 ]]; do
@@ -42,7 +42,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-ASSET="enochd-linux-$ARCH"
+ASSET="enoxd-linux-$ARCH"
 
 # Load GITHUB_TOKEN from .env if not already set
 if [[ -z "$TOKEN" && -f "$REPO_DIR/.env" ]]; then
@@ -57,32 +57,32 @@ if $BUILD_ON_REMOTE; then
         -C "$REPO_DIR" . | \
     ssh "$SSH_TARGET" \
         "docker run --rm -i \
-            -v enochian-cargo-cache:/usr/local/cargo/registry \
-            -v enochian-out:/out \
+            -v enoxian-cargo-cache:/usr/local/cargo/registry \
+            -v enoxian-out:/out \
             rust:alpine \
-            sh -c 'apk add --no-cache musl-dev && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --release --bin enochd && cp target/release/enochd /out/enochd'"
+            sh -c 'apk add --no-cache musl-dev && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --release --bin enoxd && cp target/release/enoxd /out/enoxd'"
 
     ssh "$SSH_TARGET" \
-        "docker run --rm -v enochian-out:/out busybox cp /out/enochd /tmp/enochd && chmod +x /tmp/enochd"
+        "docker run --rm -v enoxian-out:/out busybox cp /out/enoxd /tmp/enoxd && chmod +x /tmp/enoxd"
 
 elif $LOCAL; then
     LINUX_TARGET="${ARCH}-unknown-linux-gnu"
-    BINARY="$REPO_DIR/target/$LINUX_TARGET/release/enochd"
-    echo "▶ Building enochd for Linux ($LINUX_TARGET)..."
+    BINARY="$REPO_DIR/target/$LINUX_TARGET/release/enoxd"
+    echo "▶ Building enoxd for Linux ($LINUX_TARGET)..."
     cd "$REPO_DIR"
 
     if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "$ARCH" ]]; then
-        cargo build --release --bin enochd
-        BINARY="$REPO_DIR/target/release/enochd"
+        cargo build --release --bin enoxd
+        BINARY="$REPO_DIR/target/release/enoxd"
     elif command -v cross &>/dev/null; then
-        cross build --release --bin enochd --target "$LINUX_TARGET"
+        cross build --release --bin enoxd --target "$LINUX_TARGET"
     else
         echo "Error: install cross (cargo install cross) or use --build-on-remote"
         exit 1
     fi
 
     echo "▶ Uploading..."
-    scp "$BINARY" "${SSH_TARGET}:/tmp/enochd"
+    scp "$BINARY" "${SSH_TARGET}:/tmp/enoxd"
 
 else
     # ── Download latest GitHub release (default) ─────────────────────────────
@@ -104,9 +104,9 @@ else
     API_URL="https://api.github.com/repos/$REPO/releases/assets/$ASSET_ID"
     echo "  $TAG: $ASSET"
     if [[ -n "$TOKEN" ]]; then
-        ssh "$SSH_TARGET" "curl -fsSL -H 'Authorization: Bearer $TOKEN' -H 'Accept: application/octet-stream' '$API_URL' -o /tmp/enochd && chmod +x /tmp/enochd"
+        ssh "$SSH_TARGET" "curl -fsSL -H 'Authorization: Bearer $TOKEN' -H 'Accept: application/octet-stream' '$API_URL' -o /tmp/enoxd && chmod +x /tmp/enoxd"
     else
-        ssh "$SSH_TARGET" "curl -fsSL -H 'Accept: application/octet-stream' '$API_URL' -o /tmp/enochd && chmod +x /tmp/enochd"
+        ssh "$SSH_TARGET" "curl -fsSL -H 'Accept: application/octet-stream' '$API_URL' -o /tmp/enoxd && chmod +x /tmp/enoxd"
     fi
 fi
 
@@ -115,12 +115,12 @@ if $UPDATE_ONLY; then
     echo "▶ Updating binary and restarting service..."
     ssh "$SSH_TARGET" "
         set -e
-        cp /tmp/enochd /usr/local/bin/enochd
-        chmod +x /usr/local/bin/enochd
-        systemctl restart enochd-bootstrap
+        cp /tmp/enoxd /usr/local/bin/enoxd
+        chmod +x /usr/local/bin/enoxd
+        systemctl restart enoxd-bootstrap
         sleep 1
-        systemctl is-active enochd-bootstrap && echo '✦ Service restarted' \
-            || { journalctl -u enochd-bootstrap -n 10 --no-pager; exit 1; }
+        systemctl is-active enoxd-bootstrap && echo '✦ Service restarted' \
+            || { journalctl -u enoxd-bootstrap -n 10 --no-pager; exit 1; }
     "
 else
     echo "▶ Running setup on $SSH_TARGET..."

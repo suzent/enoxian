@@ -1,6 +1,6 @@
 # REST API Reference
 
-`enochd` exposes a single HTTP server (default port `9090`). Routes are split between **daemon-level** (no circle context) and **per-circle** (scoped to a specific circle ID).
+`enoxd` exposes a single HTTP server (default port `9090`). Routes are split between **daemon-level** (no circle context) and **per-circle** (scoped to a specific circle ID).
 
 All request and response bodies are JSON. Errors return `{ "error": "<message>" }`.
 
@@ -45,7 +45,7 @@ Circle overview.
 {
   "circle_id":   "8e563c41-f0ec-4225-9764-064f1fb04341",
   "circle_name": "MyCircle",
-  "workspace":   "/home/user/enochian/MyCircle",
+  "workspace":   "/home/user/enoxian/MyCircle",
   "agent_id":    "mymac-KRhAf4ug",
   "docs":        3
 }

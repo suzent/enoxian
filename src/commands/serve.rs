@@ -9,12 +9,12 @@ pub async fn run(args: ServeArgs) -> Result<()> {
 
     let active: Vec<_> = all_configs.iter().filter(|c| !c.disabled).collect();
     info!(
-        "Starting enochd — {} circle(s) found ({} active)",
+        "Starting enoxd — {} circle(s) found ({} active)",
         all_configs.len(),
         active.len()
     );
     if all_configs.is_empty() {
-        info!("No circles yet — waiting for `enoch init` or POST /api/init via the frontend.");
+        info!("No circles yet — waiting for `enox init` or POST /api/init via the frontend.");
     }
 
     let daemon = DaemonState::new();
@@ -71,6 +71,6 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         .await
         .context("axum server error")?;
 
-    info!("enochd stopped");
+    info!("enoxd stopped");
     Ok(())
 }

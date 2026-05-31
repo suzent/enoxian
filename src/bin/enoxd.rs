@@ -1,19 +1,19 @@
 use clap::Parser;
-use enochian::cli::{DaemonCli, ServeArgs};
+use enoxian::cli::{DaemonCli, ServeArgs};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("enochian=info".parse()?),
+                .add_directive("enoxian=info".parse()?),
         )
         .init();
 
     let cli = DaemonCli::parse();
     if cli.bootstrap {
-        enochian::bootstrap::run(cli.port).await
+        enoxian::bootstrap::run(cli.port).await
     } else {
-        enochian::commands::serve::run(ServeArgs { port: cli.port }).await
+        enoxian::commands::serve::run(ServeArgs { port: cli.port }).await
     }
 }

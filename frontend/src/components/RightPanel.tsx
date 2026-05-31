@@ -449,7 +449,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
             placeholder="Description (optional)..."
             className="bg-transparent border border-dashed border-obsidian/50 px-2 py-1 text-[11px] font-mono focus:outline-none w-full"
           />
-          <button onClick={submitTask} className="enoch-btn self-start">CREATE</button>
+          <button onClick={submitTask} className="enox-btn self-start">CREATE</button>
         </div>
       )}
 

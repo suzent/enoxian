@@ -1,4 +1,4 @@
-# ENOCHIAN
+# enoxian
 
 **P2P agent collaboration protocol** — shared files, tasks, and file locks for AI agents and humans working inside a Circle.
 
@@ -8,7 +8,7 @@
 
 ## What it is
 
-ENOCHIAN lets any agent (AI or human) join a **Circle** — a named workspace with:
+enoxian lets any agent (AI or human) join a **Circle** — a named workspace with:
 
 - **Real-time file sync** via Yjs CRDT (conflict-free, offline-capable)
 - **Task board** for work coordination
@@ -20,8 +20,8 @@ Two binaries:
 
 | Binary | Role |
 |--------|------|
-| `enochd` | Long-running daemon — P2P node, HTTP/WS server, file watcher |
-| `enoch` | Short-lived CLI — agent sends commands to a daemon |
+| `enoxd` | Long-running daemon — P2P node, HTTP/WS server, file watcher |
+| `enox` | Short-lived CLI — agent sends commands to a daemon |
 
 ---
 
@@ -31,16 +31,16 @@ Two binaries:
 cargo build
 
 # 1. Create a Circle
-./target/debug/enoch init --name "my-project"
+./target/debug/enox init --name "my-project"
 
 # 2. Start the daemon
-RUST_LOG=info ./target/debug/enochd serve --circle <circle-id>
+RUST_LOG=info ./target/debug/enoxd serve --circle <circle-id>
 
 # 3. In another terminal — talk to it
-export ENOCHIAN_API=http://127.0.0.1:9090/api
-./target/debug/enoch status
-./target/debug/enoch tasks
-./target/debug/enoch watch
+export enoxian_API=http://127.0.0.1:9090/api
+./target/debug/enox status
+./target/debug/enox tasks
+./target/debug/enox watch
 ```
 
 ---
@@ -67,7 +67,7 @@ export ENOCHIAN_API=http://127.0.0.1:9090/api
 
 | Phase | Status | Scope |
 |-------|--------|-------|
-| 0 — P2P skeleton | ✅ | `enoch init` / `enochd serve` / `enoch enter`, mDNS, libp2p |
+| 0 — P2P skeleton | ✅ | `enox init` / `enoxd serve` / `enox enter`, mDNS, libp2p |
 | 1 — Document sync | ✅ | Yjs Y.Text, file watcher, `/ws/yjs` WebSocket |
 | 2 — CLI contract | ✅ | `status`, `who`, `tasks`, `claim`, `done`, `bind`, `release`, `watch` |
 | 3 — Coordination | ✅ | Lock log, presence, full REST API, SSE events |
@@ -85,8 +85,8 @@ All docs are in the [`docs/`](docs/) folder:
 | [docs/overview.md](docs/overview.md) | **Start here** — intuitive walkthrough with diagrams |
 | [docs/getting-started.md](docs/getting-started.md) | Build, initialize, first commands |
 | [docs/concepts.md](docs/concepts.md) | Circle, Agent, Document, Control Doc |
-| [docs/cli.md](docs/cli.md) | Full `enoch` command reference |
-| [docs/daemon.md](docs/daemon.md) | `enochd` reference and configuration |
+| [docs/cli.md](docs/cli.md) | Full `enox` command reference |
+| [docs/daemon.md](docs/daemon.md) | `enoxd` reference and configuration |
 | [docs/api.md](docs/api.md) | REST API endpoint reference |
 | [docs/protocol.md](docs/protocol.md) | WebSocket y-sync and SSE event stream |
 | [docs/architecture.md](docs/architecture.md) | System diagram, components, data model |
@@ -105,5 +105,5 @@ For AI agents: see [AGENTS.md](AGENTS.md).
 | `yrs` | 0.26 | Yjs CRDT (Y.Text, Y.Map, Y.Array) |
 | `axum` | 0.8 | HTTP + WebSocket server |
 | `notify` | 8 | Cross-platform file watcher |
-| `reqwest` | 0.12 | HTTP client (enoch CLI) |
+| `reqwest` | 0.12 | HTTP client (enox CLI) |
 | `clap` | 4 | CLI argument parsing |

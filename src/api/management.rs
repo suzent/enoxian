@@ -75,7 +75,7 @@ pub async fn enter_circle(
     Json(payload): Json<EnterReq>,
 ) -> impl IntoResponse {
     // Extract circle_id from invite URI before running, so we can spawn it afterward.
-    let circle_id_hint = if payload.target.starts_with("enochian://") {
+    let circle_id_hint = if payload.target.starts_with("enoxian://") {
         crate::invite::decode(&payload.target).ok().map(|p| p.circle_id)
     } else {
         Some(payload.target.clone())
@@ -185,7 +185,7 @@ pub async fn generate_invite(
     };
 
     // rendezvous_addr: from saved config, or fall back to the default server
-    // (enochian.com) so invites are WAN-capable even without manual configuration.
+    // (enoxian.com) so invites are WAN-capable even without manual configuration.
     let rendezvous_addr = if let Some(saved) = config.rendezvous_addrs.into_iter().next() {
         Some(saved)
     } else {

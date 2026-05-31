@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 ///
 /// Accepts:
 ///   - A full multiaddr: `/ip4/1.2.3.4/udp/36521/quic-v1/p2p/<id>` — returned as-is
-///   - A hostname or IP with optional port: `enoch.suzent.com`, `enoch.suzent.com:4001`,
+///   - A hostname or IP with optional port: `enox.suzent.com`, `enox.suzent.com:4001`,
 ///     `1.2.3.4`, `1.2.3.4:4001`
 ///
 /// For the short forms, the CLI fetches `GET http://<host>:<port>/peer-id` from the

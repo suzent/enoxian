@@ -107,7 +107,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         }
     }
 
-    // Auto-register local peer in the member list so `enoch member list` shows all participants.
+    // Auto-register local peer in the member list so `enox member list` shows all participants.
     // Only writes if no entry exists yet — preserves explicit removals across restarts.
     {
         use yrs::{Map, Out, Any, Transact};
@@ -474,7 +474,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     kad
                 },
                 identify: identify::Behaviour::new(identify::Config::new(
-                    "/enochian/1.0.0".to_string(),
+                    "/enoxian/1.0.0".to_string(),
                     key.public(),
                 )),
                 ping: libp2p::ping::Behaviour::default(),
@@ -496,7 +496,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse::<Multiaddr>()?)?;
 
     // ── Dial bootstrap peers from config ──────────────────────────────────────
-    // Peer addresses saved at `enoch enter` time (from invite). This ensures
+    // Peer addresses saved at `enox enter` time (from invite). This ensures
     // connectivity even when mDNS is unavailable (different subnets, firewalls).
     for peer_str in &config.peers {
         match peer_str.parse::<Multiaddr>() {
@@ -640,7 +640,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     let swarm_token = token.clone();
     let state_for_swarm = state.clone();
     let rendezvous_namespace = rendezvous::Namespace::new(circle_id.clone())
-        .unwrap_or_else(|_| rendezvous::Namespace::from_static("enochian"));
+        .unwrap_or_else(|_| rendezvous::Namespace::from_static("enoxian"));
 
     tokio::spawn(async move {
         // Re-register with rendezvous servers every hour (TTL is 2h).
@@ -1070,7 +1070,7 @@ pub async fn rotate_psk_and_restart(circle_id: &str, new_psk: [u8; 32], daemon: 
 
 /// Returns true for listen addresses worth tracking for invite embedding:
 /// rejects loopback, unspecified, link-local, and p2p-circuit relay addresses.
-/// RFC1918 and Tailscale CGNAT addresses are kept — `enoch invite` sorts them
+/// RFC1918 and Tailscale CGNAT addresses are kept — `enox invite` sorts them
 /// after public IPs so a public address is preferred when available.
 fn is_routable_listen_addr(addr: &Multiaddr) -> bool {
     use libp2p::multiaddr::Protocol;

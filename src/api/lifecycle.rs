@@ -28,7 +28,7 @@ pub async fn start_circle(
     };
 
     if cfg.disabled {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "circle is disabled — run `enoch enable` first"}))).into_response();
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "circle is disabled — run `enox enable` first"}))).into_response();
     }
 
     match lifecycle::spawn_circle(cfg, daemon).await {

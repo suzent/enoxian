@@ -66,7 +66,7 @@ git -C "$REPO_DIR" push origin "$TAG"
 
 echo ""
 echo "✦ Released $TAG — GitHub Actions is building the binaries."
-echo "  Watch: https://github.com/suzent/enochian/actions"
+echo "  Watch: https://github.com/suzent/enoxian/actions"
 echo ""
 echo "  Once the build finishes, deploy:"
 echo "    ./scripts/deploy-rendezvous.sh <host> --update"

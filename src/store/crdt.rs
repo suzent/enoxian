@@ -7,7 +7,7 @@ use yrs::updates::decoder::Decode;
 /// Hidden directory so the watcher ignores it (`.` prefix rule).
 pub fn state_path(workspace: &Path, rel_path: &str) -> PathBuf {
     workspace
-        .join(".enoch_crdt")
+        .join(".enox_crdt")
         .join(rel_path.replace('/', std::path::MAIN_SEPARATOR_STR))
 }
 

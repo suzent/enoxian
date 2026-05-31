@@ -61,37 +61,37 @@ fn install_windows(src: &PathBuf) -> Result<()> {
         bail!("cargo build failed");
     }
 
-    // Kill enochd now (not locked). enoch.exe itself is still locked until we exit.
+    // Kill enoxd now (not locked). enox.exe itself is still locked until we exit.
     // Suppress output — "process not found" is expected if daemon wasn't running.
     Command::new("taskkill")
-        .args(["/F", "/IM", "enochd.exe"])
+        .args(["/F", "/IM", "enoxd.exe"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .ok();
 
-    // Write a PowerShell script to copy binaries + restart daemon after enoch.exe exits.
+    // Write a PowerShell script to copy binaries + restart daemon after enox.exe exits.
     let cargo_bin = home_cargo_bin()?;
-    let enoch_src  = src.join("target\\release\\enoch.exe");
-    let enochd_src = src.join("target\\release\\enochd.exe");
-    let enoch_dst  = cargo_bin.join("enoch.exe");
-    let enochd_dst = cargo_bin.join("enochd.exe");
-    let script_path = std::env::temp_dir().join("enoch-update.ps1");
+    let enox_src  = src.join("target\\release\\enox.exe");
+    let enoxd_src = src.join("target\\release\\enoxd.exe");
+    let enox_dst  = cargo_bin.join("enox.exe");
+    let enoxd_dst = cargo_bin.join("enoxd.exe");
+    let script_path = std::env::temp_dir().join("enox-update.ps1");
 
     let script = format!(
         "Start-Sleep -Seconds 2\n\
-         $log = \"$env:TEMP\\enoch-update.log\"\n\
+         $log = \"$env:TEMP\\enox-update.log\"\n\
          \"$(Get-Date): copying binaries\" | Out-File $log\n\
-         Copy-Item -Force '{enoch_src}' '{enoch_dst}'\n\
-         Copy-Item -Force '{enochd_src}' '{enochd_dst}'\n\
-         \"$(Get-Date): starting enochd\" | Out-File $log -Append\n\
-         Start-Process -FilePath '{enochd_dst}' -WindowStyle Hidden\n\
+         Copy-Item -Force '{enox_src}' '{enox_dst}'\n\
+         Copy-Item -Force '{enoxd_src}' '{enoxd_dst}'\n\
+         \"$(Get-Date): starting enoxd\" | Out-File $log -Append\n\
+         Start-Process -FilePath '{enoxd_dst}' -WindowStyle Hidden\n\
          \"$(Get-Date): done\" | Out-File $log -Append\n\
          Remove-Item $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue\n",
-        enoch_src  = enoch_src.display(),
-        enochd_src = enochd_src.display(),
-        enoch_dst  = enoch_dst.display(),
-        enochd_dst = enochd_dst.display(),
+        enox_src  = enox_src.display(),
+        enoxd_src = enoxd_src.display(),
+        enox_dst  = enox_dst.display(),
+        enoxd_dst = enoxd_dst.display(),
     );
     std::fs::write(&script_path, script)?;
 
@@ -108,20 +108,20 @@ fn install_windows(src: &PathBuf) -> Result<()> {
         .spawn()?;
 
     println!("✓ Binaries built. Replacements will be applied in 2 seconds after this process exits.");
-    println!("  enochd will restart automatically.");
+    println!("  enoxd will restart automatically.");
     Ok(())
 }
 
 fn run_stable() -> Result<()> {
     println!("Stable binary downloads are not yet available (coming in M12).");
-    println!("To update from source: enoch update --dev [--src <path>]");
+    println!("To update from source: enox update --dev [--src <path>]");
     Ok(())
 }
 
 fn resolve_src(arg: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(p) = arg {
         if !p.join("Cargo.toml").exists() {
-            bail!("'{}' doesn't look like an enochian source directory", p.display());
+            bail!("'{}' doesn't look like an enoxian source directory", p.display());
         }
         let mut cfg = config::load_global();
         cfg.dev_src = Some(p.to_string_lossy().into_owned());
@@ -138,19 +138,19 @@ fn resolve_src(arg: Option<PathBuf>) -> Result<PathBuf> {
         bail!("saved source path '{}' no longer exists — run with --src <path>", saved);
     }
 
-    bail!("no source path configured — run once with: enoch update --dev --src <path/to/enochian>")
+    bail!("no source path configured — run once with: enox update --dev --src <path/to/enoxian>")
 }
 
 #[cfg(unix)]
 fn restart_daemon() -> Result<()> {
-    println!("▶ Restarting enochd...");
-    Command::new("pkill").args(["-f", "enochd"]).status().ok();
+    println!("▶ Restarting enoxd...");
+    Command::new("pkill").args(["-f", "enoxd"]).status().ok();
     std::thread::sleep(std::time::Duration::from_secs(1));
-    Command::new("enochd")
+    Command::new("enoxd")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
-    println!("✓ enochd restarted");
+    println!("✓ enoxd restarted");
     Ok(())
 }
 

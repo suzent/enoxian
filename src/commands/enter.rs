@@ -22,7 +22,7 @@ use crate::{
 
 pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
     // ── Step 1: Resolve credentials from invite URI or legacy flags ───────────
-    let (circle_id, circle_name, psk_hex, peer_from_invite, relay_from_invite, rendezvous_from_invite, admin_pubkey_hex) = if args.target.starts_with("enochian://") {
+    let (circle_id, circle_name, psk_hex, peer_from_invite, relay_from_invite, rendezvous_from_invite, admin_pubkey_hex) = if args.target.starts_with("enoxian://") {
         let payload = invite::decode(&args.target)?;
         invite::check_expiry(&payload)?;
 
@@ -37,7 +37,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         (payload.circle_id, name, psk_hex, payload.peer_addr, payload.relay_addr, payload.rendezvous_addr, admin_pubkey_hex)
     } else {
         let secret = args.secret.as_deref()
-            .context("--secret is required when target is a Circle ID (or pass an enochian:// invite)")?;
+            .context("--secret is required when target is a Circle ID (or pass an enoxian:// invite)")?;
         let circle_id = args.target.clone();
         (circle_id.clone(), circle_id.clone(), secret.to_string(), None, None, None, String::new())
     };
@@ -59,8 +59,8 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
             // Same UUID — already a member
             println!("✦ Already a member of '{circle_name}' — nothing to do.");
             println!();
-            println!("  Start the daemon: enochd");
-            println!("  Then: enoch --circle \"{circle_name}\" status");
+            println!("  Start the daemon: enoxd");
+            println!("  Then: enox --circle \"{circle_name}\" status");
             return Ok(());
         }
         Some(r) => r,
@@ -79,7 +79,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         .with_context(|| format!("failed to create workspace {}", workspace_dir.display()))?;
 
     // --rendezvous on CLI takes precedence over the invite-embedded address.
-    // Short forms like "enoch.suzent.com" are auto-resolved to full multiaddrs.
+    // Short forms like "enox.suzent.com" are auto-resolved to full multiaddrs.
     let cli_rendezvous = match args.rendezvous {
         Some(ref s) => Some(rdvz::resolve(s, client).await
             .with_context(|| format!("could not resolve rendezvous server '{s}'"))?),
@@ -136,13 +136,13 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
 
     // ── Generate MLS identity (M11) ───────────────────────────────────────────
     // Joiner creates their identity now; admin will send a Welcome via the
-    // control doc (mls_welcomes) after running `enoch member add`.
+    // control doc (mls_welcomes) after running `enox member add`.
     let cdir = circle_dir(&circle_id)?;
     let mls_identity = MlsIdentity::generate(&peer_id.to_string())?;
     mls_identity.save(&cdir)?;
 
     println!("  Workspace : {}", workspace_dir.display());
-    println!("  Config    → ~/.enochian/circles/{circle_id}/config.toml");
+    println!("  Config    → ~/.enoxian/circles/{circle_id}/config.toml");
 
     // ── Step 4: Optionally verify connectivity to the invite peer ─────────────
     // Skipped when called from the daemon API (no_verify=true): the API spawns
@@ -156,8 +156,8 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
     let Some(peer_addr_str) = peer else {
         println!();
         println!("  No peer address in invite. Start the daemon to connect via mDNS:");
-        println!("    enochd");
-        println!("    enoch --circle \"{circle_name}\" status");
+        println!("    enoxd");
+        println!("    enox --circle \"{circle_name}\" status");
         return Ok(());
     };
 
@@ -217,7 +217,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
                 )?,
                 kad: kad::Behaviour::new(pid, kad::store::MemoryStore::new(pid)),
                 identify: identify::Behaviour::new(identify::Config::new(
-                    "/enochian/1.0.0".to_string(),
+                    "/enoxian/1.0.0".to_string(),
                     key.public(),
                 )),
                 ping: libp2p::ping::Behaviour::default(),
@@ -244,13 +244,13 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         println!("  ✦ Verified peer {peer_id} via {}", endpoint.get_remote_address());
                         println!();
-                        println!("  Start the daemon: enochd");
-                        println!("  Then: enoch --circle \"{circle_name}\" status");
+                        println!("  Start the daemon: enoxd");
+                        println!("  Then: enox --circle \"{circle_name}\" status");
                         return Ok(());
                     }
                     SwarmEvent::OutgoingConnectionError { error, .. } => {
                         warn!("Could not reach peer: {error}");
-                        println!("  (Config saved — connect via mDNS when enochd starts)");
+                        println!("  (Config saved — connect via mDNS when enoxd starts)");
                         return Ok(());
                     }
                     SwarmEvent::Behaviour(EnochEvent::Ping(_)) => {}

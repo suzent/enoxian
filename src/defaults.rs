@@ -17,6 +17,6 @@ pub const DEFAULT_RENDEZVOUS: Option<&str> = Some("enoxian.com");
 /// from the internet even without a rendezvous server.
 ///
 /// Set to the same host as `DEFAULT_RENDEZVOUS` if the same server runs
-/// both services (the default `enochd --bootstrap` setup does this).
+/// both services (the default `enoxd --bootstrap` setup does this).
 /// Set to `None` to disable automatic relay reservation.
 pub const DEFAULT_RELAY: Option<&str> = Some("enoxian.com");

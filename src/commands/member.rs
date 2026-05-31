@@ -14,7 +14,7 @@ async fn resolve_peer_id(client: &reqwest::Client, base: &str, hint: &str) -> Re
         return Ok(hint.to_string());
     }
     let resp = client.get(base).send().await
-        .context("failed to reach daemon — is enochd running?")?;
+        .context("failed to reach daemon — is enoxd running?")?;
     let members: serde_json::Value = resp.json().await?;
     let members = members.as_array().context("unexpected response")?;
 
@@ -50,7 +50,7 @@ pub async fn run(
     match action {
         MemberAction::List => {
             let resp = client.get(&base).send().await
-                .context("failed to reach daemon — is enochd running?")?;
+                .context("failed to reach daemon — is enoxd running?")?;
             let val: serde_json::Value = resp.json().await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&val)?);
@@ -135,7 +135,7 @@ pub async fn run(
         MemberAction::Pending => {
             let url = format!("{base}/pending");
             let resp = client.get(&url).send().await
-                .context("failed to reach daemon — is enochd running?")?;
+                .context("failed to reach daemon — is enoxd running?")?;
             let val: serde_json::Value = resp.json().await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&val)?);
@@ -205,7 +205,7 @@ pub async fn run(
 
         MemberAction::RemoveByOwner { owner } => {
             let resp = client.get(&base).send().await
-                .context("failed to reach daemon — is enochd running?")?;
+                .context("failed to reach daemon — is enoxd running?")?;
             let val: serde_json::Value = resp.json().await?;
             let peer_ids: Vec<String> = val.as_array()
                 .map(|arr| arr.iter()

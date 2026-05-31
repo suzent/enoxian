@@ -1,4 +1,4 @@
-# ENOCHIAN — Intuitive Overview
+# enoxian — Intuitive Overview
 
 > A P2P workspace where AI agents and humans share files, tasks, and cryptographic membership.
 
@@ -13,10 +13,10 @@ The unit of collaboration is called a **Circle**.
 ```
   Alice's laptop          Bob's desktop           Alice's suzent agent
   ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
-  │  enochd     │◄───────►│  enochd     │◄───────►│  enochd     │
+  │  enoxd     │◄───────►│  enoxd     │◄───────►│  enoxd     │
   │  ~/project/ │  P2P    │  ~/project/ │  P2P    │  ~/project/ │
   │             │  mesh   │             │  mesh   │             │
-  │  enoch CLI  │         │  enoch CLI  │         │  API calls  │
+  │  enox CLI  │         │  enox CLI  │         │  API calls  │
   └─────────────┘         └─────────────┘         └─────────────┘
         ▲                        ▲                        ▲
         │ HTTP                   │ HTTP                   │ HTTP
@@ -27,23 +27,23 @@ The unit of collaboration is called a **Circle**.
   └──────────┘             └──────────┘             └──────────┘
 ```
 
-Every participant runs one `enochd` daemon per workspace. The daemon is the P2P node, the file syncer, and the HTTP server all in one. The `enoch` CLI and any AI agent talk to it over localhost HTTP.
+Every participant runs one `enoxd` daemon per workspace. The daemon is the P2P node, the file syncer, and the HTTP server all in one. The `enox` CLI and any AI agent talk to it over localhost HTTP.
 
 ---
 
 ## Two Binaries
 
 ```
-enochd   long-running daemon
+enoxd   long-running daemon
          ├── P2P swarm (libp2p)    — connects to other daemons
          ├── File watcher (notify) — disk ↔ CRDT sync
-         └── HTTP server (axum)    — serves enoch CLI + AI agents
+         └── HTTP server (axum)    — serves enox CLI + AI agents
 
-enoch    short-lived CLI
-         └── reqwest HTTP calls    → enochd on localhost:36521
+enox    short-lived CLI
+         └── reqwest HTTP calls    → enoxd on localhost:36521
 ```
 
-A human types `enoch status`. The CLI calls `GET /circles/{id}/api/status` on the local daemon and prints the result. That's the entire interface. AI agents do the same thing via HTTP calls.
+A human types `enox status`. The CLI calls `GET /circles/{id}/api/status` on the local daemon and prints the result. That's the entire interface. AI agents do the same thing via HTTP calls.
 
 ---
 
@@ -58,7 +58,7 @@ owner        "alice"
              │
              ├── peer_id   "12D3KooW..."
              │             the machine/daemon — unique libp2p keypair
-             │             one per enochd instance, persists across restarts
+             │             one per enoxd instance, persists across restarts
              │             this is what the MLS group tracks
              │
              │   agent_id  "alice"          ← human CLI on this machine
@@ -66,7 +66,7 @@ owner        "alice"
              │   agent_id  "claude-code"    ← claude on same machine
              │
              │   (multiple agents share one peer_id — they all connect
-             │    to the same enochd daemon via localhost HTTP)
+             │    to the same enoxd daemon via localhost HTTP)
              │
              └── peer_id   "QmXyz..."
                            alice's second machine (desktop)
@@ -88,7 +88,7 @@ Chat and presence use `agent_id`. MLS group membership uses `peer_id`. The membe
 ### Step 1 — Create
 
 ```
-admin$ enoch init --name "my-project" --owner alice
+admin$ enox init --name "my-project" --owner alice
 
   Generates:
     circle_id   = random UUID
@@ -97,7 +97,7 @@ admin$ enoch init --name "my-project" --owner alice
     admin keypair = Ed25519          (signs member operations)
     MLS group   = single-member group (alice is leaf 0)
 
-  Saves to ~/.enochian/circles/<id>/
+  Saves to ~/.enoxian/circles/<id>/
     config.toml   (circle_id, PSK, keypair, join_policy, owner)
     admin.key     (admin private key — creator only, never shared)
     mls/identity.json
@@ -107,9 +107,9 @@ admin$ enoch init --name "my-project" --owner alice
 ### Step 2 — Invite
 
 ```
-admin$ enoch invite "my-project" --ttl 7d
+admin$ enox invite "my-project" --ttl 7d
 
-  Returns: enochian://ABC123...
+  Returns: enoxian://ABC123...
 
   Encoded inside the URI:
     circle_id, circle_name
@@ -122,7 +122,7 @@ admin$ enoch invite "my-project" --ttl 7d
 ### Step 3 — Enter (Bob's machine)
 
 ```
-bob$ enoch enter enochian://ABC123... --owner bob
+bob$ enox enter enoxian://ABC123... --owner bob
 
   Bob's machine:
     generates its own peer keypair
@@ -143,8 +143,8 @@ bob$ enoch enter enochian://ABC123... --owner bob
   join_policy = "auto"   → admin daemon sees new mls_pending entry,
                            auto-approves immediately
 
-  join_policy = "manual" → admin sees it in enoch member pending,
-                           runs enoch member approve <peer_id>
+  join_policy = "manual" → admin sees it in enox member pending,
+                           runs enox member approve <peer_id>
 
   Either way, approve does:
     1. reads key package from mls_key_packages[bob_peer_id]
@@ -173,7 +173,7 @@ bob$ enoch enter enochian://ABC123... --owner bob
 ### Step 6 — Remove (epoch rotation locks out the removed peer)
 
 ```
-admin$ enoch member remove <bob_peer_id>
+admin$ enox member remove <bob_peer_id>
 
   1. MLS remove_member(bob_leaf_index)
        → new epoch, new epoch secrets
@@ -193,7 +193,7 @@ MLS (RFC 9420) is a group key agreement protocol. Think of it as a cryptographic
 
 ```
   Epoch 0: [alice]
-  │  alice creates the group, epoch_psk = derive("enochian-psk", epoch_0_secret)
+  │  alice creates the group, epoch_psk = derive("enoxian-psk", epoch_0_secret)
   │
   ├─ add bob ──────────────────────────────────────────── Epoch 1: [alice, bob]
   │  alice runs add_members(bob_key_package)               epoch_psk = derive(..., epoch_1_secret)
@@ -212,7 +212,7 @@ MLS (RFC 9420) is a group key agreement protocol. Think of it as a cryptographic
 
 Each epoch's PSK is derived via:
 ```
-group.export_secret(crypto, "enochian-psk", &[], 32)
+group.export_secret(crypto, "enoxian-psk", &[], 32)
 ```
 
 This is a one-way derivation — knowing an old PSK tells you nothing about the current one.
@@ -238,7 +238,7 @@ Peers connect to each other over libp2p with a layered transport:
          ▼                              ▼
   ┌──────────────────────────────────────────────────────┐
   │                   Bootstrap Server                   │
-  │              enochd --bootstrap (public VPS)         │
+  │              enoxd --bootstrap (public VPS)         │
   │                                                      │
   │   QUIC only (no PSK) — not a circle member           │
   │   Rendezvous: peers register & discover each other   │
@@ -332,7 +332,7 @@ Bob's editor sees the file change. Total latency: typically under 100ms on LAN.
 Same CRDT mechanism applies to all coordination:
 
 ```
-  enoch say "shipping today @bob"
+  enox say "shipping today @bob"
       │
       ▼
   POST /circles/{id}/api/chat
@@ -343,7 +343,7 @@ Same CRDT mechanism applies to all coordination:
       ├──► P2P sync → bob's daemon → bob's daemon fires AgentMentioned SSE event
       │                              bob's agent wakes up
       │
-      └──► local SSE stream → alice's `enoch watch` terminal shows the message
+      └──► local SSE stream → alice's `enox watch` terminal shows the message
 ```
 
 Same pattern for tasks, locks, presence — everything flows through the CRDT and everyone converges.
@@ -380,7 +380,7 @@ This proves the holder of that peer's private key asserts the name — preventin
 ## Directory Layout
 
 ```
-~/.enochian/
+~/.enoxian/
 └── circles/
     └── <circle-id>/
         ├── config.toml       circle_id, PSK, keypair, join_policy, owner
@@ -389,43 +389,43 @@ This proves the holder of that peer's private key asserts the name — preventin
             ├── identity.json MLS signing keypair + credential
             └── group.json    MLS group state (serialised OpenMLS storage)
 
-~/enochian/                   default workspace root
+~/enoxian/                   default workspace root
 └── my-project/               one directory per circle
     ├── src/
     │   └── main.rs           synced files live here
     └── notes.txt
 ```
 
-The workspace (`~/enochian/my-project/`) and the credentials (`~/.enochian/circles/<id>/`) are intentionally separate — workspace files are easy to find and edit directly; credentials are in a dotfile dir and never appear in the workspace.
+The workspace (`~/enoxian/my-project/`) and the credentials (`~/.enoxian/circles/<id>/`) are intentionally separate — workspace files are easy to find and edit directly; credentials are in a dotfile dir and never appear in the workspace.
 
 ---
 
 ## Quick Reference
 
 ```
-enoch init --name "proj" --owner alice     create circle, you are admin
-enoch invite "proj"                         generate invite link
-enoch enter enochian://...  --owner bob    join from invite
-enochd                                      start daemon (all known circles)
+enox init --name "proj" --owner alice     create circle, you are admin
+enox invite "proj"                         generate invite link
+enox enter enoxian://...  --owner bob    join from invite
+enoxd                                      start daemon (all known circles)
 
-enoch status                               circle overview
-enoch who                                  who is online
-enoch member list                          all members (owner / agent / role)
-enoch member pending                       waiting for approval
-enoch member approve <peer_id>             approve + MLS add + PSK rotation
-enoch member reject  <peer_id>             deny
-enoch member remove  <peer_id>             remove + MLS epoch advance + PSK rotation
-enoch member remove-by-owner alice         remove all of alice's machines at once
+enox status                               circle overview
+enox who                                  who is online
+enox member list                          all members (owner / agent / role)
+enox member pending                       waiting for approval
+enox member approve <peer_id>             approve + MLS add + PSK rotation
+enox member reject  <peer_id>             deny
+enox member remove  <peer_id>             remove + MLS epoch advance + PSK rotation
+enox member remove-by-owner alice         remove all of alice's machines at once
 
-enoch tasks                                task board
-enoch task-create "write tests"            create task
-enoch claim <task_id>                      claim it
-enoch done  <task_id>                      mark done
+enox tasks                                task board
+enox task-create "write tests"            create task
+enox claim <task_id>                      claim it
+enox done  <task_id>                      mark done
 
-enoch bind    src/main.rs                  acquire advisory lock
-enoch release src/main.rs                  release lock
+enox bind    src/main.rs                  acquire advisory lock
+enox release src/main.rs                  release lock
 
-enoch say "hello @bob"                     post chat message
-enoch chat -f                              follow live chat
-enoch watch                                stream all circle events
+enox say "hello @bob"                     post chat message
+enox chat -f                              follow live chat
+enox watch                                stream all circle events
 ```

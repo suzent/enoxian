@@ -2,7 +2,7 @@
 
 ## Layers of protection
 
-ENOCHIAN applies four independent security layers in sequence. Each layer rejects peers that fail its check before passing control to the next.
+enoxian applies four independent security layers in sequence. Each layer rejects peers that fail its check before passing control to the next.
 
 | Layer | Mechanism | What it proves |
 |-------|-----------|----------------|
@@ -21,13 +21,13 @@ Every circle has a 256-bit pre-shared key. It is applied at the TCP layer via `l
 
 **The PSK is the primary access credential.** Anyone who holds it can connect to the circle swarm.
 
-The PSK is distributed via invite links (`enochian://v1/...`). Once a peer has joined, the PSK lives in their `~/.enochian/circles/<id>/config.toml` indefinitely. There is no expiry.
+The PSK is distributed via invite links (`enoxian://v1/...`). Once a peer has joined, the PSK lives in their `~/.enoxian/circles/<id>/config.toml` indefinitely. There is no expiry.
 
 ---
 
 ## Peer identity — who you are
 
-Each peer has an Ed25519 keypair generated at `enoch enter` time. The peer ID is a hash of the public key. The Noise protocol proves key ownership on every connection: you cannot claim a peer ID without the corresponding private key.
+Each peer has an Ed25519 keypair generated at `enox enter` time. The peer ID is a hash of the public key. The Noise protocol proves key ownership on every connection: you cannot claim a peer ID without the corresponding private key.
 
 **Peer IDs are unforgeable but not tied to a person.** Anyone with the PSK can generate a fresh keypair and join as a new identity.
 
@@ -43,13 +43,13 @@ The member list (`member_list` Y.Map in the control doc) is a CRDT-replicated di
 
 The security boundary is the **MLS group** + **PSK**.
 
-Behaviour on `enoch member remove <peer>`:
+Behaviour on `enox member remove <peer>`:
 
 1. Admin issues an MLS `Remove` + `Commit` for the peer's leaf node
 2. The peer's entry is removed from the CRDT member list; a tombstone entry is written to the `mls_removed` CRDT map (atomically in the same CRDT transaction)
 3. The commit is broadcast via the `mls_commits` CRDT array to all remaining members
 4. Each remaining member applies the commit, advancing their MLS epoch
-5. A new PSK is derived from the new epoch key material using `export_secret("enochian-psk", ...)`
+5. A new PSK is derived from the new epoch key material using `export_secret("enoxian-psk", ...)`
 6. The admin immediately rotates the circle's pnet PSK to the new value and restarts their swarm
 7. Remaining members see the commit via the commit-watcher observer and do the same
 8. Any pending/welcome/key-package entries are cleaned up; the peer's presence entry is written as Offline
@@ -94,11 +94,11 @@ Between steps 2 and 6 (member removed from CRDT but PSK not yet rotated), the re
 
 ## Invite TTL and PSK revocation
 
-Invite links have a TTL (`--ttl`, default 7 days). After expiry, `enoch enter` rejects the link.
+Invite links have a TTL (`--ttl`, default 7 days). After expiry, `enox enter` rejects the link.
 
 **What invite TTL protects:** prevents a removed member from using a stale invite link to obtain a KeyPackage from the admin. It does **not** help if the member already joined — they have the PSK on disk.
 
-**What MLS revocation protects:** when a member is removed (`enoch member remove`), the MLS Remove commit advances the epoch for all remaining members. The admin and each member derive a new PSK and restart their swarm. The removed peer's old PSK is immediately useless for connecting.
+**What MLS revocation protects:** when a member is removed (`enox member remove`), the MLS Remove commit advances the epoch for all remaining members. The admin and each member derive a new PSK and restart their swarm. The removed peer's old PSK is immediately useless for connecting.
 
 **Residual data:** the removed peer retains a local copy of everything they synced before removal. MLS provides forward secrecy (they cannot decrypt future traffic) but not backward secrecy (they keep old data). This is the standard MLS threat model.
 
@@ -108,7 +108,7 @@ Invite links have a TTL (`--ttl`, default 7 days). After expiry, `enoch enter` r
 
 ## MLS — RFC 9420 access revocation (implemented)
 
-ENOCHIAN uses **IETF MLS (RFC 9420)** for group key management, implemented via the [`openmls`](https://github.com/openmls/openmls) crate.
+enoxian uses **IETF MLS (RFC 9420)** for group key management, implemented via the [`openmls`](https://github.com/openmls/openmls) crate.
 
 ### How TreeKEM works
 
@@ -120,7 +120,7 @@ On **Remove**: the removed leaf's node is blanked. A new epoch root secret is de
 
 ```
 MLS epoch secret
-    └─ export_secret("enochian-psk", [], 32)
+    └─ export_secret("enoxian-psk", [], 32)
          └─ pnet PSK (XSalsa20 stream cipher key)
 ```
 
@@ -150,7 +150,7 @@ Offline members who miss the Remove commit will receive it when they next connec
 
 ## Admin keypair
 
-The circle creator generates an Ed25519 admin keypair at `enoch init`. The private key (`admin.key`) never leaves the creator's machine. The public key is embedded in invite URIs so all peers can verify admin signatures.
+The circle creator generates an Ed25519 admin keypair at `enox init`. The private key (`admin.key`) never leaves the creator's machine. The public key is embedded in invite URIs so all peers can verify admin signatures.
 
 Only the holder of `admin.key` can:
 - Add or remove members (including issuing MLS Add/Remove commits)
@@ -159,14 +159,14 @@ Only the holder of `admin.key` can:
 
 There is currently no mechanism to transfer admin authority to another peer (multi-admin is not implemented). Losing `admin.key` means member operations can no longer be performed for that circle, and the MLS group cannot be updated.
 
-The daemon auto-signs on behalf of the admin when the frontend omits a signature — it reads `admin.key` from disk and signs locally. This means the admin machine's daemon is privileged: anyone with local access to `~/.enochian/circles/<id>/admin.key` can perform admin operations.
+The daemon auto-signs on behalf of the admin when the frontend omits a signature — it reads `admin.key` from disk and signs locally. This means the admin machine's daemon is privileged: anyone with local access to `~/.enoxian/circles/<id>/admin.key` can perform admin operations.
 
 ---
 
 ## LAN exposure
 
 mDNS peer discovery broadcasts peer IDs and listen addresses on the local network. This reveals:
-- That an ENOCHIAN daemon is running
+- That an enoxian daemon is running
 - The peer's libp2p peer ID
 - The TCP port the daemon is listening on
 

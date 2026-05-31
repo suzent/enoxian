@@ -8,7 +8,7 @@ use tls_codec::{Deserialize as _, Serialize as _};
 
 use super::{identity::MlsIdentity, CIPHERSUITE};
 
-const PSK_LABEL: &str = "enochian-psk";
+const PSK_LABEL: &str = "enoxian-psk";
 const PSK_LEN: usize = 32;
 
 pub struct MlsGroupManager {
@@ -16,7 +16,7 @@ pub struct MlsGroupManager {
 }
 
 impl MlsGroupManager {
-    // ── Creator: called once at `enoch init` ──────────────────────────────────
+    // ── Creator: called once at `enox init` ──────────────────────────────────
 
     pub fn create(identity: &MlsIdentity) -> Result<Self> {
         let config = MlsGroupCreateConfig::builder()

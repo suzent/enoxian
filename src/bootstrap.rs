@@ -1,18 +1,18 @@
-//! Bootstrap server mode (`enochd --bootstrap`).
+//! Bootstrap server mode (`enoxd --bootstrap`).
 //!
 //! Runs a public rendezvous + circuit-relay node that circle members can use
 //! for WAN peer discovery.  The server holds no PSK and joins no circle.
 //! It speaks QUIC (no PSK) — circle members connect to it via QUIC and
 //! register under their circle UUID namespace.
 //!
-//! # Setup (enoch.suzent.com)
+//! # Setup (enox.suzent.com)
 //!
-//! 1. On the server: `enochd --bootstrap --port 36521`
+//! 1. On the server: `enoxd --bootstrap --port 36521`
 //!    Copy the printed peer ID from the log.
 //! 2. Share the multiaddr with circle members:
 //!    `/ip4/<PUBLIC_IP>/udp/36521/quic-v1/p2p/<PEER_ID>`
-//! 3. Members pass it via `enoch enter <invite> --rendezvous <addr>`
-//!    or embed it in invites with `enoch invite --rendezvous <addr>`.
+//! 3. Members pass it via `enox enter <invite> --rendezvous <addr>`
+//!    or embed it in invites with `enox invite --rendezvous <addr>`.
 
 use anyhow::{Context, Result};
 use axum::{extract::State, routing::get, Json, Router};
@@ -25,7 +25,7 @@ use libp2p::{
 use tracing::info;
 
 use crate::{
-    config::enochian_dir,
+    config::enoxian_dir,
     crypto::{generate_keypair, keypair_from_hex, keypair_to_hex},
     network::bootstrap_behaviour::{BootstrapBehaviour, BootstrapEvent},
 };
@@ -37,7 +37,7 @@ pub async fn run(port: u16) -> Result<()> {
 
     info!("Bootstrap server starting");
     info!("  PeerID : {peer_id}");
-    info!("  HTTP   : http://0.0.0.0:{port}/peer-id  (for enoch CLI auto-resolution)");
+    info!("  HTTP   : http://0.0.0.0:{port}/peer-id  (for enox CLI auto-resolution)");
     info!("  Share once you see the QUIC listen address below.");
 
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
@@ -53,7 +53,7 @@ pub async fn run(port: u16) -> Result<()> {
                 ),
                 relay: relay::Behaviour::new(pid, relay::Config::default()),
                 identify: identify::Behaviour::new(identify::Config::new(
-                    "/enochian-bootstrap/1.0.0".to_string(),
+                    "/enoxian-bootstrap/1.0.0".to_string(),
                     key.public(),
                 )),
                 ping: libp2p::ping::Behaviour::default(),
@@ -69,7 +69,7 @@ pub async fn run(port: u16) -> Result<()> {
     let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/udp/{port}/quic-v1").parse()?;
     swarm.listen_on(listen_addr)?;
 
-    // ── HTTP server: GET /peer-id — allows `enoch` CLI to auto-resolve the ──────
+    // ── HTTP server: GET /peer-id — allows `enox` CLI to auto-resolve the ──────
     // full multiaddr without the operator having to copy-paste the peer ID.
     // Runs on TCP:<port> alongside QUIC on UDP:<port> — no conflict.
     let app = Router::new()
@@ -89,7 +89,7 @@ pub async fn run(port: u16) -> Result<()> {
                 info!("Bootstrap listening on {address}");
                 info!("  Rendezvous + relay address for circle members:");
                 info!("    {address}/p2p/{peer_id}");
-                info!("  Or just run: enoch invite <circle> --rendezvous <hostname>");
+                info!("  Or just run: enox invite <circle> --rendezvous <hostname>");
             }
             SwarmEvent::ConnectionEstablished { peer_id: remote, endpoint, .. } => {
                 info!("[bootstrap] peer connected: {remote} via {}", endpoint.get_remote_address());
@@ -135,8 +135,8 @@ async fn peer_id_handler(State(peer_id): State<String>) -> Json<serde_json::Valu
 }
 
 fn load_or_create_keypair() -> Result<libp2p::identity::Keypair> {
-    let dir = enochian_dir()?;
-    std::fs::create_dir_all(&dir).context("failed to create ~/.enochian")?;
+    let dir = enoxian_dir()?;
+    std::fs::create_dir_all(&dir).context("failed to create ~/.enoxian")?;
     let path = dir.join("bootstrap.key");
     if path.exists() {
         let hex = std::fs::read_to_string(&path)

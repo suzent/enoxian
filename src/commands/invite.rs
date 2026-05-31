@@ -13,7 +13,7 @@ use crate::{
 pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> Result<()> {
     let configs = load_all()?;
     let config = resolve::resolve(&args.circle, &configs)
-        .with_context(|| format!("circle '{}' not found — run `enoch circles` to list known circles", args.circle))?
+        .with_context(|| format!("circle '{}' not found — run `enox circles` to list known circles", args.circle))?
         .clone();
 
     let psk_bytes = hex::decode(&config.psk_hex)
@@ -40,7 +40,7 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
             best_listen_addr(addrs).map(String::from)
         });
 
-    // relay_addr: from circle config (saved at `enoch enter` time from the invite).
+    // relay_addr: from circle config (saved at `enox enter` time from the invite).
     // The user never has to think about this — if they joined via a relay invite,
     // they can forward that same relay to the people they invite.
     let relay_addr = args.relay.clone().or_else(|| config.relay_addrs.first().cloned());
@@ -93,7 +93,7 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
         }
     }
     println!();
-    println!("  Join with: enoch enter \"<invite>\"");
+    println!("  Join with: enox enter \"<invite>\"");
 
     Ok(())
 }

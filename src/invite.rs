@@ -1,4 +1,4 @@
-//! `enochian://` invite URI encoding, decoding, and expiry validation.
+//! `enoxian://` invite URI encoding, decoding, and expiry validation.
 //!
 //! Binary payload (variable length, base64url-no-pad, no query string):
 //!   bytes  0-15   circle UUID (big-endian)
@@ -10,14 +10,14 @@
 //!   bytes 58+N..  peer_addr (UTF-8, M bytes)
 //!
 //! Full URI (no query string — safe to paste in any shell without quoting):
-//!   enochian://v1/<base64url-no-pad>
+//!   enoxian://v1/<base64url-no-pad>
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
-const SCHEME_PREFIX: &str = "enochian://v1/";
+const SCHEME_PREFIX: &str = "enoxian://v1/";
 const MIN_LEN: usize = 58; // 16 + 32 + 8 + 1 + 1
 
 pub struct InvitePayload {
@@ -88,7 +88,7 @@ pub fn decode(uri: &str) -> Result<InvitePayload> {
 
     let b64 = uri_clean
         .strip_prefix(SCHEME_PREFIX)
-        .with_context(|| format!("not a valid enochian:// URI: {uri}"))?;
+        .with_context(|| format!("not a valid enoxian:// URI: {uri}"))?;
 
     let raw = URL_SAFE_NO_PAD
         .decode(b64)
@@ -246,7 +246,7 @@ mod tests {
         };
 
         let uri = encode(&payload);
-        assert!(uri.starts_with("enochian://v1/"));
+        assert!(uri.starts_with("enoxian://v1/"));
         assert!(!uri.contains('?'), "URI must not have a query string");
         assert!(!uri.contains('&'), "URI must not contain & (shell unsafe)");
 

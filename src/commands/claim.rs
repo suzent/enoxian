@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 pub async fn run(client: &reqwest::Client, base: &str, task_id: String, json_out: bool) -> Result<()> {
-    let agent_id = std::env::var("ENOCHIAN_AGENT_ID").unwrap_or_else(|_| "cli".to_string());
+    let agent_id = std::env::var("enoxian_AGENT_ID").unwrap_or_else(|_| "cli".to_string());
     let resp = client
         .post(format!("{base}/claim"))
         .json(&json!({ "task_id": task_id, "agent_id": agent_id }))

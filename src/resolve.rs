@@ -47,18 +47,18 @@ pub fn resolve<'a>(target: &str, configs: &'a [CircleConfig]) -> Result<&'a Circ
         _ => {}
     }
 
-    bail!("no circle found matching '{}' — run `enoch circles` to list known circles", target)
+    bail!("no circle found matching '{}' — run `enox circles` to list known circles", target)
 }
 
 /// Pick the one active circle, or error if there are zero or many.
 pub fn resolve_default(configs: &[CircleConfig]) -> Result<&CircleConfig> {
     match configs.len() {
-        0 => bail!("no circles found — run `enoch init` to create one"),
+        0 => bail!("no circles found — run `enox init` to create one"),
         1 => Ok(&configs[0]),
         _ => {
             let names: Vec<_> = configs.iter().map(|c| c.circle_name.as_str()).collect();
             bail!(
-                "multiple circles found ({}): specify one with --circle or ENOCHIAN_CIRCLE",
+                "multiple circles found ({}): specify one with --circle or enoxian_CIRCLE",
                 names.join(", ")
             )
         }
@@ -81,6 +81,8 @@ mod tests {
             peers: vec![],
             relay_addrs: vec![],
             rendezvous_addrs: vec![],
+            join_policy: Default::default(),
+            owner: String::new(),
         }
     }
 

@@ -4,7 +4,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     enochd (circle mode)                    │
+│                     enoxd (circle mode)                    │
 │                                                             │
 │  ┌─────────────┐   ┌────────────────────┐   ┌────────────┐  │
 │  │  libp2p     │   │   axum HTTP + WS   │   │   notify   │  │
@@ -25,7 +25,7 @@
 │         │                   │               │            │  │
 │  PSK TCP: circle peers      HTTP / WS       │ control    │  │
 │  QUIC: bootstrap server     reqwest         │ Arc<Doc>   │  │
-│  /enochian/sync                             │            │  │
+│  /enoxian/sync                             │            │  │
 │  y-sync protocol                            │ peer_id    │  │
 │  (live, M3)                                 │ ext_addrs  │  │
 │         │                   │               │            │  │
@@ -33,7 +33,7 @@
           │                   │
           ▼                   ▼
   ┌──────────────┐   ┌──────────────────┐   ┌──────────────────┐
-  │  enochd peer │   │    enoch CLI     │   │ enochd           │
+  │  enoxd peer │   │    enox CLI     │   │ enoxd           │
   │  (other node)│   │  or AI agent     │   │ --bootstrap      │
   └──────────────┘   └──────────────────┘   │ (QUIC only,      │
                                             │ no PSK,          │
@@ -61,10 +61,10 @@
 | Lock arbitration | `src/control/arbitration.rs` | Replay `lock_log` array → current holder map |
 | Control types | `src/control/mod.rs` | Task, LockEntry, Presence, CircleEvent structs |
 | FS lock | `src/control/fs_lock.rs` | `set_readonly()` — chmod wrapper |
-| P2P sync | `src/network/sync.rs` | `/enochian/sync/1.0.0` stream handler; 3-phase handshake + continuous update exchange |
+| P2P sync | `src/network/sync.rs` | `/enoxian/sync/1.0.0` stream handler; 3-phase handshake + continuous update exchange |
 | P2P behaviour | `src/network/behaviour.rs` | `EnochBehaviour` combining all libp2p behaviours (mDNS, Kad, Identify, Ping, Rendezvous client, RelayClient, Relay, DCUtR, Stream) |
-| Bootstrap behaviour | `src/network/bootstrap_behaviour.rs` | `BootstrapBehaviour` for `enochd --bootstrap`: Rendezvous server + Relay + Identify + Ping + Kad |
-| Bootstrap server | `src/bootstrap.rs` | `enochd --bootstrap` — QUIC-only rendezvous + relay node; no PSK; no circles |
+| Bootstrap behaviour | `src/network/bootstrap_behaviour.rs` | `BootstrapBehaviour` for `enoxd --bootstrap`: Rendezvous server + Relay + Identify + Ping + Kad |
+| Bootstrap server | `src/bootstrap.rs` | `enoxd --bootstrap` — QUIC-only rendezvous + relay node; no PSK; no circles |
 | Serve command | `src/commands/serve.rs` | Main daemon loop; one swarm per circle + axum HTTP server |
 | CLI commands | `src/commands/*.rs` | `reqwest` calls to the REST API |
 | CLI definitions | `src/cli.rs` | `clap` arg structs for both binaries |
@@ -86,12 +86,12 @@ pub struct AppState {
     pub peer_id:     String,
 
     /// Externally-confirmed TCP multiaddrs, populated by SwarmEvent::ExternalAddrConfirmed.
-    /// Used by `enoch invite` to auto-embed a connectable peer address.
+    /// Used by `enox invite` to auto-embed a connectable peer address.
     pub p2p_external_addrs: Arc<RwLock<Vec<String>>>,
 
     /// Local listen multiaddrs (non-loopback, non-unspecified, non-circuit).
     /// On a VPS these include the real public IP immediately at startup, before any peer
-    /// connects to confirm via Identify. Used as fallback in `enoch invite`.
+    /// connects to confirm via Identify. Used as fallback in `enox invite`.
     pub p2p_listen_addrs: Arc<RwLock<Vec<String>>>,
 
     /// File docs. Key = relative path with forward slashes.
@@ -194,28 +194,28 @@ Serialized to JSON (`{"type":"task_created", ...}`) for the SSE stream.
 ### Runtime (data)
 
 ```
-~/.enochian/
+~/.enoxian/
 └── circles/
     └── <circle-id>/
         ├── config.toml          # Circle config, node keypair, PSK, workspace path
         └── admin.key            # Admin Ed25519 keypair hex (creator only; unenforced until M6)
 
-~/enochian/                      # Default workspace root (configurable via --dir or workspace_dir)
+~/enoxian/                      # Default workspace root (configurable via --dir or workspace_dir)
 └── <circle-name>/               # One directory per circle
     ├── notes.txt
     └── src/
         └── main.rs
 ```
 
-The workspace path is stored in `config.toml` as `workspace_dir` and can be any directory on the filesystem. The config dir (`~/.enochian/circles/<id>/`) holds credentials only — workspace files live separately so they're easy to find and edit directly.
+The workspace path is stored in `config.toml` as `workspace_dir` and can be any directory on the filesystem. The config dir (`~/.enoxian/circles/<id>/`) holds credentials only — workspace files live separately so they're easy to find and edit directly.
 
 ### Source
 
 ```
 src/
 ├── bin/
-│   ├── enoch.rs                 # Agent CLI entry point
-│   └── enochd.rs                # Daemon entry point
+│   ├── enox.rs                 # Agent CLI entry point
+│   └── enoxd.rs                # Daemon entry point
 ├── api/
 │   ├── mod.rs                   # axum Router
 │   ├── events.rs                # GET /api/events
@@ -224,15 +224,15 @@ src/
 │   ├── tasks.rs                 # GET/POST /api/tasks
 │   └── who.rs                   # GET /api/who
 ├── commands/
-│   ├── serve.rs                 # enochd serve — main loop
-│   ├── bind.rs                  # enoch bind
-│   ├── claim.rs                 # enoch claim
-│   ├── done_cmd.rs              # enoch done
-│   ├── release.rs               # enoch release
-│   ├── status.rs                # enoch status
-│   ├── tasks.rs                 # enoch tasks
-│   ├── watch.rs                 # enoch watch
-│   └── who.rs                   # enoch who
+│   ├── serve.rs                 # enoxd serve — main loop
+│   ├── bind.rs                  # enox bind
+│   ├── claim.rs                 # enox claim
+│   ├── done_cmd.rs              # enox done
+│   ├── release.rs               # enox release
+│   ├── status.rs                # enox status
+│   ├── tasks.rs                 # enox tasks
+│   ├── watch.rs                 # enox watch
+│   └── who.rs                   # enox who
 ├── control/
 │   ├── mod.rs                   # Task, LockEntry, Presence, CircleEvent
 │   ├── arbitration.rs           # Lock log replay
@@ -246,11 +246,11 @@ src/
 ├── config.rs                    # config.toml load/save
 ├── crypto.rs                    # Keypair generation + hex encoding
 ├── lib.rs                       # Crate root
-├── bootstrap.rs                 # enochd --bootstrap server (QUIC rendezvous + relay)
+├── bootstrap.rs                 # enoxd --bootstrap server (QUIC rendezvous + relay)
 ├── network/
 │   ├── behaviour.rs             # EnochBehaviour + EnochEvent (libp2p)
 │   ├── bootstrap_behaviour.rs   # BootstrapBehaviour + BootstrapEvent (--bootstrap mode)
-│   └── sync.rs                  # /enochian/sync/1.0.0 — y-sync over libp2p Stream
+│   └── sync.rs                  # /enoxian/sync/1.0.0 — y-sync over libp2p Stream
 └── state.rs                     # AppState
 ```
 
@@ -268,7 +268,7 @@ Each circle swarm uses three transport legs combined via `or_transport`:
 
 The PSK is transport-level: it runs before Noise. Bootstrap servers do not know any circle's PSK, so they are unreachable over the PSK-TCP leg. Circle members reach them exclusively over QUIC.
 
-The bootstrap server (`enochd --bootstrap`) runs **QUIC only** — it never participates in a circle and holds no PSK.
+The bootstrap server (`enoxd --bootstrap`) runs **QUIC only** — it never participates in a circle and holds no PSK.
 
 ---
 
@@ -279,12 +279,12 @@ The bootstrap server (`enochd --bootstrap`) runs **QUIC only** — it never part
 | `tokio` | 1 | Async runtime |
 | `axum` | 0.8 | HTTP + WebSocket server |
 | `libp2p` | 0.56 | P2P transport and protocols (tcp, quic, pnet, noise, yamux, mdns, kad, identify, ping, rendezvous, relay, dcutr) |
-| `libp2p-stream` | 0.4.0-alpha | Custom stream protocol (`/enochian/sync/1.0.0`) |
+| `libp2p-stream` | 0.4.0-alpha | Custom stream protocol (`/enoxian/sync/1.0.0`) |
 | `tokio-util` | 0.7 | `FuturesAsyncReadCompatExt` — bridges libp2p Stream to tokio AsyncRead/Write |
 | `yrs` | 0.26 | Yjs CRDT (Y.Doc, Y.Text, Y.Map, Y.Array) |
 | `notify` | 8 | Cross-platform file watcher |
 | `dashmap` | 6 | Lock-free concurrent HashMap |
-| `reqwest` | 0.12 | HTTP client (enoch CLI) |
+| `reqwest` | 0.12 | HTTP client (enox CLI) |
 | `serde` / `serde_json` | 1 | Serialization |
 | `clap` | 4 | CLI argument parsing |
 | `tokio-stream` | 0.1 | Broadcast → SSE stream bridging |

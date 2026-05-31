@@ -1,9 +1,9 @@
-# Daemon Reference — `enochd`
+# Daemon Reference — `enoxd`
 
-The `enochd` binary is the long-running daemon. It serves **all known Circles** over a single HTTP/WS port, with each Circle getting its own P2P swarm on a random port.
+The `enoxd` binary is the long-running daemon. It serves **all known Circles** over a single HTTP/WS port, with each Circle getting its own P2P swarm on a random port.
 
 ```
-Usage: enochd [OPTIONS]
+Usage: enoxd [OPTIONS]
 
 Options:
   --port <PORT>    HTTP port [default: 9090]
@@ -14,12 +14,12 @@ Options:
 
 ## Startup sequence
 
-1. Scan `~/.enochian/circles/*/config.toml` and load all known circles
+1. Scan `~/.enoxian/circles/*/config.toml` and load all known circles
 2. For each circle:
    a. Create in-memory state (CRDT doc store, `all_updates` broadcast, `self_write_flags`)
    b. Spawn a file watcher on the circle's workspace directory
    c. Build a libp2p swarm with PSK-enforced transport (XSalsa20 via `pnet`) + Noise + Yamux + mDNS + Kademlia + Identify + Ping + Rendezvous + Stream, on a random port
-   d. Spawn the stream accept task (listens for incoming `/enochian/sync/1.0.0` streams)
+   d. Spawn the stream accept task (listens for incoming `/enoxian/sync/1.0.0` streams)
    e. Spawn the swarm event loop (dials mDNS peers, opens sync streams on connect)
    f. Register the circle in the shared daemon state
 3. Start a single HTTP/WS server on `--port` serving all circles
@@ -50,20 +50,20 @@ All per-circle endpoints are prefixed with `/circles/<circle-id>`:
 
 ## Configuration file
 
-Located at `~/.enochian/circles/<circle-id>/config.toml`. Created by `enoch init` or `enoch enter`.
+Located at `~/.enoxian/circles/<circle-id>/config.toml`. Created by `enox init` or `enox enter`.
 
 ```toml
 circle_id         = "8e563c41-f0ec-4225-9764-064f1fb04341"
 circle_name       = "MyCircle"
 psk_hex           = "d2d89de6..."        # 256-bit pre-shared key (circle membership)
 keypair_proto_hex = "0802..."            # Ed25519 node keypair, protobuf-encoded hex
-workspace_dir     = "/Users/suzy/enochian/MyCircle"
+workspace_dir     = "/Users/suzy/enoxian/MyCircle"
 admin_pubkey_hex  = "0803..."            # Ed25519 admin pubkey (enforced in M6)
 ```
 
 > Do not share `keypair_proto_hex`. The `psk_hex` is the circle membership credential — every member holds it and any member can generate invite links (until M6 restricts invite authority to the admin keypair).
 
-The `admin_pubkey_hex` is generated at `enoch init` and stored in `admin.key` (private) alongside `config.toml`. It is replicated into joining members' configs via the invite flow. It is currently stored but not enforced — enforcement of invite signing and member lists is planned for M6.
+The `admin_pubkey_hex` is generated at `enox init` and stored in `admin.key` (private) alongside `config.toml`. It is replicated into joining members' configs via the invite flow. It is currently stored but not enforced — enforcement of invite signing and member lists is planned for M6.
 
 ---
 
@@ -73,11 +73,11 @@ Each circle has a **workspace** — a visible directory where shared files live.
 
 | Scenario | Default location |
 |----------|-----------------|
-| `enoch init --name MyCircle` | `~/enochian/MyCircle` |
-| `enoch init --name MyCircle --dir ~/projects` | `~/projects` |
-| `enoch enter <invite>` | `~/enochian/<circle-name>` |
-| Name conflict on join | `~/enochian/<circle-name>-<short-id>` |
-| Old config without `workspace_dir` | `~/.enochian/circles/<id>/files` (migration fallback) |
+| `enox init --name MyCircle` | `~/enoxian/MyCircle` |
+| `enox init --name MyCircle --dir ~/projects` | `~/projects` |
+| `enox enter <invite>` | `~/enoxian/<circle-name>` |
+| Name conflict on join | `~/enoxian/<circle-name>-<short-id>` |
+| Old config without `workspace_dir` | `~/.enoxian/circles/<id>/files` (migration fallback) |
 
 Files in the workspace are watched recursively. Any write triggers a CRDT update and broadcasts to connected WebSocket clients.
 
@@ -86,9 +86,9 @@ Files in the workspace are watched recursively. Any write triggers a CRDT update
 ## Log levels
 
 ```bash
-RUST_LOG=info  enochd          # recommended for normal use
-RUST_LOG=debug enochd          # full verbosity including libp2p internals
-RUST_LOG=warn  enochd          # errors and warnings only
+RUST_LOG=info  enoxd          # recommended for normal use
+RUST_LOG=debug enoxd          # full verbosity including libp2p internals
+RUST_LOG=warn  enoxd          # errors and warnings only
 ```
 
 ---

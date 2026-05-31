@@ -14,7 +14,7 @@ pub struct AppState {
     pub circle_id: String,
     pub circle_name: String,
     pub workspace: PathBuf,
-    /// ~/.enochian/circles/<circle_id>/ — used for session and peer records.
+    /// ~/.enoxian/circles/<circle_id>/ — used for session and peer records.
     pub circle_dir: PathBuf,
     pub admin_pubkey_hex: String,
     pub agent_id: String,
@@ -23,11 +23,11 @@ pub struct AppState {
     /// This node's libp2p peer ID.
     pub peer_id: String,
     /// Externally-confirmed TCP multiaddrs for this node (populated by Identify / ExternalAddrConfirmed).
-    /// Used by `enoch invite` to auto-embed a connectable peer address.
+    /// Used by `enox invite` to auto-embed a connectable peer address.
     pub p2p_external_addrs: Arc<RwLock<Vec<String>>>,
     /// Local listen multiaddrs (non-loopback, non-unspecified, non-circuit).
     /// On a VPS with a public IP these include the real address immediately at startup,
-    /// before any peer connects to confirm via Identify. Used as fallback for `enoch invite`.
+    /// before any peer connects to confirm via Identify. Used as fallback for `enox invite`.
     pub p2p_listen_addrs: Arc<RwLock<Vec<String>>>,
     /// File docs. Key = relative path with forward slashes.
     pub docs: Arc<DashMap<String, Arc<Doc>>>,

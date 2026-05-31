@@ -21,7 +21,7 @@ use yrs::{encoding::read::Cursor, Any, GetString, Map, Out, ReadTxn, StateVector
 use crate::control::MLS_REMOVED_KEY;
 use crate::state::AppState;
 
-pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enochian/sync/1.0.0");
+pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/sync/1.0.0");
 const AWARENESS_PATH_PREFIX: &str = "\0awareness/";
 const DELETE_PATH_PREFIX: &str = "\0delete/";
 const SESSION_PATH: &str = "\0session";

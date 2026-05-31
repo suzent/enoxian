@@ -57,7 +57,7 @@ git push origin $tag
 
 Write-Host ""
 Write-Host "✦ Released $tag — GitHub Actions is building the binaries."
-Write-Host "  Watch: https://github.com/suzent/enochian/actions"
+Write-Host "  Watch: https://github.com/suzent/enoxian/actions"
 Write-Host ""
 Write-Host "  Once the build finishes, deploy:"
 Write-Host "    .\scripts\deploy-rendezvous.ps1 <host> -Update"

@@ -30,7 +30,7 @@ pub struct CircleConfig {
     /// Admin public key hex (Ed25519). Present on all peers; private key only on admin machines.
     #[serde(default)]
     pub admin_pubkey_hex: String,
-    /// If true, enochd skips this circle at startup and does not start its swarm.
+    /// If true, enoxd skips this circle at startup and does not start its swarm.
     #[serde(default)]
     pub disabled: bool,
     /// Known peer multiaddrs (e.g. from invite). Dialed on startup as bootstrap
@@ -51,26 +51,26 @@ pub struct CircleConfig {
     pub owner: String,
 }
 
-pub fn enochian_dir() -> Result<PathBuf> {
+pub fn enoxian_dir() -> Result<PathBuf> {
     let base = dirs::home_dir().context("cannot resolve home directory")?;
-    Ok(base.join(".enochian"))
+    Ok(base.join(".enoxian"))
 }
 
 pub fn circles_dir() -> Result<PathBuf> {
-    Ok(enochian_dir()?.join("circles"))
+    Ok(enoxian_dir()?.join("circles"))
 }
 
 // ── Global config ──────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct GlobalConfig {
-    /// Path to the enochian source directory, saved by `enoch update --dev`.
+    /// Path to the enoxian source directory, saved by `enox update --dev`.
     #[serde(default)]
     pub dev_src: Option<String>,
 }
 
 pub fn global_config_path() -> Result<PathBuf> {
-    Ok(enochian_dir()?.join("config.toml"))
+    Ok(enoxian_dir()?.join("config.toml"))
 }
 
 pub fn load_global() -> GlobalConfig {
@@ -94,18 +94,18 @@ pub fn circle_dir(circle_id: &str) -> Result<PathBuf> {
     Ok(circles_dir()?.join(circle_id))
 }
 
-/// Default workspace root: ~/enochian/
+/// Default workspace root: ~/enoxian/
 pub fn workspace_root() -> Result<PathBuf> {
     let base = dirs::home_dir().context("cannot resolve home directory")?;
-    Ok(base.join("enochian"))
+    Ok(base.join("enoxian"))
 }
 
-/// Default workspace for a circle: ~/enochian/<circle-name>/
+/// Default workspace for a circle: ~/enoxian/<circle-name>/
 pub fn default_workspace_dir(circle_name: &str) -> Result<PathBuf> {
     Ok(workspace_root()?.join(circle_name))
 }
 
-/// Workspace dir for a circle that would collide on name: ~/enochian/<name>-<id[..6]>/
+/// Workspace dir for a circle that would collide on name: ~/enoxian/<name>-<id[..6]>/
 pub fn disambiguated_workspace_dir(circle_name: &str, circle_id: &str) -> Result<PathBuf> {
     let short_id = &circle_id.replace('-', "")[..6];
     Ok(workspace_root()?.join(format!("{circle_name}-{short_id}")))
@@ -175,7 +175,7 @@ pub fn load(circle_id: &str) -> Result<CircleConfig> {
     Ok(config)
 }
 
-/// Load every circle config found under ~/.enochian/circles/*/config.toml.
+/// Load every circle config found under ~/.enoxian/circles/*/config.toml.
 pub fn load_all() -> Result<Vec<CircleConfig>> {
     let dir = circles_dir()?;
     if !dir.exists() {

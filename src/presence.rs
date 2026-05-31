@@ -10,7 +10,7 @@ use crate::state::AppState;
 /// Derive a stable, human-readable agent ID from a custom agent name and peer_id.
 ///
 /// Resolution order:
-///   1. `ENOCHIAN_AGENT_ID` env var — explicit override (`codex`, `cursor`, `alice`, …)
+///   1. `enoxian_AGENT_ID` env var — explicit override (`codex`, `cursor`, `alice`, …)
 ///   2. System hostname — auto-detected, stripped of `.local` (macOS) / domain suffixes
 ///   3. `"device"` — last-resort fallback if hostname is unavailable
 ///
@@ -19,7 +19,7 @@ use crate::state::AppState;
 pub fn local_agent_id(peer_id: &PeerId) -> String {
     let peer_str = peer_id.to_string();
     let short = &peer_str[peer_str.len().saturating_sub(8)..];
-    let agent = std::env::var("ENOCHIAN_AGENT_ID")
+    let agent = std::env::var("enoxian_AGENT_ID")
         .ok()
         .map(|s| sanitize_agent_name(&s))
         .filter(|s| !s.is_empty())

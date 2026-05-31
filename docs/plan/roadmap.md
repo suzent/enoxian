@@ -1,20 +1,20 @@
-# ENOCHIAN Roadmap
+# enoxian Roadmap
 
 ## What works today
 
 | Feature | Notes |
 |---------|-------|
-| Circle creation — `enoch init` | Generates keypair + PSK + admin keypair; prints invite link with embedded admin pubkey |
-| Invite links — `enochian://v1/<b64>` | No-quote shell-safe URI, expiry enforced, admin pubkey embedded |
-| Join — `enoch enter` | Saves config + admin pubkey, workspace created, conflict handling |
-| Multi-circle daemon — `enochd` | Loads all enabled circles at startup; one P2P swarm per circle; hot-reload every 10s; starts HTTP server even with zero circles |
-| Circle lifecycle | `enoch disable/enable/leave`; `POST /circles/<id>/stop|start`; per-circle `CancellationToken` |
-| Workspace folders | `~/enochian/<name>/` per circle, configurable via `--dir` |
+| Circle creation — `enox init` | Generates keypair + PSK + admin keypair; prints invite link with embedded admin pubkey |
+| Invite links — `enoxian://v1/<b64>` | No-quote shell-safe URI, expiry enforced, admin pubkey embedded |
+| Join — `enox enter` | Saves config + admin pubkey, workspace created, conflict handling |
+| Multi-circle daemon — `enoxd` | Loads all enabled circles at startup; one P2P swarm per circle; hot-reload every 10s; starts HTTP server even with zero circles |
+| Circle lifecycle | `enox disable/enable/leave`; `POST /circles/<id>/stop|start`; per-circle `CancellationToken` |
+| Workspace folders | `~/enoxian/<name>/` per circle, configurable via `--dir` |
 | REST API | Tasks, locks, presence, members, events SSE, lifecycle, files |
 | Yjs CRDT + file watcher | Local file changes sync into CRDT, broadcast to local WS clients |
 | WebSocket Yjs sync | Local editor/agent clients can sync documents over WS |
 | Name-based circle resolution | `--circle Work` resolves by exact name → prefix → UUID prefix |
-| `enoch` CLI | init, enter, invite, circles, status, who, tasks, task-create, claim, done, bind, release, watch, disable, enable, leave, member |
+| `enox` CLI | init, enter, invite, circles, status, who, tasks, task-create, claim, done, bind, release, watch, disable, enable, leave, member |
 | PSK-enforced transport | `pnet` XSalsa20 applied at TCP layer — cross-circle connections rejected at handshake |
 | Live P2P file sync | Bidirectional y-sync over libp2p streams; mDNS auto-discovery; new files sync without reconnect |
 | File sync hardening | Startup preload; post-handshake full-state push; macOS atomic-save fix (`Name(Both)`); temp file filter; CRDT state persistence across restarts |
@@ -22,19 +22,19 @@
 | Self-write loop prevention | Shared per-path flags prevent flush_to_disk from triggering re-sync |
 | P2P echo prevention | Updates applied from peers use `"p2p"` origin; observer skips forwarding them back |
 | P2P awareness relay | Cursor/presence awareness bytes forwarded between WS clients and across P2P peers via `all_awareness_updates` broadcast |
-| Live presence | Hostname-based agent_id (strips `.local`); 30s heartbeat; immediate OFFLINE on disconnect/shutdown; stale detection (>90s); `enoch who` shows last-seen age |
-| Admin & member management | Admin keypair signs member operations; daemon auto-signs when `admin.key` present; `enoch member list/add/remove/promote/pending/approve/reject`; pending queue; ghost-entry cleanup on rejoin |
+| Live presence | Hostname-based agent_id (strips `.local`); 30s heartbeat; immediate OFFLINE on disconnect/shutdown; stale detection (>90s); `enox who` shows last-seen age |
+| Admin & member management | Admin keypair signs member operations; daemon auto-signs when `admin.key` present; `enox member list/add/remove/promote/pending/approve/reject`; pending queue; ghost-entry cleanup on rejoin |
 | MLS access revocation (RFC 9420) | Group created at init; KeyPackages on join; Welcome delivery; serial commit watcher; `remove_member` issues Remove commit + rotates PSK; evicted peer fails pnet handshake |
-| Chat | `enoch say` posts messages; `enoch chat [--follow]` reads/streams; `@mention` emits `AgentMentioned` event as agent wake signal |
+| Chat | `enox say` posts messages; `enox chat [--follow]` reads/streams; `@mention` emits `AgentMentioned` event as agent wake signal |
 | Task SSE events from P2P | Control doc observer fires `TaskCreated/Claimed/Done` SSE events when task updates arrive via P2P sync |
-| Web frontend | React SPA: circle selector, presence panel, file tree, collaborative CodeMirror editor, task queue, chat, member management; served from `enochd` at `/app` |
+| Web frontend | React SPA: circle selector, presence panel, file tree, collaborative CodeMirror editor, task queue, chat, member management; served from `enoxd` at `/app` |
 | Remote cursors | Yjs awareness in CodeMirror shows live cursor position and agent name label per connected peer |
-| `enoch open` | Opens the circle UI in the default browser (`http://127.0.0.1:36521/app`) |
+| `enox open` | Opens the circle UI in the default browser (`http://127.0.0.1:36521/app`) |
 | Production build | `cargo build --release` automatically runs `npm run build` via `build.rs` |
 | WAN / circuit relay | Every node is relay server + client; relay circuit addr auto-derived and embedded in invites; DCUtR hole-punching; non-blocking background relay/rendezvous resolution |
-| Bootstrap rendezvous server | `enochd --bootstrap` — QUIC rendezvous + relay for both-behind-NAT; no PSK; stable keypair |
+| Bootstrap rendezvous server | `enoxd --bootstrap` — QUIC rendezvous + relay for both-behind-NAT; no PSK; stable keypair |
 | QUIC transport | PSK-free QUIC leg alongside PSK-TCP; circle members connect to bootstrap via QUIC |
-| Auto-embedded invites | `enoch invite` queries the daemon and auto-embeds peer addr, relay, and rendezvous — no manual flags; relay circuit addr as fallback when no direct IP available |
+| Auto-embedded invites | `enox invite` queries the daemon and auto-embeds peer addr, relay, and rendezvous — no manual flags; relay circuit addr as fallback when no direct IP available |
 | P2P status in API | `GET /api/status` returns `p2p.peer_id`, `p2p.external_addrs`, `p2p.relay_addrs`, `p2p.rendezvous_addrs` |
 
 ---
@@ -51,9 +51,9 @@ See [security.md](../security.md) for the full threat model, including PSK seman
 - Kademlia DHT + rendezvous handles WAN peer discovery
 - The optional `--peer` in an invite is just a bootstrap hint — any online peer's address works
 
-**Anchor nodes** are regular `enochd` peers that happen to run 24/7 on a VPS. They act as relay and always-on presence for their circles. No special code — just a peer that's always reachable. Teams that need WAN or strong liveness guarantees deploy one; LAN-only teams don't need it.
+**Anchor nodes** are regular `enoxd` peers that happen to run 24/7 on a VPS. They act as relay and always-on presence for their circles. No special code — just a peer that's always reachable. Teams that need WAN or strong liveness guarantees deploy one; LAN-only teams don't need it.
 
-**Bootstrap servers** run `enochd --bootstrap` and provide rendezvous + relay for any circle, without joining any of them. They hold no PSK and cannot read synced content. `enoch.suzent.com` is the shared public bootstrap for teams where no member has a public IP. A single bootstrap server serves all circles simultaneously.
+**Bootstrap servers** run `enoxd --bootstrap` and provide rendezvous + relay for any circle, without joining any of them. They hold no PSK and cannot read synced content. `enox.suzent.com` is the shared public bootstrap for teams where no member has a public IP. A single bootstrap server serves all circles simultaneously.
 
 **Conflict model:** CRDT handles concurrent real-time edits perfectly. For offline edits (both peers disconnected simultaneously), conflict detection uses the persisted CRDT state as the common ancestor. If only one side diverged, the merge is clean. If both sides diverged, the loser's version is preserved as a conflict copy (`file.conflict.<peer>`) and the CRDT merge becomes the working file.
 
@@ -64,7 +64,7 @@ See [security.md](../security.md) for the full threat model, including PSK seman
 ### M1 — Workspace folders
 **Status: Complete**
 
-Each circle has a named, visible workspace directory (`~/enochian/<circle-name>/` by default).
+Each circle has a named, visible workspace directory (`~/enoxian/<circle-name>/` by default).
 See [workspace.md](workspace.md) for details.
 
 ---
@@ -84,7 +84,7 @@ PSK is now applied to every swarm via `pnet::PnetConfig` + `with_other_transport
 ### M3 — Live P2P sync (core protocol)
 **Status: Complete**
 
-`libp2p_stream` behaviour is wired into every circle swarm. On `ConnectionEstablished` (dialing side), a `/enochian/sync/1.0.0` stream is opened. A deadlock-free handshake exchanges `SyncStep1`/`SyncStep2` for all currently-open docs. After handshake, local updates are forwarded via the `all_updates` global broadcast channel; incoming updates are applied to the local CRDT and flushed to workspace disk. Verified end-to-end bidirectional file sync on a real LAN (Windows ↔ Mac).
+`libp2p_stream` behaviour is wired into every circle swarm. On `ConnectionEstablished` (dialing side), a `/enoxian/sync/1.0.0` stream is opened. A deadlock-free handshake exchanges `SyncStep1`/`SyncStep2` for all currently-open docs. After handshake, local updates are forwarded via the `all_updates` global broadcast channel; incoming updates are applied to the local CRDT and flushed to workspace disk. Verified end-to-end bidirectional file sync on a real LAN (Windows ↔ Mac).
 
 **Implementation:**
 - `src/network/sync.rs` — full sync handler; deadlock-free 3-phase handshake; lag recovery via full-state resend
@@ -94,7 +94,7 @@ PSK is now applied to every swarm via `pnet::PnetConfig` + `with_other_transport
 - `libp2p-stream = "0.4.0-alpha"` added to dependencies
 
 **Tasks:**
-- [x] Add `libp2p_stream` behaviour for `/enochian/sync/1.0.0`
+- [x] Add `libp2p_stream` behaviour for `/enoxian/sync/1.0.0`
 - [x] On `ConnectionEstablished`: open sync stream, run y-sync handshake for all open docs
 - [x] Subscribe to `all_updates` broadcast channel, forward to peer stream
 - [x] On incoming update: apply to local CRDT, flush to workspace disk
@@ -127,20 +127,20 @@ All circles load at daemon startup; individual circles can be stopped, started, 
 
 **Tasks:**
 - [x] Add `disabled: bool` field to `CircleConfig` (default false, `#[serde(default)]`)
-- [x] `enochd` skips disabled circles at startup
-- [x] `enoch disable` — set flag in config, call `/circles/<id>/stop`
-- [x] `enoch enable` — clear flag in config, call `/circles/<id>/start`
-- [x] `enoch leave [--yes]` — confirm prompt, delete config dir, call `/circles/<id>/stop`
+- [x] `enoxd` skips disabled circles at startup
+- [x] `enox disable` — set flag in config, call `/circles/<id>/stop`
+- [x] `enox enable` — clear flag in config, call `/circles/<id>/start`
+- [x] `enox leave [--yes]` — confirm prompt, delete config dir, call `/circles/<id>/stop`
 - [x] `POST /circles/<id>/stop` API endpoint — cancels token, removes from DaemonState
 - [x] `POST /circles/<id>/start` API endpoint — reloads config, spawns circle, inserts into DaemonState
-- [x] `enoch circles` output shows disabled circles with a `[paused]` marker
+- [x] `enox circles` output shows disabled circles with a `[paused]` marker
 
 ---
 
 ### M5 — Presence
 **Status: Complete**
 
-On startup, each daemon writes a `Presence` entry (`agent_id = <hostname>-shortpeerid`, status=online, last_seen=now) to the control doc's `presence` Y.Map. The agent ID prefix uses the system hostname (stripping `.local` on macOS), falling back to `ENOCHIAN_AGENT_ID` env var or `"device"`. A 30-second heartbeat task refreshes `last_seen`. On clean shutdown, `OFFLINE` is written before the swarm drops so connected peers receive it immediately. On abrupt disconnect, the observing peer writes `OFFLINE` for the lost peer when the last P2P connection closes (`ConnectionClosed { num_established: 0 }`).
+On startup, each daemon writes a `Presence` entry (`agent_id = <hostname>-shortpeerid`, status=online, last_seen=now) to the control doc's `presence` Y.Map. The agent ID prefix uses the system hostname (stripping `.local` on macOS), falling back to `enoxian_AGENT_ID` env var or `"device"`. A 30-second heartbeat task refreshes `last_seen`. On clean shutdown, `OFFLINE` is written before the swarm drops so connected peers receive it immediately. On abrupt disconnect, the observing peer writes `OFFLINE` for the lost peer when the last P2P connection closes (`ConnectionClosed { num_established: 0 }`).
 
 **Implementation:**
 - `src/presence.rs` — `local_agent_id()` (hostname → strip `.local` → peer suffix), `spawn_presence()`, heartbeat loop, `write_offline()`
@@ -151,8 +151,8 @@ On startup, each daemon writes a `Presence` entry (`agent_id = <hostname>-shortp
 **Tasks:**
 - [x] Write presence entry (agent ID, hostname, timestamp) on daemon start
 - [x] Refresh presence heartbeat every 30s via a tokio interval task
-- [x] `enoch who` displays live agents with last-seen time
-- [x] Hostname-based agent_id (strips `.local`/domain suffix); `ENOCHIAN_AGENT_ID` override
+- [x] `enox who` displays live agents with last-seen time
+- [x] Hostname-based agent_id (strips `.local`/domain suffix); `enoxian_AGENT_ID` override
 - [x] Immediate OFFLINE on clean shutdown (written before swarm drops)
 - [x] Immediate OFFLINE on abrupt disconnect (written by observing peer on `ConnectionClosed`)
 
@@ -164,7 +164,7 @@ See [admin.md](admin.md) for the full design.
 
 **Status: Complete**
 
-Admin keypair is generated at `enoch init` and stored in `admin.key`. The public key is embedded in invite URIs so joining peers save it automatically. Member operations (add, remove, promote, approve, reject) require an admin signature; the daemon auto-signs from `admin.key` when a request arrives from the frontend with no signature provided.
+Admin keypair is generated at `enox init` and stored in `admin.key`. The public key is embedded in invite URIs so joining peers save it automatically. Member operations (add, remove, promote, approve, reject) require an admin signature; the daemon auto-signs from `admin.key` when a request arrives from the frontend with no signature provided.
 
 > ⚠ **Security note:** The member list is a directory, not an access gate. Removing a peer from the list stops them from auto-registering on restart but does not revoke their PSK — they can still connect and sync, or rejoin with a fresh keypair. True access revocation requires MLS epoch rotation (M11). See [security.md](../security.md) for the full threat model.
 
@@ -174,24 +174,24 @@ Admin keypair is generated at `enoch init` and stored in `admin.key`. The public
 - `src/commands/invite.rs` — loads `admin.key` if present, embeds pubkey in invite
 - `src/commands/enter.rs` — extracts `admin_pubkey_hex` from invite, saves to `config.toml`
 - `src/api/members.rs` — `list_members`, `add_member`, `remove_member`, `promote_member`, `list_pending`, `approve_member`, `reject_member`; all mutating ops verify admin signature; `resolve_admin_sig()` auto-signs with local `admin.key` when frontend omits signature
-- `src/commands/member.rs` — `enoch member list/add/remove/promote/pending/approve/reject`; auto-signs with `admin.key`
+- `src/commands/member.rs` — `enox member list/add/remove/promote/pending/approve/reject`; auto-signs with `admin.key`
 - `src/control/mod.rs` — `MemberEntry`, `MemberRole`, `PendingEntry`, `MEMBER_LIST_KEY`, `MLS_PENDING_KEY`, `MemberAdded`/`MemberRemoved` events
 - `src/lifecycle.rs` — auto-registration on startup; stale pending cleanup on restart (already-registered path); ghost-entry eviction (same `agent_id`, different `peer_id` — leave/rejoin); non-admin member-list observer removes own pending on P2P approval; admin self-evict observer removes own pending if synced from remote
 
 **Tasks:**
-- [x] Admin keypair generated at `enoch init`, stored as `admin.key`
+- [x] Admin keypair generated at `enox init`, stored as `admin.key`
 - [x] Invite format carries admin pubkey (backward-compatible extension)
-- [x] `enoch enter` saves `admin_pubkey_hex` from invite to `config.toml`
+- [x] `enox enter` saves `admin_pubkey_hex` from invite to `config.toml`
 - [x] Member list stored in control doc CRDT (`member_list` Y.Map) — replicated to all peers
-- [x] `enoch member list` — show all members and their roles
-- [x] `enoch member add <peer-id> [--role admin|member]` — admin-signed add
-- [x] `enoch member remove <peer-id>` — admin-signed remove
-- [x] `enoch member promote <peer-id>` — promote to admin
+- [x] `enox member list` — show all members and their roles
+- [x] `enox member add <peer-id> [--role admin|member]` — admin-signed add
+- [x] `enox member remove <peer-id>` — admin-signed remove
+- [x] `enox member promote <peer-id>` — promote to admin
 - [x] Daemon verifies admin signature on all member write operations
 - [x] Auto-registration — each peer writes its own member entry to the CRDT on daemon start (role=Admin if `admin.key` present, Member otherwise); skips if entry already exists so explicit removals persist across restarts
 - [x] Peer ID prefix/suffix resolution in `member remove` and `member promote`
-- [x] Pending queue — non-admins write a `PendingEntry` on first join; `enoch member pending` lists them
-- [x] `enoch member approve/reject <peer-id>` — admin approves or rejects pending entries
+- [x] Pending queue — non-admins write a `PendingEntry` on first join; `enox member pending` lists them
+- [x] `enox member approve/reject <peer-id>` — admin approves or rejects pending entries
 - [x] Frontend approve/reject UI — admin sees pending queue with APPROVE/REJECT buttons; device name shown
 - [x] Daemon auto-sign — API handlers call `resolve_admin_sig()` so frontend can approve without shipping the private key to the browser
 - [x] Stale pending cleanup — on restart, already-registered peers remove their own stale pending entry
@@ -211,8 +211,8 @@ Admin keypair is generated at `enoch init` and stored in `admin.key`. The public
 - `src/commands/serve.rs` — hot-reload loop (10s poll, shared with M4)
 
 **Tasks:**
-- [x] `enoch task-create <title> [--description "..."]`
-- [x] Hot-reload new circles without restarting `enochd`
+- [x] `enox task-create <title> [--description "..."]`
+- [x] Hot-reload new circles without restarting `enoxd`
 
 ---
 
@@ -243,7 +243,7 @@ Each peer tracks a `session_id` (incremented on every daemon start) and `last_co
 - `src/network/sync.rs` — post-handshake full-state push; file deletion propagation; `sv_has_divergence()` + `write_conflict_copy()`; pre-merge snapshot; conflict detection in both initiator and responder handshake paths
 - `src/state.rs` — `all_deletes` broadcast for P2P file deletion; `all_awareness_updates` for P2P cursor relay
 - `src/api/status.rs` — `/status` includes `conflicts: [...]` array from workspace scan
-- `src/commands/status.rs` — `enoch status` prints conflict list
+- `src/commands/status.rs` — `enox status` prints conflict list
 
 **Tasks:**
 - [x] CRDT state persistence across restarts (`.enoch_crdt/`)
@@ -253,12 +253,12 @@ Each peer tracks a `session_id` (incremented on every daemon start) and `last_co
 - [x] Temp/hidden file filter
 - [x] File deletion propagation via P2P (`all_deletes` broadcast + P2P sync handler)
 - [x] Fix CRDT/file race condition — `crdt::save` now awaited synchronously in `flush_to_disk` (not background spawn)
-- [x] Session ID — `store/session.rs`; incremented on every daemon start, stored in `~/.enochian/circles/<id>/session_id`; held in `AppState`
-- [x] `last_connected_at` — recorded per-peer on every sync handshake in `~/.enochian/circles/<id>/peers/<peer_id>`
+- [x] Session ID — `store/session.rs`; incremented on every daemon start, stored in `~/.enoxian/circles/<id>/session_id`; held in `AppState`
+- [x] `last_connected_at` — recorded per-peer on every sync handshake in `~/.enoxian/circles/<id>/peers/<peer_id>`
 - [x] Exchange session metadata on reconnect — `\0session` frame exchanged before CRDT handshake; both sides log each other's session ID
 - [x] Conflict detection — state vector divergence check (`sv_has_divergence`) in P2P handshake; both initiator and responder paths covered using pre-merge snapshot
 - [x] Conflict copy — `<file>.conflict.<agent_id>` written before CRDT merge is applied; watcher ignores these files; `store/conflicts.rs`
-- [x] `enoch status` shows unresolved conflict files in the workspace (scanned from workspace dir; `/status` API + CLI display)
+- [x] `enox status` shows unresolved conflict files in the workspace (scanned from workspace dir; `/status` API + CLI display)
 
 **Planned: Binary file dual-track sync**
 
@@ -271,7 +271,7 @@ Binary/large files → Blob sync (hash ref in Yjs CRDT → fetch content by hash
 
 Design:
 - On write: hash the binary file (BLAKE3) → store as `.enoch_blobs/<hash>` → write the hash string into the Yjs doc for that path
-- On sync: peer receives a hash ref → checks if it has the blob locally → if not, fetches via a new `/enochian/blob/1.0.0` libp2p stream protocol
+- On sync: peer receives a hash ref → checks if it has the blob locally → if not, fetches via a new `/enoxian/blob/1.0.0` libp2p stream protocol
 - The Yjs CRDT remains the source of truth for "which version is current" (the hash); the blob store is a content-addressed cache
 - Large text files (> configurable threshold, default 1 MB) can also go through the blob path to avoid bloating CRDT state
 
@@ -279,7 +279,7 @@ Tasks (to be scheduled as part of M8 or a dedicated M8.5):
 - [ ] BLAKE3 blob store (`store/blobs.rs`) — `put(bytes) → hash`, `get(hash) → bytes`, stored in `.enoch_blobs/`
 - [ ] Binary/large file detection in watcher — route to blob store instead of Yjs text encoding
 - [ ] Hash ref format in Yjs — store `blob:<hash>` as the doc content for binary paths
-- [ ] `/enochian/blob/1.0.0` stream protocol — request/response for blob fetch by hash
+- [ ] `/enoxian/blob/1.0.0` stream protocol — request/response for blob fetch by hash
 - [ ] On P2P sync: detect `blob:` refs in received docs → request missing blobs from peer
 
 ---
@@ -309,15 +309,15 @@ The array is append-only by convention — edits are not supported. Deletes are 
 
 | Command | Description |
 |---------|-------------|
-| `enoch chat` | Print recent messages (last 50) |
-| `enoch chat --follow` | Stream new messages as they arrive (SSE) |
-| `enoch say "<text>"` | Post a message |
+| `enox chat` | Print recent messages (last 50) |
+| `enox chat --follow` | Stream new messages as they arrive (SSE) |
+| `enox say "<text>"` | Post a message |
 
 **Implementation:**
 - `src/control/mod.rs` — `ChatMessage` struct (`id`, `agent_id`, `text`, `mentions`, `ts`); `CHAT_KEY` constant; `MessagePosted` and `AgentMentioned` events added to `CircleEvent`
 - `src/api/chat.rs` — `GET /api/chat?since=<ts>`, `POST /api/chat`, `GET /api/chat/stream` (SSE, chat events only)
-- `src/commands/chat.rs` — `enoch chat [--follow] [--since=<ts>]`
-- `src/commands/say.rs` — `enoch say "<text>"`
+- `src/commands/chat.rs` — `enox chat [--follow] [--since=<ts>]`
+- `src/commands/say.rs` — `enox say "<text>"`
 
 **Tasks:**
 - [x] Add `chat` Y.Array to control doc; define `ChatMessage` struct in `src/control/mod.rs`
@@ -325,15 +325,15 @@ The array is append-only by convention — edits are not supported. Deletes are 
 - [x] `POST /api/chat` — append message, emit `CircleEvent::MessagePosted`
 - [x] `@mention` parsing — emits `CircleEvent::AgentMentioned` per mention (agent wake signal)
 - [x] SSE stream for chat (`GET /api/chat/stream` — chat events only)
-- [x] `enoch chat` and `enoch chat --follow` commands
-- [x] `enoch say "<text>"` shorthand command
+- [x] `enox chat` and `enox chat --follow` commands
+- [x] `enox say "<text>"` shorthand command
 
 ---
 
 ### M10 — Frontend
 **Status: Complete**
 
-A minimal web UI served by `enochd` itself (no separate build server). Targets local agent use: one browser tab per circle, showing files, tasks, presence, and chat.
+A minimal web UI served by `enoxd` itself (no separate build server). Targets local agent use: one browser tab per circle, showing files, tasks, presence, and chat.
 
 **Tech stack:**
 - Vite + React + TypeScript
@@ -365,9 +365,9 @@ A minimal web UI served by `enochd` itself (no separate build server). Targets l
 - [x] Remote cursors — Yjs awareness relayed between WS clients and across P2P peers; name labels clamped inside scroller via `constrainCursorLabels` ViewPlugin (all browsers/positions); remote selections clipped to text bounds
 - [x] Connection status — `YjsConnectionStatus` ('connecting'|'synced'|'disconnected') shown in editor header
 - [x] Agent colors — deterministic per-agent palette, shared between editor cursors and presence panel
-- [x] `enochd` serves `static/` at `/app` via `tower-http::ServeDir` (dev: Vite proxy only)
+- [x] `enoxd` serves `static/` at `/app` via `tower-http::ServeDir` (dev: Vite proxy only)
 - [x] Production build step — `build.rs` runs `npm run build` automatically on `cargo build --release`
-- [x] `enoch open` — opens `http://127.0.0.1:36521/app` in the default browser
+- [x] `enox open` — opens `http://127.0.0.1:36521/app` in the default browser
 
 ---
 
@@ -394,7 +394,7 @@ Yjs is the right CRDT for high-frequency text sequences (code files, chat). For 
 
 **Architecture:**
 - Automerge documents live alongside Yjs docs in the control doc's blob store (or a dedicated `automerge/` store)
-- The existing `/enochian/sync/1.0.0` stream protocol is extended to handle Automerge sync messages in addition to Yjs
+- The existing `/enoxian/sync/1.0.0` stream protocol is extended to handle Automerge sync messages in addition to Yjs
 - Frontend uses [`@automerge/automerge-repo`](https://github.com/automerge/automerge-repo) for reactive binding to React components
 
 **Tasks (to be scheduled when these features are built):**
@@ -410,7 +410,7 @@ Yjs is the right CRDT for high-frequency text sequences (code files, chat). For 
 ### M11 — Access Revocation via MLS (RFC 9420)
 **Status: Complete**
 
-True revocation requires changing the group key when a member is removed. ENOCHIAN uses **IETF MLS (RFC 9420)** — the international standard for group key management in decentralised systems, implemented in Rust by [`openmls`](https://github.com/openmls/openmls).
+True revocation requires changing the group key when a member is removed. enoxian uses **IETF MLS (RFC 9420)** — the international standard for group key management in decentralised systems, implemented in Rust by [`openmls`](https://github.com/openmls/openmls).
 
 **Why MLS instead of custom PSK rotation:**
 - MLS TreeKEM is cryptographically proven and handles eviction, offline members, and key rotation as first-class operations
@@ -432,10 +432,10 @@ TCP
 ```
 
 When a member is evicted:
-1. Admin runs `enoch member remove <peer>`
+1. Admin runs `enox member remove <peer>`
 2. MLS `Remove` + `Commit` issued — TreeKEM prunes the evicted leaf, derives new epoch key
 3. Remove commit broadcast via `mls_commits` CRDT array to all remaining members
-4. Admin and each remaining peer apply the commit, derive the new PSK (`export_secret("enochian-psk")`), and restart their swarm
+4. Admin and each remaining peer apply the commit, derive the new PSK (`export_secret("enoxian-psk")`), and restart their swarm
 5. Evicted peer's old PSK fails the pnet XSalsa20 handshake — connection refused before any data
 6. Offline members apply the pending commit on reconnect and rotate their PSK
 
@@ -449,8 +449,8 @@ When a member is evicted:
 
 **Tasks:**
 - [x] Add `openmls` and `openmls_rust_crypto` dependencies
-- [x] MLS group creation at `enoch init` — group state stored in circle config dir
-- [x] `MlsIdentity` generation on `enoch enter` — persisted in `~/.enochian/circles/<id>/`
+- [x] MLS group creation at `enox init` — group state stored in circle config dir
+- [x] `MlsIdentity` generation on `enox enter` — persisted in `~/.enoxian/circles/<id>/`
 - [x] KeyPackage written to `mls_key_packages` Y.Map on daemon start
 - [x] `approve_member` API: load KeyPackage → `group.add_member()` → distribute commit + Welcome via Yjs
 - [x] Welcome consumer — watches `mls_welcomes` for own peer_id and applies Welcome to join MLS group
@@ -467,14 +467,14 @@ When a member is evicted:
 ### M12 — WAN Support (Circuit Relay + DCUtR + Bootstrap Rendezvous)
 **Status: Complete**
 
-Every `enochd` node includes both a circuit relay server and relay client. Any node with a public IP can serve as relay. Peers behind NAT connect through a relay and DCUtR attempts a direct hole-punch. For the case where **no** peer has a public IP, `enochd --bootstrap` provides a public rendezvous + relay server.
+Every `enoxd` node includes both a circuit relay server and relay client. Any node with a public IP can serve as relay. Peers behind NAT connect through a relay and DCUtR attempts a direct hole-punch. For the case where **no** peer has a public IP, `enoxd --bootstrap` provides a public rendezvous + relay server.
 
 **Design:**
 
-- Every `enochd` is simultaneously a relay server (can be used by others) and a relay client (can connect through others)
-- Invite links auto-embed relay, rendezvous, and peer addresses — `enoch invite` queries the daemon; no manual flags needed
+- Every `enoxd` is simultaneously a relay server (can be used by others) and a relay client (can connect through others)
+- Invite links auto-embed relay, rendezvous, and peer addresses — `enox invite` queries the daemon; no manual flags needed
 - Relay and rendezvous addresses propagate: once one member joins with a relay/rendezvous, future invites they generate include it automatically
-- The bootstrap server (`enochd --bootstrap`) speaks QUIC only (no PSK) — it is not a circle member and cannot read any content
+- The bootstrap server (`enoxd --bootstrap`) speaks QUIC only (no PSK) — it is not a circle member and cannot read any content
 - Circle members connect to the bootstrap server via a separate QUIC transport leg (no PSK); direct circle-to-circle connections remain PSK-protected TCP
 
 **Transport stack (circle swarms):**
@@ -489,7 +489,7 @@ QUIC (no PSK)                           →  /ip4/.../udp/.../quic-v1  (bootstra
 - `Cargo.toml` — added `relay`, `dcutr`, `quic` to libp2p features
 - `src/network/behaviour.rs` — `relay_client::Behaviour`, `relay::Behaviour`, `dcutr::Behaviour`, `rendezvous::client::Behaviour` in `EnochBehaviour`
 - `src/network/bootstrap_behaviour.rs` — `BootstrapBehaviour`: `rendezvous::server::Behaviour` + `relay::Behaviour` + identify + ping + kad
-- `src/bootstrap.rs` — `run_bootstrap(port)`: generates/loads stable keypair at `~/.enochian/bootstrap.key`; QUIC listener; logs full multiaddr at startup
+- `src/bootstrap.rs` — `run_bootstrap(port)`: generates/loads stable keypair at `~/.enoxian/bootstrap.key`; QUIC listener; logs full multiaddr at startup
 - `src/config.rs` — `relay_addrs` and `rendezvous_addrs: Vec<String>` (serde-defaulted)
 - `src/state.rs` — `peer_id: String` and `p2p_external_addrs: Arc<RwLock<Vec<String>>>` added to `AppState`
 - `src/invite.rs` — `relay_addr` and `rendezvous_addr` extensions in invite binary format (backward-compatible)
@@ -498,7 +498,7 @@ QUIC (no PSK)                           →  /ip4/.../udp/.../quic-v1  (bootstra
 - `src/commands/enter.rs` — saves `relay_addrs` and `rendezvous_addrs` from invite to `config.toml`
 - `src/api/status.rs` — `GET /api/status` returns `p2p` section: peer_id, external_addrs, relay_addrs, rendezvous_addrs
 - `src/lifecycle.rs` — QUIC transport wired alongside TCP+PSK; dials rendezvous servers on startup; registers namespace on connect; discovers peers; re-registers hourly; `ExternalAddrConfirmed` → `p2p_external_addrs`
-- `src/bin/enochd.rs` — `--bootstrap` flag routes to `bootstrap::run(port)`
+- `src/bin/enoxd.rs` — `--bootstrap` flag routes to `bootstrap::run(port)`
 
 **Tasks:**
 - [x] Add `relay`, `dcutr`, `quic` libp2p features
@@ -506,12 +506,12 @@ QUIC (no PSK)                           →  /ip4/.../udp/.../quic-v1  (bootstra
 - [x] QUIC transport (no PSK) wired alongside TCP+PSK in lifecycle.rs
 - [x] `relay_addrs` and `rendezvous_addrs` in `CircleConfig`
 - [x] Extension 2 (`relay_addr`) and extension 3 (`rendezvous_addr`) in invite binary format
-- [x] `enoch invite` auto-embeds peer/relay/rendezvous from daemon state and config; explicit flags override
-- [x] `enoch enter` saves relay and rendezvous addresses to config
+- [x] `enox invite` auto-embeds peer/relay/rendezvous from daemon state and config; explicit flags override
+- [x] `enox enter` saves relay and rendezvous addresses to config
 - [x] Relay transport wired alongside TCP+PSK; `swarm.listen_on(<relay>/p2p-circuit)` on startup
 - [x] DCUtR — direct hole-punch after relay connection
 - [x] Rendezvous client — register + discover on connect; re-register every hour
-- [x] `enochd --bootstrap` — stable keypair; QUIC rendezvous server + relay server; no PSK; no circles
+- [x] `enoxd --bootstrap` — stable keypair; QUIC rendezvous server + relay server; no PSK; no circles
 - [x] `peer_id` and `p2p_external_addrs` in AppState; populated by `ExternalAddrConfirmed` events
 - [x] `GET /api/status` returns full `p2p` block
 - [x] Non-blocking background rendezvous + relay resolution — default server resolved in background task, injected into running swarm via mpsc channel; never blocks `spawn_circle`
@@ -524,14 +524,14 @@ QUIC (no PSK)                           →  /ip4/.../udp/.../quic-v1  (bootstra
 ### M13 — Packaging & Distribution  *(was M12)*
 **Status: Planned**
 
-Ship `enochd` and `enoch` as ready-to-use binaries for all major platforms. Anchor nodes ship as a Docker image.
+Ship `enoxd` and `enox` as ready-to-use binaries for all major platforms. Anchor nodes ship as a Docker image.
 
 **Tasks:**
 - [ ] GitHub Actions CI — build and test on Linux, macOS, Windows on every push
 - [ ] Release workflow — on `git tag v*`, build release binaries for all platforms and upload to GitHub Releases
 - [ ] macOS: universal binary (x86_64 + aarch64), `.tar.gz` archive; optional `.app` bundle + DMG
 - [ ] Linux: static musl binary (x86_64 + aarch64), `.tar.gz`; optional `.deb` and `.rpm` packages
-- [ ] Windows: `enoch.exe` + `enochd.exe`, zipped; optional NSIS installer
-- [ ] Docker image for anchor node — `ghcr.io/enochian/enochd:latest`; `docker run` one-liner in docs
+- [ ] Windows: `enox.exe` + `enoxd.exe`, zipped; optional NSIS installer
+- [ ] Docker image for anchor node — `ghcr.io/enoxian/enoxd:latest`; `docker run` one-liner in docs
 - [ ] `install.sh` / `install.ps1` quick-install scripts (download latest release binary, place in PATH)
 - [ ] Homebrew formula for macOS/Linux

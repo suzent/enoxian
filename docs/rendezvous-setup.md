@@ -33,27 +33,27 @@ In your DNS provider's control panel, add:
 
 | Type | Name | Value | TTL |
 |------|------|-------|-----|
-| A | `enoch` | `12.34.56.78` | 300 |
+| A | `enox` | `12.34.56.78` | 300 |
 
-This creates `enoch.yourdomain.com → 12.34.56.78`. Use a short TTL (300s = 5 min) so changes propagate quickly if you ever need to move the server.
+This creates `enox.yourdomain.com → 12.34.56.78`. Use a short TTL (300s = 5 min) so changes propagate quickly if you ever need to move the server.
 
 ### 2. Verify propagation
 
 ```bash
 # Should return your VPS IP
-nslookup enoch.yourdomain.com
+nslookup enox.yourdomain.com
 
 # Or
-dig +short enoch.yourdomain.com
+dig +short enox.yourdomain.com
 ```
 
 ### 3. Use the hostname in invites
 
 ```bash
-enoch invite <circle> --rendezvous enoch.yourdomain.com
+enox invite <circle> --rendezvous enox.yourdomain.com
 ```
 
-The CLI resolves it to `/dns4/enoch.yourdomain.com/udp/36521/quic-v1/p2p/<id>` and stores the hostname (not the IP) in config, so DNS changes are picked up automatically on the next daemon restart.
+The CLI resolves it to `/dns4/enox.yourdomain.com/udp/36521/quic-v1/p2p/<id>` and stores the hostname (not the IP) in config, so DNS changes are picked up automatically on the next daemon restart.
 
 ---
 
@@ -72,10 +72,10 @@ The deploy script downloads the latest pre-built binary from GitHub Releases and
 ```
 
 This will:
-1. Build `enochd` locally (`cargo build --release --bin enochd`)
+1. Build `enoxd` locally (`cargo build --release --bin enoxd`)
 2. Copy the binary to the VPS
-3. Create a `enochian` system user
-4. Install a systemd service (`enochd-bootstrap`)
+3. Create a `enoxian` system user
+4. Install a systemd service (`enoxd-bootstrap`)
 5. Open port `36521` on ufw/firewalld
 6. Start the service and print the server address
 
@@ -87,7 +87,7 @@ Output at the end:
   Peer ID: 12D3KooWrdv...
 
   To embed in invites from your local machine:
-    enoch invite <circle> --rendezvous 12.34.56.78
+    enox invite <circle> --rendezvous 12.34.56.78
 ```
 
 ### Custom port
@@ -127,20 +127,20 @@ Requires Docker on the VPS.
 
 ## Using the server
 
-Once deployed, pass the hostname or IP to `enoch invite` or `enoch enter` — the peer ID is resolved automatically:
+Once deployed, pass the hostname or IP to `enox invite` or `enox enter` — the peer ID is resolved automatically:
 
 ```bash
 # Embed rendezvous in an invite
-enoch invite <circle> --rendezvous 12.34.56.78
+enox invite <circle> --rendezvous 12.34.56.78
 
 # Or use a hostname
-enoch invite <circle> --rendezvous enoch.suzent.com
+enox invite <circle> --rendezvous enox.suzent.com
 
 # Join a circle that has a rendezvous embedded in the invite
-enoch enter <invite>
+enox enter <invite>
 
 # Override the rendezvous server when joining
-enoch enter <invite> --rendezvous enoch.suzent.com
+enox enter <invite> --rendezvous enox.suzent.com
 ```
 
 The CLI calls `GET http://<host>:36521/peer-id`, gets the peer ID, and constructs the full multiaddr automatically. **After the first member joins, the rendezvous address is saved in their config and auto-embedded in every invite they generate** — no one else needs to type it.
@@ -154,17 +154,17 @@ If you prefer to set up manually or are not using systemd:
 ### 1. Copy the binary
 
 ```bash
-cargo build --release --bin enochd
-scp target/release/enochd user@your-vps:/usr/local/bin/enochd
+cargo build --release --bin enoxd
+scp target/release/enoxd user@your-vps:/usr/local/bin/enoxd
 ```
 
 ### 2. Run directly
 
 ```bash
-enochd --bootstrap
+enoxd --bootstrap
 ```
 
-The server generates a stable Ed25519 keypair at `~/.enochian/bootstrap.key` on first run. The peer ID is stable across restarts — **do not delete this file**.
+The server generates a stable Ed25519 keypair at `~/.enoxian/bootstrap.key` on first run. The peer ID is stable across restarts — **do not delete this file**.
 
 Startup output:
 
@@ -180,18 +180,18 @@ Bootstrap listening on /ip4/0.0.0.0/udp/36521/quic-v1
 ### 3. Systemd service (manual)
 
 ```ini
-# /etc/systemd/system/enochd-bootstrap.service
+# /etc/systemd/system/enoxd-bootstrap.service
 [Unit]
-Description=Enochian Bootstrap Server (rendezvous + relay)
+Description=enoxian Bootstrap Server (rendezvous + relay)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/enochd --bootstrap --port 36521
+ExecStart=/usr/local/bin/enoxd --bootstrap --port 36521
 Restart=always
 RestartSec=5
-User=enochian
-Environment=HOME=/home/enochian
+User=enoxian
+Environment=HOME=/home/enoxian
 StandardOutput=journal
 StandardError=journal
 
@@ -200,7 +200,7 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl enable --now enochd-bootstrap
+sudo systemctl enable --now enoxd-bootstrap
 ```
 
 ### 4. Firewall
@@ -228,10 +228,10 @@ curl http://your-vps:36521/peer-id
 # {"peer_id":"12D3KooWrdv..."}
 
 # Check service status on the VPS
-systemctl status enochd-bootstrap
+systemctl status enoxd-bootstrap
 
 # Live logs
-journalctl -u enochd-bootstrap -f
+journalctl -u enoxd-bootstrap -f
 ```
 
 ---

@@ -126,7 +126,7 @@ export default function ChatPanel({ onMessage }: Props) {
           className="min-w-[160px] flex-1 bg-transparent border border-obsidian font-mono text-[11px] px-2 py-2
                      text-obsidian placeholder:text-slate focus:outline-none focus:bg-obsidian/5"
         />
-        <button onClick={send} className="enoch-btn">EXEC</button>
+        <button onClick={send} className="enox-btn">EXEC</button>
       </div>
     </aside>
   )
