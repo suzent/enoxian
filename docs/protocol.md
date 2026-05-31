@@ -49,7 +49,7 @@ All frames are **binary**. Messages are encoded with yrs `EncoderV1`. The leadin
 ### Example flow
 
 ```
-connect → ws://localhost:9090/ws/yjs?path=src/notes.txt
+connect → ws://localhost:36521/ws/yjs?path=src/notes.txt
 
 S→C  SyncStep1([state_vector bytes])
 C→S  SyncStep2([diff bytes])
@@ -110,7 +110,7 @@ enox watch
 ```python
 import httpx
 
-with httpx.stream("GET", "http://127.0.0.1:9090/api/events",
+with httpx.stream("GET", "http://127.0.0.1:36521/api/events",
                   headers={"Accept": "text/event-stream"}) as r:
     for line in r.iter_lines():
         if line.startswith("data: "):
@@ -119,6 +119,6 @@ with httpx.stream("GET", "http://127.0.0.1:9090/api/events",
 ```
 
 ```javascript
-const source = new EventSource("http://127.0.0.1:9090/api/events");
+const source = new EventSource("http://127.0.0.1:36521/api/events");
 source.onmessage = (e) => console.log(JSON.parse(e.data));
 ```

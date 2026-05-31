@@ -12,7 +12,10 @@ pub enum JoinPolicy {
 
 impl std::fmt::Display for JoinPolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self { Self::Auto => write!(f, "auto"), Self::Manual => write!(f, "manual") }
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Manual => write!(f, "manual"),
+        }
     }
 }
 
@@ -53,7 +56,15 @@ pub struct CircleConfig {
 
 pub fn enoxian_dir() -> Result<PathBuf> {
     let base = dirs::home_dir().context("cannot resolve home directory")?;
-    Ok(base.join(".enoxian"))
+    let current = base.join(".enoxian");
+    let legacy = base.join(".enochian");
+    if !current.exists() && legacy.exists() {
+        if std::fs::rename(&legacy, &current).is_ok() || current.exists() {
+            return Ok(current);
+        }
+        return Ok(legacy);
+    }
+    Ok(current)
 }
 
 pub fn circles_dir() -> Result<PathBuf> {
@@ -86,7 +97,10 @@ pub fn save_global(cfg: &GlobalConfig) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, toml::to_string_pretty(cfg).context("serialize failed")?)?;
+    std::fs::write(
+        path,
+        toml::to_string_pretty(cfg).context("serialize failed")?,
+    )?;
     Ok(())
 }
 
@@ -133,9 +147,9 @@ pub fn resolve_workspace_dir(
     let default = default_workspace_dir(circle_name)?;
 
     // Check if the default workspace is already claimed by a different circle
-    let name_clash = existing.iter().any(|c| {
-        c.circle_name == circle_name && c.circle_id != circle_id
-    });
+    let name_clash = existing
+        .iter()
+        .any(|c| c.circle_name == circle_name && c.circle_id != circle_id);
 
     if name_clash {
         let dir = disambiguated_workspace_dir(circle_name, circle_id)?;
@@ -165,7 +179,8 @@ pub fn load(circle_id: &str) -> Result<CircleConfig> {
     let path = circle_dir(circle_id)?.join("config.toml");
     let contents = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let mut config: CircleConfig = toml::from_str(&contents).context("failed to parse config.toml")?;
+    let mut config: CircleConfig =
+        toml::from_str(&contents).context("failed to parse config.toml")?;
     // Migrate: fill in workspace_dir if missing from older configs
     if config.workspace_dir.is_empty() {
         config.workspace_dir = default_workspace_dir(&config.circle_name)?
@@ -188,9 +203,10 @@ pub fn load_all() -> Result<Vec<CircleConfig>> {
         let entry = entry?;
         let config_path = entry.path().join("config.toml");
         if config_path.exists() {
-            match std::fs::read_to_string(&config_path)
-                .and_then(|s| toml::from_str(&s).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
-            {
+            match std::fs::read_to_string(&config_path).and_then(|s| {
+                toml::from_str(&s)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            }) {
                 Ok(cfg) => {
                     let cfg: CircleConfig = cfg;
                     // Migrate workspace_dir

@@ -25,19 +25,19 @@ It is read by Claude Code, Cursor, Codex, and any other coding agent that respec
 Before starting work, verify the daemon is running:
 
 ```bash
-enoxd status
+enox circles
 ```
 
 If the daemon is not running, start it:
 
 ```bash
-enoxd serve --circle <circle-id>
+enox start
 ```
 
 Or join an existing circle:
 
 ```bash
-enoxd enter <circle-id> --secret <psk>
+enox enter <circle-id> --secret <psk>
 ```
 
 ---
@@ -47,14 +47,14 @@ enoxd enter <circle-id> --secret <psk>
 ### 1. Check what's available
 
 ```bash
-enoxd who        # Who is in the circle and what they're doing
-enoxd tasks      # List available tasks
+enox who        # Who is in the circle and what they're doing
+enox tasks      # List available tasks
 ```
 
 ### 2. Claim a task before starting
 
 ```bash
-enoxd claim <task-id>
+enox claim <task-id>
 ```
 
 Do not start work on a task without claiming it first. Claiming signals to other agents that this task is taken.
@@ -64,7 +64,7 @@ Do not start work on a task without claiming it first. Claiming signals to other
 For files that are shared and conflict-prone (e.g., configuration, schema files, shared utilities):
 
 ```bash
-enoxd bind <path>
+enox bind <path>
 ```
 
 For routine files that only you are likely to touch, the lock is optional — the CRDT layer handles minor conflicts automatically.
@@ -76,8 +76,8 @@ Use your native file tools. Edit files normally. `enoxd` watches for changes via
 ### 5. Release locks and mark done
 
 ```bash
-enoxd release <path>   # release explicit bind (if you used bind)
-enoxd done <task-id>   # mark the task complete
+enox release <path>   # release explicit bind (if you used bind)
+enox done <task-id>   # mark the task complete
 ```
 
 ---
@@ -86,10 +86,10 @@ enoxd done <task-id>   # mark the task complete
 
 | Situation | Action |
 |-----------|--------|
-| About to edit a shared config / schema / entry point | `enoxd bind <path>` first |
+| About to edit a shared config / schema / entry point | `enox bind <path>` first |
 | Editing a file you created or own | Lock optional |
-| File is already locked by another agent | Wait; poll with `enoxd status` |
-| Finished editing a locked file | `enoxd release <path>` immediately |
+| File is already locked by another agent | Wait; poll with `enox status` |
+| Finished editing a locked file | `enox release <path>` immediately |
 
 A locked file will be set to read-only (`chmod 444` on Unix) by the daemon. Your write will fail with a permission error if another agent holds the lock — this is by design.
 
@@ -104,10 +104,10 @@ unclaimed → claimed → in_progress → done
 ```
 
 ```bash
-enoxd tasks                     # list all tasks with status
-enoxd tasks --status unclaimed  # filter by status
-enoxd claim <task-id>           # unclaimed → claimed
-enoxd done <task-id>            # in_progress → done
+enox tasks                     # list all tasks with status
+enox tasks --status unclaimed  # filter by status
+enox claim <task-id>           # unclaimed → claimed
+enox done <task-id>            # in_progress → done
 ```
 
 ---
@@ -115,8 +115,8 @@ enoxd done <task-id>            # in_progress → done
 ## Presence & Awareness
 
 ```bash
-enoxd who                       # see all agents, their status and current file
-enoxd watch                     # stream live Circle events (tasks, locks, connections)
+enox who                       # see all agents, their status and current file
+enox watch                     # stream live Circle events (tasks, locks, connections)
 ```
 
 Presence updates are broadcast automatically — you do not need to announce yourself.
@@ -127,10 +127,10 @@ Presence updates are broadcast automatically — you do not need to announce you
 
 | ❌ Don't | ✅ Do instead |
 |---------|--------------|
-| Read files via `enoxd read <path>` | Use your native `read_file` / `cat` |
-| Write files via `enoxd write <path>` | Use your native `edit_file` / `write` |
-| Start a task without claiming | `enoxd claim <task-id>` first |
-| Hold a lock after finishing | `enoxd release <path>` immediately |
+| Read files via `enox read <path>` | Use your native `read_file` / `cat` |
+| Write files via `enox write <path>` | Use your native `edit_file` / `write` |
+| Start a task without claiming | `enox claim <task-id>` first |
+| Hold a lock after finishing | `enox release <path>` immediately |
 | Ignore a locked file and write anyway | Wait for the lock to be released |
 | Claim multiple tasks simultaneously | Claim one, finish it, then claim the next |
 
@@ -138,19 +138,13 @@ Presence updates are broadcast automatically — you do not need to announce you
 
 ## Environment Variables
 
-The daemon injects these into `.enoxian.env` when you run `enoxd enter` or `enoxd serve`:
+Use these environment variables to target a daemon and circle from the CLI:
 
 | Variable | Value | Use |
 |----------|-------|-----|
-| `enoxian_CIRCLE_ID` | UUID | Current circle identifier |
-| `enoxian_SYNC_DIR` | Path | Root of the synced file tree |
-| `enoxian_API` | URL | REST API base (`http://127.0.0.1:9090/api`) |
-
-Source this file to get the variables in your shell:
-
-```bash
-source .enoxian.env
-```
+| `ENOXIAN_CIRCLE` | Name/UUID prefix | Default circle for `enox` commands |
+| `ENOXIAN_API` | URL | REST API base (`http://127.0.0.1:36521`) |
+| `ENOXIAN_AGENT_ID` | Name | Agent name used for claims, locks, and presence |
 
 ---
 
@@ -159,7 +153,7 @@ source .enoxian.env
 | Mode | Description | Capabilities |
 |------|-------------|--------------|
 | **Unmanaged** | Agent edits files; daemon syncs changes | File sync, passive lock protection |
-| **CLI** | Agent uses `enoxd` CLI for coordination | + Task claiming, explicit locking, presence |
+| **CLI** | Agent uses `enox` CLI for coordination | + Task claiming, explicit locking, presence |
 | **Native (Suzent)** | Direct Yjs connection via `y-py` | + Streaming write, reactive subscriptions, awareness, planner |
 
 Most third-party agents operate in **CLI mode**. This file defines the CLI mode contract.
@@ -171,10 +165,10 @@ Most third-party agents operate in **CLI mode**. This file defines the CLI mode 
 All commands support `--json` for scripting:
 
 ```bash
-enoxd status --json
-enoxd who --json
-enoxd tasks --json
-enoxd watch --json   # newline-delimited JSON event stream
+enox status --json
+enox who --json
+enox tasks --json
+enox watch --json   # newline-delimited JSON event stream
 ```
 
 ---
@@ -182,12 +176,12 @@ enoxd watch --json   # newline-delimited JSON event stream
 ## Quick Reference
 
 ```bash
-enoxd status                          # circle overview
-enoxd who                             # agent presence
-enoxd tasks                           # task list
-enoxd claim <task-id>                 # take a task
-enoxd done <task-id>                  # finish a task
-enoxd bind <path>                     # acquire file lock
-enoxd release <path>                  # release file lock
-enoxd watch                           # live event stream
+enox status                          # circle overview
+enox who                             # agent presence
+enox tasks                           # task list
+enox claim <task-id>                 # take a task
+enox done <task-id>                  # finish a task
+enox bind <path>                     # acquire file lock
+enox release <path>                  # release file lock
+enox watch                           # live event stream
 ```

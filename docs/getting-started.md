@@ -74,15 +74,15 @@ $env:RUST_LOG = "info"
 
 By default the daemon identifies its local editor/user presence as
 `human-<peer-suffix>`. To run multiple agents from the same machine or give the
-local user a stable custom name, set `enoxian_AGENT_ID` before starting
+local user a stable custom name, set `ENOXIAN_AGENT_ID` before starting
 `enoxd`:
 
 ```bash
-enoxian_AGENT_ID=codex ./target/debug/enoxd
+ENOXIAN_AGENT_ID=codex ./target/debug/enoxd
 ```
 
 ```powershell
-$env:enoxian_AGENT_ID = "codex"
+$env:ENOXIAN_AGENT_ID = "codex"
 .\target\debug\enoxd.exe
 ```
 
@@ -94,7 +94,7 @@ Expected output:
 ```
 INFO  Starting enoxd — 1 circle(s) found
 INFO    Circle 'MyCircle' (8e563c41-...) — PeerID: 12D3KooW... — Workspace: /Users/suzy/enoxian/MyCircle
-INFO  HTTP/WS listening on :9090
+INFO  HTTP/WS listening on :36521
 INFO  [8e563c41-...] P2P listening on /ip4/192.168.1.x/tcp/<random>
 ```
 
@@ -124,7 +124,7 @@ With multiple circles, specify by name:
 ```bash
 ./target/debug/enox --circle MyCircle status
 # or via env var
-export enoxian_CIRCLE=MyCircle
+export ENOXIAN_CIRCLE=MyCircle
 ./target/debug/enox status
 ```
 
@@ -143,7 +143,7 @@ List all known circles:
 enox status
 
 # Create a task (via REST)
-curl -X POST http://127.0.0.1:9090/circles/8e563c41-.../api/tasks \
+curl -X POST http://127.0.0.1:36521/circles/8e563c41-.../api/tasks \
   -H "Content-Type: application/json" \
   -d '{"title":"Write integration tests","created_by":"agent-alpha"}'
 

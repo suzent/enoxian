@@ -6,8 +6,8 @@
 //!   3. UUID prefix match
 //!   4. Error — not found or ambiguous
 
-use anyhow::{bail, Result};
 use crate::config::CircleConfig;
+use anyhow::{bail, Result};
 
 /// Resolve `target` against a slice of known circle configs.
 pub fn resolve<'a>(target: &str, configs: &'a [CircleConfig]) -> Result<&'a CircleConfig> {
@@ -47,7 +47,10 @@ pub fn resolve<'a>(target: &str, configs: &'a [CircleConfig]) -> Result<&'a Circ
         _ => {}
     }
 
-    bail!("no circle found matching '{}' — run `enox circles` to list known circles", target)
+    bail!(
+        "no circle found matching '{}' — run `enox circles` to list known circles",
+        target
+    )
 }
 
 /// Pick the one active circle, or error if there are zero or many.
@@ -58,7 +61,7 @@ pub fn resolve_default(configs: &[CircleConfig]) -> Result<&CircleConfig> {
         _ => {
             let names: Vec<_> = configs.iter().map(|c| c.circle_name.as_str()).collect();
             bail!(
-                "multiple circles found ({}): specify one with --circle or enoxian_CIRCLE",
+                "multiple circles found ({}): specify one with --circle or ENOXIAN_CIRCLE",
                 names.join(", ")
             )
         }

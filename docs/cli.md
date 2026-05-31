@@ -8,13 +8,13 @@ Usage: enox [OPTIONS] <COMMAND>
 Options:
   --json              Output raw JSON instead of human-readable text
   --circle <NAME>     Target circle by name, name prefix, or UUID prefix
-                      (overrides enoxian_CIRCLE env var)
+                      (overrides ENOXIAN_CIRCLE env var)
   -h, --help
 ```
 
 Circle resolution order: exact name → case-insensitive name prefix → UUID prefix → error if ambiguous. If only one circle exists, it is selected automatically and `--circle` is optional.
 
-The target daemon URL is configured via `enoxian_API` (default: `http://127.0.0.1:9090`).
+The target daemon URL is configured via `ENOXIAN_API` (default: `http://127.0.0.1:36521`).
 
 ---
 
@@ -422,6 +422,6 @@ enox [--circle <NAME>] watch
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `enoxian_API` | `http://127.0.0.1:9090` | Daemon base URL |
-| `enoxian_CIRCLE` | — | Default circle (name, prefix, or UUID prefix) |
-| `enoxian_SRC` | — | Source directory for `enox update --dev` (saved after first use) |
+| `ENOXIAN_API` | `http://127.0.0.1:36521` | Daemon base URL |
+| `ENOXIAN_CIRCLE` | — | Default circle (name, prefix, or UUID prefix) |
+| `ENOXIAN_SRC` | — | Source directory for `enox update --dev` (saved after first use) |

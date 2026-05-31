@@ -1,7 +1,7 @@
+use crate::config;
 use anyhow::{bail, Result};
 use std::path::PathBuf;
 use std::process::Command;
-use crate::config;
 
 pub async fn run(dev: bool, src: Option<PathBuf>, no_pull: bool) -> Result<()> {
     if dev {
@@ -72,9 +72,9 @@ fn install_windows(src: &PathBuf) -> Result<()> {
 
     // Write a PowerShell script to copy binaries + restart daemon after enox.exe exits.
     let cargo_bin = home_cargo_bin()?;
-    let enox_src  = src.join("target\\release\\enox.exe");
+    let enox_src = src.join("target\\release\\enox.exe");
     let enoxd_src = src.join("target\\release\\enoxd.exe");
-    let enox_dst  = cargo_bin.join("enox.exe");
+    let enox_dst = cargo_bin.join("enox.exe");
     let enoxd_dst = cargo_bin.join("enoxd.exe");
     let script_path = std::env::temp_dir().join("enox-update.ps1");
 
@@ -88,9 +88,9 @@ fn install_windows(src: &PathBuf) -> Result<()> {
          Start-Process -FilePath '{enoxd_dst}' -WindowStyle Hidden\n\
          \"$(Get-Date): done\" | Out-File $log -Append\n\
          Remove-Item $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue\n",
-        enox_src  = enox_src.display(),
+        enox_src = enox_src.display(),
         enoxd_src = enoxd_src.display(),
-        enox_dst  = enox_dst.display(),
+        enox_dst = enox_dst.display(),
         enoxd_dst = enoxd_dst.display(),
     );
     std::fs::write(&script_path, script)?;
@@ -101,13 +101,17 @@ fn install_windows(src: &PathBuf) -> Result<()> {
     Command::new("powershell")
         .args([
             "-NonInteractive",
-            "-WindowStyle", "Hidden",
-            "-File", &script_path.to_string_lossy(),
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+            &script_path.to_string_lossy(),
         ])
         .creation_flags(0x00000010) // CREATE_NEW_CONSOLE
         .spawn()?;
 
-    println!("✓ Binaries built. Replacements will be applied in 2 seconds after this process exits.");
+    println!(
+        "✓ Binaries built. Replacements will be applied in 2 seconds after this process exits."
+    );
     println!("  enoxd will restart automatically.");
     Ok(())
 }
@@ -121,7 +125,10 @@ fn run_stable() -> Result<()> {
 fn resolve_src(arg: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(p) = arg {
         if !p.join("Cargo.toml").exists() {
-            bail!("'{}' doesn't look like an enoxian source directory", p.display());
+            bail!(
+                "'{}' doesn't look like an enoxian source directory",
+                p.display()
+            );
         }
         let mut cfg = config::load_global();
         cfg.dev_src = Some(p.to_string_lossy().into_owned());
@@ -135,7 +142,21 @@ fn resolve_src(arg: Option<PathBuf>) -> Result<PathBuf> {
         if p.join("Cargo.toml").exists() {
             return Ok(p);
         }
-        bail!("saved source path '{}' no longer exists — run with --src <path>", saved);
+        bail!(
+            "saved source path '{}' no longer exists — run with --src <path>",
+            saved
+        );
+    }
+
+    if let Ok(saved) = std::env::var("ENOXIAN_SRC") {
+        let p = PathBuf::from(&saved);
+        if p.join("Cargo.toml").exists() {
+            return Ok(p);
+        }
+        bail!(
+            "ENOXIAN_SRC '{}' does not look like an enoxian source directory",
+            saved
+        );
     }
 
     bail!("no source path configured — run once with: enox update --dev --src <path/to/enoxian>")

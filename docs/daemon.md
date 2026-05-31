@@ -6,7 +6,7 @@ The `enoxd` binary is the long-running daemon. It serves **all known Circles** o
 Usage: enoxd [OPTIONS]
 
 Options:
-  --port <PORT>    HTTP port [default: 9090]
+  --port <PORT>    HTTP port [default: 36521]
   -h, --help
 ```
 

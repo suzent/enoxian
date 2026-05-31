@@ -224,7 +224,7 @@ src/
 │   ├── tasks.rs                 # GET/POST /api/tasks
 │   └── who.rs                   # GET /api/who
 ├── commands/
-│   ├── serve.rs                 # enoxd serve — main loop
+│   ├── serve.rs                 # enoxd main loop
 │   ├── bind.rs                  # enox bind
 │   ├── claim.rs                 # enox claim
 │   ├── done_cmd.rs              # enox done

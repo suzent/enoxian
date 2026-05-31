@@ -21,9 +21,9 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
-            asset: enoxd-linux-x86_64
+            asset: enoxian-linux-x86_64.tar.gz
           - target: aarch64-unknown-linux-musl
-            asset: enoxd-linux-aarch64
+            asset: enoxian-linux-aarch64.tar.gz
 
     steps:
       - uses: actions/checkout@v4
@@ -55,14 +55,18 @@ jobs:
 
       - name: Build (x86_64)
         if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: cargo build --release --bin enoxd --target ${{ matrix.target }}
+        run: cargo build --release --bins --target ${{ matrix.target }}
 
       - name: Build (aarch64 via zigbuild)
         if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: cargo zigbuild --release --bin enoxd --target ${{ matrix.target }}
+        run: cargo zigbuild --release --bins --target ${{ matrix.target }}
 
-      - name: Rename binary
-        run: cp target/${{ matrix.target }}/release/enoxd ${{ matrix.asset }}
+      - name: Package binaries
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/enox dist/
+          cp target/${{ matrix.target }}/release/enoxd dist/
+          tar -C dist -czf ${{ matrix.asset }} enox enoxd
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2

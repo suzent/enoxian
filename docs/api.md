@@ -1,6 +1,6 @@
 # REST API Reference
 
-`enoxd` exposes a single HTTP server (default port `9090`). Routes are split between **daemon-level** (no circle context) and **per-circle** (scoped to a specific circle ID).
+`enoxd` exposes a single HTTP server (default port `36521`). Routes are split between **daemon-level** (no circle context) and **per-circle** (scoped to a specific circle ID).
 
 All request and response bodies are JSON. Errors return `{ "error": "<message>" }`.
 

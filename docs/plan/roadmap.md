@@ -140,7 +140,7 @@ All circles load at daemon startup; individual circles can be stopped, started, 
 ### M5 — Presence
 **Status: Complete**
 
-On startup, each daemon writes a `Presence` entry (`agent_id = <hostname>-shortpeerid`, status=online, last_seen=now) to the control doc's `presence` Y.Map. The agent ID prefix uses the system hostname (stripping `.local` on macOS), falling back to `enoxian_AGENT_ID` env var or `"device"`. A 30-second heartbeat task refreshes `last_seen`. On clean shutdown, `OFFLINE` is written before the swarm drops so connected peers receive it immediately. On abrupt disconnect, the observing peer writes `OFFLINE` for the lost peer when the last P2P connection closes (`ConnectionClosed { num_established: 0 }`).
+On startup, each daemon writes a `Presence` entry (`agent_id = <hostname>-shortpeerid`, status=online, last_seen=now) to the control doc's `presence` Y.Map. The agent ID prefix uses the system hostname (stripping `.local` on macOS), falling back to `ENOXIAN_AGENT_ID` env var or `"device"`. A 30-second heartbeat task refreshes `last_seen`. On clean shutdown, `OFFLINE` is written before the swarm drops so connected peers receive it immediately. On abrupt disconnect, the observing peer writes `OFFLINE` for the lost peer when the last P2P connection closes (`ConnectionClosed { num_established: 0 }`).
 
 **Implementation:**
 - `src/presence.rs` — `local_agent_id()` (hostname → strip `.local` → peer suffix), `spawn_presence()`, heartbeat loop, `write_offline()`
@@ -152,7 +152,7 @@ On startup, each daemon writes a `Presence` entry (`agent_id = <hostname>-shortp
 - [x] Write presence entry (agent ID, hostname, timestamp) on daemon start
 - [x] Refresh presence heartbeat every 30s via a tokio interval task
 - [x] `enox who` displays live agents with last-seen time
-- [x] Hostname-based agent_id (strips `.local`/domain suffix); `enoxian_AGENT_ID` override
+- [x] Hostname-based agent_id (strips `.local`/domain suffix); `ENOXIAN_AGENT_ID` override
 - [x] Immediate OFFLINE on clean shutdown (written before swarm drops)
 - [x] Immediate OFFLINE on abrupt disconnect (written by observing peer on `ConnectionClosed`)
 

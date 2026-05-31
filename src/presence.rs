@@ -10,7 +10,7 @@ use crate::state::AppState;
 /// Derive a stable, human-readable agent ID from a custom agent name and peer_id.
 ///
 /// Resolution order:
-///   1. `enoxian_AGENT_ID` env var — explicit override (`codex`, `cursor`, `alice`, …)
+///   1. `ENOXIAN_AGENT_ID` env var — explicit override (`codex`, `cursor`, `alice`, …)
 ///   2. System hostname — auto-detected, stripped of `.local` (macOS) / domain suffixes
 ///   3. `"device"` — last-resort fallback if hostname is unavailable
 ///
@@ -19,7 +19,8 @@ use crate::state::AppState;
 pub fn local_agent_id(peer_id: &PeerId) -> String {
     let peer_str = peer_id.to_string();
     let short = &peer_str[peer_str.len().saturating_sub(8)..];
-    let agent = std::env::var("enoxian_AGENT_ID")
+    let agent = std::env::var("ENOXIAN_AGENT_ID")
+        .or_else(|_| std::env::var("enoxian_AGENT_ID"))
         .ok()
         .map(|s| sanitize_agent_name(&s))
         .filter(|s| !s.is_empty())
@@ -40,24 +41,29 @@ pub fn local_agent_id(peer_id: &PeerId) -> String {
 
 /// Strip trailing domain/mDNS suffixes so `MacBook-Pro.local` → `MacBook-Pro`.
 fn strip_domain_suffix(hostname: &str) -> String {
-    hostname
-        .split('.')
-        .next()
-        .unwrap_or(hostname)
-        .to_string()
+    hostname.split('.').next().unwrap_or(hostname).to_string()
 }
 
 fn sanitize_agent_name(raw: &str) -> String {
     raw.trim()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .trim_matches('-')
         .to_string()
 }
 
 fn peer_suffix(agent_id: &str) -> &str {
-    agent_id.rsplit_once('-').map(|(_, suffix)| suffix).unwrap_or(agent_id)
+    agent_id
+        .rsplit_once('-')
+        .map(|(_, suffix)| suffix)
+        .unwrap_or(agent_id)
 }
 
 fn hostname_candidates() -> Vec<String> {
@@ -137,7 +143,9 @@ fn write_presence_with_file(
         last_seen: Utc::now(),
         current_file,
     };
-    let Ok(json) = serde_json::to_string(&presence) else { return };
+    let Ok(json) = serde_json::to_string(&presence) else {
+        return;
+    };
     remove_legacy_presence_keys(state, agent_id);
     let map = state.control.get_or_insert_map(PRESENCE_KEY);
     let mut txn = state.control.transact_mut();
@@ -158,7 +166,9 @@ pub fn set_current_file(state: &AppState, current_file: Option<String>) {
 }
 
 pub fn clear_current_file_if_matches(state: &AppState, current_file: &str) {
-    let Some(presence) = read_presence(state, &state.agent_id) else { return };
+    let Some(presence) = read_presence(state, &state.agent_id) else {
+        return;
+    };
     if presence.current_file.as_deref() == Some(current_file) {
         write_presence_with_file(state, &state.agent_id, presence.status, None);
     }

@@ -34,10 +34,10 @@ cargo build
 ./target/debug/enox init --name "my-project"
 
 # 2. Start the daemon
-RUST_LOG=info ./target/debug/enoxd serve --circle <circle-id>
+RUST_LOG=info ./target/debug/enoxd
 
 # 3. In another terminal — talk to it
-export enoxian_API=http://127.0.0.1:9090/api
+export ENOXIAN_API=http://127.0.0.1:36521
 ./target/debug/enox status
 ./target/debug/enox tasks
 ./target/debug/enox watch
@@ -67,7 +67,7 @@ export enoxian_API=http://127.0.0.1:9090/api
 
 | Phase | Status | Scope |
 |-------|--------|-------|
-| 0 — P2P skeleton | ✅ | `enox init` / `enoxd serve` / `enox enter`, mDNS, libp2p |
+| 0 — P2P skeleton | ✅ | `enox init` / `enoxd` / `enox enter`, mDNS, libp2p |
 | 1 — Document sync | ✅ | Yjs Y.Text, file watcher, `/ws/yjs` WebSocket |
 | 2 — CLI contract | ✅ | `status`, `who`, `tasks`, `claim`, `done`, `bind`, `release`, `watch` |
 | 3 — Coordination | ✅ | Lock log, presence, full REST API, SSE events |

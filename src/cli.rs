@@ -3,7 +3,10 @@ use clap::{Parser, Subcommand};
 // ── Daemon CLI ─────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "enoxd", about = "enoxian daemon — serves all known Circles over HTTP/P2P")]
+#[command(
+    name = "enoxd",
+    about = "enoxian daemon — serves all known Circles over HTTP/P2P"
+)]
 pub struct DaemonCli {
     /// Port to listen on
     #[arg(long, default_value = "36521")]
@@ -19,14 +22,17 @@ pub struct DaemonCli {
 // ── Agent CLI ──────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "enox", about = "enoxian agent CLI — collaborate inside a Circle")]
+#[command(
+    name = "enox",
+    about = "enoxian agent CLI — collaborate inside a Circle"
+)]
 pub struct AgentCli {
     /// Output raw JSON (machine-readable)
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Circle name or ID prefix to target (overrides enoxian_CIRCLE)
-    #[arg(long, global = true, env = "enoxian_CIRCLE")]
+    /// Circle name or ID prefix to target (overrides ENOXIAN_CIRCLE)
+    #[arg(long, global = true, env = "ENOXIAN_CIRCLE")]
     pub circle: Option<String>,
 
     #[command(subcommand)]
