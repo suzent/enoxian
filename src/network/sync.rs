@@ -6,8 +6,9 @@
 ///   Both: enter continuous Update/SyncStep1 exchange (see IncomingEvent).
 ///
 /// Framing: [4-byte path len][path UTF-8][4-byte data len][y-sync bytes]
-use anyhow::Result;
+use anyhow::{Context, Result};
 use libp2p::{PeerId, Stream, StreamProtocol};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
@@ -16,7 +17,9 @@ use tracing::{debug, info, warn};
 use yrs::sync::protocol::{Message, SyncMessage};
 use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
-use yrs::{encoding::read::Cursor, Any, GetString, Map, Out, ReadTxn, StateVector, Transact, Update};
+use yrs::{
+    encoding::read::Cursor, Any, GetString, Map, Out, ReadTxn, StateVector, Transact, Update,
+};
 
 use crate::control::MLS_REMOVED_KEY;
 use crate::state::AppState;
@@ -25,6 +28,19 @@ pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/sync/1.0.0");
 const AWARENESS_PATH_PREFIX: &str = "\0awareness/";
 const DELETE_PATH_PREFIX: &str = "\0delete/";
 const SESSION_PATH: &str = "\0session";
+const SESSION_HELLO_MAGIC: &[u8] = b"enoxian-sync-session-v2\0";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PeerSession {
+    circle_id: Option<String>,
+    session_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionHello {
+    circle_id: String,
+    session_id: u64,
+}
 
 // ── Wire helpers ──────────────────────────────────────────────────────────────
 
@@ -36,6 +52,41 @@ async fn write_frame<W: AsyncWriteExt + Unpin>(w: &mut W, path: &str, data: &[u8
     w.write_all(data).await?;
     w.flush().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_legacy_session_id() {
+        let session_id = 42_u64;
+        assert_eq!(
+            decode_session_hello(&session_id.to_be_bytes()).unwrap(),
+            PeerSession {
+                circle_id: None,
+                session_id,
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_session_hello_with_circle_id() {
+        let hello = SessionHello {
+            circle_id: "circle-123".to_string(),
+            session_id: 99,
+        };
+        let mut bytes = SESSION_HELLO_MAGIC.to_vec();
+        bytes.extend_from_slice(&serde_json::to_vec(&hello).unwrap());
+
+        assert_eq!(
+            decode_session_hello(&bytes).unwrap(),
+            PeerSession {
+                circle_id: Some("circle-123".to_string()),
+                session_id: 99,
+            }
+        );
+    }
 }
 
 async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<(String, Vec<u8>)> {
@@ -99,6 +150,51 @@ fn encode_sync(msg: Message) -> Vec<u8> {
     enc.to_vec()
 }
 
+fn encode_session_hello(state: &AppState) -> Result<Vec<u8>> {
+    let hello = SessionHello {
+        circle_id: state.circle_id.clone(),
+        session_id: state.session_id,
+    };
+    let mut bytes = Vec::with_capacity(SESSION_HELLO_MAGIC.len() + 96);
+    bytes.extend_from_slice(SESSION_HELLO_MAGIC);
+    bytes.extend_from_slice(&serde_json::to_vec(&hello)?);
+    Ok(bytes)
+}
+
+fn decode_session_hello(data: &[u8]) -> Result<PeerSession> {
+    if let Some(json) = data.strip_prefix(SESSION_HELLO_MAGIC) {
+        let hello: SessionHello =
+            serde_json::from_slice(json).context("invalid sync session hello")?;
+        return Ok(PeerSession {
+            circle_id: Some(hello.circle_id),
+            session_id: hello.session_id,
+        });
+    }
+
+    // Backward compatibility for peers that only sent an 8-byte session_id.
+    if data.len() == 8 {
+        return Ok(PeerSession {
+            circle_id: None,
+            session_id: u64::from_be_bytes(data.try_into().unwrap()),
+        });
+    }
+
+    Err(anyhow::anyhow!("invalid sync session frame"))
+}
+
+async fn write_session_hello<W: AsyncWriteExt + Unpin>(w: &mut W, state: &AppState) -> Result<()> {
+    let hello = encode_session_hello(state)?;
+    write_frame(w, SESSION_PATH, &hello).await
+}
+
+async fn read_session_hello<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<PeerSession> {
+    let (path, data) = read_frame(r).await?;
+    if path != SESSION_PATH {
+        return Err(anyhow::anyhow!("expected sync session frame, got {path:?}"));
+    }
+    decode_session_hello(&data)
+}
+
 // ── Events from the reader task to the writer loop ───────────────────────────
 
 enum IncomingEvent {
@@ -130,13 +226,15 @@ fn parse_frame(path: String, data: &[u8]) -> IncomingEvent {
 
     let mut dec = DecoderV1::new(Cursor::new(data));
     match Message::decode(&mut dec) {
-        Ok(Message::Sync(SyncMessage::SyncStep1(sv))) => {
-            IncomingEvent::ResyncRequest { path, sv: sv.encode_v1() }
-        }
-        Ok(Message::Sync(SyncMessage::SyncStep2(raw))) |
-        Ok(Message::Sync(SyncMessage::Update(raw))) => {
-            IncomingEvent::Apply { path, raw_update: raw }
-        }
+        Ok(Message::Sync(SyncMessage::SyncStep1(sv))) => IncomingEvent::ResyncRequest {
+            path,
+            sv: sv.encode_v1(),
+        },
+        Ok(Message::Sync(SyncMessage::SyncStep2(raw)))
+        | Ok(Message::Sync(SyncMessage::Update(raw))) => IncomingEvent::Apply {
+            path,
+            raw_update: raw,
+        },
         _ => IncomingEvent::Closed,
     }
 }
@@ -215,13 +313,13 @@ fn sv_has_divergence(our_sv_bytes: &[u8], their_sv_bytes: &[u8]) -> bool {
     let our_sv = StateVector::decode_v1(our_sv_bytes).unwrap_or_default();
     let their_sv = StateVector::decode_v1(their_sv_bytes).unwrap_or_default();
     // They have a client or clock we haven't seen yet.
-    let they_have_new = their_sv.iter().any(|(client, &their_clock)| {
-        our_sv.get(client) < their_clock
-    });
+    let they_have_new = their_sv
+        .iter()
+        .any(|(client, &their_clock)| our_sv.get(client) < their_clock);
     // We have a client or clock they haven't seen yet.
-    let we_have_new = our_sv.iter().any(|(client, &our_clock)| {
-        their_sv.get(client) < our_clock
-    });
+    let we_have_new = our_sv
+        .iter()
+        .any(|(client, &our_clock)| their_sv.get(client) < our_clock);
     they_have_new && we_have_new
 }
 
@@ -312,30 +410,48 @@ async fn sync_inner(
     //   2. Our saved last_session_id for them — did WE restart since then?
     // Together these detect the dual-offline case needed for conflict detection.
 
-    let peer_session_id: u64;
+    let peer_session: PeerSession;
 
     if is_initiator {
-        write_frame(&mut tx, SESSION_PATH, &state.session_id.to_be_bytes()).await?;
-        let (_, data) = read_frame(&mut rx).await?;
-        peer_session_id = if data.len() == 8 {
-            u64::from_be_bytes(data.try_into().unwrap())
-        } else {
-            0
-        };
+        write_session_hello(&mut tx, state).await?;
+        peer_session = read_session_hello(&mut rx).await?;
     } else {
-        let (_, data) = read_frame(&mut rx).await?;
-        peer_session_id = if data.len() == 8 {
-            u64::from_be_bytes(data.try_into().unwrap())
-        } else {
-            0
-        };
-        write_frame(&mut tx, SESSION_PATH, &state.session_id.to_be_bytes()).await?;
+        peer_session = read_session_hello(&mut rx).await?;
+        write_session_hello(&mut tx, state).await?;
+    }
+
+    if let Some(remote_circle_id) = &peer_session.circle_id {
+        if remote_circle_id != &state.circle_id {
+            warn!(
+                "[sync] rejected {peer_id}: circle mismatch (remote {remote_circle_id}, local {})",
+                state.circle_id
+            );
+            return Err(anyhow::anyhow!(
+                "peer rejected: circle mismatch (remote {remote_circle_id}, local {})",
+                state.circle_id
+            ));
+        }
+    } else {
+        warn!(
+            "[sync] {peer_id}: legacy session hello without circle_id; allowing sync for compatibility"
+        );
     }
 
     let now = chrono::Utc::now().timestamp();
     let peer_id_str = peer_id.to_string();
-    crate::store::session::record_peer(&state.circle_dir, &peer_id_str, peer_session_id, now).await;
-    tracing::info!("[sync] {peer_id}: session {peer_session_id} (ours: {})", state.session_id);
+    crate::store::session::record_peer(
+        &state.circle_dir,
+        &peer_id_str,
+        peer_session.session_id,
+        now,
+    )
+    .await;
+    tracing::info!(
+        "[sync] {peer_id}: session {} (ours: {}, circle {})",
+        peer_session.session_id,
+        state.session_id,
+        state.circle_id
+    );
 
     // ── Pre-merge snapshot ────────────────────────────────────────────────────
     //
@@ -364,9 +480,18 @@ async fn sync_inner(
         // Send our SyncStep1 messages
         write_u32(&mut tx, my_paths.len() as u32).await?;
         for path in &my_paths {
-            let doc = if path == "__control__" { state.control.clone() } else { state.get_or_create_doc(path) };
+            let doc = if path == "__control__" {
+                state.control.clone()
+            } else {
+                state.get_or_create_doc(path)
+            };
             let sv = doc.transact().state_vector();
-            write_frame(&mut tx, path, &encode_sync(Message::Sync(SyncMessage::SyncStep1(sv)))).await?;
+            write_frame(
+                &mut tx,
+                path,
+                &encode_sync(Message::Sync(SyncMessage::SyncStep1(sv))),
+            )
+            .await?;
         }
 
         // Read SyncStep2 replies (one per our SyncStep1)
@@ -383,7 +508,10 @@ async fn sync_inner(
         let their_count = read_u32(&mut rx).await? as usize;
         for _ in 0..their_count {
             let (path, data) = read_frame(&mut rx).await?;
-            if let IncomingEvent::ResyncRequest { sv: their_sv_bytes, .. } = parse_frame(path.clone(), &data) {
+            if let IncomingEvent::ResyncRequest {
+                sv: their_sv_bytes, ..
+            } = parse_frame(path.clone(), &data)
+            {
                 // Conflict detection: compare responder's sv against our PRE-MERGE sv.
                 if path != "__control__" {
                     if let Some((our_pre_sv, our_pre_content)) = pre_merge.get(&path) {
@@ -393,9 +521,18 @@ async fn sync_inner(
                     }
                 }
                 let sv = StateVector::decode_v1(&their_sv_bytes)?;
-                let doc = if path == "__control__" { state.control.clone() } else { state.get_or_create_doc(&path) };
+                let doc = if path == "__control__" {
+                    state.control.clone()
+                } else {
+                    state.get_or_create_doc(&path)
+                };
                 let diff = doc.transact().encode_diff_v1(&sv);
-                write_frame(&mut tx, &path, &encode_sync(Message::Sync(SyncMessage::SyncStep2(diff)))).await?;
+                write_frame(
+                    &mut tx,
+                    &path,
+                    &encode_sync(Message::Sync(SyncMessage::SyncStep2(diff))),
+                )
+                .await?;
             }
         }
     } else {
@@ -403,7 +540,10 @@ async fn sync_inner(
         let their_count = read_u32(&mut rx).await? as usize;
         for _ in 0..their_count {
             let (path, data) = read_frame(&mut rx).await?;
-            if let IncomingEvent::ResyncRequest { sv: their_sv_bytes, .. } = parse_frame(path.clone(), &data) {
+            if let IncomingEvent::ResyncRequest {
+                sv: their_sv_bytes, ..
+            } = parse_frame(path.clone(), &data)
+            {
                 // Conflict detection: check before any update is applied to our CRDT.
                 if path != "__control__" {
                     if let Some((our_sv_bytes, our_content)) = pre_merge.get(&path) {
@@ -413,18 +553,36 @@ async fn sync_inner(
                     }
                 }
                 let sv = StateVector::decode_v1(&their_sv_bytes)?;
-                let doc = if path == "__control__" { state.control.clone() } else { state.get_or_create_doc(&path) };
+                let doc = if path == "__control__" {
+                    state.control.clone()
+                } else {
+                    state.get_or_create_doc(&path)
+                };
                 let diff = doc.transact().encode_diff_v1(&sv);
-                write_frame(&mut tx, &path, &encode_sync(Message::Sync(SyncMessage::SyncStep2(diff)))).await?;
+                write_frame(
+                    &mut tx,
+                    &path,
+                    &encode_sync(Message::Sync(SyncMessage::SyncStep2(diff))),
+                )
+                .await?;
             }
         }
 
         // Send our own SyncStep1 messages
         write_u32(&mut tx, my_paths.len() as u32).await?;
         for path in &my_paths {
-            let doc = if path == "__control__" { state.control.clone() } else { state.get_or_create_doc(path) };
+            let doc = if path == "__control__" {
+                state.control.clone()
+            } else {
+                state.get_or_create_doc(path)
+            };
             let sv = doc.transact().state_vector();
-            write_frame(&mut tx, path, &encode_sync(Message::Sync(SyncMessage::SyncStep1(sv)))).await?;
+            write_frame(
+                &mut tx,
+                path,
+                &encode_sync(Message::Sync(SyncMessage::SyncStep1(sv))),
+            )
+            .await?;
         }
 
         // Read initiator's SyncStep2 replies
