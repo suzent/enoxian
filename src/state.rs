@@ -53,6 +53,9 @@ pub struct AppState {
     pub join_policy: crate::config::JoinPolicy,
     pub owner: String,
     pub mls: crate::mls::SharedMlsState,
+    /// Recent P2P connection failures (unix_ts, message). Surfaced by the status
+    /// API so silent handshake failures (e.g. PSK mismatch) are diagnosable.
+    pub recent_conn_errors: Arc<RwLock<std::collections::VecDeque<(i64, String)>>>,
 }
 
 impl AppState {
@@ -168,6 +171,7 @@ impl AppState {
             join_policy,
             owner,
             mls,
+            recent_conn_errors: Arc::new(RwLock::new(std::collections::VecDeque::new())),
         }
     }
 
@@ -211,6 +215,16 @@ impl AppState {
     pub fn subscribe_doc_updates(&self, rel_path: &str) -> broadcast::Receiver<Vec<u8>> {
         self.get_or_create_doc(rel_path); // ensure doc + channel exist
         self.doc_updates.get(rel_path).unwrap().subscribe()
+    }
+
+    /// Record a recent P2P connection failure (keeps the last 10), for the
+    /// status API. Lets silent handshake failures like a PSK mismatch be seen.
+    pub fn record_conn_error(&self, msg: String) {
+        let mut errs = self.recent_conn_errors.write().unwrap();
+        errs.push_back((chrono::Utc::now().timestamp(), msg));
+        while errs.len() > 10 {
+            errs.pop_front();
+        }
     }
 
     pub fn remove_doc(&self, rel_path: &str) {

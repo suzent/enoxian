@@ -44,52 +44,6 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
 
     let peer = args.peer.or(peer_from_invite);
 
-    // ── Step 2: Conflict detection ────────────────────────────────────────────
-    let existing = config::load_all()?;
-
-    let workspace_resolution = resolve_workspace_dir(
-        &circle_name,
-        &circle_id,
-        &existing,
-        args.dir,
-    )?;
-
-    let (workspace_dir, warn_msg) = match workspace_resolution {
-        None => {
-            // Same UUID — already a member
-            println!("✦ Already a member of '{circle_name}' — nothing to do.");
-            println!();
-            println!("  Start the daemon: enoxd");
-            println!("  Then: enox --circle \"{circle_name}\" status");
-            return Ok(());
-        }
-        Some(r) => r,
-    };
-
-    if let Some(ref msg) = warn_msg {
-        println!("{msg}");
-    }
-
-    // ── Step 3: Generate keypair + save config ────────────────────────────────
-    let keypair = generate_keypair();
-    let peer_id = keypair.public().to_peer_id();
-    info!("Entering circle {circle_id} as {peer_id}");
-
-    tokio::fs::create_dir_all(&workspace_dir).await
-        .with_context(|| format!("failed to create workspace {}", workspace_dir.display()))?;
-
-    // --rendezvous on CLI takes precedence over the invite-embedded address.
-    // Short forms like "enox.suzent.com" are auto-resolved to full multiaddrs.
-    let cli_rendezvous = match args.rendezvous {
-        Some(ref s) => Some(rdvz::resolve(s, client).await
-            .with_context(|| format!("could not resolve rendezvous server '{s}'"))?),
-        None => None,
-    };
-    let rendezvous_addrs = cli_rendezvous
-        .or(rendezvous_from_invite)
-        .into_iter()
-        .collect::<Vec<_>>();
-
     // ── Build bootstrap peer list ─────────────────────────────────────────────
     // Start with the direct peer address from the invite (public IP or confirmed
     // external addr). Also derive the inviter's relay circuit address from the
@@ -117,6 +71,70 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
             }
         }
     }
+
+    // --rendezvous on CLI takes precedence over the invite-embedded address.
+    // Short forms like "enox.suzent.com" are auto-resolved to full multiaddrs.
+    // Computed before the membership check so the "already a member" refresh can
+    // persist it too.
+    let cli_rendezvous = match args.rendezvous {
+        Some(ref s) => Some(rdvz::resolve(s, client).await
+            .with_context(|| format!("could not resolve rendezvous server '{s}'"))?),
+        None => None,
+    };
+    let rendezvous_addrs = cli_rendezvous
+        .or(rendezvous_from_invite)
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    // ── Step 2: Conflict detection ────────────────────────────────────────────
+    let existing = config::load_all()?;
+
+    let workspace_resolution = resolve_workspace_dir(
+        &circle_name,
+        &circle_id,
+        &existing,
+        args.dir,
+    )?;
+
+    let (workspace_dir, warn_msg) = match workspace_resolution {
+        None => {
+            // Same UUID — already a member. Don't silently no-op: refresh the
+            // credentials/bootstrap from this invite so a re-invite can repair a
+            // rotated PSK or a stale peer address (the common "already joined but
+            // can't connect" case). Keep our existing identity and workspace.
+            if let Ok(mut existing_cfg) = config::load(&circle_id) {
+                let psk_changed = existing_cfg.psk_hex != psk_hex;
+                existing_cfg.psk_hex = psk_hex.clone();
+                existing_cfg.peers = bootstrap_peers.clone();
+                existing_cfg.relay_addrs = relay_from_invite.clone().into_iter().collect();
+                existing_cfg.rendezvous_addrs = rendezvous_addrs.clone();
+                config::save(&existing_cfg).context("failed to refresh circle config")?;
+                println!("✦ Already a member of '{circle_name}' — refreshed credentials from invite.");
+                if psk_changed {
+                    println!("  PSK updated (the circle key had changed).");
+                }
+            } else {
+                println!("✦ Already a member of '{circle_name}' — nothing to do.");
+            }
+            println!();
+            println!("  Restart the daemon to apply: enox update --dev --no-pull (or restart enoxd)");
+            println!("  Then: enox --circle \"{circle_name}\" status");
+            return Ok(());
+        }
+        Some(r) => r,
+    };
+
+    if let Some(ref msg) = warn_msg {
+        println!("{msg}");
+    }
+
+    // ── Step 3: Generate keypair + save config ────────────────────────────────
+    let keypair = generate_keypair();
+    let peer_id = keypair.public().to_peer_id();
+    info!("Entering circle {circle_id} as {peer_id}");
+
+    tokio::fs::create_dir_all(&workspace_dir).await
+        .with_context(|| format!("failed to create workspace {}", workspace_dir.display()))?;
 
     let circle_config = CircleConfig {
         circle_id:         circle_id.clone(),

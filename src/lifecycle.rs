@@ -841,7 +841,20 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         tracing::debug!("[{}] Ping: {e:?}", circle_id);
                     }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                        tracing::debug!("[{}] Outgoing error to {peer_id:?}: {error}", circle_id);
+                        let msg = error.to_string();
+                        // A connection reset during/just after the noise handshake (right
+                        // after the pnet pre-shared-key cipher is set up) almost always
+                        // means the two sides have different circle PSKs — the dialed
+                        // address belongs to a different circle, or one side re-created
+                        // the circle with a new key. pnet is unauthenticated, so the
+                        // cipher "succeeds" and the failure only shows up here.
+                        let hint = if msg.contains("reset") || msg.contains("ConnectionReset") {
+                            " — likely PSK mismatch (different circle key, or the dialed address belongs to another circle)"
+                        } else {
+                            ""
+                        };
+                        tracing::warn!("[{}] outgoing connection to {peer_id:?} failed: {error}{hint}", circle_id);
+                        state_for_swarm.record_conn_error(format!("{error}{hint}"));
                     }
                     _ => {}
                 }

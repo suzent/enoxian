@@ -30,6 +30,13 @@ pub async fn get_status(
         .map(|c| (c.relay_addrs, c.rendezvous_addrs))
         .unwrap_or_default();
 
+    // Recent connection failures (most recent first) — makes silent handshake
+    // failures like a PSK mismatch visible without trawling daemon logs.
+    let conn_errors: Vec<_> = state.recent_conn_errors
+        .read()
+        .map(|q| q.iter().rev().map(|(ts, msg)| json!({"ts": ts, "error": msg})).collect())
+        .unwrap_or_default();
+
     Json(json!({
         "circle_id":   state.circle_id,
         "circle_name": state.circle_name,
@@ -43,6 +50,7 @@ pub async fn get_status(
             "listen_addrs":     listen_addrs,
             "relay_addrs":      relay_addrs,
             "rendezvous_addrs": rendezvous_addrs,
+            "recent_conn_errors": conn_errors,
         },
     })).into_response()
 }
