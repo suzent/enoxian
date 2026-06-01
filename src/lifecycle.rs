@@ -487,13 +487,20 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         })?
         .build();
 
-    // Listen on both TCP (PSK-protected, for LAN and relay) and QUIC (UDP,
-    // for direct WAN connections and UDP hole punching via DCUtR).
-    // QUIC does not carry the PSK but noise + application-layer CRDT encryption
-    // keep circle data private. The ExternalAddrConfirmed event on the QUIC port
-    // gives us a real public address to embed in invites even behind NAT.
-    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse::<Multiaddr>()?)?;
-    swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse::<Multiaddr>()?)?;
+    // Listen on stable per-circle TCP + QUIC ports so direct peer addresses
+    // embedded in invites remain useful across daemon restarts. If another
+    // process already owns the derived port, fall back to an ephemeral port.
+    let listen_port = stable_listen_port(&config.circle_id);
+    let tcp_addr = format!("/ip4/0.0.0.0/tcp/{listen_port}").parse::<Multiaddr>()?;
+    if let Err(e) = swarm.listen_on(tcp_addr) {
+        warn!("[{}] stable TCP listen port {listen_port} unavailable ({e}); falling back to random", config.circle_id);
+        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse::<Multiaddr>()?)?;
+    }
+    let quic_addr = format!("/ip4/0.0.0.0/udp/{listen_port}/quic-v1").parse::<Multiaddr>()?;
+    if let Err(e) = swarm.listen_on(quic_addr) {
+        warn!("[{}] stable QUIC listen port {listen_port} unavailable ({e}); falling back to random", config.circle_id);
+        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse::<Multiaddr>()?)?;
+    }
 
     // ── Dial bootstrap peers from config ──────────────────────────────────────
     // Peer addresses saved at `enox enter` time (from invite). This ensures
@@ -1066,6 +1073,15 @@ pub async fn rotate_psk_and_restart(circle_id: &str, new_psk: [u8; 32], daemon: 
             _ => {}
         }
     });
+}
+
+fn stable_listen_port(circle_id: &str) -> u16 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in circle_id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    49_152 + (hash % 12_000) as u16
 }
 
 /// Returns true for listen addresses worth tracking for invite embedding:

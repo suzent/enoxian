@@ -91,10 +91,6 @@ export class YjsProvider {
         this.sendAwarenessUpdate([this.doc.clientID], ws)
       }, 10_000)
 
-      // The server may already have sent a compatible state vector before it
-      // needs to answer with SyncStep2, so "open + SyncStep1 sent" is the
-      // earliest reliable connected state for the UI.
-      this.markSynced()
     }
 
     ws.onmessage = (e) => {
@@ -109,7 +105,11 @@ export class YjsProvider {
         if (encoding.length(replyEnc) > 1 && ws.readyState === WebSocket.OPEN) {
           ws.send(encoding.toUint8Array(replyEnc))
         }
-        if (syncType === syncProtocol.messageYjsSyncStep1 || syncType === syncProtocol.messageYjsSyncStep2) {
+        if (
+          syncType === syncProtocol.messageYjsSyncStep1 ||
+          syncType === syncProtocol.messageYjsSyncStep2 ||
+          syncType === syncProtocol.messageYjsUpdate
+        ) {
           this.markSynced()
         }
       } else if (msgType === MSG_AWARENESS) {
