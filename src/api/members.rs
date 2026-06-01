@@ -6,7 +6,6 @@ use yrs::{Any, Array, Map, MapRef, Out, Transact};
 
 use crate::control::{CircleEvent, MemberEntry, MemberRole, MlsCommitEntry, PendingEntry, MEMBER_LIST_KEY, MLS_COMMITS_KEY, MLS_KEY_PACKAGES_KEY, MLS_PENDING_KEY, MLS_REMOVED_KEY, MLS_WELCOMES_KEY};
 use crate::daemon::DaemonState;
-use crate::lifecycle::rotate_psk_and_restart;
 
 pub async fn list_members(
     State(daemon): State<DaemonState>,
@@ -126,7 +125,6 @@ pub async fn remove_member(
     // Phase 2: CRDT writes and disk save outside the lock.
     struct MlsRemoveOut {
         commit_bytes: Vec<u8>,
-        psk: [u8; 32],
         epoch: u64,
     }
     let mls_out: Option<MlsRemoveOut> = {
@@ -145,12 +143,8 @@ pub async fn remove_member(
                             Ok(b) => b,
                             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("MLS remove_member failed: {e}")}))).into_response(),
                         };
-                        let psk = match group.epoch_psk(identity) {
-                            Ok(p) => p,
-                            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("MLS epoch_psk failed: {e}")}))).into_response(),
-                        };
                         let epoch = group.epoch();
-                        Some(MlsRemoveOut { commit_bytes, psk, epoch })
+                        Some(MlsRemoveOut { commit_bytes, epoch })
                     }
                 }
             }
@@ -159,7 +153,11 @@ pub async fn remove_member(
     };
 
     // Phase 2: broadcast commit + save group (outside the MLS lock).
-    let new_psk: Option<[u8; 32]> = if let Some(out) = mls_out {
+    // The MLS epoch advances for remaining members, but we no longer derive or
+    // rotate a transport PSK from it — the transport key is a stable per-circle
+    // gate and eviction is the mls_removed tombstone written below. See
+    // docs/plan/identity.md.
+    if let Some(out) = mls_out {
         // Broadcast the Remove commit to remaining members via the CRDT.
         let entry = MlsCommitEntry {
             epoch: out.epoch,
@@ -174,17 +172,11 @@ pub async fn remove_member(
         }
 
         // Persist the updated MLS group to disk.
-        {
-            let mls_locked = state.mls.blocking_lock();
-            if let Some(group) = &mls_locked.group {
-                let _ = group.save(&mls_locked.identity, &state.circle_dir);
-            }
+        let mls_locked = state.mls.blocking_lock();
+        if let Some(group) = &mls_locked.group {
+            let _ = group.save(&mls_locked.identity, &state.circle_dir);
         }
-
-        Some(out.psk)
-    } else {
-        None
-    };
+    }
 
     // Read the agent_id before removing the member entry (needed for presence update).
     let evicted_agent_id: Option<String> = {
@@ -226,16 +218,10 @@ pub async fn remove_member(
 
     let _ = state.events.send(CircleEvent::MemberRemoved { peer_id: req.peer_id.clone() });
 
-    // Rotate the admin's own PSK now that the MLS epoch has advanced.
-    // This restarts the swarm with the new key; the evicted peer will fail
-    // the pnet handshake with the old key.
-    if let Some(psk) = new_psk {
-        let cid = circle_id.clone();
-        let d = daemon.clone();
-        tokio::spawn(async move {
-            rotate_psk_and_restart(&cid, psk, d).await;
-        });
-    }
+    // No transport-PSK rotation: the mls_removed tombstone written above is the
+    // eviction boundary (sync.rs rejects tombstoned peers before any data). The
+    // transport PSK stays stable so legitimate members never get locked out by
+    // an epoch they missed. See docs/plan/identity.md.
 
     Json(json!({"status": "removed", "peer_id": req.peer_id})).into_response()
 }

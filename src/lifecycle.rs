@@ -347,8 +347,6 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             let our_peer_id_str = peer_id.to_string();
             let mls_w = mls.clone();
             let state_w = state.clone();
-            let daemon_w = daemon.clone();
-            let circle_id_w = config.circle_id.clone();
             let welcome_sub = welcomes_map.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
                 use yrs::types::EntryChange;
                 for (key, change) in event.keys(txn) {
@@ -357,10 +355,8 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         let welcome_hex = s.to_string();
                         let mls = mls_w.clone();
                         let state = state_w.clone();
-                        let daemon = daemon_w.clone();
-                        let circle_id = circle_id_w.clone();
                         tokio::spawn(async move {
-                            consume_welcome(welcome_hex, mls, state, daemon, circle_id).await;
+                            consume_welcome(welcome_hex, mls, state).await;
                         });
                     }
                 }
@@ -370,13 +366,13 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     }
 
     // ── Commit watcher ────────────────────────────────────────────────────────
-    // All peers: watch mls_commits for new entries and apply them to stay in
-    // sync with epoch advances. PSK rotates after each epoch change.
+    // All peers: watch mls_commits for new entries and apply them to keep MLS
+    // group state in sync with epoch advances (membership tracking; the
+    // transport PSK is NOT rotated — see docs/plan/identity.md).
     //
     // Commits are fed through a serial channel to prevent concurrent MLS
     // operations from racing — multiple commits arriving in a single P2P sync
-    // batch would otherwise spawn concurrent tasks fighting over the mutex and
-    // calling rotate_psk_and_restart simultaneously.
+    // batch would otherwise spawn concurrent tasks fighting over the mutex.
     {
         use yrs::types::Change;
         let (commit_tx, mut commit_rx) =
@@ -401,15 +397,13 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
 
         let mls_c = mls.clone();
         let state_c = state.clone();
-        let daemon_c = daemon.clone();
-        let circle_id_c = config.circle_id.clone();
         let token_c = token.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
                     _ = token_c.cancelled() => break,
                     entry = commit_rx.recv() => match entry {
-                        Some(e) => apply_commit_entry(e, mls_c.clone(), state_c.clone(), daemon_c.clone(), circle_id_c.clone()).await,
+                        Some(e) => apply_commit_entry(e, mls_c.clone(), state_c.clone()).await,
                         None => break,
                     },
                 }
@@ -974,37 +968,31 @@ async fn consume_welcome(
     welcome_hex: String,
     mls: SharedMlsState,
     state: AppState,
-    daemon: DaemonState,
-    circle_id: String,
 ) {
     let welcome_bytes = match hex::decode(&welcome_hex) {
         Ok(b) => b,
         Err(_) => return,
     };
 
-    let new_psk = {
-        let mut mls_locked = mls.lock().await;
-        // Skip if we already joined (race: observer fires twice).
-        if mls_locked.group.is_some() { return; }
-        let identity_ptr = &mls_locked.identity as *const MlsIdentity;
-        let identity = unsafe { &*identity_ptr };
-        // ratchet_tree_bytes is None because use_ratchet_tree_extension is enabled —
-        // the ratchet tree is embedded inside the Welcome bytes.
-        let group = match MlsGroupManager::join_from_welcome(identity, &welcome_bytes, None) {
-            Ok(g) => g,
-            Err(e) => { warn!("[mls] join_from_welcome failed: {e}"); return; }
-        };
-        let psk = match group.epoch_psk(identity) {
-            Ok(p) => p,
-            Err(e) => { warn!("[mls] epoch_psk after welcome failed: {e}"); return; }
-        };
-        let _ = group.save(identity, &state.circle_dir);
-        mls_locked.group = Some(group);
-        info!("[mls] joined group via Welcome — epoch PSK derived, rotating transport PSK");
-        psk
+    // Join the MLS group and persist it. We deliberately do NOT derive an epoch
+    // PSK or rotate the transport key here: the transport PSK is a stable
+    // per-circle network gate, and eviction is enforced by the mls_removed
+    // sync-gate (see docs/plan/identity.md). MLS membership is still tracked for
+    // the sync gate and for future content-layer encryption.
+    let mut mls_locked = mls.lock().await;
+    // Skip if we already joined (race: observer fires twice).
+    if mls_locked.group.is_some() { return; }
+    let identity_ptr = &mls_locked.identity as *const MlsIdentity;
+    let identity = unsafe { &*identity_ptr };
+    // ratchet_tree_bytes is None because use_ratchet_tree_extension is enabled —
+    // the ratchet tree is embedded inside the Welcome bytes.
+    let group = match MlsGroupManager::join_from_welcome(identity, &welcome_bytes, None) {
+        Ok(g) => g,
+        Err(e) => { warn!("[mls] join_from_welcome failed: {e}"); return; }
     };
-
-    rotate_psk_and_restart(&circle_id, new_psk, daemon).await;
+    let _ = group.save(identity, &state.circle_dir);
+    mls_locked.group = Some(group);
+    info!("[mls] joined group via Welcome (membership tracked; transport PSK stays stable)");
 }
 
 /// Called for every new MlsCommitEntry that arrives from a peer.
@@ -1015,8 +1003,6 @@ async fn apply_commit_entry(
     entry: MlsCommitEntry,
     mls: SharedMlsState,
     state: AppState,
-    daemon: DaemonState,
-    circle_id: String,
 ) {
     // Don't apply commits we ourselves produced.
     if entry.sender_peer_id == state.peer_id { return; }
@@ -1026,47 +1012,41 @@ async fn apply_commit_entry(
         Err(_) => return,
     };
 
-    let maybe_psk = {
-        let mut mls_locked = mls.lock().await;
-        // Take raw pointer to identity before the mutable group borrow.
-        let identity_ptr = &mls_locked.identity as *const MlsIdentity;
-        let identity = unsafe { &*identity_ptr };
-        let group = match mls_locked.group.as_mut() {
-            Some(g) => g,
-            None => return, // not in group yet — will consume via Welcome path
-        };
-        let current_epoch = group.epoch();
-        // Commit at epoch N advances us from epoch N → N+1.
-        // Skip if we're already past this epoch.
-        if entry.epoch < current_epoch { return; }
-
-        match group.apply_commit(identity, &commit_bytes) {
-            Ok(()) => {}
-            Err(e) => { warn!("[mls] apply_commit (epoch {}): {e}", entry.epoch); return; }
-        }
-
-        // Derive new PSK. If this fails we were likely removed — skip rotation
-        // and let the PSK mismatch handle disconnection naturally.
-        match group.epoch_psk(identity) {
-            Ok(psk) => {
-                let _ = group.save(identity, &state.circle_dir);
-                info!("[mls] applied Commit epoch {} → {} — rotating PSK", entry.epoch, group.epoch());
-                Some(psk)
-            }
-            Err(_) => {
-                info!("[mls] applied Commit that removed us — awaiting PSK mismatch disconnect");
-                None
-            }
-        }
+    // Apply the commit to keep our MLS group state in sync (epoch advances are
+    // tracked for the sync gate and future content encryption). We do NOT derive
+    // an epoch PSK or rotate the transport key — the transport PSK is a stable
+    // per-circle gate and eviction is the mls_removed sync-gate. See
+    // docs/plan/identity.md.
+    let mut mls_locked = mls.lock().await;
+    // Take raw pointer to identity before the mutable group borrow.
+    let identity_ptr = &mls_locked.identity as *const MlsIdentity;
+    let identity = unsafe { &*identity_ptr };
+    let group = match mls_locked.group.as_mut() {
+        Some(g) => g,
+        None => return, // not in group yet — will consume via Welcome path
     };
+    let current_epoch = group.epoch();
+    // Commit at epoch N advances us from epoch N → N+1.
+    // Skip if we're already past this epoch.
+    if entry.epoch < current_epoch { return; }
 
-    if let Some(new_psk) = maybe_psk {
-        rotate_psk_and_restart(&circle_id, new_psk, daemon).await;
+    match group.apply_commit(identity, &commit_bytes) {
+        Ok(()) => {
+            let _ = group.save(identity, &state.circle_dir);
+            info!("[mls] applied Commit epoch {} → {} (membership tracked)", entry.epoch, group.epoch());
+        }
+        Err(e) => { warn!("[mls] apply_commit (epoch {}): {e}", entry.epoch); }
     }
 }
 
 /// Saves the new PSK to config.toml, then stops and restarts the circle so
 /// the swarm rebuilds its transport with the new pnet key.
+///
+/// NOTE: no longer wired to MLS epoch changes — the transport PSK is a stable
+/// per-circle gate and eviction is the mls_removed sync-gate (see
+/// docs/plan/identity.md). Retained for a possible future *explicit* circle-key
+/// rotation (e.g. a manual `enox rotate-key` admin action); currently unused.
+#[allow(dead_code)]
 pub async fn rotate_psk_and_restart(circle_id: &str, new_psk: [u8; 32], daemon: DaemonState) {
     let mut cfg = match config::load(circle_id) {
         Ok(c) => c,
