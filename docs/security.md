@@ -1,5 +1,18 @@
 # Security Model
 
+> **⚠️ Reconciliation note (supersedes part of this doc).** The
+> epoch→PSK **rotation** described below (§"MLS — RFC 9420 access revocation"
+> and Layer 1/4 of the table) is **superseded** by
+> [`plan/identity.md`](plan/identity.md). The transport PSK is now a **stable
+> per-circle network gate** (matching [`plan/admin.md`](plan/admin.md): *"PSK
+> rotation is not required"*); eviction is enforced by the signed member list +
+> `mls_removed` tombstone sync-gate (Layer 3), with optional MLS **content**
+> encryption as the future cryptographic-eviction layer. Rotating the transport
+> PSK per epoch coupled connectivity to epoch-sync and caused permanent
+> lock-outs (a peer one epoch behind can't connect to receive the key that would
+> let it connect). The sections below describe the *previous* model; treat
+> `plan/identity.md` as authoritative.
+
 ## Layers of protection
 
 enoxian applies four independent security layers in sequence. Each layer rejects peers that fail its check before passing control to the next.
