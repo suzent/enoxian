@@ -890,7 +890,29 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
 
     let (commit_bytes, welcome_bytes, ratchet_tree_bytes) = match result {
         Ok(t) => t,
-        Err(_) => return,
+        Err(_) => {
+            // add_member failed — most likely the peer is already in the MLS group
+            // (e.g. the daemon restarted and re-wrote a pending entry to the CRDT
+            // before the sync caught up). Remove the stale pending entry so the UI
+            // stops showing them as awaiting approval.
+            let member_map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
+            let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
+            let already_member = {
+                use yrs::Transact;
+                let txn = state.control.transact();
+                matches!(
+                    member_map.get(&txn, peer_id_str.as_str()),
+                    Some(yrs::Out::Any(yrs::Any::String(_)))
+                )
+            };
+            if already_member {
+                use yrs::Transact;
+                let mut txn = state.control.transact_mut();
+                pending_map.remove(&mut txn, peer_id_str.as_str());
+                info!("[member] removed stale pending entry for {peer_id_str} (already a member)");
+            }
+            return;
+        }
     };
 
     let welcome_hex = hex::encode(&welcome_bytes);
