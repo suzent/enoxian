@@ -487,12 +487,28 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         })?
         .build();
 
-    // Listen on both TCP (PSK-protected, for LAN and relay) and QUIC (UDP,
-    // for direct WAN connections and UDP hole punching via DCUtR).
-    // QUIC does not carry the PSK but noise + application-layer CRDT encryption
-    // keep circle data private. The ExternalAddrConfirmed event on the QUIC port
-    // gives us a real public address to embed in invites even behind NAT.
-    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse::<Multiaddr>()?)?;
+    // TCP (PSK-protected, for LAN and relay) on a STABLE per-circle port; QUIC
+    // (UDP, for WAN/NAT hole-punching via DCUtR) on an ephemeral port.
+    //
+    // LAN peers discover each other via mDNS regardless of port, and behind NAT
+    // we rely on the relay/rendezvous + the QUIC ExternalAddrConfirmed address.
+    // But peers reached over a stable-IP overlay (e.g. Tailscale) WITHOUT a
+    // rendezvous server only have the bootstrap address saved at `enox enter`
+    // time — so that address must survive daemon restarts. A deterministic TCP
+    // port keeps it valid; we fall back to ephemeral if the port is taken.
+    //
+    // QUIC stays ephemeral: a fixed UDP port buys nothing here (hole-punching
+    // discovers addresses dynamically), and the combined relay+quic transport
+    // rejects a fixed-port QUIC listen, so binding one would just fail anyway.
+    let listen_port = stable_listen_port(&config.circle_id);
+    let tcp_addr = format!("/ip4/0.0.0.0/tcp/{listen_port}").parse::<Multiaddr>()?;
+    if let Err(e) = swarm.listen_on(tcp_addr) {
+        warn!(
+            "[{}] stable TCP listen port {listen_port} unavailable ({e}); falling back to ephemeral",
+            config.circle_id
+        );
+        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse::<Multiaddr>()?)?;
+    }
     swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse::<Multiaddr>()?)?;
 
     // ── Dial bootstrap peers from config ──────────────────────────────────────
@@ -1066,6 +1082,21 @@ pub async fn rotate_psk_and_restart(circle_id: &str, new_psk: [u8; 32], daemon: 
             _ => {}
         }
     });
+}
+
+/// Deterministic TCP listen port for a circle, in the IANA dynamic/private
+/// range (49152–61151). Derived from the circle_id via FNV-1a so every device
+/// in the circle is predictable and the same across daemon restarts — which is
+/// what keeps a saved Tailscale/LAN bootstrap address valid without a
+/// rendezvous server. Collisions with other processes fall back to ephemeral
+/// at bind time (see spawn_circle).
+fn stable_listen_port(circle_id: &str) -> u16 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in circle_id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    49_152 + (hash % 12_000) as u16
 }
 
 /// Returns true for listen addresses worth tracking for invite embedding:
