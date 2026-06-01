@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Presence, Task, Member, PendingEntry } from '../types'
-import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember } from '../api'
+import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, createFile, renameFile, deleteFile, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember } from '../api'
 import { useApp } from '../context/AppContext'
-import { agentColor } from '../lib/agentColor'
 
 interface Props {
   onFileSelect: (path: string | null) => void
@@ -40,6 +39,9 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [newTaskTitle, setNewTaskTitle] = useState('')
   const [newTaskDesc, setNewTaskDesc] = useState('')
   const [creating, setCreating] = useState(false)
+  const [creatingFile, setCreatingFile] = useState(false)
+  const [newFilePath, setNewFilePath] = useState('')
+  const [fileActionError, setFileActionError] = useState<string | null>(null)
   const [inviteUri, setInviteUri] = useState<string | null>(null)
   const [inviteConnectivity, setInviteConnectivity] = useState<{peer_addr: string|null, relay_addr: string|null, rendezvous_addr: string|null} | null>(null)
   const [inviteCopied, setInviteCopied] = useState(false)
@@ -49,6 +51,19 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   useEffect(() => {
     selectedFileRef.current = selectedFile
   }, [selectedFile])
+
+  const refreshFiles = useCallback(() => {
+    if (!activeCircleId) return Promise.resolve()
+    return getFiles(activeCircleId)
+      .then(data => {
+        setFiles(data)
+        const selected = selectedFileRef.current
+        if (selected && !data.includes(selected)) {
+          onFileSelect(null)
+        }
+      })
+      .catch(e => console.error('[files]', e))
+  }, [activeCircleId, onFileSelect])
 
   useEffect(() => {
     setPresence([])
@@ -94,34 +109,27 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
         })
     }
 
-    const refreshFiles = () => {
+    const refreshFilesQueued = () => {
       if (filesInFlight) {
         filesRefreshPending = true
         return
       }
       filesInFlight = true
       getFiles(activeCircleId)
-        .then(data => {
-          if (cancelled) return
-          setFiles(data)
-          const selected = selectedFileRef.current
-          if (selected && !data.includes(selected)) {
-            onFileSelect(null)
-          }
-        })
+        .then(data => { if (!cancelled) setFiles(data) })
         .catch(e => console.error('[files]', e))
         .finally(() => {
           filesInFlight = false
           if (filesRefreshPending && !cancelled) {
             filesRefreshPending = false
-            refreshFiles()
+            refreshFilesQueued()
           }
         })
     }
 
     const scheduleFilesRefresh = () => {
       if (filesTimer !== undefined) window.clearTimeout(filesTimer)
-      filesTimer = window.setTimeout(refreshFiles, 150)
+      filesTimer = window.setTimeout(refreshFilesQueued, 150)
     }
 
     const scheduleTasksRefresh = () => {
@@ -132,7 +140,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     const refresh = () => {
       refreshPresence()
       refreshTasks()
-      refreshFiles()
+      refreshFilesQueued()
       refreshMembers()
     }
 
@@ -167,7 +175,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
       if (tasksTimer !== undefined) window.clearTimeout(tasksTimer)
       es.close()
     }
-  }, [activeCircleId, onFileSelect])
+  }, [activeCircleId, onFileSelect, refreshFiles])
 
   const refreshTasks = useCallback(() => {
     if (activeCircleId) getTasks(activeCircleId).then(setTasks).catch(() => {})
@@ -241,6 +249,48 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     doneTask(activeCircleId, taskId, status.agent_id).then(refreshTasks).catch(() => {})
   }
 
+  const submitFile = async () => {
+    const path = newFilePath.trim()
+    if (!path || !activeCircleId) return
+    setFileActionError(null)
+    try {
+      await createFile(activeCircleId, path)
+      setNewFilePath('')
+      setCreatingFile(false)
+      await refreshFiles()
+      onFileSelect(path)
+    } catch (err: any) {
+      setFileActionError(err.message)
+    }
+  }
+
+  const handleRenameFile = async (path: string) => {
+    if (!activeCircleId) return
+    const next = window.prompt('Rename file', path)?.trim()
+    if (!next || next === path) return
+    setFileActionError(null)
+    try {
+      await renameFile(activeCircleId, path, next)
+      await refreshFiles()
+      if (selectedFile === path) onFileSelect(next)
+    } catch (err: any) {
+      setFileActionError(err.message)
+    }
+  }
+
+  const handleDeleteFile = async (path: string) => {
+    if (!activeCircleId) return
+    if (!window.confirm(`Delete ${path}?`)) return
+    setFileActionError(null)
+    try {
+      await deleteFile(activeCircleId, path)
+      await refreshFiles()
+      if (selectedFile === path) onFileSelect(null)
+    } catch (err: any) {
+      setFileActionError(err.message)
+    }
+  }
+
   // Build a simple nested tree from flat paths
   const fileTree = buildTree(files)
 
@@ -256,11 +306,12 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   }
 
   return (
-    <aside className="app-right-panel flex min-h-0 flex-col border-l-2 border-obsidian bg-alabaster/85 z-10 overflow-hidden">
+    <>
+    <aside className="app-circle-panel sys-window flex min-h-0 flex-col z-10 overflow-hidden">
 
       {/* ── Presence ─────────────────────────────────────────────────────── */}
       <div className="section-header flex justify-between items-center pr-3">
-        <span>Structural Entities</span>
+        <span>Circle</span>
         <button onClick={handleInvite} className="text-[9px] font-bold font-mono hover:underline text-alabaster/70 hover:text-alabaster">[+] INVITE</button>
       </div>
       {inviteUri && (
@@ -423,6 +474,9 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
         })}
       </div>
 
+    </aside>
+
+    <aside className="app-right-panel sys-window flex min-h-0 flex-col z-10 overflow-hidden">
       {/* ── Tasks ────────────────────────────────────────────────────────── */}
       <div className="section-header border-t-2 border-obsidian flex justify-between items-center pr-3">
         <span>Task Queue</span>
@@ -495,34 +549,63 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
       </div>
 
       {/* ── File tree ────────────────────────────────────────────────────── */}
-      <div className="section-header border-t-2 border-obsidian">Artifact Filesystem</div>
-      <div className="flex-1 overflow-y-auto p-4 font-mono text-[11px]">
+      <div className="section-header border-t-2 border-obsidian">
+        <span>Files</span>
+        <button
+          onClick={() => setCreatingFile(v => !v)}
+          className="text-[9px] font-bold font-mono hover:underline"
+        >{creatingFile ? 'CANCEL' : 'NEW'}</button>
+      </div>
+      {creatingFile && (
+        <div className="file-action-box">
+          <input
+            autoFocus
+            value={newFilePath}
+            onChange={e => setNewFilePath(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && submitFile()}
+            placeholder="docs/notes.md"
+            className="file-input"
+          />
+          <button onClick={submitFile} className="file-mini-btn">CREATE</button>
+        </div>
+      )}
+      {fileActionError && (
+        <div className="file-error">{fileActionError}</div>
+      )}
+      <div className="flex-1 overflow-y-auto p-3 font-mono text-[11px]">
         {files.length === 0 && <div className="text-slate">NO ARTIFACTS INDEXED</div>}
-        <FileTree nodes={fileTree} onSelect={onFileSelect} selected={selectedFile} depth={0} />
+        <FileTree
+          nodes={fileTree}
+          onSelect={onFileSelect}
+          onRename={handleRenameFile}
+          onDelete={handleDeleteFile}
+          selected={selectedFile}
+          depth={0}
+        />
       </div>
     </aside>
+    </>
   )
 }
 
 function PresenceRow({ p }: { p: Presence }) {
   const stale = Date.now() - new Date(p.last_seen).getTime() > 90_000
   const status = stale && p.status === 'online' ? 'stale' : p.status
-  const dot = status === 'online' ? '●' : status === 'idle' || status === 'stale' ? '◑' : '○'
-  const color = agentColor(p.agent_id)
   return (
-    <div className="flex flex-col gap-0.5">
-      <div className="flex justify-between items-baseline">
-        <span className="font-bold" title={p.agent_id}>@{shortenAgentId(p.agent_id)}</span>
-        <div className="flex gap-2 items-baseline">
-          <span className="text-[9px] font-bold" style={{ color }}>{dot} {status.toUpperCase()}</span>
-          <span className="text-[9px] text-slate">{age(p.last_seen)}</span>
-        </div>
+    <div className="person-row">
+      <span className={`sigil ${status}`} aria-hidden="true" />
+      <div className="min-w-0">
+        <div className="font-bold truncate" title={p.agent_id}>@{shortenAgentId(p.agent_id)}</div>
+        {p.current_file && (
+          <div className="text-[9px] text-slate truncate" title={p.current_file}>
+            AT {p.current_file}
+          </div>
+        )}
       </div>
-      {p.current_file && (
-        <div className="text-[9px] text-slate truncate" title={p.current_file}>
-          AT {p.current_file}
-        </div>
-      )}
+      <div className="text-right">
+        <div className="text-[9px] font-bold">{status.toUpperCase()}</div>
+        <div className="text-[9px] text-slate">{age(p.last_seen)}</div>
+      </div>
     </div>
   )
 }
@@ -555,9 +638,11 @@ function buildTree(paths: string[]): TreeNode[] {
   return root.children
 }
 
-function FileTree({ nodes, onSelect, selected, depth }: {
+function FileTree({ nodes, onSelect, onRename, onDelete, selected, depth }: {
   nodes: TreeNode[]
   onSelect: (path: string) => void
+  onRename: (path: string) => void
+  onDelete: (path: string) => void
   selected: string | null
   depth: number
 }) {
@@ -568,22 +653,39 @@ function FileTree({ nodes, onSelect, selected, depth }: {
       {nodes.map(n => (
         <div key={n.path}>
           <div
-            className={`flex justify-between py-1 border-b border-dashed border-obsidian/20 cursor-pointer
-                        transition-colors ${
+            className={`file-row ${
                           selected === n.path
-                            ? 'bg-obsidian text-alabaster'
-                            : 'hover:bg-slate/15 hover:text-obsidian'
+                            ? 'selected'
+                            : ''
                         }`}
             style={{ paddingLeft: `${depth * 12}px` }}
-            onClick={() => {
-              if (n.isDir) setOpen(s => { const ns = new Set(s); ns.has(n.path) ? ns.delete(n.path) : ns.add(n.path); return ns })
-              else onSelect(n.path)
-            }}
           >
-            <span>{n.isDir ? (open.has(n.path) ? '▾ ' : '▸ ') : '  '}{n.name}</span>
+            <button
+              className="file-name"
+              onClick={() => {
+                if (n.isDir) setOpen(s => { const ns = new Set(s); ns.has(n.path) ? ns.delete(n.path) : ns.add(n.path); return ns })
+                else onSelect(n.path)
+              }}
+              title={n.path}
+            >
+              <span>{n.isDir ? (open.has(n.path) ? '[-] ' : '[+] ') : '    '}{n.name}</span>
+            </button>
+            {!n.isDir && (
+              <span className="file-actions">
+                <button onClick={() => onRename(n.path)} title={`Rename ${n.path}`}>REN</button>
+                <button onClick={() => onDelete(n.path)} title={`Delete ${n.path}`}>DEL</button>
+              </span>
+            )}
           </div>
           {n.isDir && open.has(n.path) && (
-            <FileTree nodes={n.children} onSelect={onSelect} selected={selected} depth={depth + 1} />
+            <FileTree
+              nodes={n.children}
+              onSelect={onSelect}
+              onRename={onRename}
+              onDelete={onDelete}
+              selected={selected}
+              depth={depth + 1}
+            />
           )}
         </div>
       ))}

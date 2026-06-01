@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { EditorState } from '@codemirror/state'
-import { EditorView, keymap } from '@codemirror/view'
+import { EditorView, keymap, lineNumbers, highlightActiveLineGutter } from '@codemirror/view'
 import { defaultKeymap, indentWithTab } from '@codemirror/commands'
 import { javascript } from '@codemirror/lang-javascript'
 import { python } from '@codemirror/lang-python'
@@ -17,6 +17,7 @@ import { constrainCursorLabels } from '../lib/constrainCursorLabels'
 
 interface Props {
   filePath: string | null
+  onBack?: () => void
 }
 
 function langExt(path: string) {
@@ -82,7 +83,11 @@ const enochTheme = EditorView.theme({
   },
 }, { dark: false })
 
-export default function EditorPanel({ filePath }: Props) {
+function fileName(path: string) {
+  return path.split('/').pop() || path
+}
+
+export default function EditorPanel({ filePath, onBack }: Props) {
   const { activeCircleId, status } = useApp()
   const editorRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
@@ -121,6 +126,8 @@ export default function EditorPanel({ filePath }: Props) {
     const state = EditorState.create({
       extensions: [
         keymap.of([...defaultKeymap, indentWithTab]),
+        lineNumbers(),
+        highlightActiveLineGutter(),
         langExt(filePath),
         enochTheme,
         EditorView.lineWrapping,
@@ -152,17 +159,25 @@ export default function EditorPanel({ filePath }: Props) {
   }
 
   return (
-    <main className="app-editor-panel flex min-h-0 flex-col items-center justify-center z-10 bg-transparent p-8 overflow-hidden">
-      <div className="editor-frame border-2 border-obsidian bg-alabaster w-full max-w-3xl flex min-h-0 flex-col
-                      shadow-[20px_20px_0px_rgba(17,17,17,0.13)]">
-        <div className="flex justify-between items-center px-4 py-3 border-b-2 border-obsidian
-                        gap-3 font-mono text-[10px] font-bold uppercase bg-alabaster">
-          <span className="min-w-0 truncate" title={filePath}>{filePath}</span>
-          <span className={`text-[9px] ${connectionStatus === 'synced' ? 'text-obsidian' : 'text-slate'}`}>
-            {connectionStatus === 'synced' ? '◉ SYNCED' : connectionStatus === 'connecting' ? '◎ CONNECTING...' : '○ OFFLINE'}
+    <main className="app-editor-panel flex min-h-0 flex-col z-10 bg-transparent overflow-hidden">
+      <div className="editor-frame ide-frame w-full flex min-h-0 flex-col">
+        <div className="ide-topbar">
+          <button onClick={onBack} className="ide-back" title="Back to circle chat">
+            BACK TO CHAT
+          </button>
+          <div className="ide-file-meta min-w-0">
+            <div className="ide-file-name truncate" title={filePath}>{fileName(filePath)}</div>
+            <div className="ide-file-path truncate" title={filePath}>{filePath}</div>
+          </div>
+          <span className={`ide-sync ${connectionStatus}`}>
+            {connectionStatus === 'synced' ? 'SYNCED' : connectionStatus === 'connecting' ? 'CONNECTING' : 'OFFLINE'}
           </span>
         </div>
-        <div ref={editorRef} className="min-h-0 flex-1 overflow-auto bg-transparent" />
+        <div className="ide-subbar">
+          <span>collaborative document</span>
+          <span>{status?.agent_id ?? 'unknown'}</span>
+        </div>
+        <div ref={editorRef} className="ide-editor min-h-0 flex-1 overflow-auto bg-transparent" />
       </div>
     </main>
   )

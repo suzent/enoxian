@@ -1,26 +1,29 @@
 import { useApp } from '../context/AppContext'
 import CircleManager from './CircleManager'
+import type { RitualMode } from './RitualTransition'
 
-export default function Header() {
+interface Props {
+  onRitual?: (mode: RitualMode, label?: string) => void
+}
+
+export default function Header({ onRitual }: Props) {
   const { status } = useApp()
 
   return (
-    <header className="app-header border-b-2 border-obsidian bg-alabaster z-[100]
-                       flex items-center justify-between gap-4 px-6 min-h-[60px] font-mono text-[11px] uppercase font-bold tracking-widest">
+    <header className="app-header sys-window z-[100] flex items-center justify-between gap-4 px-5 min-h-[64px] font-mono text-[11px] uppercase font-bold">
       <div className="flex min-w-0 items-center gap-6">
-        <span className="shrink-0 text-obsidian">enoxian</span>
-        <span className="text-slate font-normal">//</span>
-        <CircleManager />
+        <span className="brand-mark shrink-0">E</span>
+        <CircleManager onRitual={onRitual} />
       </div>
 
-      <div className="header-status flex items-center justify-end gap-8 text-slate font-normal">
+      <div className="header-status flex items-center justify-end gap-3 text-slate font-normal">
         {status && (
           <>
-            <span>AGENT: <span className="text-obsidian font-bold">{status.agent_id}</span></span>
-            <span>DOCS: <span className="text-obsidian font-bold">{status.docs}</span></span>
+            <span className="sys-badge">agent {status.agent_id}</span>
+            <span className="sys-badge">docs {status.docs}</span>
           </>
         )}
-        <span className="text-obsidian">YJS CRDT // SYNC: ACTIVE</span>
+        <span className="sys-badge">yjs synced</span>
       </div>
     </header>
   )

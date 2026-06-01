@@ -1,8 +1,13 @@
 import { useState } from 'react'
 import { initCircle, enterCircle, enableCircle, disableCircle, leaveCircle } from '../api'
 import { useApp } from '../context/AppContext'
+import type { RitualMode } from './RitualTransition'
 
-export default function CircleManager() {
+interface Props {
+  onRitual?: (mode: RitualMode, label?: string) => void
+}
+
+export default function CircleManager({ onRitual }: Props) {
   const { circles, activeCircleId, setActiveCircleId, reloadCircles } = useApp()
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [modal, setModal] = useState<'init' | 'enter' | 'leave' | null>(null)
@@ -25,6 +30,7 @@ export default function CircleManager() {
       await reloadCircles()
       if (res.circle_id) setActiveCircleId(res.circle_id)
       setModal(null)
+      onRitual?.('init', initName)
       setInitName('')
       setInitOwner('')
       setInitJoinPolicy('auto')
@@ -40,6 +46,7 @@ export default function CircleManager() {
       await enterCircle(enterTarget.trim(), enterOwner || undefined)
       await reloadCircles()
       setModal(null)
+      onRitual?.('enter', enterOwner || 'invite')
       setEnterTarget('')
       setEnterOwner('')
     } catch (err: any) {
@@ -60,16 +67,16 @@ export default function CircleManager() {
 
   return (
     <div className="circle-manager relative flex min-w-0 items-center">
-      <div className="circle-controls flex min-w-0 items-stretch shadow-[2px_2px_0px_#111]">
+      <div className="circle-controls flex min-w-0 items-stretch">
         {/* Circle Selector Button */}
         <button
           onClick={() => setDropdownOpen(!dropdownOpen)}
-          className="circle-select bg-alabaster border-2 border-obsidian font-mono text-[11px] uppercase font-bold px-3 py-1 cursor-pointer hover:bg-obsidian/5 transition-colors min-w-[200px] text-left flex justify-between items-center"
+          className="circle-select sys-control min-w-[220px] text-left flex justify-between items-center"
         >
           <span className="min-w-0 truncate">
             {activeCircle ? activeCircle.circle_name : 'NO CIRCLE SELECTED'}
           </span>
-          <span className="text-[9px] ml-4">▼</span>
+            <span className="text-[9px] ml-4">▾</span>
         </button>
 
         {/* State Toggle */}
@@ -106,7 +113,7 @@ export default function CircleManager() {
       {activeCircle && (
         <button
           onClick={() => setModal('leave')}
-          className="circle-leave ml-2 px-2 text-slate hover:text-red-600 transition-colors flex items-center font-bold text-[10px] uppercase"
+          className="circle-leave ml-2 px-2 text-slate hover:text-obsidian transition-colors flex items-center font-bold text-[10px] uppercase"
           title="Leave Circle"
         >
           LEAVE ×
@@ -115,7 +122,7 @@ export default function CircleManager() {
 
       {/* Dropdown Menu */}
       {dropdownOpen && (
-        <div className="circle-menu absolute top-full left-0 mt-2 w-[280px] bg-alabaster border-2 border-obsidian z-50 shadow-[4px_4px_0px_#111] text-[11px]">
+        <div className="circle-menu sys-window absolute top-full left-0 mt-2 w-[280px] z-50 text-[11px]">
           {circles.length > 0 && (
             <div className="px-3 py-2 border-b-2 border-obsidian font-bold text-alabaster bg-obsidian text-[10px] tracking-widest">
               SWITCH CIRCLE
@@ -156,8 +163,8 @@ export default function CircleManager() {
 
       {/* Modals */}
       {modal && (
-        <div className="fixed inset-0 bg-obsidian/60 z-[100] flex items-center justify-center overflow-y-auto p-4 backdrop-blur-sm">
-          <div className="circle-modal bg-alabaster border-2 border-obsidian p-6 w-[400px] max-w-full shadow-[8px_8px_0px_#111] relative text-[11px] uppercase font-mono">
+          <div className="fixed inset-0 bg-obsidian/60 z-[100] flex items-center justify-center overflow-y-auto p-4 backdrop-blur-sm">
+          <div className="circle-modal sys-window p-6 w-[400px] max-w-full relative text-[11px] uppercase font-mono">
             <button
               onClick={() => setModal(null)}
               className="absolute top-2 right-3 text-obsidian hover:text-red-600 font-bold text-xl leading-none"

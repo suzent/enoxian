@@ -34,6 +34,12 @@ export const claimTask = (id: string, taskId: string, agentId: string) =>
 export const doneTask = (id: string, taskId: string, agentId: string) =>
   post(`${api(id)}/done`, { task_id: taskId, agent_id: agentId })
 export const getFiles = (id: string) => get<string[]>(`${api(id)}/files`)
+export const createFile = (id: string, path: string, content = '') =>
+  post<{status: string, path: string}>(`${api(id)}/files/create`, { path, content })
+export const renameFile = (id: string, from: string, to: string) =>
+  post<{status: string, from: string, to: string}>(`${api(id)}/files/rename`, { from, to })
+export const deleteFile = (id: string, path: string) =>
+  post<{status: string, path: string}>(`${api(id)}/files/delete`, { path })
 
 // ── Member management (M11) ──────────────────────────────────────────────────
 export const getMembers = (id: string) => get<Member[]>(`/circles/${id}/members`)

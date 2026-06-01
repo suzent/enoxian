@@ -5,6 +5,7 @@ import { useApp } from '../context/AppContext'
 
 interface Props {
   onMessage?: () => void
+  variant?: 'rail' | 'main'
 }
 
 function formatTime(ts: number) {
@@ -44,7 +45,7 @@ function MsgRow({ msg, myAgentId }: { msg: ChatMessage; myAgentId: string }) {
   )
 }
 
-export default function ChatPanel({ onMessage }: Props) {
+export default function ChatPanel({ onMessage, variant = 'rail' }: Props) {
   const { activeCircleId, status } = useApp()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
@@ -104,8 +105,8 @@ export default function ChatPanel({ onMessage }: Props) {
   }
 
   return (
-    <aside className="app-chat-panel flex min-h-0 flex-col border-r-2 border-obsidian bg-alabaster/85 z-10 overflow-hidden">
-      <div className="section-header">Terminal Log</div>
+    <main className={`app-chat-panel flex min-h-0 flex-col z-10 overflow-hidden ${variant === 'main' ? 'chat-main sys-window' : 'border-r-2 border-obsidian bg-alabaster/85'}`}>
+      <div className="section-header">{variant === 'main' ? 'Circle Chat' : 'Terminal Log'}</div>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 flex flex-col gap-4 font-mono text-[11px] min-w-0">
         {messages.length === 0 && (
@@ -126,8 +127,8 @@ export default function ChatPanel({ onMessage }: Props) {
           className="min-w-[160px] flex-1 bg-transparent border border-obsidian font-mono text-[11px] px-2 py-2
                      text-obsidian placeholder:text-slate focus:outline-none focus:bg-obsidian/5"
         />
-        <button onClick={send} className="enox-btn">EXEC</button>
+        <button onClick={send} className="enox-btn">{variant === 'main' ? 'SEND' : 'EXEC'}</button>
       </div>
-    </aside>
+    </main>
   )
 }
