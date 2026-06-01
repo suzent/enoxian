@@ -59,6 +59,7 @@ pub struct AppState {
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, circle_dir: PathBuf, admin_pubkey_hex: String, agent_id: String, session_id: u64, peer_id: String, join_policy: crate::config::JoinPolicy, owner: String, mls: crate::mls::SharedMlsState) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
@@ -87,7 +88,7 @@ impl AppState {
                 if let yrs::types::Change::Added(values) = change {
                     for val in values {
                         if let yrs::Out::Any(yrs::Any::String(s)) = val {
-                            if let Ok(msg) = serde_json::from_str::<ChatMessage>(&s) {
+                            if let Ok(msg) = serde_json::from_str::<ChatMessage>(s) {
                                 let _ = events_for_chat.send(CircleEvent::MessagePosted { message: msg.clone() });
                                 for mention in &msg.mentions {
                                     let _ = events_for_chat.send(CircleEvent::AgentMentioned {
@@ -111,7 +112,7 @@ impl AppState {
             let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
             if !is_p2p { return; }
 
-            for (_key, change) in event.keys(txn) {
+            for change in event.keys(txn).values() {
                 match change {
                     yrs::types::EntryChange::Inserted(yrs::Out::Any(yrs::Any::String(s))) => {
                         if let Ok(task) = serde_json::from_str::<Task>(s) {

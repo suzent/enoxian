@@ -38,7 +38,6 @@ pub async fn get_status(
         .unwrap_or_default();
 
     let (device_label, user_handle) = crate::identity::read_identity_display()
-        .map(|(l, h)| (l, h))
         .unwrap_or_else(|| (String::new(), None));
 
     Json(json!({

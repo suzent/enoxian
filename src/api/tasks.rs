@@ -41,7 +41,7 @@ pub async fn get_tasks(
             }
         }
     }
-    result.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    result.sort_by_key(|a| a.created_at);
     Json(result).into_response()
 }
 

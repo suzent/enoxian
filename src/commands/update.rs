@@ -1,6 +1,6 @@
 use crate::config;
 use anyhow::{bail, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub async fn run(dev: bool, src: Option<PathBuf>, no_pull: bool) -> Result<()> {
@@ -34,7 +34,7 @@ fn run_dev(src: Option<PathBuf>, no_pull: bool) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn install_unix(src: &PathBuf) -> Result<()> {
+fn install_unix(src: &Path) -> Result<()> {
     println!("▶ Installing binaries to ~/.cargo/bin/ ...");
     // On Unix, running executables can be replaced in-place (inode swap).
     let status = Command::new("cargo")

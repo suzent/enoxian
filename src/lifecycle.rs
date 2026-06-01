@@ -382,10 +382,11 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
             if !is_p2p { return; }
             for change in event.delta(txn) {
+                #[allow(clippy::collapsible_match)]
                 if let Change::Added(values) = change {
                     for val in values {
                         if let yrs::Out::Any(yrs::Any::String(s)) = val {
-                            if let Ok(entry) = serde_json::from_str::<MlsCommitEntry>(&s) {
+                            if let Ok(entry) = serde_json::from_str::<MlsCommitEntry>(s) {
                                 let _ = commit_tx.send(entry);
                             }
                         }
@@ -1130,8 +1131,8 @@ fn is_routable_listen_addr(addr: &Multiaddr) -> bool {
                     return false;
                 }
             }
-            Protocol::Ip6(ip) => {
-                if ip.is_loopback() || ip.is_unspecified() { return false; }
+            Protocol::Ip6(ip) if ip.is_loopback() || ip.is_unspecified() => {
+                return false;
             }
             _ => {}
         }

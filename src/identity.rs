@@ -13,7 +13,6 @@
 /// This gives a stable, deterministic peer ID per (device, circle) without
 /// regenerating a fresh keypair on every join — which was the source of the
 /// MLS re-add churn and epoch-rotation lockouts.
-
 use anyhow::{bail, Context, Result};
 use hkdf::Hkdf;
 use libp2p::identity::Keypair;

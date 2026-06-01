@@ -47,7 +47,7 @@ pub async fn create(
     if let Some(desc) = description {
         body["description"] = serde_json::Value::String(desc);
     }
-    let resp = client.post(&format!("{base}/tasks")).json(&body).send().await?;
+    let resp = client.post(format!("{base}/tasks")).json(&body).send().await?;
     let val: Value = resp.json().await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&val)?);

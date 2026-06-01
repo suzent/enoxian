@@ -17,6 +17,12 @@ pub struct DaemonState {
     pub shutdown_token: CancellationToken,
 }
 
+impl Default for DaemonState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DaemonState {
     pub fn new() -> Self {
         Self {

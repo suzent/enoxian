@@ -16,6 +16,7 @@ pub struct EnochBehaviour {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum EnochEvent {
     Mdns(mdns::Event),
     Kad(kad::Event),

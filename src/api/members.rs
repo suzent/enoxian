@@ -25,7 +25,7 @@ pub async fn list_members(
             }
         }
     }
-    members.sort_by(|a, b| a.added_at.cmp(&b.added_at));
+    members.sort_by_key(|a| a.added_at);
     Json(members).into_response()
 }
 
@@ -311,7 +311,7 @@ pub async fn list_pending(
             }
         }
     }
-    entries.sort_by(|a, b| a.requested_at.cmp(&b.requested_at));
+    entries.sort_by_key(|a| a.requested_at);
     Json(entries).into_response()
 }
 

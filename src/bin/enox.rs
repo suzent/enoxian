@@ -47,15 +47,13 @@ async fn main() -> anyhow::Result<()> {
             enoxian::commands::invite::run(args, &client, &api_base).await
         }
         AgentCommands::Circles => enoxian::commands::circles::run(&client, &root, cli.json).await,
-        AgentCommands::Open => enoxian::commands::open::run(&root).map_err(Into::into),
+        AgentCommands::Open => enoxian::commands::open::run(&root),
         AgentCommands::Start { port } => enoxian::commands::start::run(port).await,
         AgentCommands::Stop => enoxian::commands::stop::run(&client, &root).await,
         AgentCommands::Update { dev, src, no_pull } => {
             enoxian::commands::update::run(dev, src, no_pull).await
         }
-        AgentCommands::Identity(args) => {
-            enoxian::commands::identity::run(args).map_err(Into::into)
-        }
+        AgentCommands::Identity(args) => enoxian::commands::identity::run(args),
 
         // All other commands need a resolved circle
         cmd => {
