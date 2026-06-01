@@ -16,6 +16,7 @@ export class YjsProvider {
   private onSyncCallback: (() => void) | undefined
   private onStatusChange: ((status: YjsConnectionStatus) => void) | undefined
   private awarenessHeartbeat: number | undefined
+  private synced = false
 
   constructor(
     private url: string,
@@ -34,6 +35,14 @@ export class YjsProvider {
 
   private emitStatus(status: YjsConnectionStatus) {
     this.onStatusChange?.(status)
+  }
+
+  private markSynced() {
+    if (this.synced) return
+    this.synced = true
+    this.onSyncCallback?.()
+    this.onSyncCallback = undefined
+    this.emitStatus('synced')
   }
 
   private sendAwarenessUpdate(clientIds: number[], ws = this.ws) {
@@ -81,6 +90,11 @@ export class YjsProvider {
       this.awarenessHeartbeat = window.setInterval(() => {
         this.sendAwarenessUpdate([this.doc.clientID], ws)
       }, 10_000)
+
+      // The server may already have sent a compatible state vector before it
+      // needs to answer with SyncStep2, so "open + SyncStep1 sent" is the
+      // earliest reliable connected state for the UI.
+      this.markSynced()
     }
 
     ws.onmessage = (e) => {
@@ -95,10 +109,8 @@ export class YjsProvider {
         if (encoding.length(replyEnc) > 1 && ws.readyState === WebSocket.OPEN) {
           ws.send(encoding.toUint8Array(replyEnc))
         }
-        if (syncType === syncProtocol.messageYjsSyncStep2) {
-          this.onSyncCallback?.()
-          this.onSyncCallback = undefined
-          this.emitStatus('synced')
+        if (syncType === syncProtocol.messageYjsSyncStep1 || syncType === syncProtocol.messageYjsSyncStep2) {
+          this.markSynced()
         }
       } else if (msgType === MSG_AWARENESS) {
         const raw = decoding.readVarUint8Array(dec)
@@ -108,13 +120,18 @@ export class YjsProvider {
 
     ws.onclose = () => {
       if (!this.destroyed) {
+        this.synced = false
         this.emitStatus('disconnected')
         setTimeout(() => this.connect(), 2000)
       }
     }
 
-    ws.onerror = () => {
-      if (!this.destroyed) this.emitStatus('disconnected')
+    ws.onerror = (event) => {
+      if (!this.destroyed) {
+        this.synced = false
+        console.warn('[yjs] websocket error', this.url, event)
+        this.emitStatus('disconnected')
+      }
     }
 
     const onUpdate = (update: Uint8Array, origin: unknown) => {

@@ -145,9 +145,9 @@ pub async fn create_file(
     }
 
     let doc = state.get_or_create_doc(&rel);
+    let text = doc.get_or_insert_text(rel.as_str());
+    let mut txn = doc.transact_mut();
     if !content.is_empty() {
-        let text = doc.get_or_insert_text(rel.as_str());
-        let mut txn = doc.transact_mut();
         text.insert(&mut txn, 0, &content);
     }
     let _ = state
@@ -233,7 +233,9 @@ pub async fn rename_file(
         let doc = state.get_or_create_doc(&to);
         let text = doc.get_or_insert_text(to.as_str());
         let mut txn = doc.transact_mut();
-        text.insert(&mut txn, 0, &content);
+        if !content.is_empty() {
+            text.insert(&mut txn, 0, &content);
+        }
     }
     let _ = state
         .events
