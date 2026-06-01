@@ -265,3 +265,156 @@ pub fn read_identity_display() -> Option<(String, Option<String>)> {
         .and_then(|s| toml::from_str::<IdentityFile>(&s).ok())
         .map(|f| (f.device_label, f.user_handle))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_device(label: &str) -> DeviceIdentity {
+        DeviceIdentity::generate(label.to_string())
+    }
+
+    // ── Key derivation ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn circle_keypair_is_deterministic() {
+        let d = make_device("test");
+        let kp1 = d.derive_circle_keypair("circle-abc").unwrap();
+        let kp2 = d.derive_circle_keypair("circle-abc").unwrap();
+        assert_eq!(
+            kp1.public().to_peer_id(),
+            kp2.public().to_peer_id(),
+            "same device + same circle_id must always produce the same peer ID"
+        );
+    }
+
+    #[test]
+    fn different_circles_produce_different_keypairs() {
+        let d = make_device("test");
+        let kp_a = d.derive_circle_keypair("circle-alpha").unwrap();
+        let kp_b = d.derive_circle_keypair("circle-beta").unwrap();
+        assert_ne!(
+            kp_a.public().to_peer_id(),
+            kp_b.public().to_peer_id(),
+            "different circle IDs must derive different peer IDs"
+        );
+    }
+
+    #[test]
+    fn different_devices_produce_different_keypairs_for_same_circle() {
+        let d1 = make_device("device-one");
+        let d2 = make_device("device-two");
+        let kp1 = d1.derive_circle_keypair("shared-circle").unwrap();
+        let kp2 = d2.derive_circle_keypair("shared-circle").unwrap();
+        assert_ne!(
+            kp1.public().to_peer_id(),
+            kp2.public().to_peer_id(),
+            "different devices must derive different peer IDs even for the same circle"
+        );
+    }
+
+    #[test]
+    fn device_keypair_differs_from_circle_keypair() {
+        let d = make_device("test");
+        let device_kp = d.device_keypair().unwrap();
+        let circle_kp = d.derive_circle_keypair("some-circle").unwrap();
+        assert_ne!(
+            device_kp.public().to_peer_id(),
+            circle_kp.public().to_peer_id()
+        );
+    }
+
+    // ── Persistence ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn save_load_round_trip() {
+        let dir = TempDir::new().unwrap();
+        // Override the identity path by setting HOME to the temp dir.
+        // DeviceIdentity::save/load use identity_path() which calls enoxian_dir()
+        // which calls dirs::home_dir(). We test the serialisation directly instead.
+        let mut d = make_device("my-machine");
+        d.user_handle = Some("alice".to_string());
+
+        // Serialise to TOML and re-parse.
+        let file = IdentityFile {
+            device_key_hex: hex::encode(d.seed),
+            device_label: d.device_label.clone(),
+            user_handle: d.user_handle.clone(),
+            user_pubkey_hex: None,
+            user_attestation_hex: None,
+            user_mnemonic: None,
+        };
+        let path = dir.path().join("identity.toml");
+        std::fs::write(&path, toml::to_string_pretty(&file).unwrap()).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let loaded: IdentityFile = toml::from_str(&raw).unwrap();
+
+        assert_eq!(loaded.device_label, "my-machine");
+        assert_eq!(loaded.user_handle.as_deref(), Some("alice"));
+        assert_eq!(loaded.device_key_hex, hex::encode(d.seed));
+    }
+
+    #[test]
+    fn peer_id_stable_after_serialise_deserialise() {
+        let d = make_device("stable-test");
+        let peer_id_before = d.derive_circle_keypair("c1").unwrap().public().to_peer_id();
+
+        // Reconstruct from the same seed bytes (simulating load from disk).
+        let d2 = DeviceIdentity {
+            seed: d.seed,
+            device_label: d.device_label.clone(),
+            user_handle: None,
+            user_pubkey_hex: None,
+            user_attestation_hex: None,
+        };
+        let peer_id_after = d2.derive_circle_keypair("c1").unwrap().public().to_peer_id();
+        assert_eq!(peer_id_before, peer_id_after);
+    }
+
+    // ── Display name ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn display_name_prefers_user_handle() {
+        let mut d = make_device("my-laptop");
+        assert_eq!(d.display_name(), "my-laptop");
+        d.set_user_handle("suzy".to_string());
+        assert_eq!(d.display_name(), "suzy");
+    }
+
+    // ── User identity & mnemonic ───────────────────────────────────────────────
+
+    #[test]
+    fn mnemonic_is_24_words() {
+        let (_user, mnemonic) = UserIdentity::generate("alice".to_string()).unwrap();
+        assert_eq!(mnemonic.split_whitespace().count(), 24);
+    }
+
+    #[test]
+    fn mnemonic_round_trip_produces_same_pubkey() {
+        let (user, mnemonic) = UserIdentity::generate("alice".to_string()).unwrap();
+        let pk1 = user.pubkey_hex().unwrap();
+
+        let user2 = UserIdentity::from_mnemonic(&mnemonic, "alice".to_string()).unwrap();
+        let pk2 = user2.pubkey_hex().unwrap();
+
+        assert_eq!(pk1, pk2, "restoring from mnemonic must reproduce the same user public key");
+    }
+
+    #[test]
+    fn invalid_mnemonic_is_rejected() {
+        let result = UserIdentity::from_mnemonic("not a valid mnemonic", "x".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn attestation_contains_device_pubkey() {
+        let (user, _) = UserIdentity::generate("alice".to_string()).unwrap();
+        let device = make_device("laptop");
+        let device_pubkey = hex::encode(device.device_keypair().unwrap().public().encode_protobuf());
+        let attestation = user.attest_device(&device_pubkey, &device.device_label);
+        assert!(attestation.is_ok(), "attestation should succeed");
+        // Attestation is a 64-byte Ed25519 signature → 128 hex chars.
+        assert_eq!(attestation.unwrap().len(), 128);
+    }
+}

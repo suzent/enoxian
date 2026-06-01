@@ -80,3 +80,6 @@ openmls_basic_credential = { version = "0.5", features = ["clonable"] }
 openmls_rust_crypto = "0.5"
 openmls_traits = "0.5"
 tls_codec = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
