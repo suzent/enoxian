@@ -492,6 +492,9 @@ body {
 .invite-box {
   max-width: 100%;
   overflow: hidden;
+  display: grid;
+  gap: 10px;
+  padding: 12px !important;
 }
 
 .invite-uri {
@@ -503,6 +506,18 @@ body {
 .invite-connectivity {
   flex-wrap: wrap;
   min-width: 0;
+}
+
+.invite-box > .mt-2 {
+  margin-top: 0 !important;
+  padding-top: 2px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.invite-box > .mt-2 button {
+  min-height: 31px;
+  padding: 4px 10px;
 }
 
 .app-circle-panel .text-\[9px\],
