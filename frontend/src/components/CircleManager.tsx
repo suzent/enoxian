@@ -116,7 +116,7 @@ export default function CircleManager({ onRitual }: Props) {
           className="circle-leave ml-2 px-2 text-slate hover:text-obsidian transition-colors flex items-center font-bold text-[10px] uppercase"
           title="Leave Circle"
         >
-          LEAVE ×
+          LEAVE
         </button>
       )}
 
@@ -137,7 +137,7 @@ export default function CircleManager({ onRitual }: Props) {
               }}
               className={`w-full text-left px-4 py-2 border-b border-obsidian/20 hover:bg-obsidian hover:text-alabaster transition-colors ${c.circle_id === activeCircleId ? 'font-bold bg-obsidian/5' : ''}`}
             >
-              {c.circle_name} {c.disabled && <span className="text-red-500 font-normal ml-2">(DISABLED)</span>}
+            {c.circle_name} {c.disabled && <span className="font-normal ml-2">(DISABLED)</span>}
             </button>
           ))}
           
@@ -150,13 +150,13 @@ export default function CircleManager({ onRitual }: Props) {
             onClick={() => { setModal('init'); setDropdownOpen(false) }}
             className="w-full text-left px-4 py-2 border-b border-obsidian/20 hover:bg-obsidian hover:text-alabaster transition-colors font-bold"
           >
-            [+] INIT NEW CIRCLE
+            INIT NEW CIRCLE
           </button>
           <button
             onClick={() => { setModal('enter'); setDropdownOpen(false) }}
             className="w-full text-left px-4 py-2 hover:bg-obsidian hover:text-alabaster transition-colors font-bold"
           >
-            {'[>]'} ENTER VIA INVITE
+            ENTER VIA INVITE
           </button>
         </div>
       )}
@@ -167,7 +167,7 @@ export default function CircleManager({ onRitual }: Props) {
           <div className="circle-modal sys-window p-6 w-[400px] max-w-full relative text-[11px] uppercase font-mono">
             <button
               onClick={() => setModal(null)}
-              className="absolute top-2 right-3 text-obsidian hover:text-red-600 font-bold text-xl leading-none"
+              className="absolute top-2 right-3 text-obsidian hover:bg-obsidian hover:text-alabaster font-bold text-xl leading-none px-1"
             >
               ×
             </button>
@@ -175,7 +175,7 @@ export default function CircleManager({ onRitual }: Props) {
             {modal === 'init' && (
               <form onSubmit={handleInit}>
                 <h2 className="text-[14px] font-bold mb-4 border-b-2 border-obsidian pb-2">INIT NEW CIRCLE</h2>
-                {errorMsg && <div className="text-red-600 mb-2 font-bold bg-red-100 p-2 border border-red-600">{errorMsg}</div>}
+                {errorMsg && <div className="file-error mb-2">{errorMsg}</div>}
                 <div className="mb-4">
                   <label className="block text-slate font-bold mb-1 tracking-widest">CIRCLE NAME</label>
                   <input
@@ -233,7 +233,7 @@ export default function CircleManager({ onRitual }: Props) {
             {modal === 'enter' && (
               <form onSubmit={handleEnter}>
                 <h2 className="text-[14px] font-bold mb-4 border-b-2 border-obsidian pb-2">ENTER CIRCLE</h2>
-                {errorMsg && <div className="text-red-600 mb-2 font-bold bg-red-100 p-2 border border-red-600">{errorMsg}</div>}
+                {errorMsg && <div className="file-error mb-2">{errorMsg}</div>}
                 <div className="mb-4">
                   <label className="block text-slate font-bold mb-1 tracking-widest">INVITE URI</label>
                   <textarea
@@ -271,7 +271,7 @@ export default function CircleManager({ onRitual }: Props) {
 
             {modal === 'leave' && (
               <div>
-                <h2 className="text-[14px] font-bold mb-4 border-b-2 border-red-600 pb-2 text-red-600">LEAVE CIRCLE</h2>
+                <h2 className="text-[14px] font-bold mb-4 border-b-2 border-obsidian pb-2">LEAVE CIRCLE</h2>
                 <p className="mb-6 leading-relaxed font-bold text-obsidian/80">
                   ARE YOU SURE YOU WANT TO LEAVE <span className="text-obsidian text-[12px] bg-obsidian/10 px-1">"{activeCircle?.circle_name}"</span>?<br/><br/>
                   THIS WILL REMOVE ALL LOCAL CONFIGURATION. YOUR WORKSPACE FILES WILL BE UNTOUCHED.
@@ -280,7 +280,7 @@ export default function CircleManager({ onRitual }: Props) {
                   <button onClick={() => setModal(null)} className="flex-1 border-2 border-obsidian py-2 font-bold hover:bg-obsidian/5 transition-colors shadow-[2px_2px_0px_#111] active:translate-y-px active:translate-x-px active:shadow-none">
                     CANCEL
                   </button>
-                  <button onClick={handleLeave} className="flex-1 bg-red-600 border-2 border-red-600 text-white font-bold py-2 hover:bg-red-700 transition-colors shadow-[2px_2px_0px_#991b1b] active:translate-y-px active:translate-x-px active:shadow-none">
+                  <button onClick={handleLeave} className="flex-1 bg-obsidian border-2 border-obsidian text-alabaster font-bold py-2 hover:bg-alabaster hover:text-obsidian transition-colors shadow-[2px_2px_0px_#000] active:translate-y-px active:translate-x-px active:shadow-none">
                     CONFIRM LEAVE
                   </button>
                 </div>

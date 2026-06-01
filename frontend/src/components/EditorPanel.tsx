@@ -161,6 +161,9 @@ export default function EditorPanel({ filePath, onBack }: Props) {
   return (
     <main className="app-editor-panel flex min-h-0 flex-col z-10 bg-transparent overflow-hidden">
       <div className="editor-frame ide-frame w-full flex min-h-0 flex-col">
+        <div className="section-header editor-titlebar">
+          <span>Editor</span>
+        </div>
         <div className="ide-topbar">
           <button onClick={onBack} className="ide-back" title="Back to circle chat">
             BACK TO CHAT

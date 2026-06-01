@@ -106,7 +106,9 @@ export default function ChatPanel({ onMessage, variant = 'rail' }: Props) {
 
   return (
     <main className={`app-chat-panel flex min-h-0 flex-col z-10 overflow-hidden ${variant === 'main' ? 'chat-main sys-window' : 'border-r-2 border-obsidian bg-alabaster/85'}`}>
-      <div className="section-header">{variant === 'main' ? 'Circle Chat' : 'Terminal Log'}</div>
+      <div className="section-header">
+        <span>{variant === 'main' ? 'Circle Chat' : 'Terminal Log'}</span>
+      </div>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 flex flex-col gap-4 font-mono text-[11px] min-w-0">
         {messages.length === 0 && (

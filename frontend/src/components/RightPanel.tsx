@@ -41,6 +41,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [creating, setCreating] = useState(false)
   const [creatingFile, setCreatingFile] = useState(false)
   const [newFilePath, setNewFilePath] = useState('')
+  const [fileMenuOpen, setFileMenuOpen] = useState<string | null>(null)
   const [fileActionError, setFileActionError] = useState<string | null>(null)
   const [inviteUri, setInviteUri] = useState<string | null>(null)
   const [inviteConnectivity, setInviteConnectivity] = useState<{peer_addr: string|null, relay_addr: string|null, rendezvous_addr: string|null} | null>(null)
@@ -266,6 +267,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 
   const handleRenameFile = async (path: string) => {
     if (!activeCircleId) return
+    setFileMenuOpen(null)
     const next = window.prompt('Rename file', path)?.trim()
     if (!next || next === path) return
     setFileActionError(null)
@@ -280,6 +282,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 
   const handleDeleteFile = async (path: string) => {
     if (!activeCircleId) return
+    setFileMenuOpen(null)
     if (!window.confirm(`Delete ${path}?`)) return
     setFileActionError(null)
     try {
@@ -310,17 +313,17 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     <aside className="app-circle-panel sys-window flex min-h-0 flex-col z-10 overflow-hidden">
 
       {/* ── Presence ─────────────────────────────────────────────────────── */}
-      <div className="section-header flex justify-between items-center pr-3">
+      <div className="section-header">
         <span>Circle</span>
-        <button onClick={handleInvite} className="text-[9px] font-bold font-mono hover:underline text-alabaster/70 hover:text-alabaster">[+] INVITE</button>
+        <button onClick={handleInvite}>INVITE</button>
       </div>
       {inviteUri && (
-        <div className="px-4 py-3 border-b border-dashed border-obsidian/30 text-[11px] font-mono">
+        <div className="invite-box px-4 py-3 border-b border-dashed border-obsidian/30 text-[11px] font-mono">
           {/* Truncated URI + copy button */}
           <div className="flex items-center gap-2 mb-2">
             <span className="text-slate text-[9px] font-bold shrink-0">INVITE</span>
             <span
-              className="flex-1 min-w-0 bg-obsidian/8 border border-obsidian/30 px-2 py-1 text-[10px] truncate text-obsidian/70 select-none"
+              className="invite-uri flex-1 min-w-0 bg-obsidian/8 border border-obsidian/30 px-2 py-1 text-[10px] text-obsidian/70 select-none"
               title={inviteUri}
             >
               {inviteUri.slice(0, 24)}···{inviteUri.slice(-6)}
@@ -349,7 +352,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
             if (inviteConnectivity.relay_addr) tags.push('RELAY')
             if (inviteConnectivity.rendezvous_addr) tags.push('RDVZ')
             return (
-              <div className="flex items-center gap-2 text-[9px]">
+              <div className="invite-connectivity flex items-center gap-2 text-[9px]">
                 <span className={`font-bold ${wan ? 'text-obsidian' : 'text-slate'}`}>
                   {wan ? '✦ WAN' : '⚠ LAN-ONLY'}
                 </span>
@@ -388,9 +391,9 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 
       {/* ── Members ──────────────────────────────────────────────────────── */}
       <div className="section-header border-t-2 border-obsidian">
-        Circle Members
+        <span>Circle Members</span>
         {pending.length > 0 && (
-          <span className="ml-2 bg-red-600 text-alabaster text-[9px] font-bold px-1.5 py-0.5">
+          <span className="pending-badge">
             {pending.length} PENDING
           </span>
         )}
@@ -399,9 +402,9 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
       {/* Pending approval queue — only visible when there are requests */}
       {pending.length > 0 && (
         <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px]">
-          <div className="group-label text-red-600">AWAITING APPROVAL</div>
+          <div className="group-label approval-label">AWAITING APPROVAL</div>
           {memberActionError && (
-            <div className="text-red-600 text-[9px] font-bold bg-red-50 border border-red-400 px-2 py-1">
+            <div className="file-error">
               {memberActionError}
             </div>
           )}
@@ -428,7 +431,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
                   </button>
                   <button
                     onClick={() => handleReject(p.peer_id)}
-                    className="text-[9px] border border-red-600 text-red-600 px-2 py-0.5 hover:bg-red-600 hover:text-alabaster font-bold"
+                    className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold"
                   >
                     REJECT
                   </button>
@@ -463,7 +466,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
               {isAdmin && !isSelf && (
                 <button
                   onClick={() => handleRemove(m.peer_id)}
-                  className="shrink-0 text-[9px] text-slate hover:text-red-600 font-bold px-1"
+                  className="shrink-0 text-[9px] text-slate hover:text-obsidian font-bold px-1"
                   title={`Remove ${name}`}
                 >
                   ×
@@ -478,12 +481,11 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 
     <aside className="app-right-panel sys-window flex min-h-0 flex-col z-10 overflow-hidden">
       {/* ── Tasks ────────────────────────────────────────────────────────── */}
-      <div className="section-header border-t-2 border-obsidian flex justify-between items-center pr-3">
+      <div className="section-header border-t-2 border-obsidian">
         <span>Task Queue</span>
         <button
           onClick={() => setCreating(v => !v)}
-          className="text-[9px] font-bold font-mono hover:underline"
-        >{creating ? '✕ CANCEL' : '+ NEW'}</button>
+        >{creating ? 'CANCEL' : 'NEW'}</button>
       </div>
 
       {creating && (
@@ -553,8 +555,9 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
         <span>Files</span>
         <button
           onClick={() => setCreatingFile(v => !v)}
-          className="text-[9px] font-bold font-mono hover:underline"
-        >{creatingFile ? 'CANCEL' : 'NEW'}</button>
+          title={creatingFile ? 'Cancel file creation' : 'Create file'}
+          aria-label={creatingFile ? 'Cancel file creation' : 'Create file'}
+        >{creatingFile ? '×' : '+'}</button>
       </div>
       {creatingFile && (
         <div className="file-action-box">
@@ -572,13 +575,15 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
       {fileActionError && (
         <div className="file-error">{fileActionError}</div>
       )}
-      <div className="flex-1 overflow-y-auto p-3 font-mono text-[11px]">
+      <div className="file-list flex-1 overflow-y-auto p-3 font-mono text-[11px]">
         {files.length === 0 && <div className="text-slate">NO ARTIFACTS INDEXED</div>}
         <FileTree
           nodes={fileTree}
           onSelect={onFileSelect}
           onRename={handleRenameFile}
           onDelete={handleDeleteFile}
+          openMenu={fileMenuOpen}
+          onOpenMenu={setFileMenuOpen}
           selected={selectedFile}
           depth={0}
         />
@@ -638,11 +643,13 @@ function buildTree(paths: string[]): TreeNode[] {
   return root.children
 }
 
-function FileTree({ nodes, onSelect, onRename, onDelete, selected, depth }: {
+function FileTree({ nodes, onSelect, onRename, onDelete, openMenu, onOpenMenu, selected, depth }: {
   nodes: TreeNode[]
   onSelect: (path: string) => void
   onRename: (path: string) => void
   onDelete: (path: string) => void
+  openMenu: string | null
+  onOpenMenu: (path: string | null) => void
   selected: string | null
   depth: number
 }) {
@@ -672,17 +679,31 @@ function FileTree({ nodes, onSelect, onRename, onDelete, selected, depth }: {
             </button>
             {!n.isDir && (
               <span className="file-actions">
-                <button onClick={() => onRename(n.path)} title={`Rename ${n.path}`}>REN</button>
-                <button onClick={() => onDelete(n.path)} title={`Delete ${n.path}`}>DEL</button>
+                <button
+                  className="file-menu-trigger"
+                  onClick={() => onOpenMenu(openMenu === n.path ? null : n.path)}
+                  title={`More actions for ${n.path}`}
+                  aria-label={`More actions for ${n.path}`}
+                >
+                  ...
+                </button>
               </span>
             )}
           </div>
+          {!n.isDir && openMenu === n.path && (
+            <div className="file-menu file-menu-inline">
+              <button onClick={() => onRename(n.path)}>Rename</button>
+              <button onClick={() => onDelete(n.path)}>Delete</button>
+            </div>
+          )}
           {n.isDir && open.has(n.path) && (
             <FileTree
               nodes={n.children}
               onSelect={onSelect}
               onRename={onRename}
               onDelete={onDelete}
+              openMenu={openMenu}
+              onOpenMenu={onOpenMenu}
               selected={selected}
               depth={depth + 1}
             />
