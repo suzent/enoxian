@@ -497,6 +497,14 @@ body {
   padding: 12px !important;
 }
 
+.invite-row {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  margin-bottom: 0 !important;
+  min-width: 0;
+}
+
 .invite-uri {
   white-space: nowrap;
   overflow: hidden;
@@ -506,18 +514,6 @@ body {
 .invite-connectivity {
   flex-wrap: wrap;
   min-width: 0;
-}
-
-.invite-box > .mt-2 {
-  margin-top: 0 !important;
-  padding-top: 2px;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.invite-box > .mt-2 button {
-  min-height: 31px;
-  padding: 4px 10px;
 }
 
 .app-circle-panel .text-\[9px\],

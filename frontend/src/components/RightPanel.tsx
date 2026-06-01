@@ -299,6 +299,12 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 
   const handleInvite = async () => {
     if (!activeCircleId) return
+    if (inviteUri) {
+      setInviteUri(null)
+      setInviteConnectivity(null)
+      setInviteCopied(false)
+      return
+    }
     try {
       const res = await inviteCircle(activeCircleId)
       setInviteUri(res.invite_uri)
@@ -315,12 +321,12 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
       {/* ── Presence ─────────────────────────────────────────────────────── */}
       <div className="section-header">
         <span>Circle</span>
-        <button onClick={handleInvite}>INVITE</button>
+        <button onClick={handleInvite}>{inviteUri ? 'CLOSE' : 'INVITE'}</button>
       </div>
       {inviteUri && (
         <div className="invite-box px-4 py-3 border-b border-dashed border-obsidian/30 text-[11px] font-mono">
           {/* Truncated URI + copy button */}
-          <div className="flex items-center gap-2 mb-2">
+          <div className="invite-row flex items-center gap-2 mb-2">
             <span className="text-slate text-[9px] font-bold shrink-0">INVITE</span>
             <span
               className="invite-uri flex-1 min-w-0 bg-obsidian/8 border border-obsidian/30 px-2 py-1 text-[10px] text-obsidian/70 select-none"
@@ -363,14 +369,6 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
             )
           })()}
 
-          <div className="mt-2 text-right">
-            <button
-              onClick={() => { setInviteUri(null); setInviteConnectivity(null); setInviteCopied(false) }}
-              className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold"
-            >
-              CLOSE
-            </button>
-          </div>
         </div>
       )}
       <div className="p-4 border-b border-dashed border-obsidian/30 flex flex-col gap-4 font-mono text-[11px]">
