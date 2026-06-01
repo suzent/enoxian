@@ -66,7 +66,7 @@ fn create_user(handle: String) -> Result<()> {
     println!("✦ User identity created: {handle}");
     println!();
     println!("  ╔══════════════════════════════════════════════════════════════╗");
-    println!("  ║  BACKUP YOUR MNEMONIC — write these words down now.         ║");
+    println!("  ║  BACKUP YOUR MNEMONIC — write these words down now.          ║");
     println!("  ║  You will need them to link other devices to this user.      ║");
     println!("  ╚══════════════════════════════════════════════════════════════╝");
     println!();
