@@ -6,6 +6,7 @@ use crate::{
     cli::InitArgs,
     config::{self, circle_dir, default_workspace_dir, CircleConfig},
     crypto::{generate_keypair, generate_psk, keypair_to_hex},
+    identity::DeviceIdentity,
     invite::{self, InvitePayload},
     mls::{MlsGroupManager, MlsIdentity},
 };
@@ -30,7 +31,10 @@ pub async fn run(args: InitArgs) -> Result<()> {
     // ── Generate credentials ──────────────────────────────────────────────────
     let circle_id = Uuid::new_v4().to_string();
     let psk = generate_psk();
-    let keypair = generate_keypair();
+    // Use the stable device identity to derive a per-circle keypair so this
+    // device always presents the same peer ID in this circle across restarts.
+    let device = DeviceIdentity::load_or_generate(None)?;
+    let keypair = device.derive_circle_keypair(&circle_id)?;
     let peer_id = keypair.public().to_peer_id();
 
     // Admin keypair — generated now; enforcement added in M6.

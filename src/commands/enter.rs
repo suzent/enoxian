@@ -14,7 +14,8 @@ use crate::{
     cli::EnterArgs,
     commands::rendezvous as rdvz,
     config::{self, circle_dir, CircleConfig, resolve_workspace_dir},
-    crypto::{generate_keypair, keypair_to_hex, psk_from_hex},
+    crypto::{keypair_to_hex, psk_from_hex},
+    identity::DeviceIdentity,
     invite,
     mls::MlsIdentity,
     network::behaviour::{EnochBehaviour, EnochEvent},
@@ -128,10 +129,13 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         println!("{msg}");
     }
 
-    // ── Step 3: Generate keypair + save config ────────────────────────────────
-    let keypair = generate_keypair();
+    // ── Step 3: Derive per-circle keypair from stable device identity ─────────
+    // Using the device identity gives a stable peer ID for this circle across
+    // restarts and re-joins, so the admin never needs to re-add this device.
+    let device = DeviceIdentity::load_or_generate(None)?;
+    let keypair = device.derive_circle_keypair(&circle_id)?;
     let peer_id = keypair.public().to_peer_id();
-    info!("Entering circle {circle_id} as {peer_id}");
+    info!("Entering circle {circle_id} as {peer_id} (device: {})", device.device_label);
 
     tokio::fs::create_dir_all(&workspace_dir).await
         .with_context(|| format!("failed to create workspace {}", workspace_dir.display()))?;

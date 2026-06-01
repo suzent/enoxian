@@ -53,6 +53,9 @@ async fn main() -> anyhow::Result<()> {
         AgentCommands::Update { dev, src, no_pull } => {
             enoxian::commands::update::run(dev, src, no_pull).await
         }
+        AgentCommands::Identity(args) => {
+            enoxian::commands::identity::run(args).map_err(Into::into)
+        }
 
         // All other commands need a resolved circle
         cmd => {
@@ -131,7 +134,8 @@ async fn main() -> anyhow::Result<()> {
                 | AgentCommands::Leave { .. }
                 | AgentCommands::Start { .. }
                 | AgentCommands::Stop
-                | AgentCommands::Update { .. } => unreachable!(),
+                | AgentCommands::Update { .. }
+                | AgentCommands::Identity(_) => unreachable!(),
             }
         }
     }

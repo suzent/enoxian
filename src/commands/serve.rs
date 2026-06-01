@@ -2,9 +2,20 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use tracing::{info, warn};
 
-use crate::{api, cli::ServeArgs, config, daemon::DaemonState, lifecycle};
+use crate::{api, cli::ServeArgs, config, daemon::DaemonState, identity::DeviceIdentity, lifecycle};
 
 pub async fn run(args: ServeArgs) -> Result<()> {
+    // ── Device identity: first-run setup ─────────────────────────────────────
+    // On first launch, prompt for a device label. Subsequent starts auto-load
+    // the saved identity silently. The identity is used to derive stable
+    // per-circle keypairs (see docs/plan/identity.md).
+    let device = ensure_identity()?;
+    info!(
+        "Device identity: {} ({})",
+        device.device_label,
+        device.user_handle.as_deref().unwrap_or("no user linked")
+    );
+
     let all_configs = config::load_all().unwrap_or_default();
 
     let active: Vec<_> = all_configs.iter().filter(|c| !c.disabled).collect();
@@ -73,4 +84,64 @@ pub async fn run(args: ServeArgs) -> Result<()> {
 
     info!("enoxd stopped");
     Ok(())
+}
+
+/// Load the device identity or run a first-time setup prompt.
+/// When running non-interactively (no TTY / ENOXIAN_DEVICE_LABEL set),
+/// auto-generates with the hostname as the label.
+fn ensure_identity() -> Result<DeviceIdentity> {
+    if DeviceIdentity::exists() {
+        return DeviceIdentity::load();
+    }
+
+    // Check env-var override first (for automated / headless setups).
+    let label_from_env = std::env::var("ENOXIAN_DEVICE_LABEL").ok()
+        .filter(|s| !s.is_empty());
+
+    let label = if let Some(l) = label_from_env {
+        eprintln!("enoxian: first run — creating device identity '{l}'");
+        l
+    } else if !is_interactive() {
+        // Non-interactive: auto-generate from hostname.
+        let label = hostname_label();
+        eprintln!("enoxian: first run — creating device identity '{label}' (set ENOXIAN_DEVICE_LABEL to override)");
+        label
+    } else {
+        // Interactive TTY: prompt the user.
+        let default = hostname_label();
+        eprint!("enoxian: first run!\nDevice label [{default}]: ");
+        let mut input = String::new();
+        let _ = std::io::stdin().read_line(&mut input);
+        let trimmed = input.trim().to_string();
+        if trimmed.is_empty() { default } else { trimmed }
+    };
+
+    let device = DeviceIdentity::generate(label);
+    device.save()?;
+    eprintln!(
+        "enoxian: identity saved to ~/.enoxian/identity.toml\n\
+         Run `enox identity` to view or link a user account."
+    );
+    Ok(device)
+}
+
+fn is_interactive() -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        extern "C" { fn isatty(fd: std::os::raw::c_int) -> std::os::raw::c_int; }
+        unsafe { isatty(std::io::stdin().as_raw_fd()) != 0 }
+    }
+    #[cfg(not(unix))]
+    { true }
+}
+
+fn hostname_label() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().split('.').next().unwrap_or("device").to_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "device".to_string())
 }

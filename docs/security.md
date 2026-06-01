@@ -15,24 +15,27 @@
 
 ## Layers of protection
 
-enoxian applies four independent security layers in sequence. Each layer rejects peers that fail its check before passing control to the next.
+enoxian applies three independent security layers in sequence. Each layer rejects peers that fail its check before passing control to the next.
 
 | Layer | Mechanism | What it proves |
 |-------|-----------|----------------|
-| **Transport** | PSK (XSalsa20 via `pnet`) | You hold the current circle secret |
-| **Identity** | Noise + Ed25519 keypair | You own the private key behind this peer ID |
-| **Sync gate** | `mls_removed` tombstone | You have not been explicitly evicted |
-| **Epoch key** | MLS epoch → PSK derivation | You are a current member with an up-to-date epoch key |
+| **Transport** | Stable PSK (XSalsa20 via `pnet`) | You hold the circle's network secret |
+| **Identity** | Noise + per-circle Ed25519 keypair (derived from device key) | You own this device identity |
+| **Sync gate** | `mls_removed` tombstone + signed member list | You have not been explicitly evicted |
 
 Each layer is independent. Failing any layer drops the peer before the next is reached.
+
+> **Note:** A fourth layer (MLS epoch key encrypting CRDT content) is planned — see
+> [`plan/identity.md`](plan/identity.md) §6. When implemented, it will provide
+> cryptographic eviction: a removed member can connect but cannot decrypt new updates.
 
 ---
 
 ## PSK — who can connect
 
-Every circle has a 256-bit pre-shared key. It is applied at the TCP layer via `libp2p::pnet` before the Noise handshake. A peer with the wrong (or no) PSK fails immediately and silently — the XSalsa20 stream is garbled and the connection drops.
+Every circle has a stable 256-bit pre-shared key. It is applied at the TCP layer via `libp2p::pnet` before the Noise handshake. A peer with the wrong (or no) PSK fails immediately and silently — the XSalsa20 stream is garbled and the connection drops.
 
-**The PSK is the primary access credential.** Anyone who holds it can connect to the circle swarm.
+**The PSK is the primary access credential.** Anyone who holds it can connect to the circle swarm. **It does not rotate** — it is a stable per-circle network gate. Eviction is handled at Layer 3 (the sync gate), not by re-keying the transport.
 
 The PSK is distributed via invite links (`enoxian://v1/...`). Once a peer has joined, the PSK lives in their `~/.enoxian/circles/<id>/config.toml` indefinitely. There is no expiry.
 
@@ -40,13 +43,14 @@ The PSK is distributed via invite links (`enoxian://v1/...`). Once a peer has jo
 
 ## Peer identity — who you are
 
-Each peer has an Ed25519 keypair generated at `enox enter` time. The peer ID is a hash of the public key. The Noise protocol proves key ownership on every connection: you cannot claim a peer ID without the corresponding private key.
+Each device has one stable Ed25519 **device key**, stored in `~/.enoxian/identity.toml`. Per-circle connection keypairs are derived deterministically from the device key via HKDF-SHA256: `HKDF(device_key, "enoxian-device-v1", "circle/<id>")`. The peer ID is a hash of the derived public key.
 
-**Peer IDs are unforgeable but not tied to a person.** Anyone with the PSK can generate a fresh keypair and join as a new identity.
+**This means the peer ID for a given (device, circle) pair is stable across daemon restarts and re-joins.** The Noise protocol proves key ownership on every connection.
 
 Implications:
-- Impersonating a specific existing peer (faking their peer ID) is cryptographically impossible
-- Rejoining with a new peer ID after being removed requires only the PSK, which the removed member still holds
+- Impersonating a specific existing peer is cryptographically impossible
+- The same device always presents the same peer ID in a given circle — no MLS re-add churn on restart
+- Rejoining after removal still uses the same peer ID, which is now rejected at the sync gate (Layer 3)
 
 ---
 
@@ -59,17 +63,12 @@ The security boundary is the **MLS group** + **PSK**.
 Behaviour on `enox member remove <peer>`:
 
 1. Admin issues an MLS `Remove` + `Commit` for the peer's leaf node
-2. The peer's entry is removed from the CRDT member list; a tombstone entry is written to the `mls_removed` CRDT map (atomically in the same CRDT transaction)
+2. The peer's entry is removed from the CRDT member list; a tombstone entry is written to the `mls_removed` CRDT map — **atomically in the same CRDT transaction**
 3. The commit is broadcast via the `mls_commits` CRDT array to all remaining members
-4. Each remaining member applies the commit, advancing their MLS epoch
-5. A new PSK is derived from the new epoch key material using `export_secret("enoxian-psk", ...)`
-6. The admin immediately rotates the circle's pnet PSK to the new value and restarts their swarm
-7. Remaining members see the commit via the commit-watcher observer and do the same
-8. Any pending/welcome/key-package entries are cleaned up; the peer's presence entry is written as Offline
-9. The removed peer's MLS state is at the old epoch — they cannot derive the new PSK and fail the pnet handshake on reconnect
+4. Each remaining member applies the commit, advancing their local MLS epoch (no transport restart)
+5. Any pending/welcome/key-package entries are cleaned up; the peer's presence entry is written as Offline
 
-**The tombstone closes the rotation window:**
-Between steps 2 and 6 (member removed from CRDT but PSK not yet rotated), the removed peer could briefly still hold a valid PSK. The sync gate in `src/network/sync.rs` checks the `mls_removed` tombstone at the top of every sync session — before any CRDT data is exchanged — and rejects tombstoned peers immediately. The tombstone propagates to all peers as part of the same CRDT update that removes the member entry.
+**Eviction is enforced by the tombstone sync-gate:** `src/network/sync.rs` checks `mls_removed` at the top of every sync session — before any CRDT data is exchanged — and rejects tombstoned peers immediately. The tombstone propagates to all peers as part of the same CRDT update that removes the member entry, so there is no gap.
 
 ---
 
@@ -119,7 +118,7 @@ Invite links have a TTL (`--ttl`, default 7 days). After expiry, `enox enter` re
 
 ---
 
-## MLS — RFC 9420 access revocation (implemented)
+## MLS — RFC 9420 membership management (implemented)
 
 enoxian uses **IETF MLS (RFC 9420)** for group key management, implemented via the [`openmls`](https://github.com/openmls/openmls) crate.
 
@@ -129,15 +128,9 @@ Members are arranged as leaf nodes of a binary Merkle-style tree. Each leaf hold
 
 On **Remove**: the removed leaf's node is blanked. A new epoch root secret is derived that depends only on the remaining members' key material. The evicted peer has no path to the new root secret, regardless of whether they rejoin with the same or a different keypair.
 
-### The MLS epoch → PSK derivation chain
+### MLS epoch and eviction
 
-```
-MLS epoch secret
-    └─ export_secret("enoxian-psk", [], 32)
-         └─ pnet PSK (XSalsa20 stream cipher key)
-```
-
-Every MLS epoch produces a distinct 32-byte PSK. Remaining members all derive the same PSK (they are in the same epoch). The evicted peer is at the old epoch and cannot derive the new PSK — their pnet handshake fails immediately.
+MLS epochs advance on every membership change (Add / Remove). The epoch state is tracked locally for each member for future content-layer encryption (Layer 4). **The epoch key is no longer derived into the transport PSK** — that coupling caused lock-out races (see [`plan/identity.md`](plan/identity.md) for the full analysis). Eviction is instead enforced by the sync gate (Layer 3): the `mls_removed` tombstone rejects a removed peer before any CRDT data is exchanged.
 
 ### Commit propagation
 
@@ -151,7 +144,7 @@ A serial commit-watcher task in each peer's daemon applies commits in order and 
 
 ### Offline members
 
-Offline members who miss the Remove commit will receive it when they next connect — the CRDT array is replicated on reconnect. They apply it, derive the new PSK, and restart their swarm. The evicted peer cannot interfere: they fail the pnet handshake before any CRDT sync occurs.
+Offline members who miss a Remove commit receive it when they next connect — the CRDT array is replicated on reconnect. They apply it, and their local MLS epoch advances. The evicted peer is blocked at the sync gate regardless of when they reconnect.
 
 ### What MLS does NOT protect
 

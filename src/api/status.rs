@@ -37,13 +37,19 @@ pub async fn get_status(
         .map(|q| q.iter().rev().map(|(ts, msg)| json!({"ts": ts, "error": msg})).collect())
         .unwrap_or_default();
 
+    let (device_label, user_handle) = crate::identity::read_identity_display()
+        .map(|(l, h)| (l, h))
+        .unwrap_or_else(|| (String::new(), None));
+
     Json(json!({
-        "circle_id":   state.circle_id,
-        "circle_name": state.circle_name,
-        "workspace":   state.workspace.to_string_lossy(),
-        "agent_id":    state.agent_id,
-        "docs":        state.docs.len(),
-        "conflicts":   conflicts,
+        "circle_id":    state.circle_id,
+        "circle_name":  state.circle_name,
+        "workspace":    state.workspace.to_string_lossy(),
+        "agent_id":     state.agent_id,
+        "device_label": device_label,
+        "user_handle":  user_handle,
+        "docs":         state.docs.len(),
+        "conflicts":    conflicts,
         "p2p": {
             "peer_id":          state.peer_id,
             "external_addrs":   external_addrs,

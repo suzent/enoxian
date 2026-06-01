@@ -126,6 +126,41 @@ pub enum AgentCommands {
         #[arg(long)]
         no_pull: bool,
     },
+    /// Manage this device's identity (label, user linking)
+    Identity(IdentityArgs),
+}
+
+#[derive(clap::Args)]
+pub struct IdentityArgs {
+    #[command(subcommand)]
+    pub action: IdentityAction,
+}
+
+#[derive(Subcommand)]
+pub enum IdentityAction {
+    /// Show this device's identity
+    Show,
+    /// Set the device label (shown in presence)
+    SetLabel {
+        label: String,
+    },
+    /// Set a user handle (shown in presence, links all your devices visually)
+    SetUser {
+        handle: String,
+    },
+    /// Create a new user identity and link this device to it.
+    /// Prints a 24-word mnemonic — back it up to link other devices.
+    CreateUser {
+        /// Your chosen handle (e.g. "suzy")
+        handle: String,
+    },
+    /// Link this device to an existing user via a BIP-39 mnemonic.
+    LinkUser {
+        /// Your user handle
+        handle: String,
+        /// The 24-word mnemonic (quote the whole phrase)
+        mnemonic: String,
+    },
 }
 
 #[derive(Parser)]

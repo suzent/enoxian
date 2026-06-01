@@ -7,15 +7,17 @@ use yrs::{Any, Map, Out, Transact};
 use crate::control::{AgentStatus, Presence, PRESENCE_KEY};
 use crate::state::AppState;
 
-/// Derive a stable, human-readable agent ID from a custom agent name and peer_id.
+/// Derive a stable, human-readable agent ID from the device identity and peer_id.
 ///
 /// Resolution order:
 ///   1. `ENOXIAN_AGENT_ID` env var — explicit override (`codex`, `cursor`, `alice`, …)
-///   2. System hostname — auto-detected, stripped of `.local` (macOS) / domain suffixes
-///   3. `"device"` — last-resort fallback if hostname is unavailable
+///   2. Device identity `user_handle` (if set, e.g. "suzy")
+///   3. Device identity `device_label` (e.g. "macbook-pro")
+///   4. System hostname — auto-detected, stripped of `.local` / domain suffixes
+///   5. `"device"` — last-resort fallback
 ///
 /// The peer suffix (-XXXXXXXX) keeps names unique across machines so two
-/// `MacBook-Pro` devices appear as `MacBook-Pro-Kj4R` and `MacBook-Pro-Ab9F`.
+/// `macbook-pro` devices appear as `macbook-pro-Kj4R` and `macbook-pro-Ab9F`.
 pub fn local_agent_id(peer_id: &PeerId) -> String {
     let peer_str = peer_id.to_string();
     let short = &peer_str[peer_str.len().saturating_sub(8)..];
@@ -24,6 +26,12 @@ pub fn local_agent_id(peer_id: &PeerId) -> String {
         .ok()
         .map(|s| sanitize_agent_name(&s))
         .filter(|s| !s.is_empty())
+        .or_else(|| {
+            // Prefer the device identity display name (user_handle or device_label).
+            crate::identity::read_identity_display()
+                .map(|(label, handle)| sanitize_agent_name(handle.as_deref().unwrap_or(&label)))
+                .filter(|s| !s.is_empty())
+        })
         .or_else(|| {
             hostname_candidates()
                 .into_iter()

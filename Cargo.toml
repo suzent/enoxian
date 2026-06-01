@@ -41,6 +41,9 @@ uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 hex = "0.4"
 base64 = "0.22"
+sha2 = "0.10"
+hkdf = "0.12"
+bip39 = "2"
 
 # Error handling
 anyhow = "1"
