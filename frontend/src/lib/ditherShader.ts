@@ -45,7 +45,16 @@ export const DitherShaderDef = {
 
     void main() {
       vec4 color = texture2D(tDiffuse, vUv) * uExposure;
-      float lum  = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+
+      // Perceptual gamma correction before Bayer thresholding.
+      // Three.js 0.16+ renders to a linear render target, so a face
+      // with 22% physical brightness stays at luminance 0.22 in the shader —
+      // mapping it to a very dark Bayer band with almost no variation.
+      // Applying pow(x, 1/2.2) mimics the sRGB transfer function, spreading
+      // the luminance range across the full Bayer matrix so shading gradients
+      // become clearly visible at all brightness levels.
+      vec3 gamma = pow(clamp(color.rgb, 0.0, 1.0), vec3(0.4545));
+      float lum  = dot(gamma, vec3(0.299, 0.587, 0.114));
 
       // 2×2 retro pixel cells
       vec2 coord = vUv * uResolution * 0.5;

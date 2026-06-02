@@ -12,14 +12,17 @@ import { useApp } from './context/AppContext'
 import './styles/globals.css'
 
 function Layout() {
-  const { activeCircleId, circles, reloadCircles } = useApp()
+  const { activeCircleId, circles } = useApp()
 
-  // Show landing page until user has at least one circle
-  if (circles.length === 0) {
-    return <LandingPage onEntered={reloadCircles} />
-  }
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [ritual, setRitual] = useState<{ mode: RitualMode; label?: string } | null>(null)
+  const [showLanding, setShowLanding] = useState(circles.length === 0)
+
+  useEffect(() => {
+    if (circles.length === 0) {
+      setShowLanding(true)
+    }
+  }, [circles.length])
 
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
   const isVoid = activeCircle?.disabled ?? false
@@ -36,11 +39,16 @@ function Layout() {
     <>
       <RitualTransition ritual={ritual} onComplete={() => setRitual(null)} />
 
+      {showLanding && (
+        <LandingPage onEntered={() => setShowLanding(false)} />
+      )}
+
       {isVoid && activeCircle && (
         <VoidOverlay circleName={activeCircle.circle_name} />
       )}
 
-      <div className={`app-shell relative z-10 grid${isVoid ? ' app-shell--void' : ''}`}>
+      {circles.length > 0 && (
+        <div className={`app-shell relative z-10 grid${isVoid ? ' app-shell--void' : ''}`}>
         <Header />
         <CircleSidebar onRitual={(mode, label) => setRitual({ mode, label })} />
         {selectedFile ? (
@@ -49,7 +57,8 @@ function Layout() {
           <ChatPanel variant="main" />
         )}
         <RightPanel onFileSelect={onFileSelect} selectedFile={selectedFile} />
-      </div>
+        </div>
+      )}
     </>
   )
 }

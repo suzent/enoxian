@@ -4,7 +4,14 @@ const api = (circleId: string) => `/circles/${circleId}/api`
 
 async function get<T>(url: string): Promise<T> {
   const res = await fetch(url)
-  if (!res.ok) throw new Error(`${res.status} ${url}`)
+  if (!res.ok) {
+    let msg = `${res.status} ${url}`
+    try {
+      const data = await res.json()
+      if (data.error) msg = data.error
+    } catch {}
+    throw new Error(msg)
+  }
   return res.json()
 }
 
@@ -14,7 +21,14 @@ async function post<T>(url: string, body: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!res.ok) throw new Error(`${res.status} ${url}`)
+  if (!res.ok) {
+    let msg = `${res.status} ${url}`
+    try {
+      const data = await res.json()
+      if (data.error) msg = data.error
+    } catch {}
+    throw new Error(msg)
+  }
   return res.json()
 }
 

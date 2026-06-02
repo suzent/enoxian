@@ -1,4 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&display=swap');
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -13,7 +12,8 @@
   --stripe-soft: repeating-linear-gradient(0deg, #000 0 1px, #fff 1px 2px);
   --stripe-wide: repeating-linear-gradient(135deg, #000 0 2px, #fff 2px 5px);
   --dither-dot: radial-gradient(#000 1px, transparent 1px);
-  --font-sans: 'JetBrains Mono', Monaco, Geneva, "Courier New", monospace;
+  --font-sans: 'Cormorant Garamond', serif;
+  --font-title: 'Cinzel', serif;
   --font-mono: 'JetBrains Mono', Monaco, Geneva, "Courier New", monospace;
   --ui-font: 13px;
   --ui-small: 11px;
