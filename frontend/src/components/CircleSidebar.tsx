@@ -3,6 +3,15 @@ import * as THREE from 'three'
 import { useApp } from '../context/AppContext'
 import { initCircle, enterCircle, leaveCircle, enableCircle, disableCircle } from '../api'
 import { makeCircleGeometry, makeShapeParams } from '../lib/circleShape'
+import {
+  createDitheredComposer,
+  addDitherLights,
+  makeDitherMaterials,
+  type DitheredComposer,
+  EXPOSURE_ICON,
+  EXPOSURE_TRANSITION_PEAK,
+  easeInOut,
+} from '../lib/ditherShader'
 import type { RitualMode } from './RitualTransition'
 
 interface Props {
@@ -14,7 +23,8 @@ type Modal = 'init' | 'enter' | 'leave' | null
 interface SceneEntry {
   scene: THREE.Scene
   camera: THREE.PerspectiveCamera
-  mesh: THREE.LineSegments
+  mesh: THREE.Mesh
+  dc: DitheredComposer
 }
 
 export default function CircleSidebar({ onRitual }: Props) {
@@ -31,6 +41,7 @@ export default function CircleSidebar({ onRitual }: Props) {
   // Three.js state — all in refs to avoid re-renders
   const iconRendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const transRendererRef = useRef<THREE.WebGLRenderer | null>(null)
+  const transDCRef = useRef<DitheredComposer | null>(null)
   const transSceneRef = useRef(new THREE.Scene())
   const transCameraRef = useRef(new THREE.PerspectiveCamera(60, 1, 0.1, 1000))
   const scenesRef = useRef<Map<string, SceneEntry>>(new Map())
@@ -40,41 +51,58 @@ export default function CircleSidebar({ onRitual }: Props) {
 
   // Bootstrap Three.js renderers once
   useEffect(() => {
-    const iconRenderer = new THREE.WebGLRenderer({ alpha: true, antialias: false })
+    // Shared icon renderer (white bg — mix-blend-mode:multiply makes white transparent)
+    const iconRenderer = new THREE.WebGLRenderer({ antialias: false })
     iconRenderer.setPixelRatio(1)
-    iconRenderer.setClearColor(0x000000, 0)
+    iconRenderer.setClearColor(0xffffff, 1)
     iconRenderer.setSize(72, 72)
     iconRenderer.domElement.style.cssText = 'position:fixed;top:-9999px;left:-9999px;pointer-events:none;'
     document.body.appendChild(iconRenderer.domElement)
     iconRendererRef.current = iconRenderer
 
-    const transRenderer = new THREE.WebGLRenderer({ alpha: false, antialias: true })
+    // Full-screen transition renderer + dithered composer
+    const transRenderer = new THREE.WebGLRenderer({ antialias: false })
     transRenderer.setSize(window.innerWidth, window.innerHeight)
-    transRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    transRenderer.setPixelRatio(1)
     transRenderer.setClearColor(0xffffff, 1)
-    transRenderer.domElement.style.cssText = 'position:fixed;inset:0;z-index:1000;pointer-events:none;display:none;'
+    transRenderer.domElement.style.cssText =
+      'position:fixed;inset:0;z-index:1000;pointer-events:none;display:none;mix-blend-mode:multiply;'
     document.body.appendChild(transRenderer.domElement)
     transRendererRef.current = transRenderer
 
-    transCameraRef.current.position.z = 5
-    transCameraRef.current.aspect = window.innerWidth / window.innerHeight
-    transCameraRef.current.updateProjectionMatrix()
+    const transScene = transSceneRef.current
+    transScene.background = new THREE.Color(0xffffff)
+    addDitherLights(transScene)
+
+    const transCamera = transCameraRef.current
+    transCamera.position.z = 5
+    transCamera.aspect = window.innerWidth / window.innerHeight
+    transCamera.updateProjectionMatrix()
+
+    const transDC = createDitheredComposer(
+      transRenderer, transScene, transCamera,
+      window.innerWidth, window.innerHeight,
+    )
+    transDC.setExposure(EXPOSURE_TRANSITION_PEAK)
+    transDCRef.current = transDC
 
     const onResize = () => {
-      transRenderer.setSize(window.innerWidth, window.innerHeight)
-      transCameraRef.current.aspect = window.innerWidth / window.innerHeight
-      transCameraRef.current.updateProjectionMatrix()
+      const W = window.innerWidth, H = window.innerHeight
+      transRenderer.setSize(W, H)
+      transDC.setSize(W, H)
+      transCamera.aspect = W / H
+      transCamera.updateProjectionMatrix()
     }
     window.addEventListener('resize', onResize)
 
-    // Single rAF loop: render each icon scene → blit to its canvas
+    // Single rAF loop: render each icon scene via its own dithered composer → blit
     function loop() {
       rafRef.current = requestAnimationFrame(loop)
-      scenesRef.current.forEach(({ scene, camera, mesh }, id) => {
+      scenesRef.current.forEach(({ mesh, dc }, id) => {
         mesh.rotation.x += mesh.userData.rotX
         mesh.rotation.y += mesh.userData.rotY
         mesh.rotation.z += mesh.userData.rotZ
-        iconRenderer.render(scene, camera)
+        dc.composer.render()
         const canvas = canvasMapRef.current.get(id)
         if (canvas) {
           const ctx = canvas.getContext('2d')
@@ -90,13 +118,15 @@ export default function CircleSidebar({ onRitual }: Props) {
     return () => {
       cancelAnimationFrame(rafRef.current)
       window.removeEventListener('resize', onResize)
-      scenesRef.current.forEach(({ mesh }) => {
+      scenesRef.current.forEach(({ mesh, dc }) => {
         mesh.geometry.dispose()
         ;(mesh.material as THREE.Material).dispose()
+        dc.composer.dispose()
       })
       scenesRef.current.clear()
       iconRenderer.dispose()
       document.body.removeChild(iconRenderer.domElement)
+      transDC.composer.dispose()
       transRenderer.dispose()
       document.body.removeChild(transRenderer.domElement)
     }
@@ -118,16 +148,17 @@ export default function CircleSidebar({ onRitual }: Props) {
 
     // Create scenes for new circles
     circles.forEach(circle => {
-      if (scenes.has(circle.circle_id)) return
+      if (scenes.has(circle.circle_id) || !iconRendererRef.current) return
       const scene = new THREE.Scene()
+      scene.background = new THREE.Color(0xffffff)
+      addDitherLights(scene)
+
       const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100)
       camera.position.z = 2.8
 
       const geo = makeCircleGeometry(circle.circle_name)
-      const edgeGeo = new THREE.EdgesGeometry(geo)
-      geo.dispose()
-      const mat = new THREE.LineBasicMaterial({ color: 0x000000 })
-      const mesh = new THREE.LineSegments(edgeGeo, mat)
+      const { flat } = makeDitherMaterials()
+      const mesh = new THREE.Mesh(geo, flat)
 
       const p = makeShapeParams(circle.circle_name)
       mesh.rotation.x = p.initRotX
@@ -137,7 +168,11 @@ export default function CircleSidebar({ onRitual }: Props) {
       mesh.userData.rotZ = p.rotZ
 
       scene.add(mesh)
-      scenes.set(circle.circle_id, { scene, camera, mesh })
+
+      const dc = createDitheredComposer(iconRendererRef.current, scene, camera, 72, 72)
+      dc.setExposure(EXPOSURE_ICON)
+
+      scenes.set(circle.circle_id, { scene, camera, mesh, dc })
     })
   }, [circles])
 
@@ -150,38 +185,44 @@ export default function CircleSidebar({ onRitual }: Props) {
   const switchCircle = useCallback(async (targetId: string) => {
     if (animatingRef.current || targetId === activeCircleId) return
     const transRenderer = transRendererRef.current
-    if (!transRenderer) { setActiveCircleId(targetId); return }
+    const transDC = transDCRef.current
+    if (!transRenderer || !transDC) { setActiveCircleId(targetId); return }
 
     animatingRef.current = true
 
-    const entry = scenesRef.current.get(targetId)
     const transScene = transSceneRef.current
-    const transCamera = transCameraRef.current
+    const targetCircle = circles.find(c => c.circle_id === targetId)
 
-    // Build transition shape (clone of target circle's icon mesh)
-    let transShape: THREE.LineSegments | null = null
-    if (entry) {
-      transShape = entry.mesh.clone()
-      ;(transShape as THREE.LineSegments).material = new THREE.LineBasicMaterial({ color: 0xffffff })
-      transShape.scale.set(0.1, 0.1, 0.1)
+    // Solid dithered shape for the target circle — expands through the screen during transition
+    let transShape: THREE.Mesh | null = null
+    if (targetCircle) {
+      const geo = makeCircleGeometry(targetCircle.circle_name)
+      const { flat } = makeDitherMaterials()
+      transShape = new THREE.Mesh(geo, flat)
+      transShape.scale.setScalar(0.1)
+      const p = makeShapeParams(targetCircle.circle_name)
+      transShape.rotation.x = p.initRotX
+      transShape.rotation.y = p.initRotY
       transScene.add(transShape)
     }
 
     transRenderer.domElement.style.display = 'block'
 
-    // Phase 1 — bg fades white → black, shape expands
+    // Phase 1 — exposure ramps from peak (transparent/white) down to near-zero (dense dots = black)
+    // mix-blend-mode:multiply turns dense dither → black screen; sparse dither → transparent
     await new Promise<void>(resolve => {
-      const start = performance.now(), dur = 700
+      const start = performance.now(), dur = 1400
+      const LOW = 0.18
       const tick = () => {
         const t = Math.min((performance.now() - start) / dur, 1)
-        const e = t < 0.5 ? 2*t*t : -1+(4-2*t)*t
-        transRenderer.setClearColor(new THREE.Color(1-e, 1-e, 1-e), 1)
+        const e = easeInOut(t)
+        transDC.setExposure(EXPOSURE_TRANSITION_PEAK - (EXPOSURE_TRANSITION_PEAK - LOW) * e)
         if (transShape) {
           transShape.scale.setScalar(0.1 + e * 13.9)
           transShape.rotation.x += 0.05
           transShape.rotation.y += 0.07
         }
-        transRenderer.render(transScene, transCamera)
+        transDC.composer.render()
         if (t < 1) requestAnimationFrame(tick); else resolve()
       }
       requestAnimationFrame(tick)
@@ -189,18 +230,19 @@ export default function CircleSidebar({ onRitual }: Props) {
 
     setActiveCircleId(targetId)
 
-    // Phase 2 — bg fades black → white
+    // Phase 2 — exposure ramps back to peak (dither dissolves → transparent → UI revealed)
     await new Promise<void>(resolve => {
-      const start = performance.now(), dur = 500
+      const start = performance.now(), dur = 1000
+      const LOW = 0.18
       const tick = () => {
         const t = Math.min((performance.now() - start) / dur, 1)
-        const e = t < 0.5 ? 2*t*t : -1+(4-2*t)*t
-        transRenderer.setClearColor(new THREE.Color(e, e, e), 1)
+        const e = easeInOut(t)
+        transDC.setExposure(LOW + (EXPOSURE_TRANSITION_PEAK - LOW) * e)
         if (transShape) {
           transShape.rotation.x += 0.03
           transShape.rotation.y += 0.04
         }
-        transRenderer.render(transScene, transCamera)
+        transDC.composer.render()
         if (t < 1) requestAnimationFrame(tick); else resolve()
       }
       requestAnimationFrame(tick)
@@ -208,12 +250,13 @@ export default function CircleSidebar({ onRitual }: Props) {
 
     if (transShape) {
       transScene.remove(transShape)
+      transShape.geometry.dispose()
       ;(transShape.material as THREE.Material).dispose()
     }
-    transRenderer.setClearColor(0xffffff, 1)
+    transDC.setExposure(EXPOSURE_TRANSITION_PEAK)
     transRenderer.domElement.style.display = 'none'
     animatingRef.current = false
-  }, [activeCircleId, setActiveCircleId])
+  }, [activeCircleId, setActiveCircleId, circles])
 
   // Modal handlers
   const handleInit = async (e: React.FormEvent) => {
@@ -273,8 +316,14 @@ export default function CircleSidebar({ onRitual }: Props) {
                 <canvas
                   ref={el => registerCanvas(circle.circle_id, el)}
                   width={72} height={72}
-                  className={isActive ? 'invert' : ''}
-                  style={{ width: 36, height: 36, flexShrink: 0, display: 'block', imageRendering: 'pixelated' }}
+                  style={{
+                    width: 36, height: 36, flexShrink: 0, display: 'block',
+                    imageRendering: 'pixelated',
+                    // White dither bg → transparent via multiply on inactive row.
+                    // On active (black) row invert the canvas so dither inverts too.
+                    filter: isActive ? 'invert(1)' : 'none',
+                    mixBlendMode: isActive ? 'normal' : 'multiply',
+                  }}
                 />
                 <div className="flex flex-col min-w-0">
                   <span className="text-[11px] font-bold truncate tracking-wide">
