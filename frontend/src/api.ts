@@ -71,6 +71,29 @@ export function eventStream(circleId: string): EventSource {
   return new EventSource(`${api(circleId)}/events`)
 }
 
+// ── Identity (global, no circle required) ────────────────────────────────────
+
+export interface IdentityInfo {
+  device_label: string
+  user_handle: string | null
+  has_user_key: boolean
+}
+
+export const getIdentity = () => get<IdentityInfo>('/api/identity')
+
+export const setIdentity = (body: { device_label?: string; user_handle?: string }) =>
+  post<{ status: string }>('/api/identity', body)
+
+export const linkDevice = (handle: string, mnemonic: string) =>
+  post<{ status: string; user_handle: string }>('/api/identity/link', { handle, mnemonic })
+
+export const createUserIdentity = (user_handle: string) =>
+  post<{ status: string; handle: string; mnemonic: string; note: string }>(
+    '/api/identity/create-user', { user_handle }
+  )
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export function wsYjsUrl(circleId: string, filePath: string): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   return `${proto}://${location.host}/circles/${circleId}/ws/yjs?path=${encodeURIComponent(filePath)}`

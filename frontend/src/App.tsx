@@ -6,12 +6,18 @@ import EditorPanel from './components/EditorPanel'
 import RightPanel from './components/RightPanel'
 import CircleSidebar from './components/CircleSidebar'
 import VoidOverlay from './components/VoidOverlay'
+import LandingPage from './components/LandingPage'
 import RitualTransition, { type RitualMode } from './components/RitualTransition'
 import { useApp } from './context/AppContext'
 import './styles/globals.css'
 
 function Layout() {
-  const { activeCircleId, circles } = useApp()
+  const { activeCircleId, circles, reloadCircles } = useApp()
+
+  // Show landing page until user has at least one circle
+  if (circles.length === 0) {
+    return <LandingPage onEntered={reloadCircles} />
+  }
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [ritual, setRitual] = useState<{ mode: RitualMode; label?: string } | null>(null)
 

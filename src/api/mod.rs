@@ -1,6 +1,7 @@
 pub mod chat;
 pub mod events;
 pub mod files;
+pub mod identity;
 pub mod lifecycle;
 pub mod lock;
 pub mod management;
@@ -94,6 +95,10 @@ pub fn router(daemon: DaemonState) -> Router {
             "/circles/{circle_id}/members/reject",
             post(members::reject_member),
         )
+        // Identity (global, no circle required)
+        .route("/api/identity", get(identity::get_identity).post(identity::set_identity))
+        .route("/api/identity/link", post(identity::link_device))
+        .route("/api/identity/create-user", post(identity::create_user_identity))
         // M7 management
         .route("/api/init", post(management::init_circle))
         .route("/api/enter", post(management::enter_circle))
