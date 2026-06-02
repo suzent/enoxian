@@ -35,6 +35,8 @@ pub struct AddMemberRequest {
     /// Human owner of this peer ("alice"). Defaults to agent_id if omitted.
     pub owner: Option<String>,
     pub agent_id: Option<String>,
+    pub device_label: Option<String>,
+    pub agents: Option<Vec<String>>,
     pub role: Option<String>,
     pub admin_signature: String,
 }
@@ -75,6 +77,8 @@ pub async fn add_member(
         peer_id: req.peer_id.clone(),
         owner,
         agent_id,
+        device_label: req.device_label.unwrap_or_default(),
+        agents: req.agents.unwrap_or_default(),
         role,
         added_at: Utc::now(),
         signature: sig,
@@ -263,11 +267,12 @@ pub async fn promote_member(
     }
 
     let map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
-    let (prev_owner, prev_agent_id) = {
+    let (prev_owner, prev_agent_id, prev_device_label, prev_agents) = {
         let txn = state.control.transact();
         map.get(&txn, req.peer_id.as_str()).and_then(|v| {
             if let Out::Any(Any::String(s)) = v {
-                serde_json::from_str::<MemberEntry>(&s).ok().map(|e| (e.owner, e.agent_id))
+                serde_json::from_str::<MemberEntry>(&s).ok()
+                    .map(|e| (e.owner, e.agent_id, e.device_label, e.agents))
             } else {
                 None
             }
@@ -277,6 +282,8 @@ pub async fn promote_member(
         peer_id: req.peer_id.clone(),
         owner: prev_owner,
         agent_id: prev_agent_id,
+        device_label: prev_device_label,
+        agents: prev_agents,
         role: MemberRole::Admin,
         added_at: Utc::now(),
         signature: sig,
@@ -321,6 +328,8 @@ pub struct ApproveMemberRequest {
     pub role: Option<String>,
     pub owner: String,
     pub admin_signature: String,
+    /// Override the agents list from the pending entry (optional).
+    pub agents: Option<Vec<String>>,
 }
 
 pub async fn approve_member(
@@ -405,13 +414,14 @@ pub async fn approve_member(
         }
     }
 
-    // Add to member list, remove from pending
-    let agent_id = {
+    // Add to member list, remove from pending — carry device_label and agents from pending entry
+    let (agent_id, device_label, agents) = {
         let pending_map: MapRef = state.control.get_or_insert_map(MLS_PENDING_KEY);
         let txn = state.control.transact();
         pending_map.get(&txn, req.peer_id.as_str()).and_then(|v| {
             if let Out::Any(Any::String(s)) = v {
-                serde_json::from_str::<PendingEntry>(&s).ok().map(|e| e.agent_id)
+                serde_json::from_str::<PendingEntry>(&s).ok()
+                    .map(|e| (e.agent_id, e.device_label, e.agents))
             } else {
                 None
             }
@@ -422,6 +432,8 @@ pub async fn approve_member(
         peer_id: req.peer_id.clone(),
         owner: req.owner.clone(),
         agent_id,
+        device_label,
+        agents: req.agents.clone().unwrap_or(agents),
         role,
         added_at: Utc::now(),
         signature: sig,

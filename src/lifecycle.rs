@@ -121,10 +121,16 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             let role = if is_local_admin { MemberRole::Admin } else { MemberRole::Member };
             let msg = format!("add:{}:{}", peer_id, role);
             let signature = keypair.sign(msg.as_bytes()).map(hex::encode).unwrap_or_default();
+            let device_label = crate::identity::read_identity_display()
+                .map(|(label, _)| label)
+                .unwrap_or_default();
+            let agents = crate::identity::read_local_agents();
             let entry = MemberEntry {
                 peer_id: peer_id.to_string(),
                 owner: config.owner.clone(),
                 agent_id: agent_id.clone(),
+                device_label,
+                agents,
                 role,
                 added_at: chrono::Utc::now(),
                 signature,
@@ -178,6 +184,10 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     peer_id: peer_id.to_string(),
                     owner: config.owner.clone(),
                     agent_id: agent_id.clone(),
+                    device_label: crate::identity::read_identity_display()
+                        .map(|(label, _)| label)
+                        .unwrap_or_default(),
+                    agents: crate::identity::read_local_agents(),
                     owner_sig: {
                         let owner_claim_msg = format!("owner:{}", config.owner);
                         keypair.sign(owner_claim_msg.as_bytes()).map(hex::encode).unwrap_or_default()
@@ -955,14 +965,16 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                 }
             })
         };
-        let (owner, agent_id) = pending_entry
-            .map(|p| (p.owner, p.agent_id))
+        let (owner, agent_id, device_label, agents) = pending_entry
+            .map(|p| (p.owner, p.agent_id, p.device_label, p.agents))
             .unwrap_or_default();
         let msg = format!("add:{}:member:owner:{}", peer_id_str, owner);
         let entry = MemberEntry {
             peer_id: peer_id_str.clone(),
             owner,
             agent_id,
+            device_label,
+            agents,
             role: MemberRole::Member,
             added_at: chrono::Utc::now(),
             signature: msg,

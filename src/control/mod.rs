@@ -40,6 +40,12 @@ pub struct PendingEntry {
     pub peer_id: String,
     pub owner: String,
     pub agent_id: String,
+    /// Human-readable device label (e.g. "macbook-pro").
+    #[serde(default)]
+    pub device_label: String,
+    /// Agent names registered on this device (e.g. ["human", "claude-code"]).
+    #[serde(default)]
+    pub agents: Vec<String>,
     /// hex(sign(peer_keypair, "owner:{owner}"))
     pub owner_sig: String,
     pub requested_at: DateTime<Utc>,
@@ -111,6 +117,9 @@ pub struct Presence {
     pub status: AgentStatus,
     pub last_seen: DateTime<Utc>,
     pub current_file: Option<String>,
+    /// The peer_id of the device this agent is running on. Links presence to member entry.
+    #[serde(default)]
+    pub peer_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -142,8 +151,15 @@ pub struct MemberEntry {
     /// Human owner — groups machines belonging to the same person (e.g. "alice").
     /// Multiple peer_ids with the same owner = same user on different machines.
     pub owner: String,
-    /// Specific agent running on this peer (e.g. "alice", "alice-suzent", "claude-code").
+    /// Primary agent label for this device (legacy display name, e.g. "alice-Kj4R").
     pub agent_id: String,
+    /// Human-readable device label (e.g. "macbook-pro"). Shown in grouped UI.
+    #[serde(default)]
+    pub device_label: String,
+    /// Agent names enrolled from this device (e.g. ["human", "claude-code"]).
+    /// Pure labels — no separate keys. File edits are attributed to the device (peer_id).
+    #[serde(default)]
+    pub agents: Vec<String>,
     pub role: MemberRole,
     pub added_at: DateTime<Utc>,
     /// Hex-encoded Ed25519 admin signature of "add:{peer_id}:{role}"

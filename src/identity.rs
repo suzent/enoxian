@@ -47,6 +47,10 @@ pub struct IdentityFile {
     /// BIP-39 mnemonic backup of the user key (stored only on the primary device).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_mnemonic: Option<String>,
+    /// Agent names registered on this device (e.g. ["human", "claude-code"]).
+    /// These are pure labels — all share the device key. Enrolled into circles at join time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<String>,
 }
 
 // ── DeviceIdentity — the in-memory handle ────────────────────────────────────
@@ -59,6 +63,7 @@ pub struct DeviceIdentity {
     pub user_handle: Option<String>,
     pub user_pubkey_hex: Option<String>,
     pub user_attestation_hex: Option<String>,
+    pub agents: Vec<String>,
 }
 
 impl DeviceIdentity {
@@ -68,7 +73,7 @@ impl DeviceIdentity {
     pub fn generate(device_label: String) -> Self {
         let mut seed = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut seed);
-        DeviceIdentity { seed, device_label, user_handle: None, user_pubkey_hex: None, user_attestation_hex: None }
+        DeviceIdentity { seed, device_label, user_handle: None, user_pubkey_hex: None, user_attestation_hex: None, agents: Vec::new() }
     }
 
     // ── Persistence ───────────────────────────────────────────────────────────
@@ -85,6 +90,7 @@ impl DeviceIdentity {
             user_pubkey_hex: self.user_pubkey_hex.clone(),
             user_attestation_hex: self.user_attestation_hex.clone(),
             user_mnemonic: None, // never write mnemonic back
+            agents: self.agents.clone(),
         };
         let toml = toml::to_string_pretty(&file).context("serialize identity")?;
         std::fs::write(&path, toml)?;
@@ -108,6 +114,7 @@ impl DeviceIdentity {
             user_handle: file.user_handle,
             user_pubkey_hex: file.user_pubkey_hex,
             user_attestation_hex: file.user_attestation_hex,
+            agents: file.agents,
         })
     }
 
@@ -265,6 +272,16 @@ pub fn read_identity_display() -> Option<(String, Option<String>)> {
         .map(|f| (f.device_label, f.user_handle))
 }
 
+/// Read the registered agents list from the local identity file.
+/// Returns an empty vec if none are configured.
+pub fn read_local_agents() -> Vec<String> {
+    identity_path().ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| toml::from_str::<IdentityFile>(&s).ok())
+        .map(|f| f.agents)
+        .unwrap_or_default()
+}
+
 /// These tests access private fields (`seed`, `IdentityFile`) and must live
 /// inline. All tests using only the public API live in `tests/identity.rs`.
 #[cfg(test)]
@@ -286,6 +303,7 @@ mod tests {
                 user_pubkey_hex: None,
                 user_attestation_hex: None,
                 user_mnemonic: None,
+                agents: device.agents.clone(),
             };
             let toml_str = toml::to_string_pretty(&file).unwrap();
             let loaded: IdentityFile = toml::from_str(&toml_str).unwrap();
@@ -308,6 +326,7 @@ mod tests {
             user_handle: None,
             user_pubkey_hex: None,
             user_attestation_hex: None,
+            agents: Vec::new(),
         };
         assert_eq!(pid_before, d2.derive_circle_keypair("c1").unwrap().public().to_peer_id());
     }

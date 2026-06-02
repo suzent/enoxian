@@ -150,6 +150,7 @@ fn write_presence_with_file(
         status,
         last_seen: Utc::now(),
         current_file,
+        peer_id: state.peer_id.clone(),
     };
     let Ok(json) = serde_json::to_string(&presence) else {
         return;

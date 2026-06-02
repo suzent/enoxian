@@ -16,6 +16,8 @@ export interface Member {
   peer_id: string
   owner: string
   agent_id: string
+  device_label: string
+  agents: string[]
   role: 'admin' | 'member'
 }
 
@@ -23,6 +25,8 @@ export interface PendingEntry {
   peer_id: string
   owner: string
   agent_id: string
+  device_label: string
+  agents: string[]
   requested_at: number
 }
 
@@ -31,6 +35,7 @@ export interface Presence {
   status: 'online' | 'idle' | 'offline'
   last_seen: string
   current_file: string | null
+  peer_id: string
 }
 
 export interface ChatMessage {

@@ -237,8 +237,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     }
   }
 
-  const local = presence.filter(p => p.agent_id === status?.agent_id)
-  const remote = presence.filter(p => p.agent_id !== status?.agent_id)
+  const userGroups = buildUserGroups(members, presence, status?.agent_id ?? '')
 
   const claim = (taskId: string) => {
     if (!activeCircleId || !status) return
@@ -318,10 +317,15 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     <>
     <aside className="app-circle-panel sys-window flex min-h-0 flex-col z-10 overflow-hidden">
 
-      {/* ── Presence ─────────────────────────────────────────────────────── */}
+      {/* ── Circle (merged presence + members) ──────────────────────────── */}
       <div className="section-header">
         <span>Circle</span>
-        <button onClick={handleInvite}>{inviteUri ? 'CLOSE' : 'INVITE'}</button>
+        <div className="flex items-center gap-2">
+          {pending.length > 0 && (
+            <span className="pending-badge">{pending.length} PENDING</span>
+          )}
+          <button onClick={handleInvite}>{inviteUri ? 'CLOSE' : 'INVITE'}</button>
+        </div>
       </div>
       {inviteUri && (
         <div className="invite-box px-4 py-3 border-b border-dashed border-obsidian/30 text-[11px] font-mono">
@@ -371,41 +375,11 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 
         </div>
       )}
-      <div className="p-4 border-b border-dashed border-obsidian/30 flex flex-col gap-4 font-mono text-[11px]">
-        {local.length > 0 && (
-          <div className="flex flex-col gap-2">
-            <div className="group-label">LOCAL HOST</div>
-            {local.map(p => <PresenceRow key={p.agent_id} p={p} />)}
-          </div>
-        )}
-        {remote.length > 0 && (
-          <div className="flex flex-col gap-2">
-            <div className="group-label">REMOTE PEERS</div>
-            {remote.map(p => <PresenceRow key={p.agent_id} p={p} />)}
-          </div>
-        )}
-        {presence.length === 0 && <div className="text-slate">NO ENTITIES DETECTED</div>}
-      </div>
-
-      {/* ── Members ──────────────────────────────────────────────────────── */}
-      <div className="section-header border-t-2 border-obsidian">
-        <span>Circle Members</span>
-        {pending.length > 0 && (
-          <span className="pending-badge">
-            {pending.length} PENDING
-          </span>
-        )}
-      </div>
-
-      {/* Pending approval queue — only visible when there are requests */}
+      {/* Pending approval queue */}
       {pending.length > 0 && (
         <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px]">
           <div className="group-label approval-label">AWAITING APPROVAL</div>
-          {memberActionError && (
-            <div className="file-error">
-              {memberActionError}
-            </div>
-          )}
+          {memberActionError && <div className="file-error">{memberActionError}</div>}
           {pending.map(p => (
             <div key={p.peer_id} className="flex flex-col gap-1 pb-2 border-b border-dashed border-obsidian/20 last:border-0">
               <div className="flex justify-between items-start gap-1">
@@ -414,25 +388,22 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
                     {peerLabel(p.owner, p.agent_id)}
                   </span>
                   <span className="text-[9px] text-slate font-mono truncate" title={p.peer_id}>
-                    {shortenAgentId(p.agent_id)}
+                    {p.device_label || shortenAgentId(p.agent_id)}
                   </span>
+                  {p.agents.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-0.5">
+                      {p.agents.map(a => (
+                        <span key={a} className="text-[9px] text-slate border border-obsidian/20 px-1">{a}</span>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <span className="text-[9px] text-slate shrink-0">{age(p.requested_at.toString())}</span>
               </div>
               {isAdmin ? (
                 <div className="flex gap-1 mt-0.5">
-                  <button
-                    onClick={() => handleApprove(p.peer_id, p.owner)}
-                    className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold"
-                  >
-                    APPROVE
-                  </button>
-                  <button
-                    onClick={() => handleReject(p.peer_id)}
-                    className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold"
-                  >
-                    REJECT
-                  </button>
+                  <button onClick={() => handleApprove(p.peer_id, p.owner)} className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold">APPROVE</button>
+                  <button onClick={() => handleReject(p.peer_id)} className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold">REJECT</button>
                 </div>
               ) : (
                 <div className="text-[9px] text-slate/60">PENDING APPROVAL</div>
@@ -442,34 +413,54 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
         </div>
       )}
 
-      {/* Member list */}
-      <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px] max-h-[180px] overflow-y-auto">
-        {members.length === 0 && <div className="text-slate">NO MEMBERS INDEXED</div>}
-        {members.map(m => {
-          const isSelf = m.agent_id === status?.agent_id
-          const name = peerLabel(m.owner, m.agent_id)
-          // Always show device name as subtitle; omit only if it would duplicate the primary label
-          const deviceLabel = shortenAgentId(m.agent_id)
-          const subtitle = deviceLabel !== name ? deviceLabel : null
+      {/* Grouped member list: owner → device → agents */}
+      <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-3 font-mono text-[11px] max-h-[280px] overflow-y-auto">
+        {userGroups.length === 0 && <div className="text-slate">NO MEMBERS INDEXED</div>}
+        {userGroups.map(group => {
+          const isGroupSelf = group.devices.some(d => d.isSelf)
           return (
-            <div key={m.peer_id} className="flex justify-between items-center gap-2 pb-1 border-b border-dashed border-obsidian/20 last:border-0">
-              <div className="flex flex-col min-w-0">
-                <span className={`font-bold truncate ${isSelf ? 'text-obsidian' : ''}`} title={m.agent_id}>
-                  {name}{isSelf ? ' ✦' : ''}
-                </span>
-                <span className={`text-[9px] font-mono ${m.role === 'admin' ? 'text-obsidian font-bold' : 'text-slate'}`}>
-                  {m.role.toUpperCase()}{subtitle ? ` · ${subtitle}` : ''}
+            <div key={group.owner} className="flex flex-col gap-1">
+              <div className="flex items-center gap-1">
+                <span className={`font-bold text-[10px] tracking-wide ${isGroupSelf ? 'text-obsidian' : ''}`}>
+                  {group.owner || '—'}{isGroupSelf ? ' ✦' : ''}
                 </span>
               </div>
-              {isAdmin && !isSelf && (
-                <button
-                  onClick={() => handleRemove(m.peer_id)}
-                  className="shrink-0 text-[9px] text-slate hover:text-obsidian font-bold px-1"
-                  title={`Remove ${name}`}
-                >
-                  ×
-                </button>
-              )}
+              {group.devices.map(device => {
+                const p = device.presence
+                const stale = p ? Date.now() - new Date(p.last_seen).getTime() > 90_000 : false
+                const statusKey = p ? (stale && p.status === 'online' ? 'stale' : p.status) : 'offline'
+                return (
+                  <div key={device.peer_id} className="ml-2 flex flex-col gap-0.5 pb-1 border-b border-dashed border-obsidian/15 last:border-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className={`sigil ${statusKey}`} aria-hidden="true" />
+                        <span className="font-bold truncate" title={device.agent_id}>{device.displayLabel}</span>
+                        <span className={`text-[9px] font-bold ${device.role === 'admin' ? 'text-obsidian' : 'text-slate/50'}`}>
+                          {device.role.toUpperCase()}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {p?.current_file && (
+                          <span className="text-[9px] text-slate truncate max-w-[70px]" title={p.current_file}>
+                            {p.current_file.split('/').pop()}
+                          </span>
+                        )}
+                        {isAdmin && !device.isSelf && (
+                          <button onClick={() => handleRemove(device.peer_id)} className="text-[9px] text-slate hover:text-obsidian font-bold px-1" title={`Remove ${device.displayLabel}`}>×</button>
+                        )}
+                      </div>
+                    </div>
+                    {device.agents.length > 0 && (
+                      <div className="ml-3 flex flex-wrap gap-1">
+                        {device.agents.map(a => (
+                          <span key={a} className="text-[9px] text-slate border border-obsidian/20 px-1">{a}</span>
+                        ))}
+                      </div>
+                    )}
+                    {p && <div className="ml-3 text-[9px] text-slate">{age(p.last_seen)}</div>}
+                  </div>
+                )
+              })}
             </div>
           )
         })}
@@ -591,26 +582,47 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   )
 }
 
-function PresenceRow({ p }: { p: Presence }) {
-  const stale = Date.now() - new Date(p.last_seen).getTime() > 90_000
-  const status = stale && p.status === 'online' ? 'stale' : p.status
-  return (
-    <div className="person-row">
-      <span className={`sigil ${status}`} aria-hidden="true" />
-      <div className="min-w-0">
-        <div className="font-bold truncate" title={p.agent_id}>@{shortenAgentId(p.agent_id)}</div>
-        {p.current_file && (
-          <div className="text-[9px] text-slate truncate" title={p.current_file}>
-            AT {p.current_file}
-          </div>
-        )}
-      </div>
-      <div className="text-right">
-        <div className="text-[9px] font-bold">{status.toUpperCase()}</div>
-        <div className="text-[9px] text-slate">{age(p.last_seen)}</div>
-      </div>
-    </div>
-  )
+// ── User/device grouping ──────────────────────────────────────────────────────
+
+interface DeviceView {
+  peer_id: string
+  displayLabel: string
+  agent_id: string
+  agents: string[]
+  role: 'admin' | 'member'
+  presence: Presence | null
+  isSelf: boolean
+}
+
+interface UserGroup {
+  owner: string
+  devices: DeviceView[]
+}
+
+function buildUserGroups(members: Member[], presenceList: Presence[], selfAgentId: string): UserGroup[] {
+  const presenceByPeer = new Map<string, Presence>()
+  const presenceByAgent = new Map<string, Presence>()
+  for (const p of presenceList) {
+    if (p.peer_id) presenceByPeer.set(p.peer_id, p)
+    presenceByAgent.set(p.agent_id, p)
+  }
+  const byOwner = new Map<string, DeviceView[]>()
+  for (const m of members) {
+    const p = presenceByPeer.get(m.peer_id) ?? presenceByAgent.get(m.agent_id) ?? null
+    const device: DeviceView = {
+      peer_id: m.peer_id,
+      displayLabel: m.device_label || shortenAgentId(m.agent_id),
+      agent_id: m.agent_id,
+      agents: m.agents,
+      role: m.role,
+      presence: p,
+      isSelf: m.agent_id === selfAgentId,
+    }
+    const list = byOwner.get(m.owner) ?? []
+    list.push(device)
+    byOwner.set(m.owner, list)
+  }
+  return Array.from(byOwner.entries()).map(([owner, devices]) => ({ owner, devices }))
 }
 
 // ── File tree ─────────────────────────────────────────────────────────────────
