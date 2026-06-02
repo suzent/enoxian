@@ -11,7 +11,7 @@ layer. It **supersedes** the epoch→PSK rotation described in
 
 Two docs disagree about what the PSK is:
 
-- [`admin.md`](admin.md): *"PSK = transport filter (can you reach the swarm)"*,
+- [`archived/admin.md`](archived/admin.md): *"PSK = transport filter (can you reach the swarm)"*,
   and explicitly *"PSK rotation is not required"* — eviction is the signed
   member list.
 - [`security.md`](../security.md): PSK is **rotated on every MLS epoch**, and

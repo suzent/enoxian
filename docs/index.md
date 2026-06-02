@@ -19,11 +19,21 @@
 
 ## Planning
 
-> Documents in `plan/` describe what is **not yet built**. Implemented features are documented above.
+> Documents in `plan/` describe active plans, design notes, and archived
+> milestone history. Implemented user-facing features are documented above.
 
 | File | Description |
 |------|-------------|
-| [plan/roadmap.md](plan/roadmap.md) | Milestone plan — what works today and what's next |
-| [plan/workspace.md](plan/workspace.md) | M1: Workspace folder design and implementation tasks |
-| [plan/lifecycle.md](plan/lifecycle.md) | M4: Circle lifecycle — disable, enable, leave |
-| [plan/admin.md](plan/admin.md) | M6: Admin keypair, member list, roles, revocation |
+| [plan/roadmap.md](plan/roadmap.md) | Current roadmap and next milestones |
+| [plan/agent-workspaces.md](plan/agent-workspaces.md) | Local workspace proposal layer for ambient and triggered agents |
+| [plan/identity.md](plan/identity.md) | Device identity, stable PSK, MLS membership, future content encryption |
+
+## Archived Plans
+
+| File | Description |
+|------|-------------|
+| [plan/archived/](plan/archived/) | Archived plan index |
+| [plan/archived/milestones.md](plan/archived/milestones.md) | Completed milestone archive |
+| [plan/archived/workspace.md](plan/archived/workspace.md) | Completed M1 workspace folder design |
+| [plan/archived/lifecycle.md](plan/archived/lifecycle.md) | Completed M4 circle lifecycle design |
+| [plan/archived/admin.md](plan/archived/admin.md) | Completed M6 admin and member management design |
