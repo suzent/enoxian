@@ -414,15 +414,20 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
       )}
 
       {/* Grouped member list: owner → device → agents */}
-      <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-3 font-mono text-[11px] max-h-[280px] overflow-y-auto">
+      <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-3 font-mono text-[11px] max-h-[280px] overflow-y-auto overflow-x-hidden">
         {userGroups.length === 0 && <div className="text-slate">NO MEMBERS INDEXED</div>}
         {userGroups.map(group => {
           const isGroupSelf = group.devices.some(d => d.isSelf)
+          // Use owner if it looks like a human name (≤40 chars); fall back to first device label.
+          // Peer IDs (~52 chars base58) and empty owners both fall back.
+          const groupLabel = group.owner && group.owner.length <= 40
+            ? group.owner
+            : (group.devices[0]?.displayLabel ?? '—')
           return (
-            <div key={group.owner} className="flex flex-col gap-1">
-              <div className="flex items-center gap-1">
-                <span className={`font-bold text-[10px] tracking-wide ${isGroupSelf ? 'text-obsidian' : ''}`}>
-                  {group.owner || '—'}{isGroupSelf ? ' ✦' : ''}
+            <div key={group.owner || group.devices[0]?.peer_id} className="flex flex-col gap-1">
+              <div className="flex items-center gap-1 min-w-0">
+                <span className={`font-bold text-[10px] tracking-wide truncate ${isGroupSelf ? 'text-obsidian' : ''}`}>
+                  {groupLabel}{isGroupSelf ? ' ✦' : ''}
                 </span>
               </div>
               {group.devices.map(device => {

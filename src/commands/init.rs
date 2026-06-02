@@ -44,7 +44,11 @@ pub async fn run(args: InitArgs) -> Result<()> {
     let admin_privkey_hex = keypair_to_hex(&admin_keypair)?;
 
     let peer_id_str = peer_id.to_string();
-    let owner = args.owner.unwrap_or_else(|| peer_id_str.clone());
+    let owner = args.owner.unwrap_or_else(|| {
+        crate::identity::read_identity_display()
+            .map(|(label, handle)| handle.unwrap_or(label))
+            .unwrap_or_else(|| peer_id_str.clone())
+    });
     let join_policy = match args.join_policy.to_lowercase().as_str() {
         "manual" => crate::config::JoinPolicy::Manual,
         _ => crate::config::JoinPolicy::Auto,

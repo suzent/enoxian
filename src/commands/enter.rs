@@ -152,7 +152,11 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         relay_addrs:       relay_from_invite.into_iter().collect(),
         rendezvous_addrs,
         join_policy:       crate::config::JoinPolicy::default(),
-        owner:             args.owner.unwrap_or_default(),
+        owner:             args.owner.unwrap_or_else(|| {
+            crate::identity::read_identity_display()
+                .map(|(label, handle)| handle.unwrap_or(label))
+                .unwrap_or_default()
+        }),
     };
     config::save(&circle_config).context("failed to save circle config")?;
 
