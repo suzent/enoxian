@@ -17,6 +17,15 @@ function Layout() {
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [ritual, setRitual] = useState<{ mode: RitualMode; label?: string } | null>(null)
   const [showLanding, setShowLanding] = useState(circles.length === 0)
+  // White bridge overlay: covers the screen as the landing unmounts (which
+  // also ends on full white), then fades out to reveal the app — so the
+  // landing → app handoff is a seamless white dissolve, never a hard pop.
+  const [revealing, setRevealing] = useState(false)
+
+  const handleEntered = useCallback(() => {
+    setShowLanding(false)
+    setRevealing(true)   // mount the white overlay in the same React batch
+  }, [])
 
   useEffect(() => {
     if (circles.length === 0) {
@@ -40,7 +49,14 @@ function Layout() {
       <RitualTransition ritual={ritual} onComplete={() => setRitual(null)} />
 
       {showLanding && (
-        <LandingPage onEntered={() => setShowLanding(false)} />
+        <LandingPage onEntered={handleEntered} />
+      )}
+
+      {revealing && (
+        <div
+          className="app-reveal-overlay"
+          onAnimationEnd={() => setRevealing(false)}
+        />
       )}
 
       {isVoid && activeCircle && (

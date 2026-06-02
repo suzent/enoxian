@@ -295,13 +295,16 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
       currentLookTarget.z = lerp(0, -200, ieIn)
       rotateHalos()
 
-      if (it >= 1) { 
+      if (it >= 1) {
         animState = 'fading'
         phaseStart = now
-        // TRIGGER THE DRY CSS TRANSITION FROM RitualTransition!
-        mount.classList.add('ritual-closing')
-        const solidBg = document.getElementById('landing-solid-bg')
-        if (solidBg) solidBg.style.opacity = '0'
+        // Fade the angel canvas straight to transparent (no scale/blur) onto the
+        // opaque white solid-bg behind it — a uniform dissolve to full white.
+        // (A scale transform here causes a visible shrinking-rectangle edge.)
+        // We deliberately keep the solid-bg opaque; App.tsx bridges the resulting
+        // white into the app with its own fade-out overlay → white → white → app.
+        mount.style.transition = 'opacity 800ms ease'
+        mount.style.opacity = '0'
       }
 
     } else if (animState === 'fading') {

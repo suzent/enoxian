@@ -63,6 +63,23 @@ select {
   grid-area: header;
 }
 
+/* White bridge between the landing animation and the app.
+   The angel scene ends on full white; this overlay mounts white in the same
+   frame the landing unmounts, then fades out to reveal the app underneath. */
+.app-reveal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 6000;
+  background: #fff;
+  pointer-events: none;
+  animation: app-reveal 650ms ease forwards;
+}
+
+@keyframes app-reveal {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
 .app-circles-sidebar {
   grid-area: circles;
 }
