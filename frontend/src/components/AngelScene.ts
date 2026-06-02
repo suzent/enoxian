@@ -270,50 +270,80 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
       }
 
     } else if (animState === 'ingress') {
-      const it = clamp01((now - phaseStart) / 2700) // 2.7 seconds for the dive
-      const ieInOut = easeInOutCubic(it)
-      const ieIn = it * it * it
+      // ── Ascension: the whole angel rises into blooming light ───────────────
+      // No monolith split, no camera fly-through. The figure lifts as the wings
+      // sweep upward to the heavens and the dither blooms to pure white in place,
+      // so the outro stays centered and ends on a clean full-white screen.
+      const it = clamp01((now - phaseStart) / 3000)
+      const e = easeInOutCubic(it)
 
-      const openT = easeOutExpo(clamp01(it * 2.0))
-      monoLeft.position.x = lerp(0, -8, openT)
-      monoRight.position.x = lerp(0, 8, openT)
-      monoLeft.rotation.z = lerp(0, 0.4, openT)
-      monoRight.rotation.z = lerp(0, -0.4, openT)
+      // Whole composition rises and recedes slightly
+      sceneRoot.position.y = lerp(0, 11, e)
+      sceneRoot.position.z = lerp(0, -7, e)
 
-      halos.scale.setScalar(lerp(1, 12, ieInOut))
+      // Camera tilts up to follow, with a gentle push-in (no dive)
+      currentLookTarget.y = lerp(0, 9, e)
+      camera.position.z = lerp(20, 17, e)
 
+      // Wings sweep UP into a tall upward fan — tips point up-and-out, blades
+      // lift and gather inward (less horizontal spread than the eruption), with
+      // outer blades reaching higher and wider. Like an angel raising its wings
+      // to the heavens. We lerp both position and rotation toward an explicit
+      // raised target so the wings open upward instead of curling into a cradle.
       const allBlades = [...wingL.feathers, ...wingR.feathers]
       allBlades.forEach((blade, i) => {
-        const dir = i < 14 ? -1 : 1
         const start = bladeFoldStart[i]
-        if (start) {
-          blade.rotation.y = lerp(start.y, start.y + dir * Math.PI / 1.8, ieInOut)
-        }
+        if (!start) return
+        const dir = i < 14 ? -1 : 1
+        const frac = (i % 14) / 13
+        const tpos = blade.userData.tPos as THREE.Vector3
+
+        // Raised target pose — a FULLY EXPANDED wingspan.
+        // Bases stay gathered near the shoulder; the long blades fan out via
+        // rotation, radiating up-and-out into a wide arc (peacock-tail / spread
+        // eagle). Inner blades stand vertical, outer blades sweep far outward.
+        const px = dir * (1.5 + frac * 2.0)   // bases near shoulder, slight spread
+        const py = frac * 1.0
+        const pz = -1
+        const rx = 0
+        const ry = dir * frac * 0.2           // slight 3D fan
+        const rz = -dir * (0.05 + frac * 1.2) // inner vertical → outer ~70° out
+
+        blade.position.set(
+          lerp(tpos.x, px, e),
+          lerp(tpos.y, py, e),
+          lerp(tpos.z, pz, e),
+        )
+        blade.rotation.set(
+          lerp(start.x, rx, e) + Math.sin(it * Math.PI * 3 + i * 0.25) * 0.05 * (1 - e),
+          lerp(start.y, ry, e),
+          lerp(start.z, rz, e),
+        )
       })
 
-      camera.position.z = lerp(20, -120, ieIn)
-      currentLookTarget.z = lerp(0, -200, ieIn)
+      // Halo expands and brightens behind the ascending figure
+      halos.scale.setScalar(lerp(1, 4.5, e))
+
+      // Bloom to white over the final 55% — the figure is consumed by light
+      const bloom = clamp01((it - 0.45) / 0.55)
+      dc.setExposure(lerp(1.8, 7.0, bloom))
+
       rotateHalos()
 
       if (it >= 1) {
         animState = 'fading'
         phaseStart = now
-        // Fade the angel canvas straight to transparent (no scale/blur) onto the
-        // opaque white solid-bg behind it — a uniform dissolve to full white.
-        // (A scale transform here causes a visible shrinking-rectangle edge.)
-        // We deliberately keep the solid-bg opaque; App.tsx bridges the resulting
-        // white into the app with its own fade-out overlay → white → white → app.
-        mount.style.transition = 'opacity 800ms ease'
+        // Scene is already bloomed to near-white; fade the canvas straight to
+        // transparent onto the opaque white solid-bg (uniform dissolve, no scale).
+        // App.tsx bridges the resulting white into the app → white → white → app.
+        mount.style.transition = 'opacity 500ms ease'
         mount.style.opacity = '0'
       }
 
     } else if (animState === 'fading') {
-      const ft = clamp01((now - phaseStart) / 800) // matches the 800ms CSS transition
-      
-      // Let the CSS transition handle the blur and scale, we just keep moving
-      camera.position.z -= 2 // continue flying forward
+      const ft = clamp01((now - phaseStart) / 500)
+      // Already white — just keep the halo drifting and hold for the CSS fade.
       rotateHalos()
-
       if (ft >= 1) {
         animState = 'done'
         completionCallback?.()
