@@ -35,6 +35,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [inviteConnectivity, setInviteConnectivity] = useState<{peer_addr: string|null, relay_addr: string|null, rendezvous_addr: string|null} | null>(null)
   const [inviteCopied, setInviteCopied] = useState(false)
   const [memberActionError, setMemberActionError] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<'members' | 'tasks' | 'files'>('members')
   const selectedFileRef = useRef<string | null>(selectedFile)
 
   useEffect(() => {
@@ -302,276 +303,204 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   }
 
   return (
-    <>
-    <aside className="app-circle-panel sys-window flex min-h-0 flex-col z-10 overflow-hidden">
+    <aside className="app-right-panel sys-window flex min-h-0 flex-col z-10 overflow-hidden">
 
-      {/* ── Circle (merged presence + members) ──────────────────────────── */}
-      <div className="section-header">
-        <span>Circle</span>
-        <div className="flex items-center gap-2">
-          {pending.length > 0 && (
-            <span className="pending-badge">{pending.length} PENDING</span>
-          )}
-          <button onClick={handleInvite}>{inviteUri ? 'CLOSE' : 'INVITE'}</button>
-        </div>
+      {/* ── Tab bar ─────────────────────────────────────────────────────── */}
+      <div className="flex shrink-0 border-b-2 border-obsidian">
+        {(['members', 'tasks', 'files'] as const).map((tab, i) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`flex-1 py-2 text-[9px] font-bold tracking-widest font-mono uppercase ${
+              i < 2 ? 'border-r-2 border-obsidian' : ''
+            } ${activeTab === tab ? 'bg-obsidian text-alabaster' : 'hover:bg-obsidian/5'}`}
+            style={{ transition: 'none' }}
+          >
+            {tab === 'members' && pending.length > 0 ? `MEMBERS (${pending.length})` : tab.toUpperCase()}
+          </button>
+        ))}
       </div>
-      {inviteUri && (
-        <div className="invite-box px-4 py-3 border-b border-dashed border-obsidian/30 text-[11px] font-mono">
-          {/* Truncated URI + copy button */}
-          <div className="invite-row flex items-center gap-2 mb-2">
-            <span className="text-slate text-[9px] font-bold shrink-0">INVITE</span>
-            <span
-              className="invite-uri flex-1 min-w-0 bg-obsidian/8 border border-obsidian/30 px-2 py-1 text-[10px] text-obsidian/70 select-none"
-              title={inviteUri}
-            >
-              {inviteUri.slice(0, 24)}···{inviteUri.slice(-6)}
-            </span>
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText(inviteUri)
-                setInviteCopied(true)
-                setTimeout(() => setInviteCopied(false), 2000)
-              }}
-              className={`shrink-0 text-[9px] px-2 py-1 border font-bold transition-colors ${
-                inviteCopied
-                  ? 'bg-obsidian text-alabaster border-obsidian'
-                  : 'border-obsidian hover:bg-obsidian hover:text-alabaster'
-              }`}
-            >
-              {inviteCopied ? 'COPIED ✓' : 'COPY'}
-            </button>
+
+      {/* ── MEMBERS tab ─────────────────────────────────────────────────── */}
+      {activeTab === 'members' && (
+        <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+          {/* Invite row */}
+          <div className="section-header">
+            <span>MEMBERS</span>
+            <button onClick={handleInvite}>{inviteUri ? 'CLOSE' : 'INVITE'}</button>
           </div>
 
-          {/* Connectivity summary */}
-          {inviteConnectivity && (() => {
-            const wan = inviteConnectivity.peer_addr || inviteConnectivity.relay_addr || inviteConnectivity.rendezvous_addr
-            const tags: string[] = []
-            if (inviteConnectivity.peer_addr) tags.push('DIRECT')
-            if (inviteConnectivity.relay_addr) tags.push('RELAY')
-            if (inviteConnectivity.rendezvous_addr) tags.push('RDVZ')
-            return (
-              <div className="invite-connectivity flex items-center gap-2 text-[9px]">
-                <span className={`font-bold ${wan ? 'text-obsidian' : 'text-slate'}`}>
-                  {wan ? '✦ WAN' : '⚠ LAN-ONLY'}
+          {inviteUri && (
+            <div className="px-4 py-3 border-b border-dashed border-obsidian/30 text-[11px] font-mono">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-slate text-[9px] font-bold shrink-0">URI</span>
+                <span className="flex-1 min-w-0 border border-obsidian/30 px-2 py-1 text-[10px] text-obsidian/70 select-none truncate" title={inviteUri}>
+                  {inviteUri.slice(0, 20)}···{inviteUri.slice(-6)}
                 </span>
-                {tags.map(t => (
-                  <span key={t} className="border border-obsidian/40 px-1 text-slate">{t}</span>
-                ))}
+                <button
+                  onClick={() => { navigator.clipboard.writeText(inviteUri); setInviteCopied(true); setTimeout(() => setInviteCopied(false), 2000) }}
+                  className={`shrink-0 text-[9px] px-2 py-1 border font-bold ${inviteCopied ? 'bg-obsidian text-alabaster border-obsidian' : 'border-obsidian hover:bg-obsidian hover:text-alabaster'}`}
+                >{inviteCopied ? 'COPIED ✓' : 'COPY'}</button>
               </div>
-            )
-          })()}
-
-        </div>
-      )}
-      {/* Pending approval queue */}
-      {pending.length > 0 && (
-        <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px]">
-          <div className="group-label approval-label">AWAITING APPROVAL</div>
-          {memberActionError && <div className="file-error">{memberActionError}</div>}
-          {pending.map(p => (
-            <div key={p.peer_id} className="flex flex-col gap-1 pb-2 border-b border-dashed border-obsidian/20 last:border-0">
-              <div className="flex justify-between items-start gap-1">
-                <div className="flex flex-col min-w-0">
-                  <span className="font-bold truncate" title={p.agent_id}>
-                    {peerLabel(p.owner, p.agent_id)}
-                  </span>
-                  <span className="text-[9px] text-slate font-mono truncate" title={p.peer_id}>
-                    {p.device_label || shortenAgentId(p.agent_id)}
-                  </span>
-                  {p.agents.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-0.5">
-                      {p.agents.map(a => (
-                        <span key={a} className="text-[9px] text-slate border border-obsidian/20 px-1">{a}</span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <span className="text-[9px] text-slate shrink-0">{age(p.requested_at.toString())}</span>
-              </div>
-              {isAdmin ? (
-                <div className="flex gap-1 mt-0.5">
-                  <button onClick={() => handleApprove(p.peer_id, p.owner)} className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold">APPROVE</button>
-                  <button onClick={() => handleReject(p.peer_id)} className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold">REJECT</button>
-                </div>
-              ) : (
-                <div className="text-[9px] text-slate/60">PENDING APPROVAL</div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Grouped member list: owner → device → agents */}
-      <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-3 font-mono text-[11px] max-h-[280px] overflow-y-auto overflow-x-hidden">
-        {userGroups.length === 0 && <div className="text-slate">NO MEMBERS INDEXED</div>}
-        {userGroups.map(group => {
-          const isGroupSelf = group.devices.some(d => d.isSelf)
-          // Use owner if it looks like a human name (≤40 chars); fall back to first device label.
-          // Peer IDs (~52 chars base58) and empty owners both fall back.
-          const groupLabel = group.owner && group.owner.length <= 40
-            ? group.owner
-            : (group.devices[0]?.displayLabel ?? '—')
-          return (
-            <div key={group.owner || group.devices[0]?.peer_id} className="flex flex-col gap-1">
-              <div className="flex items-center gap-1 min-w-0">
-                <span className={`font-bold text-[10px] tracking-wide truncate ${isGroupSelf ? 'text-obsidian' : ''}`}>
-                  {groupLabel}{isGroupSelf ? ' ✦' : ''}
-                </span>
-              </div>
-              {group.devices.map(device => {
-                const p = device.presence
-                const stale = p ? Date.now() - new Date(p.last_seen).getTime() > 90_000 : false
-                const statusKey = p ? (stale && p.status === 'online' ? 'stale' : p.status) : 'offline'
+              {inviteConnectivity && (() => {
+                const wan = inviteConnectivity.peer_addr || inviteConnectivity.relay_addr || inviteConnectivity.rendezvous_addr
+                const tags: string[] = []
+                if (inviteConnectivity.peer_addr) tags.push('DIRECT')
+                if (inviteConnectivity.relay_addr) tags.push('RELAY')
+                if (inviteConnectivity.rendezvous_addr) tags.push('RDVZ')
                 return (
-                  <div key={device.peer_id} className="ml-2 flex flex-col gap-0.5 pb-1 border-b border-dashed border-obsidian/15 last:border-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <span className={`sigil ${statusKey}`} aria-hidden="true" />
-                        <span className="font-bold truncate" title={device.agent_id}>{device.displayLabel}</span>
-                        <span className={`text-[9px] font-bold ${device.role === 'admin' ? 'text-obsidian' : 'text-slate/50'}`}>
-                          {device.role.toUpperCase()}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        {p?.current_file && (
-                          <span className="text-[9px] text-slate truncate max-w-[70px]" title={p.current_file}>
-                            {p.current_file.split('/').pop()}
-                          </span>
-                        )}
-                        {isAdmin && !device.isSelf && (
-                          <button onClick={() => handleRemove(device.peer_id)} className="text-[9px] text-slate hover:text-obsidian font-bold px-1" title={`Remove ${device.displayLabel}`}>×</button>
-                        )}
-                      </div>
-                    </div>
-                    {device.agents.length > 0 && (
-                      <div className="ml-3 flex flex-wrap gap-1">
-                        {device.agents.map(a => (
-                          <span key={a} className="text-[9px] text-slate border border-obsidian/20 px-1">{a}</span>
-                        ))}
-                      </div>
-                    )}
-                    {p && <div className="ml-3 text-[9px] text-slate">{age(p.last_seen)}</div>}
+                  <div className="flex items-center gap-2 text-[9px]">
+                    <span className={`font-bold ${wan ? 'text-obsidian' : 'text-slate'}`}>{wan ? '✦ WAN' : '⚠ LAN-ONLY'}</span>
+                    {tags.map(t => <span key={t} className="border border-obsidian/40 px-1 text-slate">{t}</span>)}
                   </div>
                 )
-              })}
+              })()}
             </div>
-          )
-        })}
-      </div>
+          )}
 
-    </aside>
+          {/* Pending approvals */}
+          {pending.length > 0 && (
+            <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px]">
+              <div className="group-label approval-label">AWAITING APPROVAL</div>
+              {memberActionError && <div className="file-error">{memberActionError}</div>}
+              {pending.map(p => (
+                <div key={p.peer_id} className="flex flex-col gap-1 pb-2 border-b border-dashed border-obsidian/20 last:border-0">
+                  <div className="flex justify-between items-start gap-1">
+                    <div className="flex flex-col min-w-0">
+                      <span className="font-bold truncate" title={p.agent_id}>{peerLabel(p.owner, p.agent_id)}</span>
+                      <span className="text-[9px] text-slate truncate">{p.device_label || shortenAgentId(p.agent_id)}</span>
+                      {p.agents.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-0.5">
+                          {p.agents.map(a => <span key={a} className="text-[9px] text-slate border border-obsidian/20 px-1">{a}</span>)}
+                        </div>
+                      )}
+                    </div>
+                    <span className="text-[9px] text-slate shrink-0">{age(p.requested_at.toString())}</span>
+                  </div>
+                  {isAdmin ? (
+                    <div className="flex gap-1 mt-0.5">
+                      <button onClick={() => handleApprove(p.peer_id, p.owner)} className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold">APPROVE</button>
+                      <button onClick={() => handleReject(p.peer_id)} className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold">REJECT</button>
+                    </div>
+                  ) : <div className="text-[9px] text-slate/60">PENDING APPROVAL</div>}
+                </div>
+              ))}
+            </div>
+          )}
 
-    <aside className="app-right-panel sys-window flex min-h-0 flex-col z-10 overflow-hidden">
-      {/* ── Tasks ────────────────────────────────────────────────────────── */}
-      <div className="section-header border-t-2 border-obsidian">
-        <span>Task Queue</span>
-        <button
-          onClick={() => setCreating(v => !v)}
-        >{creating ? 'CANCEL' : 'NEW'}</button>
-      </div>
-
-      {creating && (
-        <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px]">
-          <input
-            autoFocus
-            value={newTaskTitle}
-            onChange={e => setNewTaskTitle(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && submitTask()}
-            placeholder="Task title..."
-            className="bg-transparent border border-obsidian px-2 py-1 text-[11px] font-mono focus:outline-none focus:bg-obsidian/5 w-full"
-          />
-          <input
-            value={newTaskDesc}
-            onChange={e => setNewTaskDesc(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && submitTask()}
-            placeholder="Description (optional)..."
-            className="bg-transparent border border-dashed border-obsidian/50 px-2 py-1 text-[11px] font-mono focus:outline-none w-full"
-          />
-          <button onClick={submitTask} className="enox-btn self-start">CREATE</button>
+          {/* Member list: owner → device → agents */}
+          <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 flex flex-col gap-3 font-mono text-[11px]">
+            {userGroups.length === 0 && <div className="text-slate">NO MEMBERS INDEXED</div>}
+            {userGroups.map(group => {
+              const isGroupSelf = group.devices.some(d => d.isSelf)
+              const groupLabel = group.owner && group.owner.length <= 40
+                ? group.owner : (group.devices[0]?.displayLabel ?? '—')
+              return (
+                <div key={group.owner || group.devices[0]?.peer_id} className="flex flex-col gap-1">
+                  <div className="flex items-center gap-1 min-w-0">
+                    <span className={`font-bold text-[10px] tracking-wide truncate ${isGroupSelf ? 'text-obsidian' : ''}`}>
+                      {groupLabel}{isGroupSelf ? ' ✦' : ''}
+                    </span>
+                  </div>
+                  {group.devices.map(device => {
+                    const p = device.presence
+                    const stale = p ? Date.now() - new Date(p.last_seen).getTime() > 90_000 : false
+                    const statusKey = p ? (stale && p.status === 'online' ? 'stale' : p.status) : 'offline'
+                    return (
+                      <div key={device.peer_id} className="ml-2 flex flex-col gap-0.5 pb-1 border-b border-dashed border-obsidian/15 last:border-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className={`sigil ${statusKey}`} aria-hidden="true" />
+                            <span className="font-bold truncate" title={device.agent_id}>{device.displayLabel}</span>
+                            <span className={`text-[9px] font-bold ${device.role === 'admin' ? 'text-obsidian' : 'text-slate/50'}`}>{device.role.toUpperCase()}</span>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {p?.current_file && <span className="text-[9px] text-slate truncate max-w-[60px]" title={p.current_file}>{p.current_file.split('/').pop()}</span>}
+                            {isAdmin && !device.isSelf && <button onClick={() => handleRemove(device.peer_id)} className="text-[9px] text-slate hover:text-obsidian font-bold px-1" title={`Remove ${device.displayLabel}`}>×</button>}
+                          </div>
+                        </div>
+                        {device.agents.length > 0 && (
+                          <div className="ml-3 flex flex-wrap gap-1">
+                            {device.agents.map(a => <span key={a} className="text-[9px] text-slate border border-obsidian/20 px-1">{a}</span>)}
+                          </div>
+                        )}
+                        {p && <div className="ml-3 text-[9px] text-slate">{age(p.last_seen)}</div>}
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
 
-      <div className="p-4 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px] max-h-[220px] overflow-y-auto">
-        {tasks.length === 0 && <div className="text-slate">NO ACTIVE TASKS</div>}
-        {tasks.map(t => {
-          const isMe = t.claimed_by === status?.agent_id
-          return (
-            <div key={t.task_id} className="flex flex-col gap-1 pb-2 border-b border-dashed border-obsidian/20 last:border-0">
-              <div className="flex justify-between items-start gap-2">
-                <span className={`font-bold leading-tight ${t.status === 'done' ? 'line-through text-slate' : ''}`}>
-                  {t.title}
-                </span>
-                <span className={`shrink-0 text-[9px] font-bold px-1 border ${
-                  t.status === 'open'    ? 'border-obsidian' :
-                  t.status === 'claimed' ? 'border-obsidian bg-obsidian text-alabaster' :
-                  'border-slate text-slate'
-                }`}>{t.status.toUpperCase()}</span>
-              </div>
-              {t.description && (
-                <div className="text-[9px] text-slate leading-tight">{t.description}</div>
-              )}
-              {t.claimed_by && t.status !== 'done' && (
-                <div className="text-[9px] text-slate">↳ {t.claimed_by}</div>
-              )}
-              <div className="flex gap-2 mt-1">
-                {t.status === 'open' && (
-                  <button
-                    onClick={() => claim(t.task_id)}
-                    className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster"
-                  >CLAIM</button>
-                )}
-                {t.status === 'claimed' && isMe && (
-                  <button
-                    onClick={() => done(t.task_id)}
-                    className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster"
-                  >DONE</button>
-                )}
-              </div>
+      {/* ── TASKS tab ───────────────────────────────────────────────────── */}
+      {activeTab === 'tasks' && (
+        <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+          <div className="section-header">
+            <span>TASK QUEUE</span>
+            <button onClick={() => setCreating(v => !v)}>{creating ? 'CANCEL' : 'NEW'}</button>
+          </div>
+          {creating && (
+            <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px]">
+              <input autoFocus value={newTaskTitle} onChange={e => setNewTaskTitle(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && submitTask()} placeholder="Task title..."
+                className="bg-transparent border border-obsidian px-2 py-1 text-[11px] font-mono focus:outline-none focus:bg-obsidian/5 w-full" />
+              <input value={newTaskDesc} onChange={e => setNewTaskDesc(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && submitTask()} placeholder="Description (optional)..."
+                className="bg-transparent border border-dashed border-obsidian/50 px-2 py-1 text-[11px] font-mono focus:outline-none w-full" />
+              <button onClick={submitTask} className="enox-btn self-start">CREATE</button>
             </div>
-          )
-        })}
-      </div>
-
-      {/* ── File tree ────────────────────────────────────────────────────── */}
-      <div className="section-header border-t-2 border-obsidian">
-        <span>Files</span>
-        <button
-          onClick={() => setCreatingFile(v => !v)}
-          title={creatingFile ? 'Cancel file creation' : 'Create file'}
-          aria-label={creatingFile ? 'Cancel file creation' : 'Create file'}
-        >{creatingFile ? '×' : '+'}</button>
-      </div>
-      {creatingFile && (
-        <div className="file-action-box">
-          <input
-            autoFocus
-            value={newFilePath}
-            onChange={e => setNewFilePath(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && submitFile()}
-            placeholder="docs/notes.md"
-            className="file-input"
-          />
-          <button onClick={submitFile} className="file-mini-btn">CREATE</button>
+          )}
+          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2 font-mono text-[11px]">
+            {tasks.length === 0 && <div className="text-slate">NO ACTIVE TASKS</div>}
+            {tasks.map(t => {
+              const isMe = t.claimed_by === status?.agent_id
+              return (
+                <div key={t.task_id} className="flex flex-col gap-1 pb-2 border-b border-dashed border-obsidian/20 last:border-0">
+                  <div className="flex justify-between items-start gap-2">
+                    <span className={`font-bold leading-tight ${t.status === 'done' ? 'line-through text-slate' : ''}`}>{t.title}</span>
+                    <span className={`shrink-0 text-[9px] font-bold px-1 border ${t.status === 'open' ? 'border-obsidian' : t.status === 'claimed' ? 'border-obsidian bg-obsidian text-alabaster' : 'border-slate text-slate'}`}>{t.status.toUpperCase()}</span>
+                  </div>
+                  {t.description && <div className="text-[9px] text-slate leading-tight">{t.description}</div>}
+                  {t.claimed_by && t.status !== 'done' && <div className="text-[9px] text-slate">↳ {t.claimed_by}</div>}
+                  <div className="flex gap-2 mt-1">
+                    {t.status === 'open' && <button onClick={() => claim(t.task_id)} className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster">CLAIM</button>}
+                    {t.status === 'claimed' && isMe && <button onClick={() => done(t.task_id)} className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster">DONE</button>}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
-      {fileActionError && (
-        <div className="file-error">{fileActionError}</div>
+
+      {/* ── FILES tab ───────────────────────────────────────────────────── */}
+      {activeTab === 'files' && (
+        <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+          <div className="section-header">
+            <span>FILES</span>
+            <button onClick={() => setCreatingFile(v => !v)} title={creatingFile ? 'Cancel' : 'New file'}>{creatingFile ? '×' : '+'}</button>
+          </div>
+          {creatingFile && (
+            <div className="file-action-box">
+              <input autoFocus value={newFilePath} onChange={e => setNewFilePath(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && submitFile()} placeholder="docs/notes.md" className="file-input" />
+              <button onClick={submitFile} className="file-mini-btn">CREATE</button>
+            </div>
+          )}
+          {fileActionError && <div className="file-error">{fileActionError}</div>}
+          <div className="file-list flex-1 overflow-y-auto p-3 font-mono text-[11px]">
+            {files.length === 0 && <div className="text-slate">NO ARTIFACTS INDEXED</div>}
+            <FileTree nodes={fileTree} onSelect={onFileSelect} onRename={handleRenameFile}
+              onDelete={handleDeleteFile} openMenu={fileMenuOpen} onOpenMenu={setFileMenuOpen}
+              selected={selectedFile} depth={0} />
+          </div>
+        </div>
       )}
-      <div className="file-list flex-1 overflow-y-auto p-3 font-mono text-[11px]">
-        {files.length === 0 && <div className="text-slate">NO ARTIFACTS INDEXED</div>}
-        <FileTree
-          nodes={fileTree}
-          onSelect={onFileSelect}
-          onRename={handleRenameFile}
-          onDelete={handleDeleteFile}
-          openMenu={fileMenuOpen}
-          onOpenMenu={setFileMenuOpen}
-          selected={selectedFile}
-          depth={0}
-        />
-      </div>
+
     </aside>
-    </>
   )
 }
 

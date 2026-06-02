@@ -51,8 +51,8 @@ select {
   min-height: 0;
   grid-template-areas:
     "header header header"
-    "circle editor right";
-  grid-template-columns: 292px minmax(430px, 1fr) 330px;
+    "circles chat right";
+  grid-template-columns: 200px minmax(430px, 1fr) 280px;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   padding: 18px;
@@ -63,25 +63,54 @@ select {
   grid-area: header;
 }
 
-.app-chat-panel {
-  grid-area: editor;
+.app-circles-sidebar {
+  grid-area: circles;
 }
 
-.app-circle-panel {
-  grid-area: circle;
+.app-chat-panel {
+  grid-area: chat;
 }
 
 .app-editor-panel {
-  grid-area: editor;
+  grid-area: chat;
 }
 
 .app-right-panel {
   grid-area: right;
 }
 
+/* kept for reference — no longer in grid */
+.app-circle-panel {
+  grid-area: circle;
+}
+
 .sys-window {
   background: #fff;
   border: 2px solid var(--fg-obsidian);
+}
+
+/* ── Void state — circle is disabled/dormant ─────────────────────────────── */
+
+/* All panels get dashed borders and slight desaturation in void state */
+.app-shell--void .sys-window {
+  border: 2px dashed rgba(0, 0, 0, 0.45);
+  background: rgba(255, 255, 255, 0.88);
+}
+
+/* Section headers become lighter */
+.app-shell--void .section-header {
+  opacity: 0.55;
+}
+
+/* Scanline interference on the header to signal dormant state */
+.app-shell--void .app-header {
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.03) 2px,
+    rgba(0,0,0,0.03) 4px
+  );
 }
 
 .sys-control {
