@@ -165,25 +165,27 @@ bob$ enox enter enoxian://ABC123... --owner bob
 ```
   Bob's daemon sees mls_welcomes[bob_peer_id]:
     calls MlsGroupManager::join_from_welcome()
-    now has the same group epoch secrets as everyone else
-    calls epoch_psk() → 32-byte key from MLS exporter
-    this becomes the new pnet PSK for all connections
+    now has the same MLS membership state as everyone else
+    stores the group state for future commits and content encryption
 ```
 
-### Step 6 — Remove (epoch rotation locks out the removed peer)
+### Step 6 — Remove (tombstone gate blocks future sync)
 
 ```
 admin$ enox member remove <bob_peer_id>
 
   1. MLS remove_member(bob_leaf_index)
-       → new epoch, new epoch secrets
-  2. epoch_psk() → completely new 32-byte PSK
+       → new epoch, new membership state
+  2. admin writes mls_removed[bob_peer_id]
   3. all remaining members apply the Commit
-  4. all daemons reconnect with the new PSK
-  5. Bob's daemon can no longer connect — it has the old PSK
+  4. future sync sessions check mls_removed before CRDT exchange
+  5. Bob's daemon is rejected by tombstone-aware peers before reading new data
 ```
 
-The key point: **the PSK is derived from the MLS group epoch secret**, not stored statically. Removing a member changes the epoch, which changes the PSK. Bob is locked out at the transport layer — he can't even reach the network, let alone read files.
+The key point: **the transport PSK is stable**. It is a coarse network gate, not
+the revocation mechanism. Removing a member advances MLS membership state and
+writes a CRDT tombstone; the sync gate rejects that peer before any file, chat,
+task, or awareness data is exchanged.
 
 ---
 
@@ -193,29 +195,24 @@ MLS (RFC 9420) is a group key agreement protocol. Think of it as a cryptographic
 
 ```
   Epoch 0: [alice]
-  │  alice creates the group, epoch_psk = derive("enoxian-psk", epoch_0_secret)
+  │  alice creates the group
   │
   ├─ add bob ──────────────────────────────────────────── Epoch 1: [alice, bob]
-  │  alice runs add_members(bob_key_package)               epoch_psk = derive(..., epoch_1_secret)
-  │  → commit (everyone applies)                           PSK rotates — all reconnect
+  │  alice runs add_members(bob_key_package)
+  │  → commit (everyone applies)
   │  → welcome (only bob consumes to join)
   │
   ├─ add carol ────────────────────────────────────────── Epoch 2: [alice, bob, carol]
-  │  epoch_psk rotates again
+  │  membership state advances again
   │
   └─ remove bob ───────────────────────────────────────── Epoch 3: [alice, carol]
-     epoch_psk = derive(..., epoch_3_secret)
-     bob does not have epoch_3_secret
-     bob cannot derive the new PSK
-     bob is locked out at the network layer
+     bob is removed from MLS membership
+     mls_removed[bob_peer_id] is written
+     bob is locked out at the sync gate
 ```
 
-Each epoch's PSK is derived via:
-```
-group.export_secret(crypto, "enoxian-psk", &[], 32)
-```
-
-This is a one-way derivation — knowing an old PSK tells you nothing about the current one.
+The MLS epoch key is reserved for the future content-encryption layer. It is not
+derived into the libp2p transport PSK.
 
 ---
 
@@ -412,9 +409,9 @@ enox status                               circle overview
 enox who                                  who is online
 enox member list                          all members (owner / agent / role)
 enox member pending                       waiting for approval
-enox member approve <peer_id>             approve + MLS add + PSK rotation
+enox member approve <peer_id>             approve + MLS add
 enox member reject  <peer_id>             deny
-enox member remove  <peer_id>             remove + MLS epoch advance + PSK rotation
+enox member remove  <peer_id>             remove + MLS commit + tombstone
 enox member remove-by-owner alice         remove all of alice's machines at once
 
 enox tasks                                task board

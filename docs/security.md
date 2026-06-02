@@ -1,179 +1,180 @@
 # Security Model
 
-> **⚠️ Reconciliation note (supersedes part of this doc).** The
-> epoch→PSK **rotation** described below (§"MLS — RFC 9420 access revocation"
-> and Layer 1/4 of the table) is **superseded** by
-> [`plan/identity.md`](plan/identity.md). The transport PSK is now a **stable
-> per-circle network gate** (matching [`plan/admin.md`](plan/admin.md): *"PSK
-> rotation is not required"*); eviction is enforced by the signed member list +
-> `mls_removed` tombstone sync-gate (Layer 3), with optional MLS **content**
-> encryption as the future cryptographic-eviction layer. Rotating the transport
-> PSK per epoch coupled connectivity to epoch-sync and caused permanent
-> lock-outs (a peer one epoch behind can't connect to receive the key that would
-> let it connect). The sections below describe the *previous* model; treat
-> `plan/identity.md` as authoritative.
+This document describes the current security model. Older notes that mention
+deriving the transport PSK from each MLS epoch are obsolete; the authoritative
+identity rationale lives in [plan/identity.md](plan/identity.md).
 
-## Layers of protection
+## Trust Boundaries
 
-enoxian applies three independent security layers in sequence. Each layer rejects peers that fail its check before passing control to the next.
+enoxian separates transport, identity, membership, and content:
 
-| Layer | Mechanism | What it proves |
-|-------|-----------|----------------|
-| **Transport** | Stable PSK (XSalsa20 via `pnet`) | You hold the circle's network secret |
-| **Identity** | Noise + per-circle Ed25519 keypair (derived from device key) | You own this device identity |
-| **Sync gate** | `mls_removed` tombstone + signed member list | You have not been explicitly evicted |
+| Layer | Mechanism | What it proves | Status |
+|-------|-----------|----------------|--------|
+| Transport | Stable per-circle PSK via `libp2p::pnet` | The peer holds the circle network secret | Implemented |
+| Identity | Noise + per-circle Ed25519 key derived from the device key | The peer owns this device identity | Implemented |
+| Membership | Signed member list + `mls_removed` tombstone sync gate | The peer has not been explicitly evicted | Implemented |
+| Content | MLS epoch key encrypts CRDT updates | The peer can read current content | Planned |
 
-Each layer is independent. Failing any layer drops the peer before the next is reached.
+The public bootstrap server is outside the circle trust boundary. It provides
+rendezvous and circuit relay only; it does not join any circle and does not hold
+any circle PSK.
 
-> **Note:** A fourth layer (MLS epoch key encrypting CRDT content) is planned — see
-> [`plan/identity.md`](plan/identity.md) §6. When implemented, it will provide
-> cryptographic eviction: a removed member can connect but cannot decrypt new updates.
+## Transport PSK
 
----
+Every circle has a stable 256-bit pre-shared key. It is applied to direct TCP
+circle-peer connections through `libp2p::pnet` before Noise starts. A peer with
+the wrong PSK fails before sync protocol negotiation.
 
-## PSK — who can connect
+The PSK is a coarse network gate, not the revocation mechanism. It is distributed
+in invite links and saved in `~/.enoxian/circles/<id>/config.toml`. It does not
+expire after a peer joins, and it is not rotated on MLS epoch changes.
 
-Every circle has a stable 256-bit pre-shared key. It is applied at the TCP layer via `libp2p::pnet` before the Noise handshake. A peer with the wrong (or no) PSK fails immediately and silently — the XSalsa20 stream is garbled and the connection drops.
+## Peer Identity
 
-**The PSK is the primary access credential.** Anyone who holds it can connect to the circle swarm. **It does not rotate** — it is a stable per-circle network gate. Eviction is handled at Layer 3 (the sync gate), not by re-keying the transport.
+Each install has one stable device key in `~/.enoxian/identity.toml`.
+Per-circle connection keypairs are derived deterministically from that device key
+using HKDF-SHA256:
 
-The PSK is distributed via invite links (`enoxian://v1/...`). Once a peer has joined, the PSK lives in their `~/.enoxian/circles/<id>/config.toml` indefinitely. There is no expiry.
+```text
+HKDF(device_key, "enoxian-device-v1", "circle/<circle-id>")
+```
 
----
-
-## Peer identity — who you are
-
-Each device has one stable Ed25519 **device key**, stored in `~/.enoxian/identity.toml`. Per-circle connection keypairs are derived deterministically from the device key via HKDF-SHA256: `HKDF(device_key, "enoxian-device-v1", "circle/<id>")`. The peer ID is a hash of the derived public key.
-
-**This means the peer ID for a given (device, circle) pair is stable across daemon restarts and re-joins.** The Noise protocol proves key ownership on every connection.
+The result is a stable peer ID for each `(device, circle)` pair. Noise proves
+ownership of that per-circle key during connection setup.
 
 Implications:
-- Impersonating a specific existing peer is cryptographically impossible
-- The same device always presents the same peer ID in a given circle — no MLS re-add churn on restart
-- Rejoining after removal still uses the same peer ID, which is now rejected at the sync gate (Layer 3)
 
----
+- A peer cannot impersonate another peer ID without the corresponding key.
+- Rejoining the same circle from the same device presents the same peer ID.
+- A removed peer that reconnects with the same identity can be rejected by the
+  tombstone sync gate.
 
-## Member list and MLS group — what is enforced
+## Membership And Eviction
 
-The member list (`member_list` Y.Map in the control doc) is a CRDT-replicated directory of peer IDs and roles. Write operations (add/remove/promote) require an admin signature. This is an auditable log of who has ever been in the circle, but it is not the security boundary on its own.
+The member list (`member_list` in the control CRDT doc) is the replicated
+directory of peer IDs, roles, owners, and agent labels. Mutating member
+operations require an admin signature.
 
-The security boundary is the **MLS group** + **PSK**.
+Eviction is enforced by `mls_removed`:
 
-Behaviour on `enox member remove <peer>`:
+1. The admin removes a member.
+2. The member entry is removed and a tombstone is written to the `mls_removed`
+   CRDT map.
+3. The MLS Remove commit is broadcast through `mls_commits` so remaining members
+   keep MLS membership state in sync.
+4. `src/network/sync.rs` checks `mls_removed` before exchanging any CRDT data
+   and rejects tombstoned peers.
 
-1. Admin issues an MLS `Remove` + `Commit` for the peer's leaf node
-2. The peer's entry is removed from the CRDT member list; a tombstone entry is written to the `mls_removed` CRDT map — **atomically in the same CRDT transaction**
-3. The commit is broadcast via the `mls_commits` CRDT array to all remaining members
-4. Each remaining member applies the commit, advancing their local MLS epoch (no transport restart)
-5. Any pending/welcome/key-package entries are cleaned up; the peer's presence entry is written as Offline
+This blocks new sync sessions from removed peers. It does not yet provide
+cryptographic content secrecy against a removed peer racing a member that has
+not received the tombstone. That stronger guarantee is the planned content
+encryption layer.
 
-**Eviction is enforced by the tombstone sync-gate:** `src/network/sync.rs` checks `mls_removed` at the top of every sync session — before any CRDT data is exchanged — and rejects tombstoned peers immediately. The tombstone propagates to all peers as part of the same CRDT update that removes the member entry, so there is no gap.
+## MLS
 
----
+enoxian uses IETF MLS (RFC 9420), implemented with `openmls`, for group
+membership cryptography and future content-layer encryption.
 
-## What an attacker can and cannot do
+MLS commits are replicated in the control doc:
 
-### With the current PSK (a legitimate member)
-
-| Action | Possible? |
-|--------|-----------|
-| Connect to the circle swarm | ✓ Yes |
-| Read all synced workspace files | ✓ Yes |
-| Read all chat history | ✓ Yes |
-| Impersonate a specific peer ID | ✗ No — Noise proves key ownership |
-| Sign member operations (add/remove/promote) | ✗ No — requires `admin.key` |
-| Inject arbitrary writes into the CRDT | ✓ Yes — all members with the PSK can write |
-
-### With a **stale/revoked** PSK (after being removed)
-
-| Action | Possible? |
-|--------|-----------|
-| Connect to the circle swarm | ✗ No — pnet PSK has been rotated; XSalsa20 stream is garbled |
-| Derive the new PSK from the old MLS epoch | ✗ No — TreeKEM ensures forward secrecy; new epoch key excludes removed leaves |
-| Read new CRDT updates | ✗ No — transport rejected before any data |
-| Read data synced before removal | ✓ Yes — data already on disk is not wiped |
-
-### Without the PSK
-
-| Action | Possible? |
-|--------|-----------|
-| Connect to the circle swarm | ✗ No — PSK handshake fails immediately |
-| Read any data | ✗ No |
-| Discover that a circle exists via mDNS | ✓ Yes — mDNS is unencrypted; peer IDs and addresses are visible on LAN |
-
----
-
-## Invite TTL and PSK revocation
-
-Invite links have a TTL (`--ttl`, default 7 days). After expiry, `enox enter` rejects the link.
-
-**What invite TTL protects:** prevents a removed member from using a stale invite link to obtain a KeyPackage from the admin. It does **not** help if the member already joined — they have the PSK on disk.
-
-**What MLS revocation protects:** when a member is removed (`enox member remove`), the MLS Remove commit advances the epoch for all remaining members. The admin and each member derive a new PSK and restart their swarm. The removed peer's old PSK is immediately useless for connecting.
-
-**Residual data:** the removed peer retains a local copy of everything they synced before removal. MLS provides forward secrecy (they cannot decrypt future traffic) but not backward secrecy (they keep old data). This is the standard MLS threat model.
-
-**Practical guidance:** use short-lived invites (`--ttl 24h`) for any invite you might regret. Remove unwanted members promptly — the MLS epoch advance immediately locks them out of future sync.
-
----
-
-## MLS — RFC 9420 membership management (implemented)
-
-enoxian uses **IETF MLS (RFC 9420)** for group key management, implemented via the [`openmls`](https://github.com/openmls/openmls) crate.
-
-### How TreeKEM works
-
-Members are arranged as leaf nodes of a binary Merkle-style tree. Each leaf holds the member's public key. Every path from a leaf to the root has a corresponding chained secret. When a member is added or removed, only the nodes on the affected paths are re-keyed — the `O(log N)` update is efficient even for large groups.
-
-On **Remove**: the removed leaf's node is blanked. A new epoch root secret is derived that depends only on the remaining members' key material. The evicted peer has no path to the new root secret, regardless of whether they rejoin with the same or a different keypair.
-
-### MLS epoch and eviction
-
-MLS epochs advance on every membership change (Add / Remove). The epoch state is tracked locally for each member for future content-layer encryption (Layer 4). **The epoch key is no longer derived into the transport PSK** — that coupling caused lock-out races (see [`plan/identity.md`](plan/identity.md) for the full analysis). Eviction is instead enforced by the sync gate (Layer 3): the `mls_removed` tombstone rejects a removed peer before any CRDT data is exchanged.
-
-### Commit propagation
-
-MLS commits are broadcast via the `mls_commits` Y.Array in the control CRDT doc. Each commit carries:
-- `epoch` — the epoch this commit advances to
-- `data_hex` — TLS-serialised `MlsMessageOut`
+- `epoch` — the epoch this commit advances from
+- `data_hex` — TLS-serialized `MlsMessageOut`
 - `sender_peer_id` — who issued the commit
-- `ratchet_tree_hex` — ratchet tree extension for Add commits (empty for Remove)
+- `ratchet_tree_hex` — ratchet tree extension data for joins
 
-A serial commit-watcher task in each peer's daemon applies commits in order and rotates the PSK after each epoch advance. Serialisation via an `mpsc` channel prevents races when multiple commits arrive in one P2P sync batch.
+Each daemon applies incoming commits serially to avoid races. The MLS epoch key
+is tracked for future content encryption; it is not derived into the transport
+PSK.
 
-### Offline members
+## Current Attacker Capabilities
 
-Offline members who miss a Remove commit receive it when they next connect — the CRDT array is replicated on reconnect. They apply it, and their local MLS epoch advances. The evicted peer is blocked at the sync gate regardless of when they reconnect.
+### Current Member With The PSK
 
-### What MLS does NOT protect
+| Action | Possible? |
+|--------|-----------|
+| Connect to the circle swarm | Yes |
+| Read synced workspace files and chat | Yes |
+| Write CRDT updates | Yes |
+| Impersonate another peer ID | No, Noise proves key ownership |
+| Perform admin member operations | No, requires `admin.key` |
 
-- **Past data on disk:** MLS provides *forward* secrecy. The removed member keeps a local copy of everything they received before removal.
-- **Colluding members:** any current member can share the PSK or MLS epoch secret out-of-band. MLS models honest-but-curious adversaries who follow the protocol.
-- **Admin key compromise:** if the admin's Ed25519 key is stolen, an attacker can approve their own KeyPackage. Admin key rotation is not yet implemented.
+### Removed Member Who Still Has The Stable PSK
 
----
+| Action | Possible? |
+|--------|-----------|
+| Open a transport connection | Yes, if the PSK is still known |
+| Complete a sync session with peers that have the tombstone | No |
+| Read new CRDT updates from tombstone-aware peers | No |
+| Read data already synced to local disk | Yes |
+| Read future encrypted content after Layer 4 ships | No, if they lack the current MLS content key |
 
-## Admin keypair
+### Outside Peer Without The PSK
 
-The circle creator generates an Ed25519 admin keypair at `enox init`. The private key (`admin.key`) never leaves the creator's machine. The public key is embedded in invite URIs so all peers can verify admin signatures.
+| Action | Possible? |
+|--------|-----------|
+| Connect to direct PSK-TCP circle peers | No |
+| Read circle content | No |
+| Discover local peer IDs and addresses via mDNS | Yes, on the same LAN |
 
-Only the holder of `admin.key` can:
-- Add or remove members (including issuing MLS Add/Remove commits)
-- Approve or reject join requests
-- Promote a member to admin
+## Invites
 
-There is currently no mechanism to transfer admin authority to another peer (multi-admin is not implemented). Losing `admin.key` means member operations can no longer be performed for that circle, and the MLS group cannot be updated.
+Invite links contain the circle ID, stable PSK, expiry timestamp, optional circle
+name, optional peer/relay/rendezvous addresses, and optional admin public key.
 
-The daemon auto-signs on behalf of the admin when the frontend omits a signature — it reads `admin.key` from disk and signs locally. This means the admin machine's daemon is privileged: anyone with local access to `~/.enoxian/circles/<id>/admin.key` can perform admin operations.
+Expiry is enforced by `enox enter` before joining. It prevents accidental or
+late use of old links, but it does not revoke a peer that already joined and
+saved the PSK.
 
----
+Practical guidance:
 
-## LAN exposure
+- Share invite links only over trusted channels.
+- Use short TTLs for one-off onboarding.
+- Remove unwanted members promptly so the tombstone propagates.
+- Treat the PSK as a durable secret until explicit circle-key rotation is added.
 
-mDNS peer discovery broadcasts peer IDs and listen addresses on the local network. This reveals:
-- That an enoxian daemon is running
-- The peer's libp2p peer ID
-- The TCP port the daemon is listening on
+## Relay And Rendezvous
 
-No circle content or PSK is exposed via mDNS. Connection attempts from peers with the wrong PSK are dropped silently. On networks where this exposure is unacceptable, disable mDNS (planned flag: `--no-mdns`) and rely on explicit invite peer addresses or the WAN anchor node.
+The bootstrap server (`enoxd --bootstrap`) is centralized network
+infrastructure, not a centralized trust core. It learns metadata such as peer
+IDs, circle UUID namespaces, timing, addresses, and traffic volume. It does not
+hold the PSK and does not parse circle sync frames.
+
+Data paths:
+
+- LAN or static-IP direct path: TCP + PSK + Noise + Yamux.
+- Bootstrap/rendezvous path: QUIC to the bootstrap server for discovery.
+- Circuit relay fallback: Noise-protected relay circuit when direct dialing
+  fails.
+
+Relay traffic is opaque to the relay at the libp2p transport layer, but current
+circle members still receive plaintext CRDT updates after decrypting their peer
+connection. Full content-layer E2EE is planned separately.
+
+## Local Daemon API
+
+`enoxd` also exposes a local HTTP/WebSocket API for the CLI and web UI. This API
+is a control plane, not the WAN relay. It can read and mutate circle state, so it
+must be treated as privileged local infrastructure.
+
+Current hardening target:
+
+- Default the HTTP/WS listener to loopback.
+- Restrict CORS.
+- Add local API authentication for browser and CLI clients.
+
+## Admin Key
+
+The circle creator generates an Ed25519 admin keypair at `enox init`. The
+private key (`admin.key`) remains on the creator's machine; the public key is
+embedded in invites so peers can verify admin operations.
+
+Only the holder of `admin.key` can add, remove, approve, reject, or promote
+members. If the admin private key is compromised, an attacker can perform member
+operations. Admin key rotation and multi-admin recovery are not yet implemented.
+
+## LAN Exposure
+
+mDNS announces peer IDs and listen addresses on the local network. It does not
+expose circle content or the PSK. On networks where peer discovery metadata is
+sensitive, use explicit peer/rendezvous addresses and disable mDNS once the
+planned flag exists.

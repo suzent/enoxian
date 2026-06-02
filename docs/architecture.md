@@ -270,6 +270,11 @@ The PSK is transport-level: it runs before Noise. Bootstrap servers do not know 
 
 The bootstrap server (`enoxd --bootstrap`) runs **QUIC only** — it never participates in a circle and holds no PSK.
 
+The axum HTTP/WebSocket server is a privileged local control plane for the CLI
+and browser UI. It is not the WAN relay path. `/ws/yjs` syncs local browser
+clients with the local daemon; cross-machine file sync uses the libp2p stream
+protocol (`/enoxian/sync/1.0.0`).
+
 ---
 
 ## Dependency Stack

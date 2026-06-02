@@ -166,7 +166,7 @@ See [admin.md](admin.md) for the full design.
 
 Admin keypair is generated at `enox init` and stored in `admin.key`. The public key is embedded in invite URIs so joining peers save it automatically. Member operations (add, remove, promote, approve, reject) require an admin signature; the daemon auto-signs from `admin.key` when a request arrives from the frontend with no signature provided.
 
-> ⚠ **Security note:** The member list is a directory, not an access gate. Removing a peer from the list stops them from auto-registering on restart but does not revoke their PSK — they can still connect and sync, or rejoin with a fresh keypair. True access revocation requires MLS epoch rotation (M11). See [security.md](../security.md) for the full threat model.
+> **Security note:** The member list is a replicated directory; the sync access gate is the `mls_removed` tombstone introduced later in M11. The transport PSK remains a stable per-circle network secret. See [security.md](../security.md) for the current threat model.
 
 **Implementation:**
 - `src/invite.rs` — extended binary format: optional admin pubkey appended as u16-length-prefixed bytes (backward-compatible)
@@ -407,44 +407,44 @@ Yjs is the right CRDT for high-frequency text sequences (code files, chat). For 
 
 ---
 
-### M11 — Access Revocation via MLS (RFC 9420)
+### M11 — MLS Membership + Tombstone Sync Gate
 **Status: Complete**
 
-True revocation requires changing the group key when a member is removed. enoxian uses **IETF MLS (RFC 9420)** — the international standard for group key management in decentralised systems, implemented in Rust by [`openmls`](https://github.com/openmls/openmls).
+enoxian uses **IETF MLS (RFC 9420)** — the international standard for group key management in decentralized systems, implemented in Rust by [`openmls`](https://github.com/openmls/openmls). In the current architecture, MLS tracks membership and prepares the future content-encryption layer. It does **not** rotate the transport PSK.
 
-**Why MLS instead of custom PSK rotation:**
-- MLS TreeKEM is cryptographically proven and handles eviction, offline members, and key rotation as first-class operations
-- Offline members receive pending commits when they reconnect — no coordination window, no requirement for all members to be online simultaneously
-- Forward secrecy and post-compromise security are built in
-- `openmls` is a production Rust crate implementing RFC 9420
+**Why MLS here:**
+- MLS TreeKEM gives a standard group membership and epoch model.
+- Offline members receive pending commits when they reconnect.
+- The MLS epoch can later encrypt CRDT updates at the message layer.
+- Transport connectivity stays decoupled from membership changes.
 
 **Architecture:**
 
-The existing PSK (via `libp2p::pnet`) is kept as a coarse transport-layer admission gate. MLS manages group key material above it and drives PSK rotation: each MLS epoch produces a new PSK that the evicted peer cannot derive.
+The existing PSK (via `libp2p::pnet`) is kept as a stable transport-layer admission gate. MLS manages group membership above it. Eviction is enforced by a CRDT-replicated tombstone gate before any sync data is exchanged.
 
 ```
 TCP
-└── pnet (PSK, XSalsa20)     ← coarse gate: "are you in this circle?"
+└── pnet (stable PSK)        ← coarse gate: "do you know this circle secret?"
     └── Noise (identity)     ← peer authentication
         └── sync gate        ← tombstone check: "were you explicitly removed?"
-            └── MLS epoch → PSK  ← key gate: "do you have the current epoch key?"
-                └── CRDT sync    ← content (workspace files, chat, tasks)
+            └── CRDT sync    ← content (workspace files, chat, tasks)
+                └── future MLS content encryption
 ```
 
 When a member is evicted:
 1. Admin runs `enox member remove <peer>`
-2. MLS `Remove` + `Commit` issued — TreeKEM prunes the evicted leaf, derives new epoch key
-3. Remove commit broadcast via `mls_commits` CRDT array to all remaining members
-4. Admin and each remaining peer apply the commit, derive the new PSK (`export_secret("enoxian-psk")`), and restart their swarm
-5. Evicted peer's old PSK fails the pnet XSalsa20 handshake — connection refused before any data
-6. Offline members apply the pending commit on reconnect and rotate their PSK
+2. MLS `Remove` + `Commit` is issued so membership state advances
+3. Remove commit is broadcast via `mls_commits` CRDT array to remaining members
+4. A tombstone is written to `mls_removed`
+5. Future sync sessions check `mls_removed` before exchanging CRDT data
+6. Offline remaining members apply the pending commit when they reconnect
 
 **Implementation:**
 - `src/mls/group.rs` — `MlsGroupManager`: `create`, `join_from_welcome`, `add_member`, `remove_member`, `apply_commit`, `epoch_psk`, `leaf_index_for_peer`, `save`/`load`
 - `src/mls/identity.rs` — `MlsIdentity`: Ed25519-based credential, signer, provider; persisted in circle config dir
-- `src/lifecycle.rs` — admin bootstraps MLS group on startup; KeyPackage written to `mls_key_packages`; Welcome consumer observer; **serial commit watcher** (mpsc channel + single consumer task — prevents race conditions on MLS mutex when multiple commits arrive in one P2P batch); `rotate_psk_and_restart` rotates `config.psk_hex` and restarts the circle swarm
-- `src/api/members.rs` — `approve_member`: load KeyPackage → `group.add_member()` → distribute commit + Welcome; `remove_member`: `group.remove_member()` → distribute Remove commit → writes tombstone → `rotate_psk_and_restart` in background task; cleans up key package, welcome, and pending entries
-- `src/network/sync.rs` — membership gate at the top of `sync_inner`: checks `mls_removed` tombstone; rejects evicted peers before any CRDT data is exchanged, even during the brief window between member removal and PSK rotation completing
+- `src/lifecycle.rs` — admin bootstraps MLS group on startup; KeyPackage written to `mls_key_packages`; Welcome consumer observer; **serial commit watcher** (mpsc channel + single consumer task prevents races when multiple commits arrive in one P2P batch)
+- `src/api/members.rs` — `approve_member`: load KeyPackage → `group.add_member()` → distribute commit + Welcome; `remove_member`: `group.remove_member()` → distribute Remove commit → writes tombstone; cleans up key package, welcome, and pending entries
+- `src/network/sync.rs` — membership gate at the top of `sync_inner`: checks `mls_removed` tombstone; rejects evicted peers before any CRDT data is exchanged
 - `src/control/mod.rs` — `MLS_REMOVED_KEY`: `Map[peer_id → RFC-3339 timestamp]` — CRDT-replicated tombstone set
 
 **Tasks:**
@@ -454,13 +454,14 @@ When a member is evicted:
 - [x] KeyPackage written to `mls_key_packages` Y.Map on daemon start
 - [x] `approve_member` API: load KeyPackage → `group.add_member()` → distribute commit + Welcome via Yjs
 - [x] Welcome consumer — watches `mls_welcomes` for own peer_id and applies Welcome to join MLS group
-- [x] Commit watcher — serial mpsc consumer applies incoming MLS commits; rotates PSK after each epoch advance
+- [x] Commit watcher — serial mpsc consumer applies incoming MLS commits
 - [x] Pending member queue with approve/reject workflow wired into MLS
-- [x] `remove_member` API: `group.remove_member()` → Remove commit broadcast → `rotate_psk_and_restart`; evicts all auxiliary CRDT keys; writes peer offline
-- [x] `rotate_psk_and_restart` — saves new PSK to config, stops circle, restarts with new pnet key
-- [x] Serial commit processing — `mpsc::unbounded_channel` serialises concurrent commit arrivals; prevents MLS mutex races and double-PSK-rotation on batch sync
-- [x] Sync-level tombstone gate — `mls_removed` CRDT map; `remove_member` writes peer_id tombstone; `sync_inner` rejects tombstoned peers before any data exchange; closes the PSK-rotation window
-- [x] `docs/security.md` updated with MLS threat model, TreeKEM explanation, epoch → PSK derivation chain, commit propagation, tombstone gate design, and attacker capability tables
+- [x] `remove_member` API: `group.remove_member()` → Remove commit broadcast → tombstone write; evicts all auxiliary CRDT keys; writes peer offline
+- [x] Stable transport PSK retained; `rotate_psk_and_restart` removed from the normal membership path
+- [x] Serial commit processing — `mpsc::unbounded_channel` serializes concurrent commit arrivals and prevents MLS mutex races on batch sync
+- [x] Sync-level tombstone gate — `mls_removed` CRDT map; `remove_member` writes peer-id tombstone; `sync_inner` rejects tombstoned peers before any data exchange
+- [x] `docs/security.md` updated with current stable-PSK threat model, MLS membership state, tombstone gate design, and attacker capability tables
+- [ ] Layer 4 content encryption — encrypt CRDT update payloads with MLS-derived content keys
 
 ---
 

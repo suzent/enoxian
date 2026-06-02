@@ -243,7 +243,10 @@ journalctl -u enoxd-bootstrap -f
 3. Member B dials Member A directly over PSK-TCP. If direct connection succeeds, the rendezvous server is no longer in the data path.
 4. If direct connection fails (strict NAT on both sides), traffic routes through the relay built into the bootstrap server.
 
-The bootstrap server is only used for the initial handshake and as a relay fallback. Ongoing sync traffic flows directly between members.
+The bootstrap server is used for discovery and, when direct dialing fails, as a
+circuit relay fallback. When a direct path exists, ongoing sync traffic flows
+directly between members; otherwise the relay forwards Noise-protected circuit
+traffic without joining the circle.
 
 ---
 
@@ -254,5 +257,5 @@ The bootstrap server is only used for the initial handshake and as a relay fallb
 | Knows circle content | No |
 | Knows circle member peer IDs | Yes (registration) |
 | Knows circle UUID | Yes (used as namespace) |
-| Can impersonate members | No (PSK-protected) |
+| Can impersonate members | No (Noise peer identity) |
 | Traffic encrypted end-to-end | Yes (Noise, relay forwards ciphertext) |

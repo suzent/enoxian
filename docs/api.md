@@ -2,6 +2,10 @@
 
 `enoxd` exposes a single HTTP server (default port `36521`). Routes are split between **daemon-level** (no circle context) and **per-circle** (scoped to a specific circle ID).
 
+This API is the local daemon control plane for the CLI and web UI. It can read
+and mutate circle state, so deployments should treat it as privileged local
+infrastructure rather than as a public relay endpoint.
+
 All request and response bodies are JSON. Errors return `{ "error": "<message>" }`.
 
 ---
