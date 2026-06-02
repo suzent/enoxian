@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { ChatMessage } from '../types'
-import { getChat, postChat, chatStream } from '../api'
+import type { ChatMessage, Member } from '../types'
+import { getChat, postChat, chatStream, getMembers } from '../api'
 import { useApp } from '../context/AppContext'
+import { shortenAgentId, peerLabel } from '../lib/displayName'
 
 interface Props {
   onMessage?: () => void
@@ -12,35 +13,49 @@ function formatTime(ts: number) {
   return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-function MsgRow({ msg, myAgentId }: { msg: ChatMessage; myAgentId: string }) {
-  const isMe = msg.agent_id === myAgentId
-  const isSystem = msg.agent_id === 'system'
+interface SenderLabel {
+  user: string    // "you" or owner name
+  device: string | null  // shown when owner has multiple devices
+  agent: string | null   // shown when a registered agent (not device primary) is speaking
+}
 
-  if (isSystem) {
+interface BubbleProps {
+  msg: ChatMessage
+  isMine: boolean  // true for all devices owned by self
+  isThisDevice: boolean  // true only for the current device
+  label: SenderLabel
+  showSender: boolean
+}
+
+function Bubble({ msg, isMine, isThisDevice, label, showSender }: BubbleProps) {
+  if (msg.agent_id === 'system') {
     return (
-      <div className="msg-system px-2 py-1 text-alabaster bg-obsidian font-mono text-[11px] w-fit
-                      bg-scanline">
+      <div className="self-center px-3 py-1 text-alabaster bg-obsidian font-mono text-[10px] bg-scanline">
         {msg.text}
       </div>
     )
   }
 
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex justify-between font-mono text-[11px] font-bold">
-        <span>@{msg.agent_id}{isMe ? ' (ME)' : ''}</span>
-        <span className="font-normal text-slate">{formatTime(msg.ts)}</span>
-      </div>
+    <div className={`flex flex-col gap-0.5 max-w-[78%] ${isThisDevice ? 'self-end items-end' : 'self-start items-start'}`}>
+      {showSender && (
+        <div className={`flex items-baseline gap-1 px-0.5 ${isThisDevice ? 'flex-row-reverse' : ''}`}>
+          <span className="text-[9px] font-bold font-mono text-slate">{label.user}</span>
+          {label.device && <span className="text-[9px] font-mono text-slate/50">· {label.device}</span>}
+          {label.agent && <span className="text-[9px] font-mono text-slate/50">· {label.agent}</span>}
+        </div>
+      )}
       <div
-        className="pl-2 font-mono text-[11px] leading-relaxed break-all overflow-hidden"
-        style={{
-          borderLeft: isMe ? '4px solid #111111' : '2px dashed #111111',
-          wordBreak: 'break-word',
-          overflowWrap: 'anywhere',
-        }}
+        className={`px-3 py-2 font-mono text-[11px] leading-relaxed ${
+          isMine
+            ? 'bg-obsidian text-alabaster'
+            : 'bg-alabaster border-2 border-obsidian text-obsidian'
+        }`}
+        style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
       >
         {msg.text}
       </div>
+      <span className="text-[9px] text-slate/50 font-mono px-0.5">{formatTime(msg.ts)}</span>
     </div>
   )
 }
@@ -48,6 +63,7 @@ function MsgRow({ msg, myAgentId }: { msg: ChatMessage; myAgentId: string }) {
 export default function ChatPanel({ onMessage, variant = 'rail' }: Props) {
   const { activeCircleId, status } = useApp()
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [members, setMembers] = useState<Member[]>([])
   const [input, setInput] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
   const seenRef = useRef(new Set<string>())
@@ -67,14 +83,14 @@ export default function ChatPanel({ onMessage, variant = 'rail' }: Props) {
     seenRef.current.clear()
     latestTsRef.current = null
     setMessages([])
+    setMembers([])
+
+    getMembers(activeCircleId).then(m => { if (!cancelled) setMembers(m) }).catch(() => {})
 
     const catchUp = () => {
       const since = latestTsRef.current === null ? undefined : Math.max(0, latestTsRef.current - 1)
       getChat(activeCircleId, since)
-        .then(msgs => {
-          if (cancelled) return
-          msgs.forEach(addMsg)
-        })
+        .then(msgs => { if (cancelled) return; msgs.forEach(addMsg) })
         .catch(() => {})
     }
 
@@ -84,6 +100,9 @@ export default function ChatPanel({ onMessage, variant = 'rail' }: Props) {
       try {
         const data = JSON.parse(e.data)
         if (data.type === 'message_posted') addMsg(data.message)
+        if (data.type === 'member_joined' || data.type === 'member_removed') {
+          getMembers(activeCircleId).then(m => { if (!cancelled) setMembers(m) }).catch(() => {})
+        }
       } catch {}
     })
     catchUp()
@@ -96,6 +115,40 @@ export default function ChatPanel({ onMessage, variant = 'rail' }: Props) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // My owner name — used to recognise all my devices as "you"
+  const myMember = members.find(m => m.agent_id === status?.agent_id)
+  const selfOwner = myMember
+    ? peerLabel(myMember.owner, myMember.agent_id)
+    : shortenAgentId(status?.agent_id ?? '')
+
+  const getSenderLabel = useCallback((agentId: string): SenderLabel => {
+    // Direct member lookup by device agent_id
+    let member = members.find(m => m.agent_id === agentId)
+    let agentName: string | null = null
+
+    // If not found as a primary device, check registered agent lists (e.g. "claude-code")
+    if (!member) {
+      const host = members.find(m => m.agents.includes(agentId))
+      if (host) { member = host; agentName = agentId }
+    }
+
+    if (!member) return { user: shortenAgentId(agentId) || agentId, device: null, agent: null }
+
+    const ownerLabel = peerLabel(member.owner, member.agent_id)
+    const isOwnDevice = ownerLabel === selfOwner
+    const deviceLabel = member.device_label || shortenAgentId(member.agent_id)
+
+    // Show device qualifier when this owner has more than one device in the circle
+    const sameOwnerDevices = members.filter(m => peerLabel(m.owner, m.agent_id) === ownerLabel)
+    const showDevice = sameOwnerDevices.length > 1 && !!deviceLabel && deviceLabel !== ownerLabel
+
+    return {
+      user: isOwnDevice ? 'you' : ownerLabel,
+      device: showDevice ? deviceLabel : null,
+      agent: agentName,
+    }
+  }, [members, selfOwner])
 
   const send = () => {
     const text = input.trim()
@@ -110,13 +163,27 @@ export default function ChatPanel({ onMessage, variant = 'rail' }: Props) {
         <span>{variant === 'main' ? 'Circle Chat' : 'Terminal Log'}</span>
       </div>
 
-      <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 flex flex-col gap-4 font-mono text-[11px] min-w-0">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 flex flex-col gap-2 font-mono text-[11px] min-w-0">
         {messages.length === 0 && (
-          <div className="text-slate">[SYS] AWAITING TRANSMISSION...</div>
+          <div className="text-slate self-start">[SYS] AWAITING TRANSMISSION...</div>
         )}
-        {messages.map(msg => (
-          <MsgRow key={msg.id} msg={msg} myAgentId={status?.agent_id ?? ''} />
-        ))}
+        {messages.map((msg, i) => {
+          const label = getSenderLabel(msg.agent_id)
+          const isThisDevice = msg.agent_id === status?.agent_id
+          const isMine = label.user === 'you'
+          const prev = messages[i - 1]
+          const showSender = !prev || prev.agent_id !== msg.agent_id
+          return (
+            <Bubble
+              key={msg.id}
+              msg={msg}
+              isMine={isMine}
+              isThisDevice={isThisDevice}
+              label={label}
+              showSender={showSender}
+            />
+          )
+        })}
         <div ref={bottomRef} />
       </div>
 

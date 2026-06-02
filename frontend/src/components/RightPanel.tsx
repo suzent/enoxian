@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Presence, Task, Member, PendingEntry } from '../types'
 import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, createFile, renameFile, deleteFile, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember } from '../api'
 import { useApp } from '../context/AppContext'
+import { shortenAgentId, peerLabel } from '../lib/displayName'
 
 interface Props {
   onFileSelect: (path: string | null) => void
@@ -15,19 +16,6 @@ function age(isoStr: string) {
   return `${Math.floor(secs / 3600)}h ago`
 }
 
-/** Shorten the auto-generated peer suffix from 8 → 4 chars.
- *  "human-Kj4RQm48" → "human-Kj4R"
- *  Custom names that don't match the pattern are returned as-is. */
-function shortenAgentId(agentId: string): string {
-  return agentId.replace(/-([A-Za-z0-9]{4})[A-Za-z0-9]{4}$/, '-$1') || agentId
-}
-
-/** Best human-readable label for a peer.
- *  Priority: explicit owner name → shortened agent id */
-function peerLabel(owner: string, agentId: string): string {
-  if (owner?.trim()) return owner.trim()
-  return shortenAgentId(agentId) || agentId
-}
 
 export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const { activeCircleId, status } = useApp()
