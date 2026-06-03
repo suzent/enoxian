@@ -99,8 +99,8 @@ export default function LandingPage({ onEntered }: Props) {
 
   async function triggerEruptionAndComplete() {
     setIsErupting(true)
-    await reloadCircles()
-    angelRef.current?.triggerEruption(() => {
+    angelRef.current?.triggerEruption(async () => {
+      await reloadCircles()
       onEntered()
     })
   }

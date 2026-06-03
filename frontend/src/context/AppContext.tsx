@@ -4,6 +4,7 @@ import { getCircles, getStatus } from '../api'
 
 interface AppContextValue {
   circles: Circle[]
+  circlesLoaded: boolean
   activeCircleId: string | null
   setActiveCircleId: (id: string | null) => void
   status: Status | null
@@ -12,6 +13,7 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue>({
   circles: [],
+  circlesLoaded: false,
   activeCircleId: null,
   setActiveCircleId: () => {},
   status: null,
@@ -20,6 +22,7 @@ const AppContext = createContext<AppContextValue>({
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [circles, setCircles] = useState<Circle[]>([])
+  const [circlesLoaded, setCirclesLoaded] = useState(false)
   const [activeCircleId, setActiveCircleIdState] = useState<string | null>(null)
   const [status, setStatus] = useState<Status | null>(null)
 
@@ -27,6 +30,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const cs = await getCircles()
       setCircles(cs)
+      setCirclesLoaded(true)
       if (activeCircleId && !cs.find(c => c.circle_id === activeCircleId)) {
         const nextCircleId = cs[0]?.circle_id ?? null
         setActiveCircleIdState(nextCircleId)
@@ -59,7 +63,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [activeCircleId])
 
   return (
-    <AppContext.Provider value={{ circles, activeCircleId, setActiveCircleId, status, reloadCircles }}>
+    <AppContext.Provider value={{ circles, circlesLoaded, activeCircleId, setActiveCircleId, status, reloadCircles }}>
       {children}
     </AppContext.Provider>
   )

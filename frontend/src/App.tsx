@@ -14,11 +14,11 @@ import './styles/globals.css'
 type MobileDrawer = 'circles' | 'info' | null
 
 function Layout() {
-  const { activeCircleId, circles } = useApp()
+  const { activeCircleId, circles, circlesLoaded } = useApp()
 
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [ritual, setRitual] = useState<{ mode: RitualMode; label?: string } | null>(null)
-  const [showLanding, setShowLanding] = useState(circles.length === 0)
+  const [showLanding, setShowLanding] = useState(false)
   const [revealing, setRevealing] = useState(false)
   const [mobileDrawer, setMobileDrawer] = useState<MobileDrawer>(null)
 
@@ -28,12 +28,13 @@ function Layout() {
   }, [])
 
   useEffect(() => {
+    if (!circlesLoaded) return
     if (circles.length === 0) {
       setShowLanding(true)
     } else if (!revealing) {
       setShowLanding(false)
     }
-  }, [circles.length])
+  }, [circlesLoaded, circles.length])
 
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
   const isVoid = activeCircle?.disabled ?? false
