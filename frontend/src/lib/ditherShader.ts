@@ -36,53 +36,63 @@ export const DitherShaderDef = {
     uniform float uExposure;
     varying vec2 vUv;
 
-    const mat4 bayerIndex = mat4(
-       0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0,
-      12.0/16.0,  4.0/16.0, 14.0/16.0,  6.0/16.0,
-       3.0/16.0, 11.0/16.0,  1.0/16.0,  9.0/16.0,
-      15.0/16.0,  7.0/16.0, 13.0/16.0,  5.0/16.0
-    );
+    float bayer(vec2 p) {
+        vec2 b = floor(mod(p, 4.0));
+        int idx = int(b.x) + int(b.y) * 4;
+        if(idx == 0) return 0.0/16.0;
+        if(idx == 1) return 8.0/16.0;
+        if(idx == 2) return 2.0/16.0;
+        if(idx == 3) return 10.0/16.0;
+        if(idx == 4) return 12.0/16.0;
+        if(idx == 5) return 4.0/16.0;
+        if(idx == 6) return 14.0/16.0;
+        if(idx == 7) return 6.0/16.0;
+        if(idx == 8) return 3.0/16.0;
+        if(idx == 9) return 11.0/16.0;
+        if(idx == 10) return 1.0/16.0;
+        if(idx == 11) return 9.0/16.0;
+        if(idx == 12) return 15.0/16.0;
+        if(idx == 13) return 7.0/16.0;
+        if(idx == 14) return 13.0/16.0;
+        return 5.0/16.0;
+    }
 
     void main() {
       vec4 color = texture2D(tDiffuse, vUv) * uExposure;
 
-      // Perceptual gamma correction before Bayer thresholding.
-      // Three.js 0.16+ renders to a linear render target, so a face
-      // with 22% physical brightness stays at luminance 0.22 in the shader —
-      // mapping it to a very dark Bayer band with almost no variation.
-      // Applying pow(x, 1/2.2) mimics the sRGB transfer function, spreading
-      // the luminance range across the full Bayer matrix so shading gradients
-      // become clearly visible at all brightness levels.
-      vec3 gamma = pow(clamp(color.rgb, 0.0, 1.0), vec3(0.4545));
-      float lum  = dot(gamma, vec3(0.299, 0.587, 0.114));
+      // Increase contrast aggressively before dithering but keep it softer than smoothstep
+      vec3 contrastColor = (color.rgb - 0.5) * 1.5 + 0.5;
+      float gray = dot(contrastColor, vec3(0.299, 0.587, 0.114));
+      
+      // Add slight noise based on UV to break up banding before bayer pattern
+      float noise = fract(sin(dot(vUv, vec2(12.9898, 78.233))) * 43758.5453) * 0.05 - 0.025;
+      gray = clamp(gray + noise, 0.0, 1.0);
+      
+      // Pixel coordinate scaling for chunky pixel-art look
+      float pixelSize = 2.0; 
+      vec2 pixelCoord = floor((vUv * uResolution) / pixelSize);
+      
+      float threshold = bayer(pixelCoord);
+      
+      // Check for emissive Red (bright red, low green/blue)
+      bool isRed = (color.r > 0.5 && color.g < 0.3 && color.b < 0.3);
+      
+      // Use absolute difference to clamp exact white to white, 
+      // but let anti-aliased grey edges fall into the dither threshold.
+      float distToWhite = length(color.rgb - vec3(1.0));
+      if (distToWhite < 0.05 && !isRed) {
+          gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+          return;
+      }
 
-      // 2×2 retro pixel cells
-      vec2 coord = vUv * uResolution * 0.5;
-      int x = int(mod(coord.x, 4.0));
-      int y = int(mod(coord.y, 4.0));
-
-      float t = 0.0;
-      if      (x==0&&y==0) t = bayerIndex[0][0];
-      else if (x==1&&y==0) t = bayerIndex[0][1];
-      else if (x==2&&y==0) t = bayerIndex[0][2];
-      else if (x==3&&y==0) t = bayerIndex[0][3];
-      else if (x==0&&y==1) t = bayerIndex[1][0];
-      else if (x==1&&y==1) t = bayerIndex[1][1];
-      else if (x==2&&y==1) t = bayerIndex[1][2];
-      else if (x==3&&y==1) t = bayerIndex[1][3];
-      else if (x==0&&y==2) t = bayerIndex[2][0];
-      else if (x==1&&y==2) t = bayerIndex[2][1];
-      else if (x==2&&y==2) t = bayerIndex[2][2];
-      else if (x==3&&y==2) t = bayerIndex[2][3];
-      else if (x==0&&y==3) t = bayerIndex[3][0];
-      else if (x==1&&y==3) t = bayerIndex[3][1];
-      else if (x==2&&y==3) t = bayerIndex[3][2];
-      else if (x==3&&y==3) t = bayerIndex[3][3];
-
-      // Opaque 1-bit: white or black, no gray.
-      // Container's mix-blend-mode:multiply makes white transparent.
-      float c = step(t, lum);
-      gl_FragColor = vec4(vec3(c), 1.0);
+      if (isRed) {
+          float redDither = step(threshold, color.r * 1.2);
+          gl_FragColor = vec4(redDither, 0.0, 0.0, 1.0);
+      } else {
+          // White background logic: High gray values become 1 (white), low become 0 (black)
+          float bw = step(threshold, gray); 
+          gl_FragColor = vec4(vec3(bw), 1.0);
+      }
     }
   `,
 }
@@ -127,7 +137,7 @@ export function createDitheredComposer(
     ditherPass,
     setSize(w, h) {
       composer.setSize(w, h)
-      ditherPass.uniforms.uResolution.value.set(w, h)
+      ditherPass.uniforms.uResolution.value.set(w * window.devicePixelRatio, h * window.devicePixelRatio)
     },
     setExposure(v) {
       ditherPass.uniforms.uExposure.value = v

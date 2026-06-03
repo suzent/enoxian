@@ -49,6 +49,7 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
   const halos = new THREE.Group()
   halos.position.z = -6
   halos.scale.set(0, 0, 0)
+  halos.visible = false // Hide completely until erupting
   sceneRoot.add(halos)
 
   const halo1 = new THREE.Mesh(new THREE.TorusGeometry(12, 0.3, 4, 64), ringMat)

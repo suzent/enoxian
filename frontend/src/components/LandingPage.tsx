@@ -542,7 +542,8 @@ export default function LandingPage({ onEntered }: Props) {
       <div style={{ position: 'fixed', inset: 0, zIndex: 5000, pointerEvents: 'none' }}>
         <div ref={mountRef} className="ritual-canvas" style={{ mixBlendMode: 'multiply', width: '100%', height: '100%' }} />
         {/* We fade OUT the dither right as the eruption starts to show the clean 3D scene, then let the transition class handle the end */}
-        <div className="ritual-dither" style={{ opacity: isErupting ? 0 : 0.42, transition: 'opacity 0.4s ease' }} />
+        {/* NOTE: Removing the ritual-dither class here entirely because it adds a CSS background pattern of dots which conflicts with the shader! */}
+        <div style={{ opacity: isErupting ? 0 : 0.42, transition: 'opacity 0.4s ease' }} />
       </div>
 
       {/* UI overlay — hidden once eruption begins */}
