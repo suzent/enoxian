@@ -9,7 +9,6 @@ import {
   makeDitherMaterials,
   type DitheredComposer,
   EXPOSURE_ICON,
-  EXPOSURE_TRANSITION_PEAK,
   easeInOut,
 } from '../lib/ditherShader'
 import type { RitualMode } from './RitualTransition'
@@ -17,6 +16,20 @@ import type { RitualMode } from './RitualTransition'
 interface Props {
   onRitual?: (mode: RitualMode, label?: string) => void
 }
+
+// Full-screen "summon" played when switching circles: the selected circle's own
+// icon geometry appears to lift out of its tiny canvas, swell toward screen center
+// to fill the viewport, then drop back into the icon — rendered through the dither
+// composer the whole way so it keeps the halftone look.
+const SWITCH_DUR = 2400 // ms, total
+const SWITCH_MAX = 2.2 // peak scale — a clear, centered solid (not full-screen)
+const T_RISE = 0.26 // timeline fraction: icon → centered + full
+const T_HOLD = 0.74 // timeline fraction: end of the centered "occult" hold
+// Backdrop: the transition scene's background darkens from white (transparent under
+// mix-blend:multiply) to this gray, which the dither pass renders as a screen-filling
+// field of dots that veils the app behind. Lower = denser dots = more opaque veil.
+const VEIL_GRAY = new THREE.Color(0x4d4d4d)
+const TRANS_WHITE = new THREE.Color(0xffffff)
 
 type Modal = 'init' | 'enter' | 'leave' | null
 
@@ -40,13 +53,14 @@ export default function CircleSidebar({ onRitual }: Props) {
 
   // Three.js state — all in refs to avoid re-renders
   const iconRendererRef = useRef<THREE.WebGLRenderer | null>(null)
+  const scenesRef = useRef<Map<string, SceneEntry>>(new Map())
+  const canvasMapRef = useRef<Map<string, HTMLCanvasElement>>(new Map())
+  const rafRef = useRef(0)
+  // Full-screen transition overlay (re-used across every switch)
   const transRendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const transDCRef = useRef<DitheredComposer | null>(null)
   const transSceneRef = useRef(new THREE.Scene())
   const transCameraRef = useRef(new THREE.PerspectiveCamera(60, 1, 0.1, 1000))
-  const scenesRef = useRef<Map<string, SceneEntry>>(new Map())
-  const canvasMapRef = useRef<Map<string, HTMLCanvasElement>>(new Map())
-  const rafRef = useRef(0)
   const animatingRef = useRef(false)
 
   // Bootstrap Three.js renderers once
@@ -60,7 +74,8 @@ export default function CircleSidebar({ onRitual }: Props) {
     document.body.appendChild(iconRenderer.domElement)
     iconRendererRef.current = iconRenderer
 
-    // Full-screen transition renderer + dithered composer
+    // Full-screen transition renderer + dithered composer (white bg → transparent
+    // via mix-blend-mode:multiply; the dithered shape shows through over the UI).
     const transRenderer = new THREE.WebGLRenderer({ antialias: false })
     transRenderer.setSize(window.innerWidth, window.innerHeight)
     transRenderer.setPixelRatio(1)
@@ -83,7 +98,7 @@ export default function CircleSidebar({ onRitual }: Props) {
       transRenderer, transScene, transCamera,
       window.innerWidth, window.innerHeight,
     )
-    transDC.setExposure(EXPOSURE_TRANSITION_PEAK)
+    transDC.setExposure(EXPOSURE_ICON)
     transDCRef.current = transDC
 
     const onResize = () => {
@@ -182,81 +197,94 @@ export default function CircleSidebar({ onRitual }: Props) {
     else canvasMapRef.current.delete(id)
   }, [])
 
-  const switchCircle = useCallback(async (targetId: string) => {
+  const switchCircle = useCallback((targetId: string) => {
     if (animatingRef.current || targetId === activeCircleId) return
     const transRenderer = transRendererRef.current
     const transDC = transDCRef.current
-    if (!transRenderer || !transDC) { setActiveCircleId(targetId); return }
-
+    const entry = scenesRef.current.get(targetId)
+    const iconCanvas = canvasMapRef.current.get(targetId)
+    if (!transRenderer || !transDC || !entry || !iconCanvas) { setActiveCircleId(targetId); return }
     animatingRef.current = true
 
     const transScene = transSceneRef.current
-    const targetCircle = circles.find(c => c.circle_id === targetId)
+    const transCamera = transCameraRef.current
 
-    // Solid dithered shape for the target circle — expands through the screen during transition
-    let transShape: THREE.Mesh | null = null
-    if (targetCircle) {
-      const geo = makeCircleGeometry(targetCircle.circle_name)
-      const { flat } = makeDitherMaterials()
-      transShape = new THREE.Mesh(geo, flat)
-      transShape.scale.setScalar(0.1)
-      const p = makeShapeParams(targetCircle.circle_name)
-      transShape.rotation.x = p.initRotX
-      transShape.rotation.y = p.initRotY
-      transScene.add(transShape)
-    }
+    // Map the icon's on-screen rect into the transition camera's z=0 plane, so the
+    // overlay shape starts exactly where the little icon sits and at its apparent size.
+    const visH = 2 * Math.tan((transCamera.fov * Math.PI) / 180 / 2) * transCamera.position.z
+    const visW = visH * transCamera.aspect
+    const rect = iconCanvas.getBoundingClientRect()
+    const cx = rect.left + rect.width / 2
+    const cy = rect.top + rect.height / 2
+    const startX = ((cx / window.innerWidth) * 2 - 1) * (visW / 2)
+    const startY = -((cy / window.innerHeight) * 2 - 1) * (visH / 2)
+    // Shape (radius ~1 → diameter ~2) fills ~80% of the icon box; match that pixel size.
+    const startScale = (rect.height * 0.8) / (2 * (window.innerHeight / visH))
 
+    // Clone the icon's geometry + current spin pose so it reads as the *same* shape
+    // lifting out of the icon, then hide the real icon for the duration.
+    const { flat } = makeDitherMaterials()
+    const shape = new THREE.Mesh(entry.mesh.geometry.clone(), flat)
+    shape.rotation.copy(entry.mesh.rotation)
+    shape.position.set(startX, startY, 0)
+    shape.scale.setScalar(startScale)
+    transScene.add(shape)
+    iconCanvas.style.visibility = 'hidden'
+
+    transDC.setExposure(EXPOSURE_ICON)
     transRenderer.domElement.style.display = 'block'
 
-    // Phase 1 — exposure ramps from peak (transparent/white) down to near-zero (dense dots = black)
-    // mix-blend-mode:multiply turns dense dither → black screen; sparse dither → transparent
-    await new Promise<void>(resolve => {
-      const start = performance.now(), dur = 1400
-      const LOW = 0.18
-      const tick = () => {
-        const t = Math.min((performance.now() - start) / dur, 1)
-        const e = easeInOut(t)
-        transDC.setExposure(EXPOSURE_TRANSITION_PEAK - (EXPOSURE_TRANSITION_PEAK - LOW) * e)
-        if (transShape) {
-          transShape.scale.setScalar(0.1 + e * 13.9)
-          transShape.rotation.x += 0.05
-          transShape.rotation.y += 0.07
-        }
-        transDC.composer.render()
-        if (t < 1) requestAnimationFrame(tick); else resolve()
+    const start = performance.now()
+    let swapped = false
+    const tick = () => {
+      const t = Math.min((performance.now() - start) / SWITCH_DUR, 1)
+
+      // `out` = 0 at the icon, 1 at screen center+full. Three eased phases:
+      // rise → hold (occult) → return. Spin and dither density intensify in the hold.
+      let out: number, scale: number, exposure = EXPOSURE_ICON, spinMul = 1
+      if (t < T_RISE) {
+        const p = easeInOut(t / T_RISE)
+        out = p
+        scale = startScale + (SWITCH_MAX - startScale) * p
+      } else if (t < T_HOLD) {
+        const hp = (t - T_RISE) / (T_HOLD - T_RISE) // 0 → 1 across the hold
+        out = 1
+        scale = SWITCH_MAX * (1 + 0.05 * Math.sin(hp * Math.PI * 5)) // slow breathing
+        // Pulse only denser than the icon (never sparser → it can't fade out).
+        exposure = EXPOSURE_ICON - 0.45 * (0.5 + 0.5 * Math.sin(hp * Math.PI * 7))
+        spinMul = 3.5 // whirl faster while it hangs at center
+      } else {
+        const p = easeInOut((t - T_HOLD) / (1 - T_HOLD))
+        out = 1 - p
+        scale = SWITCH_MAX + (startScale - SWITCH_MAX) * p
       }
-      requestAnimationFrame(tick)
-    })
 
-    setActiveCircleId(targetId)
+      // Veil the app behind with a screen-filling dither field that follows `out`.
+      ;(transScene.background as THREE.Color).copy(TRANS_WHITE).lerp(VEIL_GRAY, out)
+      shape.position.set(startX * (1 - out), startY * (1 - out), 0)
+      shape.scale.setScalar(scale)
+      shape.rotation.x += 0.018 * spinMul
+      shape.rotation.y += 0.026 * spinMul
+      shape.rotation.z += 0.012 * spinMul // extra axis for an occult twist
+      transDC.setExposure(exposure)
 
-    // Phase 2 — exposure ramps back to peak (dither dissolves → transparent → UI revealed)
-    await new Promise<void>(resolve => {
-      const start = performance.now(), dur = 1000
-      const LOW = 0.18
-      const tick = () => {
-        const t = Math.min((performance.now() - start) / dur, 1)
-        const e = easeInOut(t)
-        transDC.setExposure(LOW + (EXPOSURE_TRANSITION_PEAK - LOW) * e)
-        if (transShape) {
-          transShape.rotation.x += 0.03
-          transShape.rotation.y += 0.04
-        }
-        transDC.composer.render()
-        if (t < 1) requestAnimationFrame(tick); else resolve()
+      // Swap the active circle once centered, hidden behind the full-screen dither.
+      if (!swapped && t >= T_RISE) { setActiveCircleId(targetId); swapped = true }
+      transDC.composer.render()
+      if (t < 1) {
+        requestAnimationFrame(tick)
+      } else {
+        transScene.remove(shape)
+        shape.geometry.dispose()
+        ;(shape.material as THREE.Material).dispose()
+        iconCanvas.style.visibility = ''
+        transRenderer.domElement.style.display = 'none'
+        transDC.setExposure(EXPOSURE_ICON)
+        animatingRef.current = false
       }
-      requestAnimationFrame(tick)
-    })
-
-    if (transShape) {
-      transScene.remove(transShape)
-      transShape.geometry.dispose()
-      ;(transShape.material as THREE.Material).dispose()
     }
-    transDC.setExposure(EXPOSURE_TRANSITION_PEAK)
-    transRenderer.domElement.style.display = 'none'
-    animatingRef.current = false
-  }, [activeCircleId, setActiveCircleId, circles])
+    requestAnimationFrame(tick)
+  }, [activeCircleId, setActiveCircleId])
 
   // Modal handlers
   const handleInit = async (e: React.FormEvent) => {
