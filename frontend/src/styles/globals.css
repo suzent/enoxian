@@ -52,7 +52,7 @@ select {
   grid-template-areas:
     "header header header"
     "circles chat right";
-  grid-template-columns: 200px minmax(430px, 1fr) 280px;
+  grid-template-columns: minmax(160px, 200px) minmax(0, 1fr) minmax(220px, 280px);
   grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   padding: 18px;
@@ -794,126 +794,129 @@ select option {
   color: var(--fg-obsidian);
 }
 
-@media (max-width: 1180px) {
-  .app-shell {
-    grid-template-areas:
-      "header header"
-      "circle editor"
-      "right right";
-    grid-template-columns: minmax(240px, 32vw) minmax(0, 1fr);
-    grid-template-rows: minmax(60px, auto) minmax(420px, 1fr) minmax(300px, 38dvh);
-    overflow: auto;
-  }
-
-  .app-header {
-    align-items: flex-start;
-    flex-wrap: wrap;
-    padding-bottom: 12px;
-    padding-top: 12px;
-  }
-
-  .header-status {
-    flex: 1 1 320px;
-    flex-wrap: wrap;
-    row-gap: 6px;
-  }
-
-  .app-right-panel {
-    border-left: 2px solid var(--fg-obsidian);
-  }
-
-  .editor-frame {
-    height: 100%;
-    max-width: none;
-  }
+/* ── Desktop chat wrapper ────────────────────────────────────────────────── */
+.desktop-chat {
+  grid-area: chat;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
-@media (max-width: 760px) {
-  html, body, #root {
-    overflow: auto;
-  }
+.desktop-chat > * {
+  flex: 1;
+  min-height: 0;
+}
 
+/* Mobile-only elements: hidden on desktop */
+.mobile-main-area,
+.mobile-header-btn {
+  display: none;
+}
+
+/* ── Mobile layout (≤ 760px) ─────────────────────────────────────────────── */
+@media (max-width: 760px) {
   .app-shell {
-    min-height: 100dvh;
-    height: auto;
+    height: 100dvh;
     grid-template-areas:
       "header"
-      "circle"
-      "editor"
-      "right";
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(280px, 36dvh) minmax(420px, 56dvh) minmax(420px, auto);
-    gap: 12px;
-    padding: 12px;
+      "main";
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    gap: 0;
+    padding: 0;
+    position: relative;
+    overflow: hidden;
   }
 
-  .app-header {
-    gap: 10px;
-    padding: 10px 12px;
+  /* Hide desktop-only elements (but not the ones inside mobile drawers) */
+  .app-circles-sidebar:not(.mobile-drawer *),
+  .desktop-chat,
+  .app-right-panel:not(.mobile-drawer *) {
+    display: none !important;
   }
 
-  .app-header > div:first-child {
-    flex: 1 1 100%;
-    flex-wrap: wrap;
-    gap: 8px;
+  /* Wrapper that occupies the main grid area — all children position absolutely inside it */
+  .mobile-main-area {
+    display: block;
+    grid-area: main;
+    position: relative;
+    overflow: hidden;
+    /* grid-area: main gives it the row's full height via the grid; make sure children can fill it */
+    height: 100%;
   }
 
-  .header-status {
-    flex: 1 1 100%;
-    justify-content: flex-start;
-    gap: 10px 16px;
-    line-height: 1.35;
+  /* Chat: fills the entire area */
+  .mobile-main {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 
-  .circle-manager {
-    flex: 1 1 100%;
-    flex-wrap: wrap;
-    gap: 8px;
+  .mobile-main > * {
+    flex: 1;
+    min-height: 0;
   }
 
-  .circle-controls {
-    flex: 1 1 100%;
+  /* Drawers: slide in from left/right over the chat */
+  .mobile-drawer {
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 85%;
+    max-width: 320px;
+    z-index: 50;
+    overflow: hidden;
+    transition: transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
   }
 
-  .circle-select {
-    min-width: 0;
-    flex: 1 1 auto;
+  .mobile-drawer > * {
+    flex: 1;
+    min-height: 0;
   }
 
-  .circle-state {
-    width: auto;
-    min-width: 96px;
-  }
-
-  .circle-state span:last-child {
-    display: none;
-  }
-
-  .circle-leave {
-    margin-left: 0;
-    padding-left: 0;
-  }
-
-  .circle-menu {
+  .mobile-drawer--left {
     left: 0;
-    right: 0;
-    width: min(100vw - 24px, 320px);
-  }
-
-  .app-chat-panel {
+    transform: translateX(-100%);
+    background: #fff;
     border-right: 2px solid var(--fg-obsidian);
   }
 
-  .app-editor-panel {
-    padding: 14px;
+  .mobile-drawer--right {
+    right: 0;
+    transform: translateX(100%);
+    background: #fff;
+    border-left: 2px solid var(--fg-obsidian);
   }
 
-  .app-right-panel {
-    min-height: 420px;
+  .mobile-drawer--left.open {
+    transform: translateX(0);
   }
 
-  .editor-frame {
-    box-shadow: none;
+  .mobile-drawer--right.open {
+    transform: translateX(0);
+  }
+
+  /* Header toggle buttons */
+  .mobile-header-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 2px solid var(--fg-obsidian);
+    background: #fff;
+    font-size: 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .mobile-header-btn.active {
+    background: var(--fg-obsidian);
+    color: #fff;
   }
 }
 
@@ -923,24 +926,7 @@ select option {
     padding-right: 12px;
   }
 
-  .app-shell {
-    grid-template-rows: auto minmax(260px, 34dvh) minmax(380px, 58dvh) minmax(380px, auto);
-  }
-
-  .app-editor-panel {
-    padding: 10px;
-  }
-
-  .editor-frame {
-    box-shadow: none;
-  }
-
   .cm-content {
     padding: 14px 12px !important;
-  }
-
-  .circle-modal {
-    padding: 18px;
-    box-shadow: none;
   }
 }
