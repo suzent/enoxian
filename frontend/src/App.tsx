@@ -30,6 +30,8 @@ function Layout() {
   useEffect(() => {
     if (circles.length === 0) {
       setShowLanding(true)
+    } else if (!revealing) {
+      setShowLanding(false)
     }
   }, [circles.length])
 
