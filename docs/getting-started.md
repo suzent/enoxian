@@ -27,6 +27,22 @@ cargo build --release
 # target/release/enoxd  target/release/enox
 ```
 
+### Install to PATH (development)
+
+To use `enox` and `enoxd` as plain commands without a path prefix, do a one-time install from source:
+
+```bash
+cargo install --path . --bins
+```
+
+After that, rebuild and reinstall in one step using the CLI itself:
+
+```bash
+enox update --dev --src .
+```
+
+On subsequent runs the `--src` path is remembered, so just `enox update --dev` is enough. On Windows, the running `enox.exe` is replaced via a deferred PowerShell script after the process exits; `enoxd` is restarted automatically.
+
 ---
 
 ## Step 1 — Create a Circle
