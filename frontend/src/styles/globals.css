@@ -160,15 +160,12 @@ select {
 }
 
 .brand-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
+  display: block;
+  width: 24px;
+  height: 24px;
   border: 2px solid var(--fg-obsidian);
   background: var(--bg-alabaster);
-  font-size: 13px;
-  font-weight: 800;
+  object-fit: contain;
 }
 
 .app-header {

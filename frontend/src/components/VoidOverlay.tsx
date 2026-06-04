@@ -33,11 +33,10 @@ export default function VoidOverlay({ circleName }: Props) {
     camera.position.z = 9
 
     addDitherLights(scene)
-    const { flat, smooth } = makeDitherMaterials()
+    const { smooth } = makeDitherMaterials()
 
-    // Circle's Platonic solid — flat-shaded for sharp per-face dither bands
-    const baseGeo = makeCircleGeometry(circleName)
-    const shape = new THREE.Mesh(baseGeo, flat)
+    // Circle's complex Group geometry
+    const shape = makeCircleGeometry(circleName)
     const params = makeShapeParams(circleName)
     shape.rotation.x = params.initRotX
     shape.rotation.y = params.initRotY
@@ -85,7 +84,7 @@ export default function VoidOverlay({ circleName }: Props) {
       cancelAnimationFrame(raf)
       window.removeEventListener('resize', onResize)
       if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
-      baseGeo.dispose()
+      // Removed baseGeo.dispose() since shape is now a Group
       renderer.dispose()
     }
   }, [circleName])

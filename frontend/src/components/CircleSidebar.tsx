@@ -6,7 +6,6 @@ import { makeCircleGeometry, makeShapeParams } from '../lib/circleShape'
 import {
   createDitheredComposer,
   addDitherLights,
-  makeDitherMaterials,
   type DitheredComposer,
   EXPOSURE_ICON,
   easeInOut,
@@ -133,9 +132,8 @@ export default function CircleSidebar({ onRitual }: Props) {
     return () => {
       cancelAnimationFrame(rafRef.current)
       window.removeEventListener('resize', onResize)
-      scenesRef.current.forEach(({ mesh, dc }) => {
-        mesh.geometry.dispose()
-        ;(mesh.material as THREE.Material).dispose()
+      scenesRef.current.forEach(({ dc }) => {
+        // Skip geometry/material dispose since mesh is now a Group
         dc.composer.dispose()
       })
       scenesRef.current.clear()
@@ -153,10 +151,9 @@ export default function CircleSidebar({ onRitual }: Props) {
     const ids = new Set(circles.map(c => c.circle_id))
 
     // Remove scenes for circles that no longer exist
-    scenes.forEach((entry, id) => {
+    scenes.forEach((_, id) => {
       if (!ids.has(id)) {
-        entry.mesh.geometry.dispose()
-        ;(entry.mesh.material as THREE.Material).dispose()
+        // Skip simple dispose since it's a Group
         scenes.delete(id)
       }
     })
@@ -171,23 +168,21 @@ export default function CircleSidebar({ onRitual }: Props) {
       const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100)
       camera.position.z = 2.8
 
-      const geo = makeCircleGeometry(circle.circle_name)
-      const { flat } = makeDitherMaterials()
-      const mesh = new THREE.Mesh(geo, flat)
+      const group = makeCircleGeometry(circle.circle_name)
 
       const p = makeShapeParams(circle.circle_name)
-      mesh.rotation.x = p.initRotX
-      mesh.rotation.y = p.initRotY
-      mesh.userData.rotX = p.rotX
-      mesh.userData.rotY = p.rotY
-      mesh.userData.rotZ = p.rotZ
+      group.rotation.x = p.initRotX
+      group.rotation.y = p.initRotY
+      group.userData.rotX = p.rotX
+      group.userData.rotY = p.rotY
+      group.userData.rotZ = p.rotZ
 
-      scene.add(mesh)
+      scene.add(group)
 
       const dc = createDitheredComposer(iconRendererRef.current, scene, camera, 72, 72)
       dc.setExposure(EXPOSURE_ICON)
 
-      scenes.set(circle.circle_id, { scene, camera, mesh, dc })
+      scenes.set(circle.circle_id, { scene, camera, mesh: group as unknown as THREE.Mesh, dc })
     })
   }, [circles])
 
@@ -221,11 +216,9 @@ export default function CircleSidebar({ onRitual }: Props) {
     // Shape (radius ~1 → diameter ~2) fills ~80% of the icon box; match that pixel size.
     const startScale = (rect.height * 0.8) / (2 * (window.innerHeight / visH))
 
-    // Clone the icon's geometry + current spin pose so it reads as the *same* shape
+    // Clone the icon's entire Group + current spin pose so it reads as the *same* shape
     // lifting out of the icon, then hide the real icon for the duration.
-    const { flat } = makeDitherMaterials()
-    const shape = new THREE.Mesh(entry.mesh.geometry.clone(), flat)
-    shape.rotation.copy(entry.mesh.rotation)
+    const shape = entry.mesh.clone()
     shape.position.set(startX, startY, 0)
     shape.scale.setScalar(startScale)
     transScene.add(shape)
@@ -275,8 +268,7 @@ export default function CircleSidebar({ onRitual }: Props) {
         requestAnimationFrame(tick)
       } else {
         transScene.remove(shape)
-        shape.geometry.dispose()
-        ;(shape.material as THREE.Material).dispose()
+        // Skip dispose here since shape is a Group cloned from the original Group
         iconCanvas.style.visibility = ''
         transRenderer.domElement.style.display = 'none'
         transDC.setExposure(EXPOSURE_ICON)
