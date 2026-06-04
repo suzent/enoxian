@@ -164,6 +164,10 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
       window.clearTimeout(doneTimer)
       window.removeEventListener('resize', resize)
       mount.classList.remove('ritual-closing')
+      if (renderer.domElement && renderer.domElement.parentNode) {
+        renderer.domElement.parentNode.removeChild(renderer.domElement)
+      }
+      renderer.forceContextLoss()
       renderer.dispose()
       dither.dispose()
       torus.geometry.dispose()

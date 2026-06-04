@@ -139,11 +139,17 @@ export default function CircleSidebar({ onRitual }: Props) {
         dc.composer.dispose()
       })
       scenesRef.current.clear()
+      iconRenderer.forceContextLoss()
       iconRenderer.dispose()
-      document.body.removeChild(iconRenderer.domElement)
+      if (iconRenderer.domElement.parentNode) {
+        iconRenderer.domElement.parentNode.removeChild(iconRenderer.domElement)
+      }
       transDC.composer.dispose()
+      transRenderer.forceContextLoss()
       transRenderer.dispose()
-      document.body.removeChild(transRenderer.domElement)
+      if (transRenderer.domElement.parentNode) {
+        transRenderer.domElement.parentNode.removeChild(transRenderer.domElement)
+      }
     }
   }, [])
 
@@ -353,10 +359,14 @@ export default function CircleSidebar({ onRitual }: Props) {
                   style={{
                     width: 36, height: 36, flexShrink: 0, display: 'block',
                     imageRendering: 'pixelated',
-                    // White dither bg → transparent via multiply on inactive row.
-                    // On active (black) row invert the canvas so dither inverts too.
+                    // On inactive row: multiply blend mode makes the pure white background transparent,
+                    // leaving black dither dots.
+                    // On active row: invert(1) makes the black dots white, and the white background black.
+                    // But standard CSS invert(1) black is #000000, while our tailwind 'obsidian' is #111111.
+                    // By setting mixBlendMode to 'screen' when inverted, the inverted black (#000) becomes 
+                    // transparent against the #111111 container, and only the inverted white dots show through.
                     filter: isActive ? 'invert(1)' : 'none',
-                    mixBlendMode: isActive ? 'normal' : 'multiply',
+                    mixBlendMode: isActive ? 'screen' : 'multiply',
                   }}
                 />
                 <div className="flex flex-col min-w-0">

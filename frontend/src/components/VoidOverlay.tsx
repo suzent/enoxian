@@ -83,8 +83,10 @@ export default function VoidOverlay({ circleName }: Props) {
     return () => {
       cancelAnimationFrame(raf)
       window.removeEventListener('resize', onResize)
-      if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
-      // Removed baseGeo.dispose() since shape is now a Group
+      if (mount.contains(renderer.domElement)) {
+        mount.removeChild(renderer.domElement)
+      }
+      renderer.forceContextLoss()
       renderer.dispose()
     }
   }, [circleName])

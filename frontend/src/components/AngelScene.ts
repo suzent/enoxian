@@ -719,6 +719,7 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
       window.removeEventListener('resize', onResize)
       if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
       if (mount.contains(overlay)) mount.removeChild(overlay)
+      renderer.forceContextLoss()
       renderer.dispose()
     },
   }

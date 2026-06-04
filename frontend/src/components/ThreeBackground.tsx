@@ -286,8 +286,11 @@ const ThreeBackground = forwardRef<SceneHandle>((_, ref) => {
       cancelAnimationFrame(raf)
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('resize', onResize)
+      if (el.contains(renderer.domElement)) {
+        el.removeChild(renderer.domElement)
+      }
+      renderer.forceContextLoss()
       renderer.dispose()
-      el.removeChild(renderer.domElement)
     }
   }, [])
 
