@@ -20,7 +20,7 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
   mount.appendChild(renderer.domElement)
 
   const scene = new THREE.Scene()
-  scene.background = new THREE.Color(0xffffff)
+  scene.background = new THREE.Color(0xf0f0f0) // 将死白改为极浅的冷灰色，增加空间感
   
   const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 150)
   const baseCamPos = new THREE.Vector3(0, -4, 34)
@@ -30,17 +30,78 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
   const currentLookTarget = new THREE.Vector3(0, 0, 0)
   camera.lookAt(baseLookTarget)
 
-  scene.add(new THREE.AmbientLight(0xffffff, 0.4))
-  const keyLight = new THREE.DirectionalLight(0xffffff, 3.5)
-  keyLight.position.set(-10, 15, 12)
+  // 降低全局环境光，增加阴影对比
+  scene.add(new THREE.AmbientLight(0xffffff, 0.2))
+  
+  // 主光源 (Key Light)：从左上方打过来，拉出高光和强烈的阴影边缘
+  const keyLight = new THREE.DirectionalLight(0xffffff, 4.0)
+  keyLight.position.set(-15, 20, 15)
   scene.add(keyLight)
-  const fillLight = new THREE.DirectionalLight(0xffffff, 0.5)
-  fillLight.position.set(10, 5, 2)
+  
+  // 边缘光 (Rim Light)：从右后方打过来，照亮死黑的背光面，勾勒出石碑和翅膀的右侧轮廓线
+  const rimLight = new THREE.DirectionalLight(0xffffff, 2.0)
+  rimLight.position.set(15, -5, -15)
+  scene.add(rimLight)
+  
+  // 补光 (Fill Light)：微弱的正面底光，避免正面出现纯黑死角
+  const fillLight = new THREE.DirectionalLight(0xffffff, 0.4)
+  fillLight.position.set(0, 5, 5)
   scene.add(fillLight)
 
   renderer.outputColorSpace = THREE.LinearSRGBColorSpace
 
-  const solidMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.6, metalness: 0.2 })
+  function createStoneTexture() {
+    const canvas = document.createElement('canvas')
+    canvas.width = 512
+    canvas.height = 512
+    const ctx = canvas.getContext('2d')!
+    
+    // 基础岩石灰
+    ctx.fillStyle = '#888888'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    
+    // 1. 叠加大型柔和的明暗色块，模拟大理石/岩石的光影起伏
+    for (let i = 0; i < 400; i++) {
+      ctx.fillStyle = Math.random() > 0.5 ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.04)'
+      ctx.beginPath()
+      const x = Math.random() * canvas.width
+      const y = Math.random() * canvas.height
+      const r = Math.random() * 80 + 20
+      ctx.arc(x, y, r, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    
+    // 2. 叠加细微的高频噪点颗粒，模拟石材表面的粗糙颗粒感
+    for (let i = 0; i < 150000; i++) {
+      const x = Math.random() * canvas.width
+      const y = Math.random() * canvas.height
+      ctx.fillStyle = Math.random() > 0.5 ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'
+      ctx.fillRect(x, y, 1, 1)
+    }
+
+    const tex = new THREE.CanvasTexture(canvas)
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy()
+    tex.minFilter = THREE.LinearMipmapLinearFilter
+    tex.magFilter = THREE.LinearFilter
+    tex.wrapS = THREE.RepeatWrapping
+    tex.wrapT = THREE.RepeatWrapping
+    return tex
+  }
+
+  const monoTex = createStoneTexture()
+  const solidMat = new THREE.MeshStandardMaterial({ 
+    color: 0xcccccc, // 基础颜色
+    map: monoTex,
+    bumpMap: monoTex,
+    bumpScale: 0.05, // 极其轻微的凹凸感，让 Dither 产生自然的明暗渐变散点
+    roughness: 0.95, // 石头的高粗糙度
+    metalness: 0.0,
+    emissive: 0x222222 // 增加一点自发光，确保暗面不会变成死黑，从而保留石头纹理的细节
+  })
+  
+  // 既然有了大面积留白的纹理，线框就不需要了，以免画面过于杂乱
+  // 移除 wireframeMat
+
   const bladeMat = new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.5, metalness: 0.4 })
   
   // 改为深色半透明的双面全息材质：使用 NormalBlending 和较深的颜色，确保在白色背景中清晰可见
@@ -74,12 +135,14 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
   const monolithGroup = new THREE.Group()
   sceneRoot.add(monolithGroup)
 
-  const halfGeo = new THREE.BoxGeometry(3.5, 18, 4)
+  // 增加分段数以产生有趣的几何线框结构
+  const halfGeo = new THREE.BoxGeometry(3.5, 18, 4, 3, 12, 2)
   halfGeo.translate(1.75, 0, 0) 
   halfGeo.computeVertexNormals()
   
   const monoLeft = new THREE.Mesh(halfGeo, solidMat)
   monoLeft.scale.x = -1 
+  
   const monoRight = new THREE.Mesh(halfGeo, solidMat)
   
   monolithGroup.add(monoLeft)
