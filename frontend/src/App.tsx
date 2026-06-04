@@ -8,6 +8,7 @@ import VoidOverlay from './components/VoidOverlay'
 import LandingPage from './components/LandingPage'
 import RitualTransition, { type RitualMode } from './components/RitualTransition'
 import { useApp } from './context/AppContext'
+import { Menu, PanelRight } from 'lucide-react'
 import './styles/globals.css'
 
 type MobileDrawer = 'circles' | 'info' | null
@@ -77,7 +78,7 @@ function Layout() {
                 onClick={() => toggle('circles')}
                 className={`mobile-header-btn${mobileDrawer === 'circles' ? ' active' : ''}`}
               >
-                ☰
+                <Menu size={18} strokeWidth={2.5} />
               </button>
               {activeCircle && (
                 <span className="font-bold tracking-widest truncate">{activeCircle.circle_name}</span>
@@ -87,7 +88,7 @@ function Layout() {
               onClick={() => toggle('info')}
               className={`mobile-header-btn${mobileDrawer === 'info' ? ' active' : ''}`}
             >
-              ⊞
+              <PanelRight size={18} strokeWidth={2.5} />
             </button>
           </div>
 

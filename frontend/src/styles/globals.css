@@ -887,14 +887,14 @@ select option {
     left: 0;
     transform: translateX(-100%);
     background: #fff;
-    border-right: 2px solid var(--fg-obsidian);
+    border-right: 1px solid var(--fg-obsidian);
   }
 
   .mobile-drawer--right {
     right: 0;
     transform: translateX(100%);
     background: #fff;
-    border-left: 2px solid var(--fg-obsidian);
+    border-left: 1px solid var(--fg-obsidian);
   }
 
   .mobile-drawer--left.open {
@@ -912,9 +912,9 @@ select option {
     justify-content: center;
     width: 28px;
     height: 28px;
-    border: 2px solid var(--fg-obsidian);
-    background: #fff;
-    font-size: 14px;
+    border: none;
+    background: transparent;
+    font-size: 16px;
     cursor: pointer;
     flex-shrink: 0;
   }
