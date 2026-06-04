@@ -354,11 +354,11 @@ export default function CircleSidebar({ onRitual }: Props) {
                   }}
                 />
                 <div className="flex flex-col min-w-0">
-                  <span className="text-[11px] font-bold truncate tracking-wide">
+                  <span className="font-bold truncate tracking-wide">
                     {circle.circle_name}
                   </span>
                   {circle.disabled && (
-                    <span className="text-[9px] opacity-50 font-bold">VOID</span>
+                    <span className="text-[11px] opacity-50 font-bold">VOID</span>
                   )}
                 </div>
               </button>
@@ -373,7 +373,7 @@ export default function CircleSidebar({ onRitual }: Props) {
               else await disableCircle(activeCircle.circle_id)
               await reloadCircles()
             }}
-            className={`border-t-2 border-obsidian px-3 py-2 text-[9px] font-bold tracking-widest w-full flex items-center justify-center gap-2 ${
+            className={`border-t-2 border-obsidian px-3 py-2 text-[13px] font-bold tracking-widest w-full flex items-center justify-center gap-2 ${
               !activeCircle.disabled
                 ? 'bg-obsidian text-alabaster hover:opacity-80'
                 : 'bg-alabaster text-slate border-dashed hover:bg-obsidian/5'
@@ -395,7 +395,7 @@ export default function CircleSidebar({ onRitual }: Props) {
             <button
               key={label}
               onClick={() => { setModal((['init', 'enter', 'leave'] as const)[i]); setError('') }}
-              className={`flex-1 py-2 text-[9px] font-bold tracking-widest hover:bg-obsidian hover:text-alabaster ${
+              className={`flex-1 py-2 text-[12px] font-bold tracking-widest hover:bg-obsidian hover:text-alabaster ${
                 i < 2 ? 'border-r-2 border-obsidian' : 'text-slate'
               }`}
               style={{ transition: 'none' }}

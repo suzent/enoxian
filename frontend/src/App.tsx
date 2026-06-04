@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
 import { AppProvider } from './context/AppContext'
-import Header from './components/Header'
 import ChatPanel from './components/ChatPanel'
 import EditorPanel from './components/EditorPanel'
 import RightPanel from './components/RightPanel'
@@ -70,11 +69,27 @@ function Layout() {
 
       {circles.length > 0 && (
         <div className={`app-shell relative z-10 grid${isVoid ? ' app-shell--void' : ''}`}>
-          <Header
-            mobileDrawer={mobileDrawer}
-            onToggleCircles={() => toggle('circles')}
-            onToggleInfo={() => toggle('info')}
-          />
+          {/* Mobile nav (replaces header) */}
+          <div className="mobile-nav app-header sys-window z-[100] items-center justify-between gap-4 px-5 min-h-[48px] font-mono text-[11px] uppercase font-bold">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="brand-mark shrink-0">E</span>
+              <button
+                onClick={() => toggle('circles')}
+                className={`mobile-header-btn${mobileDrawer === 'circles' ? ' active' : ''}`}
+              >
+                ☰
+              </button>
+              {activeCircle && (
+                <span className="font-bold tracking-widest truncate">{activeCircle.circle_name}</span>
+              )}
+            </div>
+            <button
+              onClick={() => toggle('info')}
+              className={`mobile-header-btn${mobileDrawer === 'info' ? ' active' : ''}`}
+            >
+              ⊞
+            </button>
+          </div>
 
           {/* Desktop sidebar */}
           <CircleSidebar onRitual={(mode, label) => setRitual({ mode, label })} />

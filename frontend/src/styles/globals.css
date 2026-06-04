@@ -15,9 +15,9 @@
   --font-sans: 'Cormorant Garamond', serif;
   --font-title: 'Cinzel', serif;
   --font-mono: 'JetBrains Mono', Monaco, Geneva, "Courier New", monospace;
-  --ui-font: 13px;
-  --ui-small: 11px;
-  --ui-tiny: 11px;
+  --ui-font: 16px;
+  --ui-small: 14px;
+  --ui-tiny: 13px;
 }
 
 * {
@@ -50,10 +50,9 @@ select {
   height: 100dvh;
   min-height: 0;
   grid-template-areas:
-    "header header header"
     "circles chat right";
   grid-template-columns: minmax(160px, 200px) minmax(0, 1fr) minmax(220px, 280px);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px;
   padding: 18px;
   overflow: hidden;
@@ -809,12 +808,18 @@ select option {
 
 /* Mobile-only elements: hidden on desktop */
 .mobile-main-area,
-.mobile-header-btn {
+.mobile-header-btn,
+.mobile-nav {
   display: none;
 }
 
 /* ── Mobile layout (≤ 760px) ─────────────────────────────────────────────── */
 @media (max-width: 760px) {
+  .mobile-nav {
+    display: flex;
+    grid-area: header;
+  }
+
   .app-shell {
     height: 100dvh;
     grid-template-areas:
