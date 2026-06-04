@@ -23,11 +23,12 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
   scene.background = new THREE.Color(0xf0f0f0) // 将死白改为极浅的冷灰色，增加空间感
   
   const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 150)
-  const baseCamPos = new THREE.Vector3(0, -4, 34)
+  // Shift camera and look target slightly left so the subject appears on the right half of the screen
+  const baseCamPos = new THREE.Vector3(-10, -4, 34)
   camera.position.copy(baseCamPos)
   
-  const baseLookTarget = new THREE.Vector3(0, 0, 0)
-  const currentLookTarget = new THREE.Vector3(0, 0, 0)
+  const baseLookTarget = new THREE.Vector3(-10, 0, 0)
+  const currentLookTarget = new THREE.Vector3(-10, 0, 0)
   camera.lookAt(baseLookTarget)
 
   // 降低全局环境光，增加阴影对比
@@ -510,6 +511,7 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
     } else if (animState === 'inscription') {
       const et = clamp01((now - phaseStart) / 1000) 
       camera.position.z = lerp(baseCamPos.z, 20, easeOutExpo(et))
+      // 当发生交互（面板消失，进入协议状态）时，将镜头从左偏 (-10) 移回正中心 (0)
       camera.position.x = lerp(baseCamPos.x, 0, easeOutExpo(et))
       currentLookTarget.lerp(new THREE.Vector3(0, 0, 0), 0.1)
       monolithGroup.rotation.y = lerp(monolithRotAtEruption, 0, easeOutExpo(et))

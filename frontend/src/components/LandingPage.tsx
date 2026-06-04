@@ -550,9 +550,9 @@ export default function LandingPage({ onEntered }: Props) {
       <div
         style={{
           position: 'fixed',
-          bottom: '8vh',
-          left: '50%',
-          transform: 'translateX(-50%)',
+          top: '50%',
+          left: 'max(10%, calc(50vw - 400px))', // Ensures it stays left but doesn't get pushed off on tiny screens
+          transform: 'translateY(-50%)',
           zIndex: 5010,
           width: 420,
           maxWidth: 'calc(100vw - 24px)',
