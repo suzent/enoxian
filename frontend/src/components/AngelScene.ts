@@ -102,7 +102,70 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
   // 既然有了大面积留白的纹理，线框就不需要了，以免画面过于杂乱
   // 移除 wireframeMat
 
-  const bladeMat = new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.5, metalness: 0.4 })
+  // 生成羽毛材质专属的细丝纹理 (Feather Barbs)
+  function createFeatherTexture() {
+    const canvas = document.createElement('canvas')
+    canvas.width = 256
+    canvas.height = 1024
+    const ctx = canvas.getContext('2d')!
+    
+    // 纯白底色
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    
+    // 中轴线 (羽轴 Rachis)
+    ctx.fillStyle = '#222222'
+    ctx.fillRect(canvas.width / 2 - 4, 0, 8, canvas.height)
+    
+    // 绘制密集的斜向细丝 (羽支 Barbs)
+    ctx.strokeStyle = '#666666'
+    ctx.lineWidth = 1
+    
+    for (let y = 0; y < canvas.height; y += 4) {
+      // 左侧羽支 (向左下倾斜)
+      ctx.beginPath()
+      ctx.moveTo(canvas.width / 2, y)
+      // 添加一些随机的长度和弯曲度，模拟真实羽毛的柔软感
+      const leftLen = canvas.width / 2 - 10 + Math.random() * 10
+      ctx.quadraticCurveTo(canvas.width / 4, y + 20, canvas.width / 2 - leftLen, y + 40)
+      ctx.stroke()
+      
+      // 右侧羽支 (向右下倾斜)
+      ctx.beginPath()
+      ctx.moveTo(canvas.width / 2, y)
+      const rightLen = canvas.width / 2 - 10 + Math.random() * 10
+      ctx.quadraticCurveTo(canvas.width * 0.75, y + 20, canvas.width / 2 + rightLen, y + 40)
+      ctx.stroke()
+    }
+    
+    // 添加一些柔和的垂直噪点，模拟羽绒的质感
+    for (let i = 0; i < 20000; i++) {
+      const x = Math.random() * canvas.width
+      const y = Math.random() * canvas.height
+      ctx.fillStyle = 'rgba(0,0,0,0.05)'
+      ctx.fillRect(x, y, 2, 4)
+    }
+
+    const tex = new THREE.CanvasTexture(canvas)
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy()
+    tex.minFilter = THREE.LinearMipmapLinearFilter
+    tex.magFilter = THREE.LinearFilter
+    tex.wrapS = THREE.RepeatWrapping
+    tex.wrapT = THREE.RepeatWrapping
+    return tex
+  }
+
+  const featherTex = createFeatherTexture()
+
+  // 羽毛材质：使用带有羽支纹理的漫反射材质，模拟真实鸟类羽毛的柔和质感
+  const bladeMat = new THREE.MeshStandardMaterial({ 
+    color: 0xffffff, // 纯白羽毛
+    map: featherTex,
+    roughness: 1.0,  // 羽毛表面是完全漫反射的，没有高光
+    metalness: 0.0,  
+    flatShading: false, // 恢复平滑着色，避免出现硬朗的几何切面
+    alphaTest: 0.5 // (可选) 如果未来改成片面羽毛，这里留个 alpha 阈值
+  })
   
   // 改为深色半透明的双面全息材质：使用 NormalBlending 和较深的颜色，确保在白色背景中清晰可见
   // 双面渲染 (DoubleSide) 和无深度写入 (depthWrite: false) 能制造出完美的幽灵能量体叠加感，同时解决穿模切割
