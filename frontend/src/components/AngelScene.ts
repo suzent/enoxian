@@ -42,7 +42,19 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
 
   const solidMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.6, metalness: 0.2 })
   const bladeMat = new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.5, metalness: 0.4 })
-  const ringMat  = new THREE.MeshPhongMaterial({ color: 0xbbbbbb, flatShading: false })
+  
+  // 改为深色半透明的双面全息材质：使用 NormalBlending 和较深的颜色，确保在白色背景中清晰可见
+  // 双面渲染 (DoubleSide) 和无深度写入 (depthWrite: false) 能制造出完美的幽灵能量体叠加感，同时解决穿模切割
+  const ringMat = new THREE.MeshPhongMaterial({ 
+    color: 0x222222, 
+    emissive: 0x111111,
+    specular: 0xaaaaaa,
+    shininess: 30,
+    transparent: true,
+    opacity: 0.6,
+    depthWrite: false,
+    side: THREE.DoubleSide
+  })
 
   const sceneRoot = new THREE.Group()
   scene.add(sceneRoot)
