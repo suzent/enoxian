@@ -136,7 +136,8 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
   overlay.style.justifyContent = 'center'
   overlay.style.pointerEvents = 'none'
   overlay.style.opacity = '0'
-  overlay.style.transition = 'opacity 0.1s'
+  overlay.style.transition = 'opacity 0.2s ease, transform 0.2s cubic-bezier(0.2, 2.0, 0.4, 1)'
+  overlay.style.transform = 'scale(1.15)'
   overlay.style.zIndex = '20'
 
   const revText = document.createElement('div')
@@ -250,7 +251,7 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
       }
 
     } else if (animState === 'revelation') {
-      const rt = clamp01((now - phaseStart) / 800)
+      const rt = clamp01((now - phaseStart) / 2000)
       
       // Removed the blinding flash entirely per user request.
       // The exposure stays at 1.8 so the geometry details remain visible.
@@ -258,6 +259,11 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
       
       if (rt > 0.1 && rt < 0.9) overlay.style.opacity = '1'
       else overlay.style.opacity = '0'
+
+      // Keep the wings breathing so the animation doesn't look "paused"
+      const breathT = (now - baseTime) * 0.003
+      wingL.feathers.forEach((b, i) => b.rotation.x = b.userData.tRot.x + Math.sin(breathT + i*0.2)*0.08)
+      wingR.feathers.forEach((b, i) => b.rotation.x = b.userData.tRot.x + Math.sin(breathT + i*0.2)*0.08)
 
       rotateHalos()
       if (rt >= 1) {
