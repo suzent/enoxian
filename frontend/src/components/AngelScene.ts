@@ -12,9 +12,10 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
   const W = window.innerWidth
   const H = window.innerHeight
 
-  const renderer = new THREE.WebGLRenderer({ antialias: false })
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
   renderer.setSize(W, H)
-  renderer.setPixelRatio(1)
+  // Use devicePixelRatio to fix diagonal aliasing/staircase jaggedness when rotating
+  renderer.setPixelRatio(window.devicePixelRatio)
   renderer.setClearColor(0xffffff, 1)
   mount.appendChild(renderer.domElement)
 
@@ -325,18 +326,16 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
       // Halo expands and brightens behind the ascending figure
       halos.scale.setScalar(lerp(1, 4.5, e))
 
-      // Bloom to white over the final 55% — the figure is consumed by light
-      const bloom = clamp01((it - 0.45) / 0.55)
-      dc.setExposure(lerp(1.8, 7.0, bloom))
+      // Keep exposure fixed at baseline so nothing fades to white / gets blown out
+      // (The flash has already happened, now the figure just ascends gracefully)
+      dc.setExposure(1.8)
 
       rotateHalos()
 
       if (it >= 1) {
         animState = 'fading'
         phaseStart = now
-        // Scene is already bloomed to near-white; fade the canvas straight to
-        // transparent onto the opaque white solid-bg (uniform dissolve, no scale).
-        // App.tsx bridges the resulting white into the app → white → white → app.
+        // Scene fades to transparent via CSS while the figure is fully visible
         mount.style.transition = 'opacity 500ms ease'
         mount.style.opacity = '0'
       }

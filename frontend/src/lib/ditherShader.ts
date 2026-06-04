@@ -58,7 +58,12 @@ export const DitherShaderDef = {
     }
 
     void main() {
-      vec4 color = texture2D(tDiffuse, vUv) * uExposure;
+      // 1. Get raw scene color
+      vec4 rawColor = texture2D(tDiffuse, vUv);
+      
+      // 2. Apply exposure early so it scales the light intensity uniformly
+      // Removed the clamp entirely so overexposure can push colors far beyond 1.0
+      vec4 color = rawColor * uExposure;
 
       // Increase contrast aggressively before dithering but keep it softer than smoothstep
       vec3 contrastColor = (color.rgb - 0.5) * 1.5 + 0.5;
