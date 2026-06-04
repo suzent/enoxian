@@ -82,8 +82,7 @@ export const DitherShaderDef = {
       // Check for emissive Red (bright red, low green/blue)
       bool isRed = (color.r > 0.5 && color.g < 0.3 && color.b < 0.3);
       
-      // Use absolute difference to clamp exact white to white, 
-      // but let anti-aliased grey edges fall into the dither threshold.
+      // EXCEPTION 1: Pure White Background Bypass
       float distToWhite = length(color.rgb - vec3(1.0));
       if (distToWhite < 0.05 && !isRed) {
           gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);

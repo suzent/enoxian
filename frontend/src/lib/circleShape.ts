@@ -22,9 +22,9 @@ export function makeCircleGeometry(name: string): THREE.Group {
   const group = new THREE.Group()
 
   const baseSize = 1.4
-  const matWhite = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1.0 })
-  const matGrey = new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.8 })
-  const matBlack = new THREE.MeshStandardMaterial({ color: 0x999999, roughness: 0.5 })
+  const matWhite = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1.0, flatShading: true })
+  const matGrey = new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.8, flatShading: true })
+  const matBlack = new THREE.MeshStandardMaterial({ color: 0x999999, roughness: 0.5, flatShading: true })
   const matEmissive = new THREE.MeshBasicMaterial({ color: 0xff0000 })
 
   function addWireframe(mesh: THREE.Mesh) {
@@ -84,10 +84,49 @@ export function makeCircleGeometry(name: string): THREE.Group {
   const mAlt = isDark ? matWhite : matGrey
   const mDetail = (seededRandom() > 0.5) ? matBlack : matGrey
 
+        // Mode 17: Infinite Isometric Pillars (Impossible geometry illusion)
+        function makeMode17() {
+            const root = new THREE.Group();
+            const pillarW = baseSize * 0.2;
+            const h = baseSize * 0.8;
+            
+            // Central impossible frame
+            for (let i=0; i<4; i++) {
+                const geo = new THREE.BoxGeometry(pillarW, h, pillarW);
+                const mesh = new THREE.Mesh(geo, mAlt);
+                mesh.position.set(
+                    (i%2==0?1:-1) * pillarW * 1.5,
+                    0,
+                    (i<2?1:-1) * pillarW * 1.5
+                );
+                // Twist and interlock
+                mesh.rotation.x = Math.PI/4 * (i%2?1:-1);
+                mesh.rotation.z = Math.PI/4 * (i<2?1:-1);
+                addWireframe(mesh);
+                root.add(mesh);
+                
+                // Emissive joints
+                if (seededRandom() > 0.3) {
+                    const joint = new THREE.Mesh(new THREE.BoxGeometry(pillarW*1.2, pillarW*1.2, pillarW*1.2), matEmissive);
+                    joint.position.copy(mesh.position);
+                    joint.position.y += h/2 * (i%2?1:-1);
+                    root.add(joint);
+                }
+            }
+            
+            // Outer bounding box
+            const frameGeo = new THREE.BoxGeometry(baseSize, baseSize, baseSize);
+            const edges = new THREE.EdgesGeometry(frameGeo);
+            const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x222222, linewidth: 2 }));
+            root.add(line);
+
+            return root;
+        }
+
   // We use Mode 15 (Omni-Directional 2x2x2) and 16 (3x3x3 Grid) logic simplified for the frontend
-  const useHighDensity = seededRandom() > 0.5
+  const densityMode = Math.floor(seededRandom() * 3)
   
-  if (useHighDensity) {
+  if (densityMode === 0) {
     // Mode 16 style: 3x3x3 Grid
     const sz = baseSize / 3
     const offset = sz
@@ -122,7 +161,7 @@ export function makeCircleGeometry(name: string): THREE.Group {
             }
         }
     }
-  } else {
+  } else if (densityMode === 1) {
     // Mode 15 style: 2x2x2 Chunk Assembly
     const sz = baseSize / 2
     const dist = sz / 2
@@ -157,6 +196,10 @@ export function makeCircleGeometry(name: string): THREE.Group {
             }
         }
     }
+  } else {
+      // Mode 17: Impossible Pillars
+      const pillarGroup = makeMode17();
+      group.add(pillarGroup);
   }
 
   // Fallback if completely empty

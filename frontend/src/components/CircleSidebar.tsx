@@ -27,7 +27,9 @@ const T_HOLD = 0.74 // timeline fraction: end of the centered "occult" hold
 // Backdrop: the transition scene's background darkens from white (transparent under
 // mix-blend:multiply) to this gray, which the dither pass renders as a screen-filling
 // field of dots that veils the app behind. Lower = denser dots = more opaque veil.
-const VEIL_GRAY = new THREE.Color(0xdedede)
+// Setting this back to exactly 0xffffff so it stays completely pure white and transparent
+// during the transition instead of becoming a gray dither matrix.
+const VEIL_GRAY = new THREE.Color(0xffffff)
 const TRANS_WHITE = new THREE.Color(0xffffff)
 
 type Modal = 'init' | 'enter' | 'leave' | null
@@ -219,6 +221,17 @@ export default function CircleSidebar({ onRitual }: Props) {
     // Clone the icon's entire Group + current spin pose so it reads as the *same* shape
     // lifting out of the icon, then hide the real icon for the duration.
     const shape = entry.mesh.clone()
+
+    // Ensure cloned materials are fully independent so we can modify them without affecting the icon
+    shape.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh
+        if (mesh.material) {
+          mesh.material = (mesh.material as THREE.Material).clone()
+        }
+      }
+    })
+
     shape.position.set(startX, startY, 0)
     shape.scale.setScalar(startScale)
     transScene.add(shape)
@@ -243,8 +256,8 @@ export default function CircleSidebar({ onRitual }: Props) {
         const hp = (t - T_RISE) / (T_HOLD - T_RISE) // 0 → 1 across the hold
         out = 1
         scale = SWITCH_MAX * (1 + 0.05 * Math.sin(hp * Math.PI * 5)) // slow breathing
-        // Pulse only denser than the icon (never sparser → it can't fade out).
-        exposure = EXPOSURE_ICON - 0.45 * (0.5 + 0.5 * Math.sin(hp * Math.PI * 7))
+        // Remove the exposure pulse entirely so it stays constant and doesn't flash
+        exposure = EXPOSURE_ICON
         spinMul = 3.5 // whirl faster while it hangs at center
       } else {
         const p = easeInOut((t - T_HOLD) / (1 - T_HOLD))
