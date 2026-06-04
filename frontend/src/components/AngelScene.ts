@@ -263,6 +263,173 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
   sceneRoot.add(wingL.group)
   sceneRoot.add(wingR.group)
 
+  // ─── ATMOSPHERE & SACRED GEOMETRY ───────────────────────────────────────────
+  const atmosGroup = new THREE.Group()
+  sceneRoot.add(atmosGroup)
+
+  const matSolid = new THREE.MeshBasicMaterial({ color: 0x111111 }) 
+  const matDotted = new THREE.MeshBasicMaterial({ color: 0x999999 }) 
+  const matAccent = new THREE.MeshBasicMaterial({ color: 0x444444 })
+
+  const createLine = (x: number, y: number, z: number, w: number, h: number, d: number, mat: THREE.Material = matSolid) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat)
+    mesh.position.set(x, y, z)
+    return mesh
+  }
+
+  // 1. Fluid Water Ripple Floor
+  const waterGeo = new THREE.PlaneGeometry(40, 40, 128, 128)
+  waterGeo.rotateX(-Math.PI / 2)
+  const waterMat = new THREE.MeshStandardMaterial({
+    color: 0x999999,
+    roughness: 0.2,
+    metalness: 0.8,
+    transparent: true,
+    opacity: 0.9,
+    depthWrite: false
+  })
+  
+  const waterUniforms = {
+    uTime: { value: 0 },
+    uImpact: { value: 0 }
+  }
+  
+  waterMat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = waterUniforms.uTime
+    shader.uniforms.uImpact = waterUniforms.uImpact
+    
+    shader.vertexShader = `
+      uniform float uTime;
+      uniform float uImpact;
+      varying float vDist;
+      
+      float getWave(float d, float time, float impact) {
+        float wave1 = sin(d * 1.5 - time * 2.0) * 0.15;
+        float wave2 = sin(d * 2.5 - time * 3.0) * impact * 0.4;
+        float mask = smoothstep(1.5, 3.0, d) * smoothstep(18.0, 5.0, d);
+        return (wave1 + wave2) * mask;
+      }
+      ${shader.vertexShader}
+    `.replace(
+      `#include <beginnormal_vertex>`,
+      `
+      float dist = length(position.xz);
+      vDist = dist;
+      float h = getWave(dist, uTime, uImpact);
+      
+      float delta = 0.05;
+      float hDx = getWave(length(position.xz + vec2(delta, 0.0)), uTime, uImpact);
+      float hDz = getWave(length(position.xz + vec2(0.0, delta)), uTime, uImpact);
+      
+      vec3 tangent = normalize(vec3(delta, hDx - h, 0.0));
+      vec3 bitangent = normalize(vec3(0.0, hDz - h, delta));
+      vec3 objectNormal = normalize(cross(bitangent, tangent));
+      `
+    ).replace(
+      `#include <begin_vertex>`,
+      `
+      vec3 transformed = vec3( position.x, position.y + h, position.z );
+      `
+    )
+    
+    shader.fragmentShader = `
+      varying float vDist;
+      ${shader.fragmentShader}
+    `.replace(
+      `vec4 diffuseColor = vec4( diffuse, opacity );`,
+      `
+      float alpha = smoothstep(20.0, 10.0, vDist) * smoothstep(1.5, 3.0, vDist);
+      vec4 diffuseColor = vec4( diffuse, opacity * alpha );
+      `
+    )
+  }
+  
+  const waterSurface = new THREE.Mesh(waterGeo, waterMat)
+  waterSurface.position.y = -9
+  atmosGroup.add(waterSurface)
+
+  // 2. Vertical Axis & Crosshairs
+  atmosGroup.add(createLine(0, 13, 0, 0.06, 8, 0.06, matDotted)) // Top Antenna
+  atmosGroup.add(createLine(0, 16.5, 0, 1.2, 0.06, 0.06, matSolid)) // Top H-cross
+  atmosGroup.add(createLine(0, 16.5, 0, 0.06, 1.2, 0.06, matSolid)) // Top V-cross
+  const topRing = new THREE.Mesh(new THREE.RingGeometry(0.3, 0.38, 32), matSolid)
+  topRing.position.set(0, 14.5, 0)
+  atmosGroup.add(topRing)
+
+  atmosGroup.add(createLine(0, -12, 0, 0.06, 6, 0.06, matDotted)) // Bottom Antenna
+  atmosGroup.add(createLine(0, -14, 0, 1.0, 0.06, 0.06, matSolid)) // Bottom H-cross
+  atmosGroup.add(createLine(0, -14, 0, 0.06, 1.0, 0.06, matSolid)) // Bottom V-cross
+  const botRing = new THREE.Mesh(new THREE.RingGeometry(0.4, 0.48, 32), matSolid)
+  botRing.position.set(0, -11, 0)
+  atmosGroup.add(botRing)
+
+  // 3. Tech/Circuit Lines Branching Out
+  const addCircuitNode = (isLeft: boolean) => {
+    const dir = isLeft ? -1 : 1
+    const group = new THREE.Group()
+
+    group.add(createLine(dir * 3.5, -4, 0, 3.5, 0.05, 0.05, matSolid))
+    group.add(createLine(dir * 5.25, -4.5, 0, 0.05, 1.0, 0.05, matSolid))
+    group.add(createLine(dir * 7.0, -5, 0, 3.5, 0.05, 0.05, matSolid))
+    
+    const sq = new THREE.Mesh(new THREE.RingGeometry(0.3, 0.38, 4), matSolid)
+    sq.rotation.z = Math.PI / 4 
+    sq.position.set(dir * 8.75, -5, 0)
+    group.add(sq)
+    
+    group.add(createLine(dir * 9.5, -5, 0, 0.3, 0.05, 0.05, matAccent))
+    group.add(createLine(dir * 9.5, -5, 0, 0.05, 0.3, 0.05, matAccent))
+
+    group.add(createLine(dir * 5.0, -7, 0, 4.0, 0.05, 0.05, matDotted))
+    const dot = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.2), matSolid)
+    dot.position.set(dir * 7.0, -7, 0)
+    group.add(dot)
+
+    return group
+  }
+  atmosGroup.add(addCircuitNode(true))
+  atmosGroup.add(addCircuitNode(false))
+
+  // 4. Scattered Floating Crosses (+)
+  const crossGroup = new THREE.Group()
+  for (let i = 0; i < 15; i++) {
+    const x = (Math.random() - 0.5) * 40
+    const y = (Math.random() - 0.5) * 30 + 5
+    const z = (Math.random() - 0.5) * 10 - 5
+    if (Math.abs(x) < 6 && Math.abs(y) < 10) continue // Keep center clear
+
+    const size = 0.2 + Math.random() * 0.3
+    const cross = new THREE.Group()
+    cross.add(createLine(0, 0, 0, size, 0.04, 0.04, matAccent))
+    cross.add(createLine(0, 0, 0, 0.04, size, 0.04, matAccent))
+    cross.position.set(x, y, z)
+    crossGroup.add(cross)
+  }
+  atmosGroup.add(crossGroup)
+
+  // 5. Stardust / Particle Field (Hinting at the wings)
+  const particleCount = 2500
+  const pGeo = new THREE.BufferGeometry()
+  const pPos = new Float32Array(particleCount * 3)
+  for (let i = 0; i < particleCount; i++) {
+    const radius = 5 + Math.random() * 25
+    const theta = (Math.random() - 0.5) * Math.PI * 0.8 
+    const x = Math.sin(theta) * radius
+    const y = -6 + Math.cos(theta) * radius + (Math.random() - 0.5) * 12
+    const z = (Math.random() - 0.5) * 8 - 4
+    pPos[i*3] = x
+    pPos[i*3+1] = y
+    pPos[i*3+2] = z
+  }
+  pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3))
+  const pMat = new THREE.PointsMaterial({
+    size: 0.1,
+    color: 0x888888
+  })
+  const particles = new THREE.Points(pGeo, pMat)
+  sceneRoot.add(particles)
+  // ────────────────────────────────────────────────────────────────────────
+
   const dc = createDitheredComposer(renderer, scene, camera, W, H)
   dc.setExposure(1.8)
 
@@ -322,6 +489,15 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
     rafId = requestAnimationFrame(tick)
     const now = performance.now()
     const t = (now - baseTime) * 0.001
+
+    // Animate Fluid Water
+    waterUniforms.uTime.value = t
+    // If the stone is erupting, we increase the impact
+    if (animState === 'erupting' || animState === 'breathing' || animState === 'revelation') {
+      waterUniforms.uImpact.value = THREE.MathUtils.lerp(waterUniforms.uImpact.value, 1.0, 0.05)
+    } else {
+      waterUniforms.uImpact.value = THREE.MathUtils.lerp(waterUniforms.uImpact.value, 0.0, 0.05)
+    }
 
     let shakeIntensity = 0
 
