@@ -9,6 +9,7 @@ import LandingPage from './components/LandingPage'
 import RitualTransition, { type RitualMode } from './components/RitualTransition'
 import { useApp } from './context/AppContext'
 import { Menu, PanelRight } from 'lucide-react'
+import { BRAND_LOGO_SRC } from './lib/brand'
 import './styles/globals.css'
 
 type MobileDrawer = 'circles' | 'info' | null
@@ -73,7 +74,7 @@ function Layout() {
           {/* Mobile nav (replaces header) */}
           <div className="mobile-nav app-header sys-window z-[100] items-center justify-between gap-4 px-5 min-h-[48px] font-mono text-[11px] uppercase font-bold">
             <div className="flex items-center gap-3 min-w-0">
-              <span className="brand-mark shrink-0">E</span>
+              <img className="brand-mark shrink-0" src={BRAND_LOGO_SRC} alt="Enoxian" />
               <button
                 onClick={() => toggle('circles')}
                 className={`mobile-header-btn${mobileDrawer === 'circles' ? ' active' : ''}`}
