@@ -205,6 +205,7 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
         phaseStart = now
         wingL.group.visible = true
         wingR.group.visible = true
+        halos.visible = true // Reveal halos when eruption starts
       }
 
     } else if (animState === 'erupting') {
