@@ -251,8 +251,10 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
 
     } else if (animState === 'revelation') {
       const rt = clamp01((now - phaseStart) / 800)
-      const flash = Math.sin(rt * Math.PI)
-      dc.setExposure(1.8 + flash * 4.0) 
+      
+      // Removed the blinding flash entirely per user request.
+      // The exposure stays at 1.8 so the geometry details remain visible.
+      dc.setExposure(1.8) 
       
       if (rt > 0.1 && rt < 0.9) overlay.style.opacity = '1'
       else overlay.style.opacity = '0'
