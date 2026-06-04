@@ -139,7 +139,7 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
   overlay.style.zIndex = '20'
 
   const revText = document.createElement('div')
-  revText.innerText = 'CONTRACT SEALED'
+  revText.innerText = 'ENOXIAN PROTOCOL ENGAGED'
   revText.style.background = '#000'
   revText.style.color = '#fff'
   revText.style.fontFamily = 'var(--font-title), serif'
