@@ -21,14 +21,14 @@ interface Props {
 // icon geometry appears to lift out of its tiny canvas, swell toward screen center
 // to fill the viewport, then drop back into the icon — rendered through the dither
 // composer the whole way so it keeps the halftone look.
-const SWITCH_DUR = 2400 // ms, total
-const SWITCH_MAX = 2.2 // peak scale — a clear, centered solid (not full-screen)
+const SWITCH_DUR = 1200 // ms, total
+const SWITCH_MAX = 1.5 // peak scale — a clear, centered solid (not full-screen)
 const T_RISE = 0.26 // timeline fraction: icon → centered + full
 const T_HOLD = 0.74 // timeline fraction: end of the centered "occult" hold
 // Backdrop: the transition scene's background darkens from white (transparent under
 // mix-blend:multiply) to this gray, which the dither pass renders as a screen-filling
 // field of dots that veils the app behind. Lower = denser dots = more opaque veil.
-const VEIL_GRAY = new THREE.Color(0x4d4d4d)
+const VEIL_GRAY = new THREE.Color(0xdedede)
 const TRANS_WHITE = new THREE.Color(0xffffff)
 
 type Modal = 'init' | 'enter' | 'leave' | null
