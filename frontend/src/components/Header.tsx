@@ -1,4 +1,5 @@
 import { useApp } from '../context/AppContext'
+import { BRAND_LOGO_SRC } from '../lib/brand'
 
 interface Props {
   mobileDrawer?: 'circles' | 'info' | null
@@ -13,7 +14,7 @@ export default function Header({ mobileDrawer, onToggleCircles, onToggleInfo }: 
   return (
     <header className="app-header sys-window z-[100] flex items-center justify-between gap-4 px-5 min-h-[48px] font-mono text-[11px] uppercase font-bold">
       <div className="flex items-center gap-3 min-w-0">
-        <span className="brand-mark shrink-0">E</span>
+        <img className="brand-mark shrink-0" src={BRAND_LOGO_SRC} alt="Enoxian" />
         {/* Mobile-only circles toggle */}
         {onToggleCircles && (
           <button
