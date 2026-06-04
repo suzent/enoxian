@@ -20,10 +20,10 @@ interface Props {
 // icon geometry appears to lift out of its tiny canvas, swell toward screen center
 // to fill the viewport, then drop back into the icon — rendered through the dither
 // composer the whole way so it keeps the halftone look.
-const SWITCH_DUR = 1200 // ms, total
-const SWITCH_MAX = 1.5 // peak scale — a clear, centered solid (not full-screen)
-const T_RISE = 0.26 // timeline fraction: icon → centered + full
-const T_HOLD = 0.74 // timeline fraction: end of the centered "occult" hold
+const SWITCH_DUR = 2500 // ms, total. Slower, more deliberate, and majestic.
+const SWITCH_MAX = 2.0 // peak scale — grows larger to feel more monumental
+const T_RISE = 0.35 // timeline fraction: icon → centered + full
+const T_HOLD = 0.65 // timeline fraction: end of the centered "occult" hold
 // Backdrop: the transition scene's background darkens from white (transparent under
 // mix-blend:multiply) to this gray, which the dither pass renders as a screen-filling
 // field of dots that veils the app behind. Lower = denser dots = more opaque veil.
@@ -255,10 +255,11 @@ export default function CircleSidebar({ onRitual }: Props) {
       } else if (t < T_HOLD) {
         const hp = (t - T_RISE) / (T_HOLD - T_RISE) // 0 → 1 across the hold
         out = 1
-        scale = SWITCH_MAX * (1 + 0.05 * Math.sin(hp * Math.PI * 5)) // slow breathing
-        // Remove the exposure pulse entirely so it stays constant and doesn't flash
+        // majestic, very slow levitation breathing instead of erratic pumping
+        scale = SWITCH_MAX * (1 + 0.02 * Math.sin(hp * Math.PI * 3)) 
         exposure = EXPOSURE_ICON
-        spinMul = 3.5 // whirl faster while it hangs at center
+        // Slower, heavy, monolithic spinning instead of whirling rapidly
+        spinMul = 0.5 
       } else {
         const p = easeInOut((t - T_HOLD) / (1 - T_HOLD))
         out = 1 - p
