@@ -373,7 +373,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
           {/* Invite row */}
           <div className="section-header">
             <span>MEMBERS</span>
-            <button onClick={handleInvite}>{inviteUri ? 'CLOSE' : 'INVITE'}</button>
+            <button onClick={handleInvite}>{inviteUri ? 'x' : '+'}</button>
           </div>
 
           {inviteUri && (
