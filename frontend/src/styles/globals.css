@@ -538,7 +538,7 @@ select {
 .ritual-canvas {
   position: absolute;
   inset: 0;
-  transition: opacity 800ms ease, transform 800ms ease, filter 800ms ease;
+  transition: opacity 220ms ease;
 }
 
 .ritual-canvas canvas {
@@ -548,9 +548,8 @@ select {
 }
 
 .ritual-closing {
-  opacity: 0;
-  transform: scale(0.72);
-  filter: contrast(72%) blur(2px);
+  transform: none;
+  filter: none;
 }
 
 .ritual-dither {
