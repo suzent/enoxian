@@ -190,7 +190,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 flex flex-col gap-2 font-mono text-[11px] min-w-0">
         {messages.length === 0 && (
-          <div className="text-slate self-start">[SYS] AWAITING TRANSMISSION...</div>
+          <div className="text-slate self-start">No chat yet.</div>
         )}
         {messages.map((msg, i) => {
           const label = getSenderLabel(msg.agent_id)
