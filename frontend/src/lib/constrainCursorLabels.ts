@@ -9,9 +9,13 @@ import { EditorView, ViewPlugin, ViewUpdate } from '@codemirror/view'
  * the left/right/top edges get truncated. This plugin runs after each render
  * and clamps each label's horizontal position so it never overflows.
  */
+const ACTIVE_CLASS = 'cm-ySelectionInfo--active'
+const LABEL_FADE_MS = 2000
+
 export const constrainCursorLabels = ViewPlugin.fromClass(class {
   private lastSignature = ''
   private repaintFrame = 0
+  private fadeTimers = new Map<HTMLElement, ReturnType<typeof setTimeout>>()
 
   constructor(private view: EditorView) {
     this.reposition()
@@ -26,6 +30,7 @@ export const constrainCursorLabels = ViewPlugin.fromClass(class {
 
   destroy() {
     if (this.repaintFrame) cancelAnimationFrame(this.repaintFrame)
+    for (const t of this.fadeTimers.values()) clearTimeout(t)
   }
 
   queueReposition() {
@@ -36,14 +41,15 @@ export const constrainCursorLabels = ViewPlugin.fromClass(class {
     })
   }
 
-  forceSafariRepaint() {
-    const scroller = this.view.scrollDOM
-    scroller.style.transform = 'translateZ(0)'
-    requestAnimationFrame(() => {
-      if (scroller.style.transform === 'translateZ(0)') {
-        scroller.style.transform = ''
-      }
-    })
+  flashLabel(label: HTMLElement) {
+    label.classList.add(ACTIVE_CLASS)
+    const existing = this.fadeTimers.get(label)
+    if (existing) clearTimeout(existing)
+    const t = setTimeout(() => {
+      label.classList.remove(ACTIVE_CLASS)
+      this.fadeTimers.delete(label)
+    }, LABEL_FADE_MS)
+    this.fadeTimers.set(label, t)
   }
 
   reposition() {
@@ -51,10 +57,16 @@ export const constrainCursorLabels = ViewPlugin.fromClass(class {
     const scrollerRect = scroller.getBoundingClientRect()
 
     const labels = scroller.querySelectorAll<HTMLElement>('.cm-ySelectionInfo')
-    const signature = [...labels].map(label => label.textContent ?? '').join('|')
+
+    // Flash labels when cursor positions change (signature = name+position).
+    const signature = [...labels].map(label => {
+      const caret = label.parentElement
+      const rect = caret?.getBoundingClientRect()
+      return `${label.textContent}@${rect?.left.toFixed(0)},${rect?.top.toFixed(0)}`
+    }).join('|')
     if (signature !== this.lastSignature) {
       this.lastSignature = signature
-      this.forceSafariRepaint()
+      labels.forEach(label => this.flashLabel(label))
     }
 
     const lineHeight = this.view.defaultLineHeight
@@ -63,32 +75,21 @@ export const constrainCursorLabels = ViewPlugin.fromClass(class {
       const caret = label.parentElement
       if (!caret) return
 
-      // Measure caret position before touching the label's styles so that
-      // getBoundingClientRect reflects the actual DOM layout.
       const caretRect = caret.getBoundingClientRect()
       const caretX = caretRect.left - scrollerRect.left
       const caretY = caretRect.top - scrollerRect.top
 
-      // Reset horizontal override only — leave transform alone until we decide.
       label.style.left = ''
-
       const labelWidth = label.offsetWidth
 
-      // Flip below when there isn't enough room above. Use lineHeight as the
-      // label height estimate: offsetHeight can be 0 in Safari before first layout.
       const fitsAbove = caretY >= lineHeight
       label.style.transform = fitsAbove
         ? 'translateY(-100%)'
         : `translateY(${lineHeight}px)`
 
-      // Ideal position: label's right edge aligns with the caret.
       let viewportX = caretX - labelWidth
-
-      // Clamp: don't go past left edge of scroller content area.
       const contentLeft = this.view.contentDOM.getBoundingClientRect().left - scrollerRect.left
       if (viewportX < contentLeft) viewportX = contentLeft
-
-      // Clamp: don't go past right edge of visible scroller.
       const maxX = scrollerRect.width - labelWidth
       if (viewportX > maxX) viewportX = maxX
 

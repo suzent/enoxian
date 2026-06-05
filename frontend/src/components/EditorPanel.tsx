@@ -60,7 +60,9 @@ const enochTheme = EditorView.theme({
     display: 'inline',
     zIndex: '10',
   },
-  // Initial position — constrainCursorLabels plugin overrides left/transform at runtime.
+  // Label: hidden by default, flashed in by the constrainCursorLabels plugin on
+  // each cursor move (adds .cm-ySelectionInfo--active which fades out after 2s),
+  // and always shown on hover via the rule below.
   '.cm-ySelectionInfo': {
     position: 'absolute',
     display: 'inline-block',
@@ -77,9 +79,17 @@ const enochTheme = EditorView.theme({
     padding: '2px 5px',
     whiteSpace: 'nowrap',
     borderRadius: '0',
+    opacity: '0',
+    transition: 'opacity 0.3s ease',
+    zIndex: '200',
+  },
+  '.cm-ySelectionInfo.cm-ySelectionInfo--active': {
     opacity: '1',
     transition: 'none',
-    zIndex: '200',
+  },
+  '.cm-ySelectionCaret:hover .cm-ySelectionInfo': {
+    opacity: '1',
+    transition: 'opacity 0.15s ease',
   },
 }, { dark: false })
 
