@@ -1,5 +1,6 @@
 import { useApp } from '../context/AppContext'
 import { BRAND_LOGO_SRC } from '../lib/brand'
+import { Menu, PanelRight } from 'lucide-react'
 
 interface Props {
   mobileDrawer?: 'circles' | 'info' | null
@@ -19,9 +20,10 @@ export default function Header({ mobileDrawer, onToggleCircles, onToggleInfo }: 
         {onToggleCircles && (
           <button
             onClick={onToggleCircles}
-            className={`mobile-header-btn${mobileDrawer === 'circles' ? ' active' : ''}`}
+            className={`mobile-header-btn mobile-header-btn--circles${mobileDrawer === 'circles' ? ' active' : ''}`}
+            aria-label="Open circles"
           >
-            ☰
+            <Menu size={18} strokeWidth={2.5} />
           </button>
         )}
         {activeCircle && (
@@ -29,12 +31,12 @@ export default function Header({ mobileDrawer, onToggleCircles, onToggleInfo }: 
         )}
       </div>
 
-      <div className="flex items-center gap-3 shrink-0">
-        <div className="flex items-center gap-3 text-slate font-normal">
+      <div className="header-actions flex items-center gap-3 shrink-0 min-w-0">
+        <div className="header-status flex items-center gap-3 text-slate font-normal min-w-0">
           {status && (
             <>
-              <span className="sys-badge">{status.agent_id}</span>
-              <span className="sys-badge">docs {status.docs}</span>
+              <span className="sys-badge header-agent-id">{status.agent_id}</span>
+              <span className="sys-badge header-docs-count">docs {status.docs}</span>
             </>
           )}
         </div>
@@ -42,9 +44,10 @@ export default function Header({ mobileDrawer, onToggleCircles, onToggleInfo }: 
         {onToggleInfo && (
           <button
             onClick={onToggleInfo}
-            className={`mobile-header-btn${mobileDrawer === 'info' ? ' active' : ''}`}
+            className={`mobile-header-btn mobile-header-btn--info${mobileDrawer === 'info' ? ' active' : ''}`}
+            aria-label="Open circle info"
           >
-            ⊞
+            <PanelRight size={18} strokeWidth={2.5} />
           </button>
         )}
       </div>

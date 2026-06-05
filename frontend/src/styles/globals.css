@@ -50,10 +50,10 @@ select {
   height: 100dvh;
   min-height: 0;
   grid-template-areas:
+    "header header header"
     "circles chat right";
-  /* Middle column now has a minimum width of 600px so it never gets crushed */
-  grid-template-columns: minmax(220px, 280px) minmax(600px, 1fr) minmax(280px, 340px);
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) minmax(260px, 340px);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   padding: 18px;
   overflow: hidden;
@@ -156,6 +156,9 @@ select {
   align-items: center;
   min-height: 22px;
   padding: 1px 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 800;
 }
@@ -175,6 +178,8 @@ select {
   padding: 5px 10px !important;
   font-size: var(--ui-small);
   gap: 12px !important;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .app-header .circle-state {
@@ -795,6 +800,7 @@ select option {
 .desktop-chat {
   grid-area: chat;
   min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
@@ -806,31 +812,41 @@ select option {
 
 /* Mobile-only elements: hidden on desktop */
 .mobile-main-area,
-.mobile-header-btn,
-.mobile-nav {
+.mobile-header-btn {
   display: none;
 }
 
-/* ── Intermediate Tablet/Small Desktop layout (761px - 1200px) ──────────────── */
-@media (max-width: 1200px) and (min-width: 761px) {
+/* ── Medium layout: circles stay visible, right panel becomes a drawer ────── */
+@media (max-width: 1279px) and (min-width: 961px) {
   .app-shell {
     grid-template-areas:
+      "header header"
       "circles chat";
-    grid-template-columns: minmax(220px, 280px) minmax(600px, 1fr);
+    grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
   }
   
   .app-right-panel:not(.mobile-drawer *) {
-    display: none !important;
+    position: fixed;
+    top: 82px;
+    right: 18px;
+    bottom: 18px;
+    width: min(340px, calc(100vw - 36px));
+    z-index: 120;
+    transform: translateX(calc(100% + 24px));
+    transition: transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .app-shell.drawer-info > .app-right-panel:not(.mobile-drawer *) {
+    transform: translateX(0);
+  }
+
+  .mobile-header-btn--info {
+    display: inline-flex;
   }
 }
 
-/* ── Mobile layout (≤ 760px) ─────────────────────────────────────────────── */
-@media (max-width: 760px) {
-  .mobile-nav {
-    display: flex;
-    grid-area: header;
-  }
-
+/* ── Compact layout: both side panels become drawers before overflow ─────── */
+@media (max-width: 960px) {
   .app-shell {
     height: 100dvh;
     grid-template-areas:
@@ -916,7 +932,6 @@ select option {
     transform: translateX(0);
   }
 
-  /* Header toggle buttons */
   .mobile-header-btn {
     display: inline-flex;
     align-items: center;
@@ -933,6 +948,22 @@ select option {
   .mobile-header-btn.active {
     background: var(--fg-obsidian);
     color: #fff;
+  }
+
+  .header-docs-count {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .header-agent-id {
+    max-width: 32vw;
+  }
+}
+
+@media (max-width: 420px) {
+  .header-status {
+    display: none !important;
   }
 }
 

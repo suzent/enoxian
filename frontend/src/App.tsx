@@ -4,12 +4,11 @@ import ChatPanel from './components/ChatPanel'
 import EditorPanel from './components/EditorPanel'
 import RightPanel from './components/RightPanel'
 import CircleSidebar from './components/CircleSidebar'
+import Header from './components/Header'
 import VoidOverlay from './components/VoidOverlay'
 import LandingPage from './components/LandingPage'
 import RitualTransition, { type RitualMode } from './components/RitualTransition'
 import { useApp } from './context/AppContext'
-import { Menu, PanelRight } from 'lucide-react'
-import { BRAND_LOGO_SRC } from './lib/brand'
 import './styles/globals.css'
 
 type MobileDrawer = 'circles' | 'info' | null
@@ -70,28 +69,12 @@ function Layout() {
       )}
 
       {circles.length > 0 && (
-        <div className={`app-shell relative z-10 grid${isVoid ? ' app-shell--void' : ''}`}>
-          {/* Mobile nav (replaces header) */}
-          <div className="mobile-nav app-header sys-window z-[100] items-center justify-between gap-4 px-5 min-h-[48px] font-mono text-[11px] uppercase font-bold">
-            <div className="flex items-center gap-3 min-w-0">
-              <img className="brand-mark shrink-0" src={BRAND_LOGO_SRC} alt="Enoxian" />
-              <button
-                onClick={() => toggle('circles')}
-                className={`mobile-header-btn${mobileDrawer === 'circles' ? ' active' : ''}`}
-              >
-                <Menu size={18} strokeWidth={2.5} />
-              </button>
-              {activeCircle && (
-                <span className="font-bold tracking-widest truncate">{activeCircle.circle_name}</span>
-              )}
-            </div>
-            <button
-              onClick={() => toggle('info')}
-              className={`mobile-header-btn${mobileDrawer === 'info' ? ' active' : ''}`}
-            >
-              <PanelRight size={18} strokeWidth={2.5} />
-            </button>
-          </div>
+        <div className={`app-shell relative z-10 grid drawer-${mobileDrawer ?? 'none'}${isVoid ? ' app-shell--void' : ''}`}>
+          <Header
+            mobileDrawer={mobileDrawer}
+            onToggleCircles={() => toggle('circles')}
+            onToggleInfo={() => toggle('info')}
+          />
 
           {/* Desktop sidebar */}
           <CircleSidebar onRitual={(mode, label) => setRitual({ mode, label })} />
