@@ -16,6 +16,8 @@ export default function VoidOverlay({ circleName }: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    // Only render if this circle is actually the active one.
+    // React might mount/unmount quickly during transitions.
     const mount = mountRef.current
     if (!mount) return
 
@@ -58,16 +60,28 @@ export default function VoidOverlay({ circleName }: Props) {
     dc.setExposure(EXPOSURE_FADE_START)
 
     let raf = 0
-    const startTime = performance.now()
+    let lastTime = performance.now()
+    const startTime = lastTime
 
     const tick = () => {
       raf = requestAnimationFrame(tick)
-      const t = Math.min((performance.now() - startTime) / 1000, 1)
+      const now = performance.now()
+      
+      // Use time delta for smooth, framerate-independent rotation
+      const dt = Math.min((now - lastTime) / 1000, 0.1) // cap dt to 100ms to avoid huge jumps on lag
+      lastTime = now
+      
+      const t = Math.min((now - startTime) / 1000, 1)
       dc.setExposure(EXPOSURE_FADE_START - (EXPOSURE_FADE_START - EXPOSURE_VOID) * easeInOut(t))
-      shape.rotation.x += params.rotX * 0.22
-      shape.rotation.y += params.rotY * 0.22
-      ring.rotation.z += 0.0007
-      ring.scale.setScalar(1 + Math.sin(performance.now() * 0.00035) * 0.025)
+      
+      // Changed to use dt instead of arbitrary tiny constants
+      shape.rotation.x += params.rotX * 60 * dt
+      shape.rotation.y += params.rotY * 60 * dt
+      
+      // Subtle hovering ring
+      ring.rotation.z += 0.05 * dt
+      ring.scale.setScalar(1 + Math.sin(now * 0.00035) * 0.025)
+      
       dc.composer.render()
     }
     tick()

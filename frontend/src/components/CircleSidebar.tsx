@@ -200,13 +200,34 @@ export default function CircleSidebar({ onRitual }: Props) {
     else canvasMapRef.current.delete(id)
   }, [])
 
+  // Use a ref to hold the absolute latest activeCircleId to avoid stale closures
+  // during fast switching. AppContext provides `activeCircleId` but useCallback 
+  // without it in the dependency array will capture an old closure.
+  const activeCircleIdRef = useRef(activeCircleId)
+  useEffect(() => {
+    activeCircleIdRef.current = activeCircleId
+  }, [activeCircleId])
+
   const switchCircle = useCallback((targetId: string) => {
-    if (animatingRef.current || targetId === activeCircleId) return
+    const currentActiveId = activeCircleIdRef.current
+    if (animatingRef.current || targetId === currentActiveId) return
     const transRenderer = transRendererRef.current
     const transDC = transDCRef.current
     const entry = scenesRef.current.get(targetId)
     const iconCanvas = canvasMapRef.current.get(targetId)
-    if (!transRenderer || !transDC || !entry || !iconCanvas) { setActiveCircleId(targetId); return }
+    
+    const targetCircle = circles.find(c => c.circle_id === targetId)
+    const isTargetDisabled = targetCircle?.disabled
+    
+    const currentCircle = circles.find(c => c.circle_id === currentActiveId)
+    const isCurrentDisabled = currentCircle?.disabled
+    
+    // Skip animation if target is VOID or if we are CURRENTLY in VOID.
+    if (!transRenderer || !transDC || !entry || !iconCanvas || isTargetDisabled || isCurrentDisabled) { 
+      setActiveCircleId(targetId);
+      return 
+    }
+    
     animatingRef.current = true
 
     const transScene = transSceneRef.current
@@ -296,7 +317,7 @@ export default function CircleSidebar({ onRitual }: Props) {
       }
     }
     requestAnimationFrame(tick)
-  }, [activeCircleId, setActiveCircleId])
+  }, [activeCircleId, setActiveCircleId, circles])
 
   // Modal handlers
   const handleInit = async (e: React.FormEvent) => {
