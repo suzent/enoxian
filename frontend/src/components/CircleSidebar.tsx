@@ -3,30 +3,20 @@ import * as THREE from 'three'
 import { useApp } from '../context/AppContext'
 import { initCircle, enterCircle, getIdentity } from '../api'
 import { applyCircleRotation, makeCircleGeometry } from '../lib/circleShape'
+import { createDitheredComposer, type DitheredComposer } from '../lib/ditherShader'
 import {
-  createDitheredComposer,
-  type DitheredComposer,
-  easeInOut,
-} from '../lib/ditherShader'
-import {
-  CIRCLE_CAMERA_FOV,
-  CIRCLE_CAMERA_Z,
   CIRCLE_EXPOSURE,
   createCircleCamera,
   createCircleRenderer,
   prepareCircleScene,
-  rectCenterOnCameraPlane,
-  scaleForRect,
 } from '../lib/circleRender'
+import { triggerDockBurst } from '../lib/particleEffect'
 import type { RitualMode } from './RitualTransition'
 
 interface Props {
   onRitual?: (mode: RitualMode, label?: string) => void
   ritualCircleName?: string
-  onSwitchingCircle?: (name: string | null) => void
 }
-
-const SWITCH_DUR = 720
 
 type Modal = 'init' | 'enter' | null
 
@@ -36,14 +26,10 @@ interface SceneEntry {
   camera: THREE.PerspectiveCamera
   mesh: THREE.Group
   dc: DitheredComposer
+  renderer: THREE.WebGLRenderer
 }
 
-interface PlanePose {
-  x: number
-  y: number
-}
-
-export default function CircleSidebar({ onRitual, ritualCircleName, onSwitchingCircle }: Props) {
+export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
   const { circles, activeCircleId, setActiveCircleId, reloadCircles } = useApp()
 
   const [modal, setModal] = useState<Modal>(null)
@@ -66,99 +52,35 @@ export default function CircleSidebar({ onRitual, ritualCircleName, onSwitchingC
     return () => { cancelled = true }
   }, [])
 
-  // Three.js state — all in refs to avoid re-renders
-  const iconRendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const scenesRef = useRef<Map<string, SceneEntry>>(new Map())
-  const canvasMapRef = useRef<Map<string, HTMLCanvasElement>>(new Map())
+  const iconMountMapRef = useRef<Map<string, HTMLDivElement>>(new Map())
+  const rowRefMap = useRef<Map<string, HTMLButtonElement>>(new Map())
+  const highlightRef = useRef<HTMLDivElement | null>(null)
+  const listRef = useRef<HTMLDivElement | null>(null)
   const rafRef = useRef(0)
-  // Full-screen transition overlay (re-used across every switch)
-  const transRendererRef = useRef<THREE.WebGLRenderer | null>(null)
-  const transDCRef = useRef<DitheredComposer | null>(null)
-  const transSceneRef = useRef(new THREE.Scene())
-  const transCameraRef = useRef(new THREE.PerspectiveCamera(CIRCLE_CAMERA_FOV, 1, 0.1, 1000))
   const animatingRef = useRef(false)
+  const prevActiveIdRef = useRef<string | null>(null)
 
-  // Bootstrap Three.js renderers once
+  // rAF loop — animates icons
   useEffect(() => {
-    // Shared icon renderer (white bg — mix-blend-mode:multiply makes white transparent)
-    const iconRenderer = createCircleRenderer(72, 72)
-    iconRenderer.domElement.style.cssText = 'position:fixed;top:-9999px;left:-9999px;pointer-events:none;'
-    document.body.appendChild(iconRenderer.domElement)
-    iconRendererRef.current = iconRenderer
-
-    // Full-screen transition renderer + dithered composer (white bg → transparent
-    // via mix-blend-mode:multiply; the dithered shape shows through over the UI).
-    const transRenderer = createCircleRenderer(window.innerWidth, window.innerHeight)
-    transRenderer.domElement.style.cssText =
-      'position:fixed;inset:0;z-index:1000;pointer-events:none;display:none;mix-blend-mode:multiply;'
-    document.body.appendChild(transRenderer.domElement)
-    transRendererRef.current = transRenderer
-
-    const transScene = transSceneRef.current
-    prepareCircleScene(transScene)
-
-    const transCamera = transCameraRef.current
-    transCamera.position.z = CIRCLE_CAMERA_Z
-    transCamera.aspect = window.innerWidth / window.innerHeight
-    transCamera.updateProjectionMatrix()
-
-    const transDC = createDitheredComposer(
-      transRenderer, transScene, transCamera,
-      window.innerWidth, window.innerHeight,
-    )
-    transDC.setExposure(CIRCLE_EXPOSURE)
-    transDCRef.current = transDC
-
-    const onResize = () => {
-      const W = window.innerWidth, H = window.innerHeight
-      transRenderer.setSize(W, H)
-      transDC.setSize(W, H)
-      transCamera.aspect = W / H
-      transCamera.updateProjectionMatrix()
-    }
-    window.addEventListener('resize', onResize)
-
-    // Single rAF loop: render each icon scene via its own dithered composer → blit
-    // IMPORTANT: blit immediately after each render(), before the next scene
-    // overwrites the shared iconRenderer framebuffer.
     function loop() {
       rafRef.current = requestAnimationFrame(loop)
       const now = performance.now()
-      scenesRef.current.forEach(({ name, mesh, dc }, id) => {
+      scenesRef.current.forEach(({ name, mesh, dc }) => {
         applyCircleRotation(mesh, name, now)
         dc.composer.render()
-        // Blit right here — iconRenderer.domElement still has this scene's frame
-        const canvas = canvasMapRef.current.get(id)
-        if (canvas) {
-          const ctx = canvas.getContext('2d')
-          if (ctx) {
-            ctx.clearRect(0, 0, canvas.width, canvas.height)
-            ctx.drawImage(iconRenderer.domElement, 0, 0, canvas.width, canvas.height)
-          }
-        }
       })
     }
     loop()
-
     return () => {
       cancelAnimationFrame(rafRef.current)
-      window.removeEventListener('resize', onResize)
-      scenesRef.current.forEach(({ dc }) => {
-        // Skip geometry/material dispose since mesh is now a Group
+      scenesRef.current.forEach(({ dc, renderer }) => {
         dc.composer.dispose()
+        renderer.forceContextLoss()
+        renderer.dispose()
+        renderer.domElement.remove()
       })
       scenesRef.current.clear()
-      iconRenderer.forceContextLoss()
-      iconRenderer.dispose()
-      if (iconRenderer.domElement.parentNode) {
-        iconRenderer.domElement.parentNode.removeChild(iconRenderer.domElement)
-      }
-      transDC.composer.dispose()
-      transRenderer.forceContextLoss()
-      transRenderer.dispose()
-      if (transRenderer.domElement.parentNode) {
-        transRenderer.domElement.parentNode.removeChild(transRenderer.domElement)
-      }
     }
   }, [])
 
@@ -166,186 +88,144 @@ export default function CircleSidebar({ onRitual, ritualCircleName, onSwitchingC
   useEffect(() => {
     const scenes = scenesRef.current
     const ids = new Set(circles.map(c => c.circle_id))
-
-    // Remove scenes for circles that no longer exist
-    scenes.forEach((_, id) => {
+    scenes.forEach((entry, id) => {
       if (!ids.has(id)) {
-        // Skip simple dispose since it's a Group
+        entry.dc.composer.dispose()
+        entry.renderer.forceContextLoss()
+        entry.renderer.dispose()
+        entry.renderer.domElement.remove()
         scenes.delete(id)
       }
     })
-
-    // Create scenes for new circles
     circles.forEach(circle => {
-      if (scenes.has(circle.circle_id) || !iconRendererRef.current) return
-      const scene = new THREE.Scene()
-      prepareCircleScene(scene)
-
-      const camera = createCircleCamera()
-
-      const group = makeCircleGeometry(circle.circle_name)
-
-      applyCircleRotation(group, circle.circle_name)
-
-      scene.add(group)
-
-      const dc = createDitheredComposer(iconRendererRef.current, scene, camera, 72, 72)
-      dc.setExposure(CIRCLE_EXPOSURE)
-
-      scenes.set(circle.circle_id, { name: circle.circle_name, scene, camera, mesh: group, dc })
+      if (scenes.has(circle.circle_id)) return
+      const mount = iconMountMapRef.current.get(circle.circle_id)
+      if (!mount) return
+      createIconScene(circle.circle_id, circle.circle_name, mount, scenes)
     })
   }, [circles])
 
-  // Register canvas DOM nodes (called via ref callback on each row)
-  const registerCanvas = useCallback((id: string, el: HTMLCanvasElement | null) => {
-    if (el) canvasMapRef.current.set(id, el)
-    else canvasMapRef.current.delete(id)
-  }, [])
+  // Slide the highlight bar + animate icon mounts on active change
+  useEffect(() => {
+    const hl = highlightRef.current
+    const list = listRef.current
+    if (!hl || !list) return
+    const row = activeCircleId ? rowRefMap.current.get(activeCircleId) : null
+    if (!row) { hl.style.opacity = '0'; return }
+    const listRect = list.getBoundingClientRect()
+    const rowRect = row.getBoundingClientRect()
+    hl.style.opacity = '1'
+    hl.style.top = `${rowRect.top - listRect.top + list.scrollTop}px`
+    hl.style.height = `${rowRect.height}px`
 
-  const cloneTransitionShape = (entry: SceneEntry) => {
-    const shape = entry.mesh.clone()
-    shape.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh
-        if (mesh.material) {
-          mesh.material = (mesh.material as THREE.Material).clone()
-        }
+    // Pop-out: newly active icon slides right and fades out
+    if (activeCircleId) {
+      const mount = iconMountMapRef.current.get(activeCircleId)
+      if (mount) {
+        mount.classList.remove('icon-pop-in')
+        mount.classList.add('icon-pop-out')
+        mount.addEventListener('animationend', () => mount.classList.remove('icon-pop-out'), { once: true })
       }
-    })
-    return shape
+    }
+    // Pop-in: previously active icon slides back in
+    const prev = prevActiveIdRef.current
+    if (prev && prev !== activeCircleId) {
+      const mount = iconMountMapRef.current.get(prev)
+      if (mount) {
+        mount.classList.remove('icon-pop-out')
+        mount.classList.add('icon-pop-in')
+        mount.addEventListener('animationend', () => mount.classList.remove('icon-pop-in'), { once: true })
+      }
+    }
+    prevActiveIdRef.current = activeCircleId
+  }, [activeCircleId, circles])
+
+  function createIconScene(
+    id: string,
+    name: string,
+    mount: HTMLDivElement,
+    scenes: Map<string, SceneEntry>,
+  ) {
+    // Render at 88px (dock resolution) so dither density matches dock glyph,
+    // CSS-scaled to 36px display size.
+    const renderSize = 88
+    const displaySize = 36
+    const renderer = createCircleRenderer(renderSize, renderSize)
+    renderer.domElement.style.cssText =
+      `display:block;width:${displaySize}px;height:${displaySize}px;image-rendering:pixelated;`
+    mount.appendChild(renderer.domElement)
+
+    const scene = new THREE.Scene()
+    prepareCircleScene(scene)
+    const camera = createCircleCamera()
+    const group = makeCircleGeometry(name)
+    applyCircleRotation(group, name)
+    scene.add(group)
+
+    const dc = createDitheredComposer(renderer, scene, camera, renderSize, renderSize)
+    dc.setExposure(CIRCLE_EXPOSURE)
+    scenes.set(id, { name, scene, camera, mesh: group, dc, renderer })
   }
 
-  // Use a ref to hold the absolute latest activeCircleId to avoid stale closures
-  // during fast switching. AppContext provides `activeCircleId` but useCallback 
-  // without it in the dependency array will capture an old closure.
+  const registerIconMount = useCallback((id: string, el: HTMLDivElement | null) => {
+    if (!el) { iconMountMapRef.current.delete(id); return }
+    iconMountMapRef.current.set(id, el)
+    if (scenesRef.current.has(id)) return
+    const circle = circles.find(c => c.circle_id === id)
+    if (!circle) return
+    createIconScene(id, circle.circle_name, el, scenesRef.current)
+  }, [circles])
+
   const activeCircleIdRef = useRef(activeCircleId)
-  useEffect(() => {
-    activeCircleIdRef.current = activeCircleId
-  }, [activeCircleId])
+  useEffect(() => { activeCircleIdRef.current = activeCircleId }, [activeCircleId])
 
   const switchCircle = useCallback((targetId: string) => {
-    const currentActiveId = activeCircleIdRef.current
-    if (animatingRef.current || targetId === currentActiveId) return
-    const transRenderer = transRendererRef.current
-    const transDC = transDCRef.current
-    const targetEntry = scenesRef.current.get(targetId)
-    const currentEntry = currentActiveId ? scenesRef.current.get(currentActiveId) : null
-    const targetCanvas = canvasMapRef.current.get(targetId)
-    const currentCanvas = currentActiveId ? canvasMapRef.current.get(currentActiveId) : null
-    
-    if (!transRenderer || !transDC || !targetEntry || !targetCanvas) { 
-      setActiveCircleId(targetId);
-      return 
-    }
-    
+    if (animatingRef.current || targetId === activeCircleIdRef.current) return
     animatingRef.current = true
 
-    const transScene = transSceneRef.current
-    const transCamera = transCameraRef.current
+    const dockEl = document.querySelector('[data-circle-dock]') as HTMLElement | null
 
-    const targetRect = targetCanvas.getBoundingClientRect()
-    const currentRect = currentCanvas?.getBoundingClientRect()
-    const dock = document.querySelector('[data-circle-dock] canvas') ?? document.querySelector('[data-circle-dock]')
-    const dockRect = dock?.getBoundingClientRect()
-    if (!dockRect) {
+    // Pop dock out, switch, pop in
+    const doSwitch = () => {
       setActiveCircleId(targetId)
-      animatingRef.current = false
-      return
-    }
+      activeCircleIdRef.current = targetId
 
-    const toPlane = (r: DOMRect): PlanePose => {
-      const world = rectCenterOnCameraPlane(r, transCamera)
-      return {
-        x: world.x,
-        y: world.y,
-      }
-    }
-    const dockPose = toPlane(dockRect)
-    const targetPose = toPlane(targetRect)
-    const currentPose = currentRect ? toPlane(currentRect) : targetPose
+      // Fire burst at the dock
+      triggerDockBurst()
 
-    const outgoingShape = currentEntry ? cloneTransitionShape(currentEntry) : null
-    const incomingShape = cloneTransitionShape(targetEntry)
-    const incomingTargetScale = scaleForRect(incomingShape, targetRect, transCamera)
-    const incomingDockScale = scaleForRect(incomingShape, dockRect, transCamera)
-    const outgoingDockScale = outgoingShape ? scaleForRect(outgoingShape, dockRect, transCamera) : 1
-    const outgoingTargetScale = outgoingShape && currentRect ? scaleForRect(outgoingShape, currentRect, transCamera) : outgoingDockScale
-
-    if (outgoingShape) {
-      outgoingShape.position.set(dockPose.x, dockPose.y, 0)
-      outgoingShape.scale.setScalar(outgoingDockScale)
-      transScene.add(outgoingShape)
-    }
-    incomingShape.position.set(targetPose.x, targetPose.y, 0)
-    incomingShape.scale.setScalar(incomingTargetScale)
-    transScene.add(incomingShape)
-
-    targetCanvas.style.visibility = 'hidden'
-    if (currentCanvas) currentCanvas.style.visibility = 'hidden'
-    if (dock instanceof HTMLElement) dock.style.visibility = 'hidden'
-
-    onSwitchingCircle?.(targetEntry.name)
-    setActiveCircleId(targetId)
-    transDC.setExposure(CIRCLE_EXPOSURE)
-    transRenderer.domElement.style.display = 'block'
-
-    const FADE_OUT_DUR = 100 // ms to cross-fade overlay → static canvas
-    const start = performance.now()
-    let fadeStartTime = -1
-
-    const tick = () => {
-      const now = performance.now()
-      const elapsed = now - start
-      const p = easeInOut(Math.min(elapsed / SWITCH_DUR, 1))
-
-      incomingShape.position.set(
-        targetPose.x + (dockPose.x - targetPose.x) * p,
-        targetPose.y + (dockPose.y - targetPose.y) * p,
-        0,
-      )
-      incomingShape.scale.setScalar(incomingTargetScale + (incomingDockScale - incomingTargetScale) * p)
-      applyCircleRotation(incomingShape, targetEntry.name, now)
-
-      if (outgoingShape) {
-        outgoingShape.position.set(
-          dockPose.x + (currentPose.x - dockPose.x) * p,
-          dockPose.y + (currentPose.y - dockPose.y) * p,
-          0,
-        )
-        outgoingShape.scale.setScalar(outgoingDockScale + (outgoingTargetScale - outgoingDockScale) * p)
-        if (currentEntry) applyCircleRotation(outgoingShape, currentEntry.name, now)
-      }
-
-      if (p >= 1 && fadeStartTime < 0) {
-        // Main animation done — restore underlying canvases and begin fade-out
-        fadeStartTime = now
-        targetCanvas.style.visibility = ''
-        if (currentCanvas) currentCanvas.style.visibility = ''
-        if (dock instanceof HTMLElement) dock.style.visibility = ''
-      }
-
-      transDC.composer.render()
-
-      if (fadeStartTime >= 0) {
-        // Cross-fade overlay out over FADE_OUT_DUR so the switch-in is seamless
-        const fadeP = Math.min((now - fadeStartTime) / FADE_OUT_DUR, 1)
-        transRenderer.domElement.style.opacity = (1 - fadeP).toString()
-        if (fadeP >= 1) {
-          transScene.remove(incomingShape)
-          if (outgoingShape) transScene.remove(outgoingShape)
-          transRenderer.domElement.style.display = 'none'
-          transRenderer.domElement.style.opacity = '1'
-          transDC.setExposure(CIRCLE_EXPOSURE)
-          onSwitchingCircle?.(null)
+      // Pop new glyph in after a brief pause for React to swap the glyph
+      setTimeout(() => {
+        if (dockEl) {
+          dockEl.style.transition = 'none'
+          dockEl.style.transform = 'scale(0.8)'
+          dockEl.style.opacity = '0'
+          requestAnimationFrame(() => {
+            dockEl.style.transition =
+              'transform 300ms cubic-bezier(0.34,1.56,0.64,1), opacity 200ms ease-out'
+            dockEl.style.transform = 'scale(1)'
+            dockEl.style.opacity = '1'
+            setTimeout(() => {
+              dockEl.style.transition = ''
+              dockEl.style.transform = ''
+              dockEl.style.opacity = ''
+              animatingRef.current = false
+            }, 320)
+          })
+        } else {
           animatingRef.current = false
-          return
         }
-      }
-
-      requestAnimationFrame(tick)
+      }, 60)
     }
-    requestAnimationFrame(tick)
-  }, [activeCircleId, setActiveCircleId, circles, onSwitchingCircle])
+
+    if (dockEl) {
+      dockEl.style.transition = 'transform 140ms ease-in, opacity 120ms ease-in'
+      dockEl.style.transform = 'scale(0.7)'
+      dockEl.style.opacity = '0'
+      setTimeout(doSwitch, 150)
+    } else {
+      doSwitch()
+    }
+  }, [setActiveCircleId])
 
   // Modal handlers
   const handleInit = async (e: React.FormEvent) => {
@@ -376,31 +256,34 @@ export default function CircleSidebar({ onRitual, ritualCircleName, onSwitchingC
           <span>CIRCLES</span>
         </div>
 
-        <div className="flex-1 overflow-y-auto flex flex-col gap-1 p-2 min-h-0">
+        <div ref={listRef} className="flex-1 overflow-y-auto flex flex-col gap-1 p-2 min-h-0 relative">
+          {/* Sliding active highlight — moves between rows via CSS transition */}
+          <div ref={highlightRef} className="circle-list-highlight" style={{ opacity: 0 }} />
+
           {circles.length === 0 && (
             <div className="text-[10px] text-slate p-2">NO CIRCLES</div>
           )}
           {circles.map(circle => {
             const isActive = circle.circle_id === activeCircleId
-            const hideGlyphForRitual = circle.circle_name === ritualCircleName
+            const hideForRitual = circle.circle_name === ritualCircleName
             return (
               <button
                 key={circle.circle_id}
+                ref={el => { if (el) rowRefMap.current.set(circle.circle_id, el); else rowRefMap.current.delete(circle.circle_id) }}
                 onClick={() => switchCircle(circle.circle_id)}
                 className={`circle-row flex items-center gap-2 p-2 border-2 border-obsidian text-left w-full ${
                   isActive ? 'circle-row-active bg-alabaster text-obsidian' : 'bg-alabaster text-obsidian hover:bg-obsidian/5'
                 }`}
-                style={{ transition: 'none' }}
+                style={{ transition: 'none', position: 'relative', zIndex: 1 }}
               >
-                <canvas
-                  ref={el => registerCanvas(circle.circle_id, el)}
-                  width={72} height={72}
+                <div
+                  ref={el => registerIconMount(circle.circle_id, el)}
+                  className={isActive ? 'circle-icon-mount circle-icon-mount--active' : 'circle-icon-mount'}
                   style={{
-                    width: 36, height: 36, flexShrink: 0, display: 'block',
-                    imageRendering: 'pixelated',
+                    width: 36, height: 36, flexShrink: 0,
                     mixBlendMode: 'multiply',
-                    opacity: isActive ? 0 : 1,
-                    visibility: hideGlyphForRitual ? 'hidden' : 'visible',
+                    visibility: hideForRitual ? 'hidden' : 'visible',
+                    overflow: 'hidden',
                   }}
                 />
                 <div className="flex flex-col min-w-0">
@@ -433,11 +316,7 @@ export default function CircleSidebar({ onRitual, ritualCircleName, onSwitchingC
       {modal && (
         <div className="ritual-modal-backdrop">
           <div className="ritual-panel sys-window">
-            <button
-              onClick={() => setModal(null)}
-              className="ritual-panel__close"
-              aria-label="Close"
-            >×</button>
+            <button onClick={() => setModal(null)} className="ritual-panel__close" aria-label="Close">×</button>
 
             {modal === 'init' && (
               <form onSubmit={handleInit} className="ritual-panel__form">
@@ -460,12 +339,7 @@ export default function CircleSidebar({ onRitual, ritualCircleName, onSwitchingC
                     <span className="ritual-label">RITUAL POLICY</span>
                     <div className="ritual-segment">
                       {(['auto', 'manual'] as const).map(p => (
-                        <button
-                          key={p}
-                          type="button"
-                          onClick={() => setInitJoinPolicy(p)}
-                          className={initJoinPolicy === p ? 'active' : ''}
-                        >
+                        <button key={p} type="button" onClick={() => setInitJoinPolicy(p)} className={initJoinPolicy === p ? 'active' : ''}>
                           {p.toUpperCase()}
                         </button>
                       ))}

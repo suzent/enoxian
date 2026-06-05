@@ -55,3 +55,107 @@ export function scaleForRectDimension(maxDimension: number, rect: DOMRect, camer
   const unitsPerPixel = visibleHeightAtZ(camera) / window.innerHeight
   return (Math.min(rect.width, rect.height) * unitsPerPixel) / maxDimension
 }
+
+// ── Dock burst ────────────────────────────────────────────────────────────────
+
+const BURST_COUNT  = 64
+const BURST_DUR    = 900    // ms
+const GRAVITY      = 5.0    // world units/s²
+const BOUNCE_DAMP  = 0.45   // velocity retained after one bounce
+
+/**
+ * Spawn a landing-impact burst at `origin` inside `scene`.
+ * Particles are placed at negative Z so they render behind the docked object.
+ * They scatter in all directions with a bouncy arc — fast radial spread with an
+ * upward kick, gravity pull-down, and one Y-bounce off the spawn plane.
+ * Returns an updater; call each rAF frame, returns false and self-cleans when done.
+ */
+export function spawnDockBurst(
+  scene: THREE.Scene,
+  origin: THREE.Vector3,
+): (now: number) => boolean {
+  const geo = new THREE.BufferGeometry()
+  const pos  = new Float32Array(BURST_COUNT * 3)
+  const vx   = new Float32Array(BURST_COUNT)
+  const vy   = new Float32Array(BURST_COUNT)
+  const vz   = new Float32Array(BURST_COUNT)
+  // time at which each particle bounces (when its Y would cross origin.y going down)
+  const tBounce = new Float32Array(BURST_COUNT)
+
+  for (let i = 0; i < BURST_COUNT; i++) {
+    pos[i * 3]     = origin.x
+    pos[i * 3 + 1] = origin.y
+    pos[i * 3 + 2] = origin.z
+
+    // Full 360° XZ spread — all directions outward
+    const angle   = Math.random() * Math.PI * 2
+    const radial  = 1.2 + Math.random() * 3.2
+    vx[i] = Math.cos(angle) * radial
+    vz[i] = Math.sin(angle) * radial * 0.3  // shallow Z so they stay readable
+
+    // Upward kick — varied so some go high, some stay low
+    vy[i] = 0.5 + Math.random() * 2.8
+
+    // Pre-compute bounce time: when vy*t - 0.5*g*t² = 0  →  t = 2*vy/g
+    tBounce[i] = (2 * vy[i]) / GRAVITY
+  }
+
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+
+  const mat = new THREE.PointsMaterial({
+    color: 0x222222,
+    size: 3.5,
+    sizeAttenuation: false,
+    transparent: true,
+    opacity: 1,
+    depthWrite: false,
+    depthTest: false,  // always draw, but renderOrder puts them behind the shape
+  })
+
+  const points = new THREE.Points(geo, mat)
+  points.renderOrder = -1  // render before the docked shape (lower = further back)
+  scene.add(points)
+
+  const startTime = performance.now()
+
+  return (now: number): boolean => {
+    const elapsed = now - startTime
+    const t = elapsed / BURST_DUR
+
+    if (t >= 1) {
+      scene.remove(points)
+      geo.dispose()
+      mat.dispose()
+      return false
+    }
+
+    const dt = elapsed / 1000
+    const posAttr = geo.attributes.position as THREE.BufferAttribute
+
+    for (let i = 0; i < BURST_COUNT; i++) {
+      const tb = tBounce[i]
+      let y: number
+
+      if (dt < tb) {
+        // Pre-bounce arc
+        y = origin.y + vy[i] * dt - 0.5 * GRAVITY * dt * dt
+      } else {
+        // Post-bounce: reflect vy with damping, resume from bounce point (origin.y)
+        const dt2 = dt - tb
+        const vyB = vy[i] * BOUNCE_DAMP  // speed after bounce
+        y = origin.y + vyB * dt2 - 0.5 * GRAVITY * dt2 * dt2
+      }
+
+      posAttr.array[i * 3]     = origin.x + vx[i] * dt
+      posAttr.array[i * 3 + 1] = y
+      // Negative Z offset so particles sit behind objects facing the camera
+      posAttr.array[i * 3 + 2] = origin.z - 0.5 + vz[i] * dt
+    }
+    posAttr.needsUpdate = true
+
+    // Hold full opacity briefly then fade out — emphasises the impact flash
+    mat.opacity = t < 0.15 ? 1.0 : Math.pow(1 - (t - 0.15) / 0.85, 1.4)
+
+    return true
+  }
+}

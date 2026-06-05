@@ -9,6 +9,7 @@ import {
   rectCenterOnCameraPlane,
   scaleForRectDimension,
 } from '../lib/circleRender'
+import { triggerDockBurst } from '../lib/particleEffect'
 
 export type RitualMode = 'init' | 'enter'
 
@@ -31,12 +32,10 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
     const W = window.innerWidth
     const H = window.innerHeight
     const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false })
-    renderer.setPixelRatio(1) // match dither shader pixelation
+    renderer.setPixelRatio(1)
     renderer.setSize(W, H)
     renderer.setClearColor(0xffffff, 1)
-    
-    // Reveal after the first rendered frame so the transition never exposes an
-    // uninitialized WebGL canvas.
+
     mount.style.cssText = 'position:fixed;inset:0;z-index:5000;mix-blend-mode:multiply;pointer-events:none;opacity:0;'
     mount.appendChild(renderer.domElement)
 
@@ -48,7 +47,7 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
     camera.position.copy(baseCamPos)
     camera.lookAt(0, 0, 0)
 
-    renderer.outputColorSpace = THREE.LinearSRGBColorSpace
+    renderer.outputColorSpace = THREE.SRGBColorSpace
 
     const dc = createDitheredComposer(renderer, scene, camera, W, H)
     dc.setExposure(CIRCLE_EXPOSURE)
@@ -172,6 +171,7 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
     const easeInOut = (t: number) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
     const clamp01 = (v: number) => Math.max(0, Math.min(1, v))
     const introMs = 900
+    let burstFired = false
 
     const getDockTarget = () => {
       const targetEl = document.querySelector('[data-circle-dock] canvas') ?? document.querySelector('[data-circle-dock]')
@@ -224,6 +224,28 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
           const targetLocal = root.worldToLocal(dockTarget.world)
           circleGroup.position.lerpVectors(circleHome, targetLocal, closeMotion)
           circleGroup.scale.setScalar(lerp(circleBaseScale, dockTarget.scale, closeMotion))
+
+          if (closeMotion >= 1 && !burstFired) {
+            burstFired = true
+            triggerDockBurst()
+            // Pop-in the dock element as the ritual overlay dissolves
+            const dockEl = document.querySelector('[data-circle-dock]') as HTMLElement | null
+            if (dockEl) {
+              dockEl.style.transition = 'none'
+              dockEl.style.transform = 'scale(0.82)'
+              dockEl.style.opacity = '0'
+              requestAnimationFrame(() => {
+                dockEl.style.transition = 'transform 300ms cubic-bezier(0.34,1.56,0.64,1), opacity 180ms ease-out'
+                dockEl.style.transform = 'scale(1)'
+                dockEl.style.opacity = '1'
+                setTimeout(() => {
+                  dockEl.style.transition = ''
+                  dockEl.style.transform = ''
+                  dockEl.style.opacity = ''
+                }, 320)
+              })
+            }
+          }
         }
       } else {
         circleGroup.position.copy(circleHome)
@@ -236,7 +258,6 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
       camera.lookAt(0, 0, 0)
 
       dc.setExposure(CIRCLE_EXPOSURE)
-
       dc.composer.render()
       if (closing) {
         const dissolve = clamp01((closeEase - 0.72) / 0.28)

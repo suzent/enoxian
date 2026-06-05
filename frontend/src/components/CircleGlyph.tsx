@@ -21,15 +21,19 @@ interface Props {
 }
 
 export default function CircleGlyph({ name, size = 72, className, title, voided = false }: Props) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const mountRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
+    const mount = mountRef.current
+    if (!mount) return
 
     const renderer = createCircleRenderer(size, size)
-    renderer.domElement.style.cssText = 'position:fixed;top:-9999px;left:-9999px;pointer-events:none;'
-    document.body.appendChild(renderer.domElement)
+    renderer.domElement.style.cssText = `
+      display:block;
+      width:${size}px;height:${size}px;
+      image-rendering:pixelated;
+    `
+    mount.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
     prepareCircleScene(scene)
@@ -42,13 +46,12 @@ export default function CircleGlyph({ name, size = 72, className, title, voided 
     scene.add(group)
 
     let ring: THREE.Mesh | null = null
-    let slash: THREE.Mesh | null = null
     if (voided) {
       const { smooth } = makeDitherMaterials()
       ring = new THREE.Mesh(new THREE.TorusGeometry(1.28, 0.045, 8, 96), smooth)
       ring.rotation.x = 0.15
       ring.rotation.z = 0.05
-      slash = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 3.0, 8), smooth.clone())
+      const slash = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 3.0, 8), smooth.clone())
       slash.rotation.z = Math.PI / 4
       scene.add(ring, slash)
     }
@@ -66,11 +69,6 @@ export default function CircleGlyph({ name, size = 72, className, title, voided 
         ring.scale.setScalar(1 + Math.sin(now * 0.00035) * 0.025)
       }
       dc.composer.render()
-      const ctx = canvas.getContext('2d')
-      if (ctx) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height)
-        ctx.drawImage(renderer.domElement, 0, 0, canvas.width, canvas.height)
-      }
     }
     tick()
 
@@ -84,10 +82,8 @@ export default function CircleGlyph({ name, size = 72, className, title, voided 
   }, [name, size, voided])
 
   return (
-    <canvas
-      ref={canvasRef}
-      width={size}
-      height={size}
+    <div
+      ref={mountRef}
       className={className}
       title={title}
       aria-label={title}
@@ -95,8 +91,8 @@ export default function CircleGlyph({ name, size = 72, className, title, voided 
         width: size,
         height: size,
         display: 'block',
-        imageRendering: 'pixelated',
         mixBlendMode: 'multiply',
+        flexShrink: 0,
       }}
     />
   )

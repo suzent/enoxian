@@ -92,8 +92,8 @@ export const DitherShaderDef = {
           float redDither = step(threshold, color.r * 1.2);
           gl_FragColor = vec4(redDither, 0.0, 0.0, 1.0);
       } else {
-          // White background logic: High gray values become 1 (white), low become 0 (black)
-          float bw = step(threshold, gray); 
+          // White background: high gray → white (transparent via multiply), low gray → black dot
+          float bw = step(threshold, gray);
           gl_FragColor = vec4(vec3(bw), 1.0);
       }
     }

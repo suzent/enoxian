@@ -221,6 +221,69 @@ select {
   overflow: hidden;
 }
 
+.ripple-container {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 88px; /* Matching the glyph size */
+  height: 88px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.dock-ripple {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.dock-ripple::before,
+.dock-ripple::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 2px;
+  background: #000;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 
+    0 -10px 0 #000, 10px 0 0 #000, 0 10px 0 #000, -10px 0 0 #000,
+    -7px -7px 0 #000, 7px -7px 0 #000, 7px 7px 0 #000, -7px 7px 0 #000,
+    0 -20px 0 #000, 20px 0 0 #000, 0 20px 0 #000, -20px 0 0 #000,
+    -14px -14px 0 #000, 14px -14px 0 #000, 14px 14px 0 #000, -14px 14px 0 #000;
+  opacity: 0;
+}
+
+.dock-ripple.animating::before {
+  animation: particle-burst 0.7s cubic-bezier(0.1, 0.8, 0.2, 1) forwards;
+}
+
+.dock-ripple.animating::after {
+  animation: particle-burst 0.8s cubic-bezier(0.1, 0.8, 0.2, 1) forwards;
+  animation-delay: 0.1s;
+}
+
+@keyframes particle-burst {
+  0% {
+    transform: translate(-50%, -50%) scale(0.2);
+    opacity: 1;
+  }
+  60% {
+    opacity: 0.6;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(2.5);
+    opacity: 0;
+  }
+}
+
 .active-circle-dock__meta {
   min-width: 0;
   display: flex;
@@ -260,15 +323,57 @@ select {
     #fff;
 }
 
-.circle-row-active {
-  box-shadow: inset 7px 0 0 #000;
-  outline: 1px solid #000;
-  outline-offset: -5px;
-}
-
 .circle-row {
   position: relative;
   min-height: 56px;
+}
+
+/* Circle list icon mount — base and active states */
+.circle-icon-mount {
+  opacity: 1;
+}
+.circle-icon-mount--active {
+  opacity: 0;
+}
+
+/* Pop-out: icon slides left off-screen when row becomes active (opposite to dock pop-in) */
+@keyframes icon-pop-out {
+  0%   { opacity: 1; transform: translateX(0);    }
+  50%  { opacity: 0; transform: translateX(-14px); }
+  100% { opacity: 0; transform: translateX(-20px); }
+}
+/* Pop-in: icon slides in from the left when row loses active state */
+@keyframes icon-pop-in {
+  0%   { opacity: 0; transform: translateX(-20px); }
+  60%  { opacity: 1; transform: translateX(3px);   }
+  100% { opacity: 1; transform: translateX(0);     }
+}
+
+.circle-icon-mount.icon-pop-out {
+  animation: icon-pop-out 180ms cubic-bezier(0.4, 0, 0.6, 1) forwards;
+}
+.circle-icon-mount.icon-pop-in {
+  animation: icon-pop-in 240ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+/* Sliding active-row highlight — absolutely positioned, animated via JS */
+.circle-list-highlight {
+  position: absolute;
+  left: 0; right: 0;
+  pointer-events: none;
+  z-index: 0;
+  box-shadow: inset 7px 0 0 #000;
+  outline: 1px solid #000;
+  outline-offset: -5px;
+  background: var(--bg-alabaster);
+  transition: top 200ms cubic-bezier(0.34,1.56,0.64,1), height 200ms cubic-bezier(0.34,1.56,0.64,1);
+}
+
+.circle-row-active {
+  box-shadow: none;
+  outline: none;
+  background: transparent;
+  z-index: 1;
 }
 
 .circle-row__state {

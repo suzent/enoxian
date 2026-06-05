@@ -20,7 +20,6 @@ function Layout() {
   const [showLanding, setShowLanding] = useState(false)
   const [revealing, setRevealing] = useState(false)
   const [mobileDrawer, setMobileDrawer] = useState<MobileDrawer>(null)
-  const [switchingCircleName, setSwitchingCircleName] = useState<string | null>(null)
 
   const handleEntered = useCallback(() => {
     setShowLanding(false)
@@ -72,35 +71,29 @@ function Layout() {
             onToggleInfo={() => toggle('info')}
           />
 
-          {/* Desktop sidebar */}
           <CircleSidebar
             onRitual={(mode, label) => setRitual({ mode, label })}
-            ritualCircleName={ritual?.label ?? switchingCircleName ?? undefined}
-            onSwitchingCircle={setSwitchingCircleName}
+            ritualCircleName={ritual?.label}
           />
 
-          {/* Desktop chat */}
           <div className="desktop-chat">
             {selectedFile
               ? <EditorPanel filePath={selectedFile} onBack={() => setSelectedFile(null)} />
-              : <ChatPanel variant="main" hideActiveCircleGlyph={!!ritual || !!switchingCircleName} />}
+              : <ChatPanel variant="main" hideActiveCircleGlyph={!!ritual} />}
           </div>
 
-          {/* Desktop right panel */}
           <RightPanel onFileSelect={onFileSelect} selectedFile={selectedFile} />
 
-          {/* Mobile: chat + drawers in a shared container */}
           <div className="mobile-main-area">
             <div className="mobile-main">
               {selectedFile
                 ? <EditorPanel filePath={selectedFile} onBack={() => setSelectedFile(null)} />
-              : <ChatPanel variant="main" hideActiveCircleGlyph={!!ritual || !!switchingCircleName} />}
+              : <ChatPanel variant="main" hideActiveCircleGlyph={!!ritual} />}
             </div>
             <div className={`mobile-drawer mobile-drawer--left${mobileDrawer === 'circles' ? ' open' : ''}`}>
               <CircleSidebar
                 onRitual={(mode, label) => { setRitual({ mode, label }); setMobileDrawer(null) }}
-                ritualCircleName={ritual?.label ?? switchingCircleName ?? undefined}
-                onSwitchingCircle={setSwitchingCircleName}
+                ritualCircleName={ritual?.label}
               />
             </div>
             <div className={`mobile-drawer mobile-drawer--right${mobileDrawer === 'info' ? ' open' : ''}`}>

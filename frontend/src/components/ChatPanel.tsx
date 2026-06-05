@@ -172,19 +172,19 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
       {variant === 'main' && activeCircle && (
         <div
           className={`active-circle-dock${activeCircle.disabled ? ' active-circle-dock--void' : ''}${hideActiveCircleGlyph ? ' active-circle-dock--ritual' : ''}`}
-          data-circle-dock
         >
-          <div className="active-circle-dock__meta">
-            <span>{activeCircle.circle_name}</span>
-            <strong className={activeCircle.disabled ? '' : 'inactive'}>VOID</strong>
+          <div className="ripple-container">
+            <div className="dock-ripple" id="dock-ripple-el" />
+            <div data-circle-dock style={{ width: '88px', height: '88px' }}>
+              <CircleGlyph
+                name={activeCircle.circle_name}
+                size={88}
+                className="active-circle-dock__glyph"
+                title={activeCircle.circle_name}
+                voided={activeCircle.disabled}
+              />
+            </div>
           </div>
-          <CircleGlyph
-            name={activeCircle.circle_name}
-            size={88}
-            className="active-circle-dock__glyph"
-            title={activeCircle.circle_name}
-            voided={activeCircle.disabled}
-          />
         </div>
       )}
 
