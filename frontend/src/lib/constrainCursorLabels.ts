@@ -74,9 +74,11 @@ export const constrainCursorLabels = ViewPlugin.fromClass(class {
       const caretX = caretRect.left - scrollerRect.left
       const caretY = caretRect.top - scrollerRect.top
 
-      // Flip below the caret when there isn't enough room above (Safari clips
-      // overflow above the scroller top; other browsers respect overflow-clip-margin).
-      const fitsAbove = caretY - labelHeight >= 0
+      // Flip below the caret when there isn't enough room above. Safari clips
+      // overflow above the scroller top and offsetHeight can be 0 before layout,
+      // so use lineHeight as a conservative stand-in for label height.
+      const estimatedLabelHeight = Math.max(labelHeight, lineHeight)
+      const fitsAbove = caretY - estimatedLabelHeight >= 0
       if (fitsAbove) {
         label.style.transform = 'translateY(-100%)'
       } else {
