@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Presence, Task, Member, PendingEntry } from '../types'
-import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, createFile, renameFile, deleteFile, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember } from '../api'
+import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, createFile, renameFile, deleteFile, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember, enableCircle, disableCircle, leaveCircle } from '../api'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 
@@ -18,7 +18,7 @@ function age(isoStr: string) {
 
 
 export default function RightPanel({ onFileSelect, selectedFile }: Props) {
-  const { activeCircleId, status } = useApp()
+  const { activeCircleId, circles, reloadCircles, status } = useApp()
   const [presence, setPresence] = useState<Presence[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [files, setFiles] = useState<string[]>([])
@@ -227,6 +227,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   }
 
   const userGroups = buildUserGroups(members, presence, status?.agent_id ?? '')
+  const activeCircle = circles.find(c => c.circle_id === activeCircleId)
 
   const claim = (taskId: string) => {
     if (!activeCircleId || !status) return
@@ -299,6 +300,28 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
       setInviteConnectivity(res.connectivity ?? null)
     } catch (err: any) {
       alert(`Error generating invite: ${err.message}`)
+    }
+  }
+
+  const handleToggleCircleEnabled = async () => {
+    if (!activeCircle) return
+    try {
+      if (activeCircle.disabled) await enableCircle(activeCircle.circle_id)
+      else await disableCircle(activeCircle.circle_id)
+      await reloadCircles()
+    } catch (err: any) {
+      alert(`Error updating circle: ${err.message}`)
+    }
+  }
+
+  const handleLeaveCircle = async () => {
+    if (!activeCircleId || !activeCircle) return
+    if (!window.confirm(`Leave ${activeCircle.circle_name}? Local config will be removed. Workspace files are untouched.`)) return
+    try {
+      await leaveCircle(activeCircleId)
+      await reloadCircles()
+    } catch (err: any) {
+      alert(`Error leaving circle: ${err.message}`)
     }
   }
 
@@ -497,6 +520,28 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
               onDelete={handleDeleteFile} openMenu={fileMenuOpen} onOpenMenu={setFileMenuOpen}
               selected={selectedFile} depth={0} />
           </div>
+        </div>
+      )}
+
+      {activeCircle && (
+        <div className="circle-actions">
+          <button
+            onClick={handleToggleCircleEnabled}
+            className={activeCircle.disabled ? 'circle-actions__primary' : 'circle-actions__secondary'}
+            title={activeCircle.disabled ? 'Enable this circle' : 'Disable this circle'}
+            data-state={activeCircle.disabled ? 'DISABLED' : 'ENABLED'}
+            data-action={activeCircle.disabled ? 'ENABLE' : 'DISABLE'}
+          >
+            <span className="circle-actions__state">{activeCircle.disabled ? 'DISABLED' : 'ENABLED'}</span>
+            <span className="circle-actions__action">{activeCircle.disabled ? 'ENABLE' : 'DISABLE'}</span>
+          </button>
+          <button
+            onClick={handleLeaveCircle}
+            className="circle-actions__danger"
+            title="Leave this circle"
+          >
+            LEAVE
+          </button>
         </div>
       )}
 

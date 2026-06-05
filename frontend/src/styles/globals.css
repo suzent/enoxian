@@ -281,6 +281,68 @@ select {
   flex: 0 0 auto;
 }
 
+.circle-actions {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-top: 2px solid #000;
+  background: #fff;
+}
+
+.circle-actions button {
+  position: relative;
+  min-height: 38px;
+  border: 0 !important;
+  background: #fff;
+  color: #000;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--ui-small);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.circle-actions__state,
+.circle-actions__action {
+  display: inline-block;
+}
+
+.circle-actions__action {
+  display: none;
+}
+
+.circle-actions button:hover .circle-actions__state,
+.circle-actions button:focus-visible .circle-actions__state {
+  display: none;
+}
+
+.circle-actions button:hover .circle-actions__action,
+.circle-actions button:focus-visible .circle-actions__action {
+  display: inline-block;
+}
+
+.circle-actions button + button {
+  border-left: 2px solid #000 !important;
+}
+
+.circle-actions__primary {
+  background: #000 !important;
+  color: #fff !important;
+}
+
+.circle-actions__secondary:hover,
+.circle-actions__danger:hover {
+  background:
+    linear-gradient(rgba(0,0,0,0.08) 1px, transparent 1px),
+    #fff !important;
+  background-size: 100% 3px !important;
+}
+
+.circle-actions__danger {
+  color: #555 !important;
+}
+
 .ritual-modal-backdrop {
   position: fixed;
   inset: 0;

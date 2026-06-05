@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import * as THREE from 'three'
 import { useApp } from '../context/AppContext'
-import { initCircle, enterCircle, leaveCircle, enableCircle, disableCircle, getIdentity } from '../api'
+import { initCircle, enterCircle, getIdentity } from '../api'
 import { applyCircleRotation, makeCircleGeometry } from '../lib/circleShape'
 import {
   createDitheredComposer,
@@ -18,7 +18,7 @@ interface Props {
 
 const SWITCH_DUR = 720
 
-type Modal = 'init' | 'enter' | 'leave' | null
+type Modal = 'init' | 'enter' | null
 
 interface SceneEntry {
   name: string
@@ -349,17 +349,6 @@ export default function CircleSidebar({ onRitual }: Props) {
     } catch (err: any) { setError(err.message) }
   }
 
-  const handleLeave = async () => {
-    if (!activeCircleId) return
-    try {
-      await leaveCircle(activeCircleId)
-      await reloadCircles()
-      setModal(null)
-    } catch (err: any) { alert(`Error: ${err.message}`) }
-  }
-
-  const activeCircle = circles.find(c => c.circle_id === activeCircleId)
-
   return (
     <>
       <aside className="app-circles-sidebar sys-window flex flex-col z-10 overflow-hidden font-mono">
@@ -403,37 +392,13 @@ export default function CircleSidebar({ onRitual }: Props) {
           })}
         </div>
 
-        {activeCircle && (
-          <button
-            onClick={async () => {
-              if (activeCircle.disabled) await enableCircle(activeCircle.circle_id)
-              else await disableCircle(activeCircle.circle_id)
-              await reloadCircles()
-            }}
-            className={`border-t-2 border-obsidian px-3 py-2 text-[13px] font-bold tracking-widest w-full flex items-center justify-center gap-2 ${
-              !activeCircle.disabled
-                ? 'bg-obsidian text-alabaster hover:opacity-80'
-                : 'bg-alabaster text-slate hover:bg-obsidian/5'
-            }`}
-            title={activeCircle.disabled
-              ? 'Summon the circle into manifest reality'
-              : 'Return the circle to the void'}
-            style={{ transition: 'none' }}
-          >
-            {!activeCircle.disabled
-              ? <>[█] <span className="tracking-[0.2em]">MANIFEST</span></>
-              : <>[{'{∅}'}] <span className="tracking-[0.2em] opacity-60">VOID</span></>
-            }
-          </button>
-        )}
-
         <div className="border-t-2 border-obsidian flex shrink-0">
-          {(['NEW', 'ENTER', 'LEAVE'] as const).map((label, i) => (
+          {(['NEW', 'ENTER'] as const).map((label, i) => (
             <button
               key={label}
-              onClick={() => { setModal((['init', 'enter', 'leave'] as const)[i]); setError('') }}
+              onClick={() => { setModal((['init', 'enter'] as const)[i]); setError('') }}
               className={`flex-1 py-2 text-[12px] font-bold tracking-widest hover:bg-obsidian hover:text-alabaster ${
-                i < 2 ? 'border-r-2 border-obsidian' : 'text-slate'
+                i === 0 ? 'border-r-2 border-obsidian' : ''
               }`}
               style={{ transition: 'none' }}
             >
@@ -517,20 +482,6 @@ export default function CircleSidebar({ onRitual }: Props) {
                   </div>
                 </div>
               </form>
-            )}
-
-            {modal === 'leave' && (
-              <div>
-                <h2 className="text-[14px] font-bold mb-4 border-b-2 border-obsidian pb-2">LEAVE CIRCLE</h2>
-                <p className="mb-6 font-bold normal-case text-obsidian/80">
-                  Leave <span className="bg-obsidian/10 px-1">"{activeCircle?.circle_name}"</span>?
-                  Local config will be removed. Workspace files are untouched.
-                </p>
-                <div className="flex gap-4">
-                  <button onClick={() => setModal(null)} className="flex-1 border-2 border-obsidian py-2 font-bold">CANCEL</button>
-                  <button onClick={handleLeave} className="flex-1 bg-obsidian text-alabaster border-2 border-obsidian py-2 font-bold">CONFIRM LEAVE</button>
-                </div>
-              </div>
             )}
           </div>
         </div>
