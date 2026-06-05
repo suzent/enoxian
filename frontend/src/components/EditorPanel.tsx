@@ -9,11 +9,12 @@ import { markdown } from '@codemirror/lang-markdown'
 import { json } from '@codemirror/lang-json'
 import * as Y from 'yjs'
 import { yCollab } from 'y-codemirror.next'
-import { wsYjsUrl } from '../api'
+import { wsYjsUrl, getMembers } from '../api'
 import { useApp } from '../context/AppContext'
 import { YjsProvider, type YjsConnectionStatus } from '../lib/YjsProvider'
 import { agentColor, agentColorLight } from '../lib/agentColor'
 import { constrainCursorLabels } from '../lib/constrainCursorLabels'
+import { peerLabel, shortenAgentId } from '../lib/displayName'
 
 interface Props {
   filePath: string | null
@@ -36,10 +37,10 @@ const enochTheme = EditorView.theme({
   '&': {
     backgroundColor: 'transparent',
     fontFamily: "'JetBrains Mono', monospace",
-    fontSize: '12px',
+    fontSize: '20px',
     color: '#111111',
   },
-  '.cm-content': { caretColor: '#111111', padding: '20px 24px', lineHeight: '1.7' },
+  '.cm-content': { caretColor: '#111111', padding: '24px 32px', lineHeight: '1.75' },
   '.cm-cursor': { borderLeftColor: '#111111', borderLeftWidth: '2px' },
   '.cm-gutters': { backgroundColor: 'rgba(234,234,228,0.5)', borderRight: '1px dashed rgba(17,17,17,0.2)', color: '#555555' },
   '.cm-activeLineGutter': { backgroundColor: 'rgba(17,17,17,0.05)' },
@@ -66,15 +67,15 @@ const enochTheme = EditorView.theme({
     top: '0',
     left: '0',
     transform: 'translateY(-100%)',
-    fontSize: '10px',
+    fontSize: '11px',
     fontFamily: "'JetBrains Mono', monospace",
     fontStyle: 'normal',
     fontWeight: 'bold',
     lineHeight: 'normal',
     userSelect: 'none',
     pointerEvents: 'none',
-    color: '#eaeae4',
-    padding: '1px 4px',
+    color: '#f4f3ef',
+    padding: '2px 5px',
     whiteSpace: 'nowrap',
     borderRadius: '0',
     opacity: '1',
@@ -94,6 +95,20 @@ export default function EditorPanel({ filePath, onBack }: Props) {
   const providerRef = useRef<YjsProvider | null>(null)
   const ydocRef = useRef<Y.Doc | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<YjsConnectionStatus>('disconnected')
+  const [displayName, setDisplayName] = useState<string>(() => status?.agent_id ?? 'unknown')
+
+  useEffect(() => {
+    if (!activeCircleId || !status?.agent_id) return
+    getMembers(activeCircleId)
+      .then(members => {
+        const me = members.find(m => m.agent_id === status.agent_id)
+        if (!me) { setDisplayName(status.agent_id); return }
+        const owner = peerLabel(me.owner, me.agent_id)
+        const device = me.device_label || shortenAgentId(me.agent_id)
+        setDisplayName(owner === device ? owner : `${owner} · ${device}`)
+      })
+      .catch(() => {})
+  }, [activeCircleId, status?.agent_id])
 
   useEffect(() => {
     if (!editorRef.current || !filePath || !activeCircleId) return
@@ -118,7 +133,7 @@ export default function EditorPanel({ filePath, onBack }: Props) {
 
     const awareness = provider.awareness
     awareness.setLocalStateField('user', {
-      name: status?.agent_id ?? 'unknown',
+      name: displayName,
       color: agentColor(status?.agent_id ?? ''),
       colorLight: agentColorLight(status?.agent_id ?? ''),
     })
@@ -144,7 +159,7 @@ export default function EditorPanel({ filePath, onBack }: Props) {
       provider.destroy()
       ydoc.destroy()
     }
-  }, [filePath, activeCircleId, status?.agent_id])
+  }, [filePath, activeCircleId, status?.agent_id, displayName])
 
   if (!filePath) {
     return (

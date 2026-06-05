@@ -7,5 +7,5 @@ export function agentColor(id: string): string {
 }
 
 export function agentColorLight(id: string): string {
-  return agentColor(id) + '33'
+  return agentColor(id) + '55'
 }
