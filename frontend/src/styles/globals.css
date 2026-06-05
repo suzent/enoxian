@@ -258,6 +258,189 @@ select {
   outline-offset: -5px;
 }
 
+.ritual-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.ritual-panel {
+  position: relative;
+  width: 420px;
+  max-width: calc(100vw - 24px);
+  background: #fff;
+  box-shadow: 6px 6px 0 #000;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+
+.ritual-panel__close {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  z-index: 1;
+  border: 0 !important;
+  background: transparent;
+  color: #555;
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 2px;
+}
+
+.ritual-panel__close:hover {
+  color: #000;
+}
+
+.ritual-panel__header {
+  border-bottom: 2px solid #000;
+  padding: 8px 12px;
+  font-family: var(--font-title);
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+}
+
+.ritual-panel__body {
+  padding: 12px 12px 10px;
+}
+
+.ritual-divider {
+  border-bottom: 1px solid #000;
+  margin: 0 0 10px;
+}
+
+.ritual-field {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.ritual-field--top {
+  align-items: flex-start;
+}
+
+.ritual-field--top .ritual-label {
+  padding-top: 6px;
+}
+
+.ritual-label {
+  display: block;
+  color: #555;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.ritual-input {
+  width: 100%;
+  min-height: 28px;
+  border: 2px solid #000;
+  background: #fff;
+  color: #000;
+  outline: none;
+  padding: 5px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.ritual-input:focus {
+  background:
+    linear-gradient(rgba(0,0,0,0.06) 1px, transparent 1px),
+    #fff;
+  background-size: 100% 3px;
+}
+
+.ritual-input--textarea {
+  min-height: 64px;
+  resize: vertical;
+  font-size: 10px;
+}
+
+.ritual-input--uri {
+  text-transform: none;
+}
+
+.ritual-segment {
+  display: flex;
+  min-width: 0;
+}
+
+.ritual-segment button {
+  flex: 1;
+  min-height: 34px;
+  border: 2px solid #000;
+  background: #fff;
+  color: #000;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.ritual-segment button + button {
+  margin-left: -2px;
+}
+
+.ritual-segment button.active {
+  background: #000;
+  color: #fff;
+}
+
+.ritual-error {
+  border: 2px solid #000;
+  background: #fff;
+  color: #000;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  padding: 4px 8px;
+}
+
+.ritual-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.ritual-btn {
+  min-height: 34px;
+  border: 2px solid #000;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding: 8px 12px;
+  text-transform: uppercase;
+}
+
+.ritual-btn--primary {
+  background: #000;
+  color: #fff;
+}
+
+.ritual-btn--secondary {
+  background: #fff;
+  color: #000;
+}
+
 .ritual-overlay {
   position: fixed;
   inset: 0;

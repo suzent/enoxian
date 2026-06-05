@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import * as THREE from 'three'
 import { useApp } from '../context/AppContext'
-import { initCircle, enterCircle, leaveCircle, enableCircle, disableCircle } from '../api'
+import { initCircle, enterCircle, leaveCircle, enableCircle, disableCircle, getIdentity } from '../api'
 import { applyCircleRotation, makeCircleGeometry } from '../lib/circleShape'
 import {
   createDitheredComposer,
@@ -44,6 +44,18 @@ export default function CircleSidebar({ onRitual }: Props) {
   const [enterTarget, setEnterTarget] = useState('')
   const [enterOwner, setEnterOwner] = useState('')
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    getIdentity()
+      .then(identity => {
+        if (cancelled || !identity.user_handle) return
+        setInitOwner(owner => owner || identity.user_handle || '')
+        setEnterOwner(owner => owner || identity.user_handle || '')
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   // Three.js state — all in refs to avoid re-renders
   const iconRendererRef = useRef<THREE.WebGLRenderer | null>(null)
@@ -434,67 +446,78 @@ export default function CircleSidebar({ onRitual }: Props) {
       </aside>
 
       {modal && (
-        <div className="fixed inset-0 bg-obsidian/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="sys-window p-6 w-[400px] max-w-full font-mono text-[11px] uppercase relative">
+        <div className="ritual-modal-backdrop">
+          <div className="ritual-panel sys-window">
             <button
               onClick={() => setModal(null)}
-              className="absolute top-2 right-3 font-bold text-xl px-1 hover:bg-obsidian hover:text-alabaster"
+              className="ritual-panel__close"
+              aria-label="Close"
             >×</button>
 
             {modal === 'init' && (
-              <form onSubmit={handleInit}>
-                <h2 className="text-[14px] font-bold mb-4 border-b-2 border-obsidian pb-2">INIT NEW CIRCLE</h2>
-                {error && <div className="file-error mb-2">{error}</div>}
-                <div className="mb-4">
-                  <label className="block text-slate font-bold mb-1 tracking-widest">CIRCLE NAME</label>
-                  <input type="text" required value={initName} onChange={e => setInitName(e.target.value)}
-                    className="w-full border-2 border-obsidian bg-transparent px-3 py-2 outline-none focus:bg-obsidian/5 font-bold"
-                    placeholder="e.g. project-alpha" />
-                </div>
-                <div className="mb-4">
-                  <label className="block text-slate font-bold mb-1 tracking-widest">YOUR NAME <span className="font-normal opacity-40">(OWNER)</span></label>
-                  <input type="text" value={initOwner} onChange={e => setInitOwner(e.target.value)}
-                    className="w-full border-2 border-obsidian bg-transparent px-3 py-2 outline-none focus:bg-obsidian/5 font-bold"
-                    placeholder="e.g. alice" />
-                </div>
-                <div className="mb-6">
-                  <label className="block text-slate font-bold mb-1 tracking-widest">JOIN POLICY</label>
-                  <div className="flex gap-2">
-                    {(['auto', 'manual'] as const).map(p => (
-                      <button key={p} type="button" onClick={() => setInitJoinPolicy(p)}
-                        className={`flex-1 py-2 border-2 border-obsidian font-bold ${initJoinPolicy === p ? 'bg-obsidian text-alabaster' : ''}`}>
-                        {p.toUpperCase()}
-                      </button>
-                    ))}
+              <form onSubmit={handleInit} className="ritual-panel__form">
+                <div className="ritual-panel__header">CREATE NEW CIRCLE</div>
+                <div className="ritual-panel__body">
+                  <div className="ritual-divider" />
+                  <label className="ritual-field">
+                    <span className="ritual-label">CIRCLE NAME</span>
+                    <input
+                      className="ritual-input"
+                      type="text"
+                      required
+                      value={initName}
+                      onChange={e => setInitName(e.target.value)}
+                      placeholder="NAME"
+                      autoFocus
+                    />
+                  </label>
+                  <div className="ritual-field">
+                    <span className="ritual-label">RITUAL POLICY</span>
+                    <div className="ritual-segment">
+                      {(['auto', 'manual'] as const).map(p => (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => setInitJoinPolicy(p)}
+                          className={initJoinPolicy === p ? 'active' : ''}
+                        >
+                          {p.toUpperCase()}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {error && <div className="ritual-error">{error}</div>}
+                  <div className="ritual-actions">
+                    <button type="submit" className="ritual-btn ritual-btn--primary">CREATE</button>
+                    <button type="button" onClick={() => setModal(null)} className="ritual-btn ritual-btn--secondary">BACK</button>
                   </div>
                 </div>
-                <button type="submit" className="w-full bg-obsidian text-alabaster py-3 font-bold border-2 border-obsidian">
-                  CREATE CIRCLE
-                </button>
               </form>
             )}
 
             {modal === 'enter' && (
-              <form onSubmit={handleEnter}>
-                <h2 className="text-[14px] font-bold mb-4 border-b-2 border-obsidian pb-2">ENTER CIRCLE</h2>
-                {error && <div className="file-error mb-2">{error}</div>}
-                <div className="mb-4">
-                  <label className="block text-slate font-bold mb-1 tracking-widest">INVITE URI</label>
-                  <textarea required value={enterTarget}
-                    onChange={e => setEnterTarget(e.target.value.trim())}
-                    onPaste={e => { e.preventDefault(); setEnterTarget(e.clipboardData.getData('text').trim()) }}
-                    className="w-full border-2 border-obsidian bg-transparent px-3 py-2 outline-none focus:bg-obsidian/5 h-24 resize-none font-bold"
-                    placeholder="enoxian://..." />
+              <form onSubmit={handleEnter} className="ritual-panel__form">
+                <div className="ritual-panel__header">ENTER THE CIRCLE</div>
+                <div className="ritual-panel__body">
+                  <div className="ritual-divider" />
+                  <label className="ritual-field ritual-field--top">
+                    <span className="ritual-label">PACT URI</span>
+                    <textarea
+                      className="ritual-input ritual-input--textarea ritual-input--uri"
+                      required
+                      value={enterTarget}
+                      onChange={e => setEnterTarget(e.target.value.trim())}
+                      onPaste={e => { e.preventDefault(); setEnterTarget(e.clipboardData.getData('text').trim()) }}
+                      placeholder="PASTE URI"
+                      autoFocus
+                    />
+                  </label>
+                  {error && <div className="ritual-error">{error}</div>}
+                  <div className="ritual-actions">
+                    <button type="submit" className="ritual-btn ritual-btn--primary">SEAL</button>
+                    <button type="button" onClick={() => setModal(null)} className="ritual-btn ritual-btn--secondary">BACK</button>
+                  </div>
                 </div>
-                <div className="mb-6">
-                  <label className="block text-slate font-bold mb-1 tracking-widest">YOUR NAME <span className="font-normal opacity-40">(OWNER)</span></label>
-                  <input type="text" value={enterOwner} onChange={e => setEnterOwner(e.target.value)}
-                    className="w-full border-2 border-obsidian bg-transparent px-3 py-2 outline-none focus:bg-obsidian/5 font-bold"
-                    placeholder="e.g. bob" />
-                </div>
-                <button type="submit" className="w-full bg-obsidian text-alabaster py-3 font-bold border-2 border-obsidian">
-                  JOIN CIRCLE
-                </button>
               </form>
             )}
 
