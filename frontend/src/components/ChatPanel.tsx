@@ -175,10 +175,10 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
         >
           <div className="ripple-container">
             <div className="dock-ripple" id="dock-ripple-el" />
-            <div data-circle-dock style={{ width: '88px', height: '88px' }}>
+            <div data-circle-dock style={{ width: '120px', height: '120px' }}>
               <CircleGlyph
                 name={activeCircle.circle_name}
-                size={88}
+                size={120}
                 className="active-circle-dock__glyph"
                 title={activeCircle.circle_name}
                 voided={activeCircle.disabled}

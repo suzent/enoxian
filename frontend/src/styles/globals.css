@@ -24,7 +24,8 @@
   --ui-tiny: 12px;
   --shell-padding: 12px;
   --shell-gap: 8px;
-  --header-height: 36px;
+  --header-height: 44px; /* inner min-height; outer ≈ 44 + 8px padding + 3px border = 55px */
+  --header-outer: 55px;
 }
 
 * {
@@ -90,18 +91,26 @@ select {
 
 .app-circles-sidebar {
   grid-area: circles;
+  align-self: stretch;
+  min-height: 0;
 }
 
 .app-chat-panel {
   grid-area: chat;
+  align-self: stretch;
+  min-height: 0;
 }
 
 .app-editor-panel {
   grid-area: chat;
+  align-self: stretch;
+  min-height: 0;
 }
 
 .app-right-panel {
   grid-area: right;
+  align-self: stretch;
+  min-height: 0;
 }
 
 /* kept for reference — no longer in grid */
@@ -216,8 +225,8 @@ select {
 
 .active-circle-dock {
   position: relative;
-  min-height: 108px;
-  border-bottom: 2px solid #000;
+  min-height: 158px;
+  border-bottom: 2px solid rgba(0,0,0,0.15);
   background-color: var(--bg-alabaster);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
@@ -233,8 +242,8 @@ select {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: 88px; /* Matching the glyph size */
-  height: 88px;
+  width: 120px;
+  height: 120px;
   pointer-events: none;
   z-index: 10;
 }
@@ -1284,13 +1293,14 @@ select option {
   
   .app-right-panel:not(.mobile-drawer *) {
     position: fixed;
-    top: calc(var(--shell-padding) + var(--header-height) + var(--shell-gap));
+    top: calc(var(--shell-padding) + var(--header-outer) + var(--shell-gap));
     right: 18px;
     bottom: 18px;
     width: min(340px, calc(100vw - 36px));
     z-index: 120;
     transform: translateX(calc(100% + 24px));
     transition: transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
+    border-top-width: 1px;
   }
 
   .app-shell.drawer-info > .app-right-panel:not(.mobile-drawer *) {
@@ -1322,6 +1332,11 @@ select option {
   .desktop-chat,
   .app-right-panel:not(.mobile-drawer *) {
     display: none !important;
+  }
+
+  /* In mobile the header and chat panel are edge-to-edge — thin the touching borders */
+  .mobile-main .sys-window {
+    border-top-width: 1px;
   }
 
   /* Wrapper that occupies the main grid area — all children position absolutely inside it */
@@ -1379,6 +1394,12 @@ select option {
     transform: translateX(100%);
     background: #fff;
     border-left: 1px solid var(--fg-obsidian);
+  }
+
+  .mobile-drawer--right .sys-window {
+    border-top: none;
+    border-right: none;
+    border-bottom: none;
   }
 
   .mobile-drawer--left.open {
