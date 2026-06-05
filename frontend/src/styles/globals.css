@@ -6,21 +6,21 @@
   --bg-alabaster: #ffffff;
   --fg-obsidian: #000000;
   --fg-slate: #555555;
-  --border-heavy: 2px solid var(--fg-obsidian);
-  --border-light: 1px dashed rgba(0, 0, 0, 0.35);
+  --border-heavy: 1px solid var(--fg-obsidian);
+  --border-light: 1px dashed rgba(0, 0, 0, 0.25);
   --stripe: repeating-linear-gradient(0deg, #000 0 1px, #fff 1px 2px);
-  --stripe-soft: repeating-linear-gradient(0deg, #000 0 1px, #fff 1px 2px);
-  --stripe-wide: repeating-linear-gradient(135deg, #000 0 2px, #fff 2px 5px);
+  --stripe-soft: repeating-linear-gradient(0deg, rgba(0,0,0,0.18) 0 1px, #fff 1px 3px);
+  --stripe-wide: repeating-linear-gradient(135deg, #000 0 1px, #fff 1px 5px);
   --dither-dot: radial-gradient(#000 1px, transparent 1px);
   --font-sans: 'Cormorant Garamond', serif;
   --font-title: 'Cinzel', serif;
   --font-mono: 'JetBrains Mono', Monaco, Geneva, "Courier New", monospace;
   --ui-font: 16px;
-  --ui-small: 14px;
-  --ui-tiny: 13px;
-  --shell-padding: 18px;
-  --shell-gap: 12px;
-  --header-height: 40px;
+  --ui-small: 13px;
+  --ui-tiny: 12px;
+  --shell-padding: 12px;
+  --shell-gap: 8px;
+  --header-height: 36px;
 }
 
 * {
@@ -114,7 +114,7 @@ select {
 .app-shell--void .sys-window {
   border: 2px solid var(--fg-obsidian);
   background: #fff;
-  outline: 2px dashed rgba(0, 0, 0, 0.45);
+  outline: 1px dashed rgba(0, 0, 0, 0.35);
   outline-offset: -2px;
 }
 
@@ -135,14 +135,14 @@ select {
 }
 
 .sys-control {
-  border: 2px solid var(--fg-obsidian);
+  border: 1px solid var(--fg-obsidian);
   background: var(--bg-alabaster);
   color: var(--fg-obsidian);
   font-family: var(--font-mono);
   font-size: var(--ui-small);
   font-weight: 700;
-  min-height: 31px;
-  padding: 4px 8px;
+  min-height: 28px;
+  padding: 3px 8px;
   text-transform: uppercase;
   cursor: pointer;
 }
@@ -153,18 +153,18 @@ select {
 }
 
 .sys-badge {
-  border: 2px solid var(--fg-obsidian);
+  border: 1px solid var(--fg-obsidian);
   background: var(--bg-alabaster);
   color: var(--fg-obsidian);
   display: inline-flex;
   align-items: center;
-  min-height: 22px;
+  min-height: 20px;
   padding: 1px 6px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .brand-mark {
@@ -178,9 +178,9 @@ select {
 .app-header {
   background: #fff;
   min-height: var(--header-height);
-  padding: 5px 10px !important;
+  padding: 4px 10px !important;
   font-size: var(--ui-small);
-  gap: 12px !important;
+  gap: 10px !important;
   min-width: 0;
   overflow: hidden;
 }
@@ -211,7 +211,7 @@ select {
 
 .active-circle-dock {
   position: relative;
-  min-height: 116px;
+  min-height: 108px;
   border-bottom: 2px solid #000;
   background: #fff;
   display: grid;
@@ -219,7 +219,7 @@ select {
   align-items: center;
   justify-content: center;
   column-gap: 16px;
-  padding: 10px 16px;
+  padding: 8px 16px;
   overflow: hidden;
 }
 
@@ -364,9 +364,9 @@ select {
   left: 0; right: 0;
   pointer-events: none;
   z-index: 0;
-  box-shadow: inset 7px 0 0 #000;
-  outline: 1px solid #000;
-  outline-offset: -5px;
+  box-shadow: inset 4px 0 0 #000;
+  outline: 1px solid rgba(0,0,0,0.5);
+  outline-offset: -3px;
   background: var(--bg-alabaster);
   transition: top 200ms cubic-bezier(0.34,1.56,0.64,1), height 200ms cubic-bezier(0.34,1.56,0.64,1);
 }
@@ -405,15 +405,15 @@ select {
 
 .circle-actions button {
   position: relative;
-  min-height: 38px;
+  min-height: 32px;
   border: 0 !important;
   background: #fff;
   color: #000;
   cursor: pointer;
   font-family: var(--font-mono);
   font-size: var(--ui-small);
-  font-weight: 800;
-  letter-spacing: 0.12em;
+  font-weight: 700;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
@@ -473,7 +473,7 @@ select {
   width: 420px;
   max-width: calc(100vw - 24px);
   background: #fff;
-  box-shadow: 6px 6px 0 #000;
+  box-shadow: 4px 4px 0 #000;
   font-family: var(--font-mono);
   text-transform: uppercase;
 }
@@ -499,9 +499,9 @@ select {
 
 .ritual-panel__header {
   border-bottom: 2px solid #000;
-  padding: 8px 12px;
+  padding: 7px 12px;
   font-family: var(--font-title);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 900;
   letter-spacing: 0.1em;
 }
@@ -543,12 +543,12 @@ select {
 
 .ritual-input {
   width: 100%;
-  min-height: 28px;
-  border: 2px solid #000;
+  min-height: 26px;
+  border: 1px solid #000;
   background: #fff;
   color: #000;
   outline: none;
-  padding: 5px 8px;
+  padding: 4px 8px;
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 700;
@@ -580,19 +580,19 @@ select {
 
 .ritual-segment button {
   flex: 1;
-  min-height: 34px;
-  border: 2px solid #000;
+  min-height: 28px;
+  border: 1px solid #000;
   background: #fff;
   color: #000;
   cursor: pointer;
   font-family: var(--font-mono);
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.08em;
 }
 
 .ritual-segment button + button {
-  margin-left: -2px;
+  margin-left: -1px;
 }
 
 .ritual-segment button.active {
@@ -601,7 +601,7 @@ select {
 }
 
 .ritual-error {
-  border: 2px solid #000;
+  border: 1px solid #000;
   background: #fff;
   color: #000;
   font-family: var(--font-mono);
@@ -619,14 +619,14 @@ select {
 }
 
 .ritual-btn {
-  min-height: 34px;
-  border: 2px solid #000;
+  min-height: 30px;
+  border: 1px solid #000;
   cursor: pointer;
   font-family: var(--font-mono);
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.08em;
-  padding: 8px 12px;
+  padding: 6px 12px;
   text-transform: uppercase;
 }
 
@@ -725,27 +725,27 @@ select {
 }
 
 .ide-topbar {
-  min-height: 48px;
-  border-bottom: 2px solid #000;
+  min-height: 40px;
+  border-bottom: 1px solid #000;
   background: #fff;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  padding: 8px;
+  padding: 6px 8px;
 }
 
 .ide-back,
 .ide-sync,
 .file-mini-btn,
 .file-actions button {
-  border: 2px solid #000;
+  border: 1px solid #000;
   background: #fff;
   color: #000;
-  min-height: 31px;
-  padding: 4px 8px;
+  min-height: 26px;
+  padding: 3px 8px;
   font-size: var(--ui-small);
-  font-weight: 800;
+  font-weight: 700;
   cursor: pointer;
 }
 
@@ -789,7 +789,7 @@ select {
 }
 
 .ide-subbar {
-  min-height: 28px;
+  min-height: 24px;
   border-bottom: 1px solid #000;
   background:
     linear-gradient(rgba(0,0,0,0.05) 1px, transparent 1px),
@@ -850,18 +850,18 @@ body {
 @layer components {
   .section-header {
     @apply font-mono font-bold uppercase px-3 py-0;
-    min-height: 34px;
+    min-height: 28px;
     color: #000;
     background: var(--stripe-soft);
     border-bottom: 2px solid #000;
     display: grid !important;
-    grid-template-columns: 26px minmax(0, 1fr) auto 26px;
+    grid-template-columns: 20px minmax(0, 1fr) auto 20px;
     align-items: center;
     gap: 6px;
     text-align: center;
     line-height: 1;
     letter-spacing: 0;
-    font-size: var(--ui-small);
+    font-size: var(--ui-tiny);
   }
 
   .section-header > span:first-child {
@@ -872,7 +872,7 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    padding: 0 8px;
+    padding: 0 6px;
     background: #fff;
   }
 
@@ -884,9 +884,9 @@ body {
   .section-header::before,
   .section-header::after {
     content: '';
-    width: 16px;
-    height: 16px;
-    border: 2px solid #000;
+    width: 10px;
+    height: 10px;
+    border: 1px solid #000;
     flex: 0 0 auto;
   }
 
@@ -902,15 +902,15 @@ body {
   .pending-badge {
     grid-column: 3;
     justify-self: end;
-    border: 2px solid #000;
+    border: 1px solid #000;
     background: #fff;
     color: #000;
-    min-width: 34px;
-    min-height: 26px;
-    padding: 2px 8px;
+    min-width: 28px;
+    min-height: 20px;
+    padding: 1px 6px;
     font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 800;
+    font-size: var(--ui-tiny);
+    font-weight: 700;
     line-height: 1;
     cursor: pointer;
   }
@@ -923,17 +923,17 @@ body {
   .group-label {
     @apply font-mono font-bold uppercase pb-1 mb-2;
     font-size: var(--ui-small);
-    border-bottom: 2px solid var(--fg-obsidian);
+    border-bottom: 1px solid var(--fg-obsidian);
     letter-spacing: 0;
   }
 
   .enox-btn {
     @apply font-mono font-bold uppercase px-4 py-2 cursor-pointer;
     font-size: var(--ui-small);
-    min-height: 34px;
+    min-height: 28px;
     background: #fff;
     color: #000;
-    border: 2px solid #000;
+    border: 1px solid #000;
   }
 
   .enox-btn:hover {
@@ -1017,10 +1017,10 @@ body {
 .person-row,
 .app-right-panel [class*="pb-2"],
 .app-circle-panel [class*="pb-2"] {
-  border: 2px solid #000 !important;
+  border: 1px solid #000 !important;
   background: #fff;
   padding: 8px !important;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .person-row {
@@ -1031,9 +1031,9 @@ body {
 }
 
 .sigil {
-  width: 14px;
-  height: 14px;
-  border: 2px solid #000;
+  width: 10px;
+  height: 10px;
+  border: 1px solid #000;
   background: #000;
 }
 
@@ -1055,6 +1055,7 @@ body {
 .app-circle-panel button,
 .circle-menu button {
   border-color: #000 !important;
+  border-width: 1px !important;
 }
 
 .app-right-panel button:hover,
@@ -1081,10 +1082,10 @@ body {
 }
 
 .file-input {
-  border: 2px solid #000;
+  border: 1px solid #000;
   background: #fff;
-  min-height: 34px;
-  padding: 6px 8px;
+  min-height: 28px;
+  padding: 4px 8px;
   font-family: var(--font-mono);
   font-size: var(--ui-small);
   font-weight: 700;
@@ -1099,12 +1100,12 @@ body {
 }
 
 .file-error {
-  border-bottom: 2px solid #000;
-  padding: 8px 10px;
+  border-bottom: 1px solid #000;
+  padding: 6px 10px;
   background: #fff;
   color: #000;
   font-size: var(--ui-small);
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .file-row {
@@ -1113,17 +1114,17 @@ body {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  border: 2px solid #000;
+  border: 1px solid #000;
   background: #fff;
-  margin-bottom: 8px;
-  min-height: 36px;
+  margin-bottom: 6px;
+  min-height: 30px;
   overflow: visible;
 }
 
 .file-row.selected {
   background: #fff;
   color: #000;
-  outline: 2px solid #000;
+  outline: 1px solid #000;
   outline-offset: -2px;
 }
 
@@ -1186,7 +1187,7 @@ body {
   z-index: 200;
   display: grid;
   min-width: 104px;
-  border: 2px solid #000;
+  border: 1px solid #000;
   background: #fff;
 }
 

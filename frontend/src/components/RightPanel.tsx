@@ -334,7 +334,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`flex-1 py-2 text-[9px] font-bold tracking-widest font-mono uppercase ${
+            className={`flex-1 py-1.5 text-[9px] font-bold tracking-widest font-mono uppercase ${
               i < 2 ? 'border-r-2 border-obsidian' : ''
             } ${activeTab === tab ? 'bg-obsidian text-alabaster' : 'hover:bg-obsidian/5'}`}
             style={{ transition: 'none' }}

@@ -51,7 +51,7 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender }: BubbleProps) {
         className={`px-3 py-2 font-mono text-[11px] leading-relaxed ${
           isMine
             ? 'bg-obsidian text-alabaster'
-            : 'bg-alabaster border-2 border-obsidian text-obsidian'
+            : 'bg-alabaster border border-obsidian text-obsidian'
         }`}
         style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
       >
@@ -212,7 +212,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
         <div ref={bottomRef} />
       </div>
 
-      <div className="border-t-2 border-obsidian p-4 flex flex-wrap gap-2 bg-alabaster">
+      <div className="border-t-2 border-obsidian p-3 flex flex-wrap gap-2 bg-alabaster">
         <input
           value={input}
           onChange={e => setInput(e.target.value)}

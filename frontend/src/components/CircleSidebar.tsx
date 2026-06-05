@@ -271,7 +271,7 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
                 key={circle.circle_id}
                 ref={el => { if (el) rowRefMap.current.set(circle.circle_id, el); else rowRefMap.current.delete(circle.circle_id) }}
                 onClick={() => switchCircle(circle.circle_id)}
-                className={`circle-row flex items-center gap-2 p-2 border-2 border-obsidian text-left w-full ${
+                className={`circle-row flex items-center gap-2 p-2 border border-obsidian text-left w-full ${
                   isActive ? 'circle-row-active bg-alabaster text-obsidian' : 'bg-alabaster text-obsidian hover:bg-obsidian/5'
                 }`}
                 style={{ transition: 'none', position: 'relative', zIndex: 1 }}
@@ -302,7 +302,7 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
             <button
               key={label}
               onClick={() => { setModal((['init', 'enter'] as const)[i]); setError('') }}
-              className={`flex-1 py-2 text-[12px] font-bold tracking-widest hover:bg-obsidian hover:text-alabaster ${
+              className={`flex-1 py-1.5 text-[11px] font-bold tracking-widest hover:bg-obsidian hover:text-alabaster ${
                 i === 0 ? 'border-r-2 border-obsidian' : ''
               }`}
               style={{ transition: 'none' }}

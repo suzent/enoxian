@@ -15,6 +15,7 @@ import {
   createUserIdentity,
 } from '../api'
 import { useApp } from '../context/AppContext'
+import { BRAND_LOGO_SRC } from '../lib/brand'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -187,7 +188,7 @@ export default function LandingPage({ onEntered }: Props) {
     fontWeight: 700,
     background: '#fff',
     color: '#000',
-    border: '2px solid #000',
+    border: '1px solid #000',
     outline: 'none',
     padding: '5px 8px',
     width: '100%',
@@ -223,11 +224,11 @@ export default function LandingPage({ onEntered }: Props) {
     letterSpacing: '0.08em',
     background: '#000',
     color: '#fff',
-    border: '2px solid #000',
+    border: '1px solid #000',
     padding: '8px 12px',
     cursor: 'pointer',
     width: '100%',
-    minHeight: 34,
+    minHeight: 32,
   }
 
   const btnSecondary: React.CSSProperties = {
@@ -262,19 +263,7 @@ export default function LandingPage({ onEntered }: Props) {
       <>
         {/* Header */}
         <div style={{ borderBottom: '2px solid #000', padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{
-            width: 22, height: 22,
-            border: '2px solid #000',
-            background: '#000',
-            color: '#fff',
-            fontFamily: 'var(--font-mono)',
-            fontWeight: 800,
-            fontSize: 13,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0,
-          }}>E</div>
+          <img src={BRAND_LOGO_SRC} alt="" style={{ width: 28, height: 28, display: 'block', flexShrink: 0, imageRendering: 'pixelated' }} />
           <div style={{ fontFamily: 'var(--font-title)', fontWeight: 900, fontSize: 16, letterSpacing: '0.15em' }}>
             ENOXIAN
           </div>
@@ -332,7 +321,7 @@ export default function LandingPage({ onEntered }: Props) {
           )}
 
           {error && (
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#000', background: '#fff', border: '2px solid #000', padding: '4px 8px', marginBottom: 8, fontWeight: 700 }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#000', background: '#fff', border: '1px solid #000', padding: '4px 8px', marginBottom: 8, fontWeight: 700 }}>
               {error}
             </div>
           )}
@@ -428,7 +417,7 @@ export default function LandingPage({ onEntered }: Props) {
                   ...btnSecondary,
                   width: 'auto',
                   flex: 1,
-                  marginLeft: -2,
+                  marginLeft: -1,
                   background: joinPolicy === 'manual' ? '#000' : '#fff',
                   color: joinPolicy === 'manual' ? '#fff' : '#000',
                 }}
@@ -438,7 +427,7 @@ export default function LandingPage({ onEntered }: Props) {
           </div>
 
           {error && (
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#000', background: '#fff', border: '2px solid #000', padding: '4px 8px', marginBottom: 8, fontWeight: 700 }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#000', background: '#fff', border: '1px solid #000', padding: '4px 8px', marginBottom: 8, fontWeight: 700 }}>
               {error}
             </div>
           )}
@@ -481,7 +470,7 @@ export default function LandingPage({ onEntered }: Props) {
           </div>
 
           {error && (
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#000', background: '#fff', border: '2px solid #000', padding: '4px 8px', marginBottom: 8, fontWeight: 700 }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#000', background: '#fff', border: '1px solid #000', padding: '4px 8px', marginBottom: 8, fontWeight: 700 }}>
               {error}
             </div>
           )}
@@ -510,7 +499,7 @@ export default function LandingPage({ onEntered }: Props) {
             YOU NEED THEM TO LINK OTHER RELIQUARYS.
           </p>
           <div style={{
-            border: '2px solid #000',
+            border: '1px solid #000',
             padding: '10px 12px',
             fontFamily: 'var(--font-mono)',
             fontSize: 11,
