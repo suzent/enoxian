@@ -72,13 +72,16 @@ function Layout() {
           />
 
           {/* Desktop sidebar */}
-          <CircleSidebar onRitual={(mode, label) => setRitual({ mode, label })} />
+          <CircleSidebar
+            onRitual={(mode, label) => setRitual({ mode, label })}
+            ritualCircleName={ritual?.label}
+          />
 
           {/* Desktop chat */}
           <div className="desktop-chat">
             {selectedFile
               ? <EditorPanel filePath={selectedFile} onBack={() => setSelectedFile(null)} />
-              : <ChatPanel variant="main" />}
+              : <ChatPanel variant="main" hideActiveCircleGlyph={!!ritual} />}
           </div>
 
           {/* Desktop right panel */}
@@ -89,10 +92,13 @@ function Layout() {
             <div className="mobile-main">
               {selectedFile
                 ? <EditorPanel filePath={selectedFile} onBack={() => setSelectedFile(null)} />
-                : <ChatPanel variant="main" />}
+              : <ChatPanel variant="main" hideActiveCircleGlyph={!!ritual} />}
             </div>
             <div className={`mobile-drawer mobile-drawer--left${mobileDrawer === 'circles' ? ' open' : ''}`}>
-              <CircleSidebar onRitual={(mode, label) => { setRitual({ mode, label }); setMobileDrawer(null) }} />
+              <CircleSidebar
+                onRitual={(mode, label) => { setRitual({ mode, label }); setMobileDrawer(null) }}
+                ritualCircleName={ritual?.label}
+              />
             </div>
             <div className={`mobile-drawer mobile-drawer--right${mobileDrawer === 'info' ? ' open' : ''}`}>
               <RightPanel onFileSelect={onFileSelect} selectedFile={selectedFile} />

@@ -14,6 +14,7 @@ import type { RitualMode } from './RitualTransition'
 
 interface Props {
   onRitual?: (mode: RitualMode, label?: string) => void
+  ritualCircleName?: string
 }
 
 const SWITCH_DUR = 720
@@ -31,10 +32,9 @@ interface SceneEntry {
 interface PlanePose {
   x: number
   y: number
-  scale: number
 }
 
-export default function CircleSidebar({ onRitual }: Props) {
+export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
   const { circles, activeCircleId, setActiveCircleId, reloadCircles } = useApp()
 
   const [modal, setModal] = useState<Modal>(null)
@@ -240,8 +240,6 @@ export default function CircleSidebar({ onRitual }: Props) {
     const transScene = transSceneRef.current
     const transCamera = transCameraRef.current
 
-    const visH = 2 * Math.tan((transCamera.fov * Math.PI) / 180 / 2) * transCamera.position.z
-    const visW = visH * transCamera.aspect
     const targetRect = targetCanvas.getBoundingClientRect()
     const currentRect = currentCanvas?.getBoundingClientRect()
     const dock = document.querySelector('[data-circle-dock] canvas') ?? document.querySelector('[data-circle-dock]')
@@ -253,12 +251,18 @@ export default function CircleSidebar({ onRitual }: Props) {
     }
 
     const toPlane = (r: DOMRect): PlanePose => {
-      const cx = r.left + r.width / 2
-      const cy = r.top + r.height / 2
+      const ndc = new THREE.Vector3(
+        ((r.left + r.width / 2) / window.innerWidth) * 2 - 1,
+        -((r.top + r.height / 2) / window.innerHeight) * 2 + 1,
+        0.5,
+      )
+      ndc.unproject(transCamera)
+      const direction = ndc.sub(transCamera.position).normalize()
+      const distance = -transCamera.position.z / direction.z
+      const world = transCamera.position.clone().add(direction.multiplyScalar(distance))
       return {
-        x: ((cx / window.innerWidth) * 2 - 1) * (visW / 2),
-        y: -((cy / window.innerHeight) * 2 - 1) * (visH / 2),
-        scale: (r.height * 0.8) / (2 * (window.innerHeight / visH)),
+        x: world.x,
+        y: world.y,
       }
     }
     const dockPose = toPlane(dockRect)
@@ -267,14 +271,27 @@ export default function CircleSidebar({ onRitual }: Props) {
 
     const outgoingShape = currentEntry ? cloneTransitionShape(currentEntry) : null
     const incomingShape = cloneTransitionShape(targetEntry)
+    const visibleHeight = 2 * transCamera.position.z * Math.tan(THREE.MathUtils.degToRad(transCamera.fov) / 2)
+    const unitsPerPixel = visibleHeight / window.innerHeight
+    const scaleFor = (shape: THREE.Object3D, rect: DOMRect) => {
+      const box = new THREE.Box3().setFromObject(shape)
+      const size = new THREE.Vector3()
+      box.getSize(size)
+      const maxDimension = Math.max(size.x, size.y, 0.001)
+      return (Math.min(rect.width, rect.height) * unitsPerPixel) / maxDimension
+    }
+    const incomingTargetScale = scaleFor(incomingShape, targetRect)
+    const incomingDockScale = scaleFor(incomingShape, dockRect)
+    const outgoingDockScale = outgoingShape ? scaleFor(outgoingShape, dockRect) : 1
+    const outgoingTargetScale = outgoingShape && currentRect ? scaleFor(outgoingShape, currentRect) : outgoingDockScale
 
     if (outgoingShape) {
       outgoingShape.position.set(dockPose.x, dockPose.y, 0)
-      outgoingShape.scale.setScalar(dockPose.scale)
+      outgoingShape.scale.setScalar(outgoingDockScale)
       transScene.add(outgoingShape)
     }
     incomingShape.position.set(targetPose.x, targetPose.y, 0)
-    incomingShape.scale.setScalar(targetPose.scale)
+    incomingShape.scale.setScalar(incomingTargetScale)
     transScene.add(incomingShape)
 
     targetCanvas.style.visibility = 'hidden'
@@ -293,7 +310,7 @@ export default function CircleSidebar({ onRitual }: Props) {
         targetPose.y + (dockPose.y - targetPose.y) * p,
         0,
       )
-      incomingShape.scale.setScalar(targetPose.scale + (dockPose.scale - targetPose.scale) * p)
+      incomingShape.scale.setScalar(incomingTargetScale + (incomingDockScale - incomingTargetScale) * p)
       applyCircleRotation(incomingShape, targetEntry.name, now)
 
       if (outgoingShape) {
@@ -302,7 +319,7 @@ export default function CircleSidebar({ onRitual }: Props) {
           dockPose.y + (currentPose.y - dockPose.y) * p,
           0,
         )
-        outgoingShape.scale.setScalar(dockPose.scale + (currentPose.scale - dockPose.scale) * p)
+        outgoingShape.scale.setScalar(outgoingDockScale + (outgoingTargetScale - outgoingDockScale) * p)
         if (currentEntry) applyCircleRotation(outgoingShape, currentEntry.name, now)
       }
       transDC.composer.render()
@@ -333,7 +350,7 @@ export default function CircleSidebar({ onRitual }: Props) {
     try {
       const res = await initCircle(initName, initOwner || undefined, initJoinPolicy)
       await reloadCircles()
-      if (res.circle_id) switchCircle(res.circle_id)
+      if (res.circle_id) setActiveCircleId(res.circle_id)
       setModal(null); onRitual?.('init', initName)
       setInitName(''); setInitOwner(''); setInitJoinPolicy('auto')
     } catch (err: any) { setError(err.message) }
@@ -362,6 +379,7 @@ export default function CircleSidebar({ onRitual }: Props) {
           )}
           {circles.map(circle => {
             const isActive = circle.circle_id === activeCircleId
+            const hideGlyphForRitual = circle.circle_name === ritualCircleName
             return (
               <button
                 key={circle.circle_id}
@@ -379,6 +397,7 @@ export default function CircleSidebar({ onRitual }: Props) {
                     imageRendering: 'pixelated',
                     mixBlendMode: 'multiply',
                     opacity: isActive ? 0 : 1,
+                    visibility: hideGlyphForRitual ? 'hidden' : 'visible',
                   }}
                 />
                 <div className="flex flex-col min-w-0">

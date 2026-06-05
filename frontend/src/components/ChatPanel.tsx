@@ -8,6 +8,7 @@ import CircleGlyph from './CircleGlyph'
 interface Props {
   onMessage?: () => void
   variant?: 'rail' | 'main'
+  hideActiveCircleGlyph?: boolean
 }
 
 function formatTime(ts: number) {
@@ -61,7 +62,7 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender }: BubbleProps) {
   )
 }
 
-export default function ChatPanel({ onMessage, variant = 'rail' }: Props) {
+export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircleGlyph = false }: Props) {
   const { activeCircleId, circles, status } = useApp()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [members, setMembers] = useState<Member[]>([])
@@ -169,7 +170,10 @@ export default function ChatPanel({ onMessage, variant = 'rail' }: Props) {
       )}
 
       {variant === 'main' && activeCircle && (
-        <div className={`active-circle-dock${activeCircle.disabled ? ' active-circle-dock--void' : ''}`} data-circle-dock>
+        <div
+          className={`active-circle-dock${activeCircle.disabled ? ' active-circle-dock--void' : ''}${hideActiveCircleGlyph ? ' active-circle-dock--ritual' : ''}`}
+          data-circle-dock
+        >
           <div className="active-circle-dock__meta">
             <span>{activeCircle.circle_name}</span>
             <strong className={activeCircle.disabled ? '' : 'inactive'}>VOID</strong>

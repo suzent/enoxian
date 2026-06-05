@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
-import { createDitheredComposer } from '../lib/ditherShader'
+import { addDitherLights, createDitheredComposer, EXPOSURE_ICON } from '../lib/ditherShader'
 import { makeCircleGeometry, applyCircleRotation } from '../lib/circleShape'
 
 export type RitualMode = 'init' | 'enter'
@@ -41,25 +41,12 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
     camera.position.copy(baseCamPos)
     camera.lookAt(0, 0, 0)
 
-    // Lighting to match global dither setup
-    scene.add(new THREE.AmbientLight(0xffffff, 0.2))
-    const keyLight = new THREE.DirectionalLight(0xffffff, 4.0)
-    keyLight.position.set(-15, 20, 15)
-    scene.add(keyLight)
-    
-    const rimLight = new THREE.DirectionalLight(0xffffff, 2.0)
-    rimLight.position.set(15, -5, -15)
-    scene.add(rimLight)
-    
-    const fillLight = new THREE.DirectionalLight(0xffffff, 0.4)
-    fillLight.position.set(0, 5, 5)
-    scene.add(fillLight)
+    addDitherLights(scene)
 
     renderer.outputColorSpace = THREE.LinearSRGBColorSpace
 
     const dc = createDitheredComposer(renderer, scene, camera, W, H)
-    // 0.8 is the EXPOSURE_ICON default
-    dc.setExposure(0.8)
+    dc.setExposure(EXPOSURE_ICON)
 
     const root = new THREE.Group()
     scene.add(root)
@@ -136,6 +123,10 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
     const circleBaseScale = 2.5
     circleGroup.scale.setScalar(1.45)
     root.add(circleGroup)
+    const circleBounds = new THREE.Box3().setFromObject(circleGroup)
+    const circleSize = new THREE.Vector3()
+    circleBounds.getSize(circleSize)
+    const circleMaxDimension = Math.max(circleSize.x, circleSize.y, 0.001) / 1.45
 
     // Ethereal circular paths
     const pathMaterial = new THREE.LineBasicMaterial({ color: 0x111111, transparent: true, opacity: 0.42 })
@@ -180,7 +171,7 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
     const clamp01 = (v: number) => Math.max(0, Math.min(1, v))
     const introMs = 900
 
-    const getDockWorldTarget = () => {
+    const getDockTarget = () => {
       const targetEl = document.querySelector('[data-circle-dock] canvas') ?? document.querySelector('[data-circle-dock]')
       if (!targetEl) return null
 
@@ -193,7 +184,11 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
       ndc.unproject(camera)
       const direction = ndc.sub(camera.position).normalize()
       const distance = -camera.position.z / direction.z
-      return camera.position.clone().add(direction.multiplyScalar(distance))
+      const world = camera.position.clone().add(direction.multiplyScalar(distance))
+      const visibleHeight = 2 * camera.position.z * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)
+      const unitsPerPixel = visibleHeight / window.innerHeight
+      const scale = (Math.min(rect.width, rect.height) * unitsPerPixel) / circleMaxDimension
+      return { world, scale }
     }
 
     const render = (now: number) => {
@@ -232,11 +227,11 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
 
       if (closing) {
         root.updateMatrixWorld(true)
-        const targetWorld = getDockWorldTarget()
-        if (targetWorld) {
-          const targetLocal = root.worldToLocal(targetWorld)
+        const dockTarget = getDockTarget()
+        if (dockTarget) {
+          const targetLocal = root.worldToLocal(dockTarget.world)
           circleGroup.position.lerpVectors(circleHome, targetLocal, closeMotion)
-          circleGroup.scale.setScalar(lerp(circleBaseScale, 1.05, closeMotion))
+          circleGroup.scale.setScalar(lerp(circleBaseScale, dockTarget.scale, closeMotion))
         }
       } else {
         circleGroup.position.copy(circleHome)
@@ -248,8 +243,7 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
       camera.position.z = lerp(13, 16, easeOutExpo(et)) + closeMotion * 1.4
       camera.lookAt(0, 0, 0)
 
-      // Keep constant exposure
-      dc.setExposure(1.8)
+      dc.setExposure(EXPOSURE_ICON)
 
       dc.composer.render()
       if (closing) {
