@@ -73,8 +73,7 @@ export const DitherShaderDef = {
       float noise = fract(sin(dot(vUv, vec2(12.9898, 78.233))) * 43758.5453) * 0.05 - 0.025;
       gray = clamp(gray + noise, 0.0, 1.0);
       
-      // Pixel coordinate scaling for chunky pixel-art look
-      float pixelSize = 2.0; 
+      float pixelSize = 1.0;
       vec2 pixelCoord = floor((vUv * uResolution) / pixelSize);
       
       float threshold = bayer(pixelCoord);

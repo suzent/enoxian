@@ -9,6 +9,8 @@ import {
   easeInOut,
 } from '../lib/ditherShader'
 import {
+  CIRCLE_CAMERA_FOV,
+  CIRCLE_CAMERA_Z,
   CIRCLE_EXPOSURE,
   createCircleCamera,
   createCircleRenderer,
@@ -73,7 +75,7 @@ export default function CircleSidebar({ onRitual, ritualCircleName, onSwitchingC
   const transRendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const transDCRef = useRef<DitheredComposer | null>(null)
   const transSceneRef = useRef(new THREE.Scene())
-  const transCameraRef = useRef(new THREE.PerspectiveCamera(60, 1, 0.1, 1000))
+  const transCameraRef = useRef(new THREE.PerspectiveCamera(CIRCLE_CAMERA_FOV, 1, 0.1, 1000))
   const animatingRef = useRef(false)
 
   // Bootstrap Three.js renderers once
@@ -96,7 +98,7 @@ export default function CircleSidebar({ onRitual, ritualCircleName, onSwitchingC
     prepareCircleScene(transScene)
 
     const transCamera = transCameraRef.current
-    transCamera.position.z = 5
+    transCamera.position.z = CIRCLE_CAMERA_Z
     transCamera.aspect = window.innerWidth / window.innerHeight
     transCamera.updateProjectionMatrix()
 
@@ -117,12 +119,15 @@ export default function CircleSidebar({ onRitual, ritualCircleName, onSwitchingC
     window.addEventListener('resize', onResize)
 
     // Single rAF loop: render each icon scene via its own dithered composer → blit
+    // IMPORTANT: blit immediately after each render(), before the next scene
+    // overwrites the shared iconRenderer framebuffer.
     function loop() {
       rafRef.current = requestAnimationFrame(loop)
       const now = performance.now()
       scenesRef.current.forEach(({ name, mesh, dc }, id) => {
         applyCircleRotation(mesh, name, now)
         dc.composer.render()
+        // Blit right here — iconRenderer.domElement still has this scene's frame
         const canvas = canvasMapRef.current.get(id)
         if (canvas) {
           const ctx = canvas.getContext('2d')
@@ -284,10 +289,15 @@ export default function CircleSidebar({ onRitual, ritualCircleName, onSwitchingC
     transDC.setExposure(CIRCLE_EXPOSURE)
     transRenderer.domElement.style.display = 'block'
 
+    const FADE_OUT_DUR = 100 // ms to cross-fade overlay → static canvas
     const start = performance.now()
+    let fadeStartTime = -1
+
     const tick = () => {
       const now = performance.now()
-      const p = easeInOut(Math.min((now - start) / SWITCH_DUR, 1))
+      const elapsed = now - start
+      const p = easeInOut(Math.min(elapsed / SWITCH_DUR, 1))
+
       incomingShape.position.set(
         targetPose.x + (dockPose.x - targetPose.x) * p,
         targetPose.y + (dockPose.y - targetPose.y) * p,
@@ -305,24 +315,34 @@ export default function CircleSidebar({ onRitual, ritualCircleName, onSwitchingC
         outgoingShape.scale.setScalar(outgoingDockScale + (outgoingTargetScale - outgoingDockScale) * p)
         if (currentEntry) applyCircleRotation(outgoingShape, currentEntry.name, now)
       }
-      transDC.composer.render()
-      if (p < 1) {
-        requestAnimationFrame(tick)
-      } else {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            transScene.remove(incomingShape)
-            if (outgoingShape) transScene.remove(outgoingShape)
-            targetCanvas.style.visibility = ''
-            if (currentCanvas) currentCanvas.style.visibility = ''
-            if (dock instanceof HTMLElement) dock.style.visibility = ''
-            transRenderer.domElement.style.display = 'none'
-            transDC.setExposure(CIRCLE_EXPOSURE)
-            onSwitchingCircle?.(null)
-            animatingRef.current = false
-          })
-        })
+
+      if (p >= 1 && fadeStartTime < 0) {
+        // Main animation done — restore underlying canvases and begin fade-out
+        fadeStartTime = now
+        targetCanvas.style.visibility = ''
+        if (currentCanvas) currentCanvas.style.visibility = ''
+        if (dock instanceof HTMLElement) dock.style.visibility = ''
       }
+
+      transDC.composer.render()
+
+      if (fadeStartTime >= 0) {
+        // Cross-fade overlay out over FADE_OUT_DUR so the switch-in is seamless
+        const fadeP = Math.min((now - fadeStartTime) / FADE_OUT_DUR, 1)
+        transRenderer.domElement.style.opacity = (1 - fadeP).toString()
+        if (fadeP >= 1) {
+          transScene.remove(incomingShape)
+          if (outgoingShape) transScene.remove(outgoingShape)
+          transRenderer.domElement.style.display = 'none'
+          transRenderer.domElement.style.opacity = '1'
+          transDC.setExposure(CIRCLE_EXPOSURE)
+          onSwitchingCircle?.(null)
+          animatingRef.current = false
+          return
+        }
+      }
+
+      requestAnimationFrame(tick)
     }
     requestAnimationFrame(tick)
   }, [activeCircleId, setActiveCircleId, circles, onSwitchingCircle])
