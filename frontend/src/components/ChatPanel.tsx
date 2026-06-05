@@ -212,7 +212,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
         <div ref={bottomRef} />
       </div>
 
-      <div className="border-t-2 border-obsidian p-3 flex flex-wrap gap-2 bg-alabaster">
+      <div className="border-t-2 border-obsidian p-3 flex flex-wrap gap-2" style={{ backgroundColor: 'var(--bg-alabaster)' }}>
         <input
           value={input}
           onChange={e => setInput(e.target.value)}

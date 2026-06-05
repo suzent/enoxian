@@ -336,7 +336,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
             onClick={() => setActiveTab(tab)}
             className={`flex-1 py-1.5 text-[9px] font-bold tracking-widest font-mono uppercase ${
               i < 2 ? 'border-r-2 border-obsidian' : ''
-            } ${activeTab === tab ? 'bg-obsidian text-alabaster' : 'hover:bg-obsidian/5'}`}
+            } ${activeTab === tab ? 'tab-active' : 'hover:bg-obsidian/5'}`}
             style={{ transition: 'none' }}
           >
             {tab === 'members' && pending.length > 0 ? `MEMBERS (${pending.length})` : tab.toUpperCase()}

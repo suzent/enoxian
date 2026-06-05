@@ -13,14 +13,23 @@ export function createCircleRenderer(width: number, height: number) {
   return renderer
 }
 
+/** Transparent-background renderer for sidebar icons — background pixels become alpha=0. */
+export function createIconRenderer(width: number, height: number) {
+  const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true })
+  renderer.setPixelRatio(1)
+  renderer.setClearColor(0x000000, 0)
+  renderer.setSize(width, height)
+  return renderer
+}
+
 export function createCircleCamera(aspect = 1, far = 100) {
   const camera = new THREE.PerspectiveCamera(CIRCLE_CAMERA_FOV, aspect, 0.1, far)
   camera.position.z = CIRCLE_CAMERA_Z
   return camera
 }
 
-export function prepareCircleScene(scene: THREE.Scene) {
-  scene.background = new THREE.Color(0xffffff)
+export function prepareCircleScene(scene: THREE.Scene, transparent = false) {
+  scene.background = transparent ? null : new THREE.Color(0xffffff)
   addDitherLights(scene)
 }
 

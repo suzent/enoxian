@@ -17,11 +17,14 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 
 export const DitherShaderDef = {
   uniforms: {
-    tDiffuse:    { value: null as THREE.Texture | null },
-    uResolution: { value: new THREE.Vector2() },
+    tDiffuse:      { value: null as THREE.Texture | null },
+    uResolution:   { value: new THREE.Vector2() },
     // Exposure controls dither density: high = overexposed = few dots,
     // low = underexposed = many dots.  Animate for fade-in/out effects.
-    uExposure:   { value: 1.35 },
+    uExposure:     { value: 1.35 },
+    // When 1.0, near-white background pixels are output as alpha=0 (transparent)
+    // instead of white, so the canvas blends seamlessly over any background color.
+    uTransparentBg: { value: 0.0 },
   },
   vertexShader: `
     varying vec2 vUv;
@@ -34,6 +37,7 @@ export const DitherShaderDef = {
     uniform sampler2D tDiffuse;
     uniform vec2 uResolution;
     uniform float uExposure;
+    uniform float uTransparentBg;
     varying vec2 vUv;
 
     float bayer(vec2 p) {
@@ -81,10 +85,15 @@ export const DitherShaderDef = {
       // Check for emissive Red (bright red, low green/blue)
       bool isRed = (color.r > 0.5 && color.g < 0.3 && color.b < 0.3);
       
-      // EXCEPTION 1: Pure White Background Bypass
+      // Background bypass: near-white pixels become either opaque white (for
+      // multiply-blend canvases) or fully transparent (for alpha-canvas icons).
       float distToWhite = length(color.rgb - vec3(1.0));
       if (distToWhite < 0.05 && !isRed) {
-          gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+          if (uTransparentBg > 0.5) {
+              gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
+          } else {
+              gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+          }
           return;
       }
 
@@ -120,17 +129,21 @@ export function createDitheredComposer(
   camera: THREE.Camera,
   width: number,
   height: number,
+  transparentBg = false,
 ): DitheredComposer {
   const composer = new EffectComposer(renderer)
   composer.addPass(new RenderPass(scene, camera))
 
-  // Clone uniforms so each composer instance has its own values
+  // Clone uniforms so each composer instance has its own values.
+  // uResolution must match physical pixels (renderer output size), not CSS pixels.
+  const dpr = renderer.getPixelRatio()
   const ditherPass = new ShaderPass({
     ...DitherShaderDef,
     uniforms: {
-      tDiffuse:    { value: null },
-      uResolution: { value: new THREE.Vector2(width, height) },
-      uExposure:   { value: DitherShaderDef.uniforms.uExposure.value },
+      tDiffuse:       { value: null },
+      uResolution:    { value: new THREE.Vector2(width * dpr, height * dpr) },
+      uExposure:      { value: DitherShaderDef.uniforms.uExposure.value },
+      uTransparentBg: { value: transparentBg ? 1.0 : 0.0 },
     },
   })
   composer.addPass(ditherPass)

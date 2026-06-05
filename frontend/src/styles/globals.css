@@ -3,15 +3,19 @@
 @tailwind utilities;
 
 :root {
-  --bg-alabaster: #ffffff;
-  --fg-obsidian: #000000;
+  --bg-alabaster: #f4f3ef;
+  --fg-obsidian: #0a0a0a;
   --fg-slate: #555555;
   --border-heavy: 1px solid var(--fg-obsidian);
   --border-light: 1px dashed rgba(0, 0, 0, 0.25);
-  --stripe: repeating-linear-gradient(0deg, #000 0 1px, #fff 1px 2px);
-  --stripe-soft: repeating-linear-gradient(0deg, rgba(0,0,0,0.18) 0 1px, #fff 1px 3px);
-  --stripe-wide: repeating-linear-gradient(135deg, #000 0 1px, #fff 1px 5px);
-  --dither-dot: radial-gradient(#000 1px, transparent 1px);
+  /* Dense 1px stripe — reads as halftone banding in section headers */
+  --stripe: repeating-linear-gradient(0deg, #0a0a0a 0 1px, #f4f3ef 1px 2px);
+  --stripe-soft: repeating-linear-gradient(0deg, rgba(0,0,0,0.22) 0 1px, transparent 1px 2px);
+  --stripe-wide: repeating-linear-gradient(135deg, #0a0a0a 0 1px, transparent 1px 5px);
+  /* Ordered dot grid — small enough to read as halftone when used as accents */
+  --dither-dot: radial-gradient(rgba(0,0,0,0.55) 0.6px, transparent 0.6px);
+  /* Coarser dot for fill areas */
+  --dither-fill: radial-gradient(rgba(0,0,0,0.25) 0.7px, transparent 0.7px);
   --font-sans: 'Cormorant Garamond', serif;
   --font-title: 'Cinzel', serif;
   --font-mono: 'JetBrains Mono', Monaco, Geneva, "Courier New", monospace;
@@ -38,6 +42,7 @@ html, body, #root {
   font-size: var(--ui-font);
   overflow: hidden;
   text-shadow: none;
+  /* Pixel-crisp rendering ties UI to the dithered 3D elements */
   image-rendering: pixelated;
   -webkit-font-smoothing: none;
 }
@@ -105,7 +110,7 @@ select {
 }
 
 .sys-window {
-  background: #fff;
+  background-color: var(--bg-alabaster);
   border: 2px solid var(--fg-obsidian);
 }
 
@@ -136,7 +141,7 @@ select {
 
 .sys-control {
   border: 1px solid var(--fg-obsidian);
-  background: var(--bg-alabaster);
+  background-color: var(--bg-alabaster);
   color: var(--fg-obsidian);
   font-family: var(--font-mono);
   font-size: var(--ui-small);
@@ -176,7 +181,7 @@ select {
 }
 
 .app-header {
-  background: #fff;
+  background-color: var(--bg-alabaster);
   min-height: var(--header-height);
   padding: 4px 10px !important;
   font-size: var(--ui-small);
@@ -213,7 +218,7 @@ select {
   position: relative;
   min-height: 108px;
   border-bottom: 2px solid #000;
-  background: #fff;
+  background-color: var(--bg-alabaster);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
@@ -338,27 +343,36 @@ select {
   opacity: 0;
 }
 
-/* Pop-out: icon slides left off-screen when row becomes active (opposite to dock pop-in) */
+
+/* Pop-out/in animations target the canvas inside the mount, not the mount itself.
+   The mount keeps overflow:hidden so the canvas is clipped as it slides. */
 @keyframes icon-pop-out {
   0%   { opacity: 1; transform: translateX(0);    }
-  50%  { opacity: 0; transform: translateX(-14px); }
-  100% { opacity: 0; transform: translateX(-20px); }
+  50%  { opacity: 0; transform: translateX(-36px); }
+  100% { opacity: 0; transform: translateX(-36px); }
 }
-/* Pop-in: icon slides in from the left when row loses active state */
 @keyframes icon-pop-in {
-  0%   { opacity: 0; transform: translateX(-20px); }
-  60%  { opacity: 1; transform: translateX(3px);   }
+  0%   { opacity: 0; transform: translateX(-36px); }
+  60%  { opacity: 1; transform: translateX(2px);   }
   100% { opacity: 1; transform: translateX(0);     }
 }
 
-.circle-icon-mount.icon-pop-out {
+.circle-icon-mount.icon-pop-out canvas {
   animation: icon-pop-out 180ms cubic-bezier(0.4, 0, 0.6, 1) forwards;
 }
-.circle-icon-mount.icon-pop-in {
+.circle-icon-mount.icon-pop-in canvas {
   animation: icon-pop-in 240ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
 }
 
 /* Sliding active-row highlight — absolutely positioned, animated via JS */
+/* Active tab — dither fill instead of solid black, ties to the 3D dither aesthetic */
+.tab-active {
+  background-color: #000;
+  background-image: radial-gradient(rgba(255,255,255,0.18) 0.6px, transparent 0.6px);
+  background-size: 3px 3px;
+  color: #fff;
+}
+
 .circle-list-highlight {
   position: absolute;
   left: 0; right: 0;
@@ -400,14 +414,14 @@ select {
   display: grid;
   grid-template-columns: 1fr 1fr;
   border-top: 2px solid #000;
-  background: #fff;
+  background: var(--bg-alabaster);
 }
 
 .circle-actions button {
   position: relative;
   min-height: 32px;
   border: 0 !important;
-  background: #fff;
+  background: var(--bg-alabaster);
   color: #000;
   cursor: pointer;
   font-family: var(--font-mono);
@@ -826,7 +840,6 @@ select {
   padding-left: 4px !important;
 }
 
-/* Dither overlay */
 body::after {
   content: '';
   position: fixed;
@@ -834,17 +847,14 @@ body::after {
   pointer-events: none;
   z-index: 9999;
   opacity: 0;
-  mix-blend-mode: multiply;
-  background-image: var(--dither-dot);
-  background-size: 5px 5px;
 }
 
 body {
+  background-color: var(--bg-alabaster);
   background-image:
-    linear-gradient(rgba(0,0,0,0.08) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0,0,0,0.08) 1px, transparent 1px),
-    #fff;
-  background-size: 18px 18px;
+    linear-gradient(rgba(0,0,0,0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,0,0,0.07) 1px, transparent 1px);
+  background-size: 12px 12px;
 }
 
 @layer components {
@@ -852,7 +862,9 @@ body {
     @apply font-mono font-bold uppercase px-3 py-0;
     min-height: 28px;
     color: #000;
-    background: var(--stripe-soft);
+    /* Dense horizontal stripe — halftone-like banding matching the dithered 3D style */
+    background-image: var(--stripe-soft);
+    background-color: var(--bg-alabaster);
     border-bottom: 2px solid #000;
     display: grid !important;
     grid-template-columns: 20px minmax(0, 1fr) auto 20px;
@@ -873,12 +885,12 @@ body {
     text-overflow: ellipsis;
     white-space: nowrap;
     padding: 0 6px;
-    background: #fff;
+    background: var(--bg-alabaster);
   }
 
   .section-header::before,
   .section-header::after {
-    background: #fff;
+    background: var(--bg-alabaster);
   }
 
   .section-header::before,
@@ -903,7 +915,7 @@ body {
     grid-column: 3;
     justify-self: end;
     border: 1px solid #000;
-    background: #fff;
+    background: var(--bg-alabaster);
     color: #000;
     min-width: 28px;
     min-height: 20px;
@@ -917,7 +929,7 @@ body {
 
   .pending-badge {
     cursor: default;
-    background: #fff;
+    background: var(--bg-alabaster);
   }
 
   .group-label {

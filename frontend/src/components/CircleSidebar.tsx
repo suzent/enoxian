@@ -152,7 +152,7 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
     const displaySize = 36
     const renderer = createCircleRenderer(renderSize, renderSize)
     renderer.domElement.style.cssText =
-      `display:block;width:${displaySize}px;height:${displaySize}px;image-rendering:pixelated;`
+      `display:block;width:${displaySize}px;height:${displaySize}px;image-rendering:pixelated;mix-blend-mode:multiply;background:transparent;`
     mount.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
@@ -272,16 +272,15 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
                 ref={el => { if (el) rowRefMap.current.set(circle.circle_id, el); else rowRefMap.current.delete(circle.circle_id) }}
                 onClick={() => switchCircle(circle.circle_id)}
                 className={`circle-row flex items-center gap-2 p-2 border border-obsidian text-left w-full ${
-                  isActive ? 'circle-row-active bg-alabaster text-obsidian' : 'bg-alabaster text-obsidian hover:bg-obsidian/5'
+                  isActive ? 'circle-row-active text-obsidian' : 'text-obsidian hover:bg-obsidian/5'
                 }`}
-                style={{ transition: 'none', position: 'relative', zIndex: 1 }}
+              style={{ transition: 'none', backgroundColor: 'var(--bg-alabaster)' }}
               >
                 <div
                   ref={el => registerIconMount(circle.circle_id, el)}
                   className={isActive ? 'circle-icon-mount circle-icon-mount--active' : 'circle-icon-mount'}
                   style={{
                     width: 36, height: 36, flexShrink: 0,
-                    mixBlendMode: 'multiply',
                     visibility: hideForRitual ? 'hidden' : 'visible',
                     overflow: 'hidden',
                   }}
