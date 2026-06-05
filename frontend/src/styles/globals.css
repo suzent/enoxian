@@ -206,6 +206,58 @@ select {
   min-width: 0;
 }
 
+.active-circle-dock {
+  min-height: 116px;
+  border-bottom: 2px solid #000;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 10px 16px;
+  overflow: hidden;
+}
+
+.active-circle-dock__meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--ui-small);
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.active-circle-dock__meta span {
+  max-width: min(320px, 42vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.active-circle-dock__meta strong {
+  color: var(--fg-slate);
+  font-size: var(--ui-tiny);
+}
+
+.active-circle-dock__glyph {
+  flex: 0 0 auto;
+}
+
+.active-circle-dock--void {
+  background:
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.08) 0 1px, transparent 1px 6px),
+    #fff;
+}
+
+.circle-row-active {
+  box-shadow: inset 7px 0 0 #000;
+  outline: 1px solid #000;
+  outline-offset: -5px;
+}
+
 .ritual-overlay {
   position: fixed;
   inset: 0;

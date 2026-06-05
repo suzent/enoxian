@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import * as THREE from 'three'
 import { useApp } from '../context/AppContext'
 import { initCircle, enterCircle, leaveCircle, enableCircle, disableCircle } from '../api'
-import { makeCircleGeometry, makeShapeParams } from '../lib/circleShape'
+import { applyCircleRotation, makeCircleGeometry } from '../lib/circleShape'
 import {
   createDitheredComposer,
   addDitherLights,
@@ -16,29 +16,22 @@ interface Props {
   onRitual?: (mode: RitualMode, label?: string) => void
 }
 
-// Full-screen "summon" played when switching circles: the selected circle's own
-// icon geometry appears to lift out of its tiny canvas, swell toward screen center
-// to fill the viewport, then drop back into the icon — rendered through the dither
-// composer the whole way so it keeps the halftone look.
-const SWITCH_DUR = 2500 // ms, total. Slower, more deliberate, and majestic.
-const SWITCH_MAX = 2.0 // peak scale — grows larger to feel more monumental
-const T_RISE = 0.35 // timeline fraction: icon → centered + full
-const T_HOLD = 0.65 // timeline fraction: end of the centered "occult" hold
-// Backdrop: the transition scene's background darkens from white (transparent under
-// mix-blend:multiply) to this gray, which the dither pass renders as a screen-filling
-// field of dots that veils the app behind. Lower = denser dots = more opaque veil.
-// Setting this back to exactly 0xffffff so it stays completely pure white and transparent
-// during the transition instead of becoming a gray dither matrix.
-const VEIL_GRAY = new THREE.Color(0xffffff)
-const TRANS_WHITE = new THREE.Color(0xffffff)
+const SWITCH_DUR = 720
 
 type Modal = 'init' | 'enter' | 'leave' | null
 
 interface SceneEntry {
+  name: string
   scene: THREE.Scene
   camera: THREE.PerspectiveCamera
   mesh: THREE.Mesh
   dc: DitheredComposer
+}
+
+interface PlanePose {
+  x: number
+  y: number
+  scale: number
 }
 
 export default function CircleSidebar({ onRitual }: Props) {
@@ -114,10 +107,9 @@ export default function CircleSidebar({ onRitual }: Props) {
     // Single rAF loop: render each icon scene via its own dithered composer → blit
     function loop() {
       rafRef.current = requestAnimationFrame(loop)
-      scenesRef.current.forEach(({ mesh, dc }, id) => {
-        mesh.rotation.x += mesh.userData.rotX
-        mesh.rotation.y += mesh.userData.rotY
-        mesh.rotation.z += mesh.userData.rotZ
+      const now = performance.now()
+      scenesRef.current.forEach(({ name, mesh, dc }, id) => {
+        applyCircleRotation(mesh, name, now)
         dc.composer.render()
         const canvas = canvasMapRef.current.get(id)
         if (canvas) {
@@ -178,19 +170,14 @@ export default function CircleSidebar({ onRitual }: Props) {
 
       const group = makeCircleGeometry(circle.circle_name)
 
-      const p = makeShapeParams(circle.circle_name)
-      group.rotation.x = p.initRotX
-      group.rotation.y = p.initRotY
-      group.userData.rotX = p.rotX
-      group.userData.rotY = p.rotY
-      group.userData.rotZ = p.rotZ
+      applyCircleRotation(group, circle.circle_name)
 
       scene.add(group)
 
       const dc = createDitheredComposer(iconRendererRef.current, scene, camera, 72, 72)
       dc.setExposure(EXPOSURE_ICON)
 
-      scenes.set(circle.circle_id, { scene, camera, mesh: group as unknown as THREE.Mesh, dc })
+      scenes.set(circle.circle_id, { name: circle.circle_name, scene, camera, mesh: group as unknown as THREE.Mesh, dc })
     })
   }, [circles])
 
@@ -199,6 +186,19 @@ export default function CircleSidebar({ onRitual }: Props) {
     if (el) canvasMapRef.current.set(id, el)
     else canvasMapRef.current.delete(id)
   }, [])
+
+  const cloneTransitionShape = (entry: SceneEntry) => {
+    const shape = entry.mesh.clone()
+    shape.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh
+        if (mesh.material) {
+          mesh.material = (mesh.material as THREE.Material).clone()
+        }
+      }
+    })
+    return shape
+  }
 
   // Use a ref to hold the absolute latest activeCircleId to avoid stale closures
   // during fast switching. AppContext provides `activeCircleId` but useCallback 
@@ -213,17 +213,12 @@ export default function CircleSidebar({ onRitual }: Props) {
     if (animatingRef.current || targetId === currentActiveId) return
     const transRenderer = transRendererRef.current
     const transDC = transDCRef.current
-    const entry = scenesRef.current.get(targetId)
-    const iconCanvas = canvasMapRef.current.get(targetId)
+    const targetEntry = scenesRef.current.get(targetId)
+    const currentEntry = currentActiveId ? scenesRef.current.get(currentActiveId) : null
+    const targetCanvas = canvasMapRef.current.get(targetId)
+    const currentCanvas = currentActiveId ? canvasMapRef.current.get(currentActiveId) : null
     
-    const targetCircle = circles.find(c => c.circle_id === targetId)
-    const isTargetDisabled = targetCircle?.disabled
-    
-    const currentCircle = circles.find(c => c.circle_id === currentActiveId)
-    const isCurrentDisabled = currentCircle?.disabled
-    
-    // Skip animation if target is VOID or if we are CURRENTLY in VOID.
-    if (!transRenderer || !transDC || !entry || !iconCanvas || isTargetDisabled || isCurrentDisabled) { 
+    if (!transRenderer || !transDC || !targetEntry || !targetCanvas) { 
       setActiveCircleId(targetId);
       return 
     }
@@ -233,87 +228,88 @@ export default function CircleSidebar({ onRitual }: Props) {
     const transScene = transSceneRef.current
     const transCamera = transCameraRef.current
 
-    // Map the icon's on-screen rect into the transition camera's z=0 plane, so the
-    // overlay shape starts exactly where the little icon sits and at its apparent size.
     const visH = 2 * Math.tan((transCamera.fov * Math.PI) / 180 / 2) * transCamera.position.z
     const visW = visH * transCamera.aspect
-    const rect = iconCanvas.getBoundingClientRect()
-    const cx = rect.left + rect.width / 2
-    const cy = rect.top + rect.height / 2
-    const startX = ((cx / window.innerWidth) * 2 - 1) * (visW / 2)
-    const startY = -((cy / window.innerHeight) * 2 - 1) * (visH / 2)
-    // Shape (radius ~1 → diameter ~2) fills ~80% of the icon box; match that pixel size.
-    const startScale = (rect.height * 0.8) / (2 * (window.innerHeight / visH))
+    const targetRect = targetCanvas.getBoundingClientRect()
+    const currentRect = currentCanvas?.getBoundingClientRect()
+    const dock = document.querySelector('[data-circle-dock] canvas') ?? document.querySelector('[data-circle-dock]')
+    const dockRect = dock?.getBoundingClientRect()
+    if (!dockRect) {
+      setActiveCircleId(targetId)
+      animatingRef.current = false
+      return
+    }
 
-    // Clone the icon's entire Group + current spin pose so it reads as the *same* shape
-    // lifting out of the icon, then hide the real icon for the duration.
-    const shape = entry.mesh.clone()
-
-    // Ensure cloned materials are fully independent so we can modify them without affecting the icon
-    shape.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh
-        if (mesh.material) {
-          mesh.material = (mesh.material as THREE.Material).clone()
-        }
+    const toPlane = (r: DOMRect): PlanePose => {
+      const cx = r.left + r.width / 2
+      const cy = r.top + r.height / 2
+      return {
+        x: ((cx / window.innerWidth) * 2 - 1) * (visW / 2),
+        y: -((cy / window.innerHeight) * 2 - 1) * (visH / 2),
+        scale: (r.height * 0.8) / (2 * (window.innerHeight / visH)),
       }
-    })
+    }
+    const dockPose = toPlane(dockRect)
+    const targetPose = toPlane(targetRect)
+    const currentPose = currentRect ? toPlane(currentRect) : targetPose
 
-    shape.position.set(startX, startY, 0)
-    shape.scale.setScalar(startScale)
-    transScene.add(shape)
-    iconCanvas.style.visibility = 'hidden'
+    const outgoingShape = currentEntry ? cloneTransitionShape(currentEntry) : null
+    const incomingShape = cloneTransitionShape(targetEntry)
+
+    if (outgoingShape) {
+      outgoingShape.position.set(dockPose.x, dockPose.y, 0)
+      outgoingShape.scale.setScalar(dockPose.scale)
+      transScene.add(outgoingShape)
+    }
+    incomingShape.position.set(targetPose.x, targetPose.y, 0)
+    incomingShape.scale.setScalar(targetPose.scale)
+    transScene.add(incomingShape)
+
+    targetCanvas.style.visibility = 'hidden'
+    if (currentCanvas) currentCanvas.style.visibility = 'hidden'
+    if (dock instanceof HTMLElement) dock.style.visibility = 'hidden'
 
     transDC.setExposure(EXPOSURE_ICON)
     transRenderer.domElement.style.display = 'block'
 
     const start = performance.now()
-    let swapped = false
     const tick = () => {
-      const t = Math.min((performance.now() - start) / SWITCH_DUR, 1)
+      const now = performance.now()
+      const p = easeInOut(Math.min((now - start) / SWITCH_DUR, 1))
+      incomingShape.position.set(
+        targetPose.x + (dockPose.x - targetPose.x) * p,
+        targetPose.y + (dockPose.y - targetPose.y) * p,
+        0,
+      )
+      incomingShape.scale.setScalar(targetPose.scale + (dockPose.scale - targetPose.scale) * p)
+      applyCircleRotation(incomingShape, targetEntry.name, now)
 
-      // `out` = 0 at the icon, 1 at screen center+full. Three eased phases:
-      // rise → hold (occult) → return. Spin and dither density intensify in the hold.
-      let out: number, scale: number, exposure = EXPOSURE_ICON, spinMul = 1
-      if (t < T_RISE) {
-        const p = easeInOut(t / T_RISE)
-        out = p
-        scale = startScale + (SWITCH_MAX - startScale) * p
-      } else if (t < T_HOLD) {
-        const hp = (t - T_RISE) / (T_HOLD - T_RISE) // 0 → 1 across the hold
-        out = 1
-        // majestic, very slow levitation breathing instead of erratic pumping
-        scale = SWITCH_MAX * (1 + 0.02 * Math.sin(hp * Math.PI * 3)) 
-        exposure = EXPOSURE_ICON
-        // Slower, heavy, monolithic spinning instead of whirling rapidly
-        spinMul = 0.5 
-      } else {
-        const p = easeInOut((t - T_HOLD) / (1 - T_HOLD))
-        out = 1 - p
-        scale = SWITCH_MAX + (startScale - SWITCH_MAX) * p
+      if (outgoingShape) {
+        outgoingShape.position.set(
+          dockPose.x + (currentPose.x - dockPose.x) * p,
+          dockPose.y + (currentPose.y - dockPose.y) * p,
+          0,
+        )
+        outgoingShape.scale.setScalar(dockPose.scale + (currentPose.scale - dockPose.scale) * p)
+        if (currentEntry) applyCircleRotation(outgoingShape, currentEntry.name, now)
       }
-
-      // Veil the app behind with a screen-filling dither field that follows `out`.
-      ;(transScene.background as THREE.Color).copy(TRANS_WHITE).lerp(VEIL_GRAY, out)
-      shape.position.set(startX * (1 - out), startY * (1 - out), 0)
-      shape.scale.setScalar(scale)
-      shape.rotation.x += 0.018 * spinMul
-      shape.rotation.y += 0.026 * spinMul
-      shape.rotation.z += 0.012 * spinMul // extra axis for an occult twist
-      transDC.setExposure(exposure)
-
-      // Swap the active circle once centered, hidden behind the full-screen dither.
-      if (!swapped && t >= T_RISE) { setActiveCircleId(targetId); swapped = true }
       transDC.composer.render()
-      if (t < 1) {
+      if (p < 1) {
         requestAnimationFrame(tick)
       } else {
-        transScene.remove(shape)
-        // Skip dispose here since shape is a Group cloned from the original Group
-        iconCanvas.style.visibility = ''
-        transRenderer.domElement.style.display = 'none'
-        transDC.setExposure(EXPOSURE_ICON)
-        animatingRef.current = false
+        setActiveCircleId(targetId)
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            transScene.remove(incomingShape)
+            if (outgoingShape) transScene.remove(outgoingShape)
+            targetCanvas.style.visibility = ''
+            if (currentCanvas) currentCanvas.style.visibility = ''
+            if (dock instanceof HTMLElement) dock.style.visibility = ''
+            transRenderer.domElement.style.display = 'none'
+            transDC.setExposure(EXPOSURE_ICON)
+            animatingRef.current = false
+          })
+        })
       }
     }
     requestAnimationFrame(tick)
@@ -370,7 +366,7 @@ export default function CircleSidebar({ onRitual }: Props) {
                 key={circle.circle_id}
                 onClick={() => switchCircle(circle.circle_id)}
                 className={`flex items-center gap-2 p-2 border-2 border-obsidian text-left w-full ${
-                  isActive ? 'bg-obsidian text-alabaster' : 'bg-alabaster text-obsidian hover:bg-obsidian/5'
+                  isActive ? 'circle-row-active bg-alabaster text-obsidian' : 'bg-alabaster text-obsidian hover:bg-obsidian/5'
                 }`}
                 style={{ transition: 'none' }}
               >
@@ -380,14 +376,8 @@ export default function CircleSidebar({ onRitual }: Props) {
                   style={{
                     width: 36, height: 36, flexShrink: 0, display: 'block',
                     imageRendering: 'pixelated',
-                    // On inactive row: multiply blend mode makes the pure white background transparent,
-                    // leaving black dither dots.
-                    // On active row: invert(1) makes the black dots white, and the white background black.
-                    // But standard CSS invert(1) black is #000000, while our tailwind 'obsidian' is #111111.
-                    // By setting mixBlendMode to 'screen' when inverted, the inverted black (#000) becomes 
-                    // transparent against the #111111 container, and only the inverted white dots show through.
-                    filter: isActive ? 'invert(1)' : 'none',
-                    mixBlendMode: isActive ? 'screen' : 'multiply',
+                    mixBlendMode: 'multiply',
+                    opacity: isActive ? 0 : 1,
                   }}
                 />
                 <div className="flex flex-col min-w-0">

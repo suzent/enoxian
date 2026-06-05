@@ -3,6 +3,7 @@ import type { ChatMessage, Member } from '../types'
 import { getChat, postChat, chatStream, getMembers } from '../api'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
+import CircleGlyph from './CircleGlyph'
 
 interface Props {
   onMessage?: () => void
@@ -61,7 +62,7 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender }: BubbleProps) {
 }
 
 export default function ChatPanel({ onMessage, variant = 'rail' }: Props) {
-  const { activeCircleId, status } = useApp()
+  const { activeCircleId, circles, status } = useApp()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [members, setMembers] = useState<Member[]>([])
   const [input, setInput] = useState('')
@@ -157,11 +158,29 @@ export default function ChatPanel({ onMessage, variant = 'rail' }: Props) {
     postChat(activeCircleId, text, status.agent_id).catch(() => {})
   }
 
+  const activeCircle = circles.find(c => c.circle_id === activeCircleId)
+
   return (
     <main className={`app-chat-panel flex min-h-0 flex-col z-10 overflow-hidden ${variant === 'main' ? 'chat-main sys-window' : 'border-r-2 border-obsidian bg-alabaster/85'}`}>
       {variant !== 'main' && (
         <div className="section-header">
           <span>Terminal Log</span>
+        </div>
+      )}
+
+      {variant === 'main' && activeCircle && (
+        <div className={`active-circle-dock${activeCircle.disabled ? ' active-circle-dock--void' : ''}`} data-circle-dock>
+          <div className="active-circle-dock__meta">
+            <span>{activeCircle.circle_name}</span>
+            {activeCircle.disabled && <strong>VOID</strong>}
+          </div>
+          <CircleGlyph
+            name={activeCircle.circle_name}
+            size={88}
+            className="active-circle-dock__glyph"
+            title={activeCircle.circle_name}
+            voided={activeCircle.disabled}
+          />
         </div>
       )}
 

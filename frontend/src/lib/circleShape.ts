@@ -238,3 +238,17 @@ export function makeShapeParams(name: string): ShapeParams {
     rotZ: ((h >> 18) & 1) ? 0.002 : 0,
   }
 }
+
+export function circleRotationAt(name: string, timeMs = performance.now()) {
+  const params = makeShapeParams(name)
+  return {
+    x: params.initRotX + params.rotX * timeMs * 0.06,
+    y: params.initRotY + params.rotY * timeMs * 0.06,
+    z: params.rotZ * timeMs * 0.06,
+  }
+}
+
+export function applyCircleRotation(target: THREE.Object3D, name: string, timeMs = performance.now()) {
+  const rotation = circleRotationAt(name, timeMs)
+  target.rotation.set(rotation.x, rotation.y, rotation.z)
+}

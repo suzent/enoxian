@@ -5,7 +5,6 @@ import EditorPanel from './components/EditorPanel'
 import RightPanel from './components/RightPanel'
 import CircleSidebar from './components/CircleSidebar'
 import Header from './components/Header'
-import VoidOverlay from './components/VoidOverlay'
 import LandingPage from './components/LandingPage'
 import RitualTransition, { type RitualMode } from './components/RitualTransition'
 import { useApp } from './context/AppContext'
@@ -62,10 +61,6 @@ function Layout() {
 
       {revealing && (
         <div className="app-reveal-overlay" onAnimationEnd={() => setRevealing(false)} />
-      )}
-
-      {isVoid && activeCircle && (
-        <VoidOverlay circleName={activeCircle.circle_name} />
       )}
 
       {circles.length > 0 && (
