@@ -60,32 +60,28 @@ export const constrainCursorLabels = ViewPlugin.fromClass(class {
     const lineHeight = this.view.defaultLineHeight
 
     labels.forEach(label => {
-      // Reset any previous override so getBoundingClientRect is accurate.
-      label.style.left = ''
-      label.style.transform = ''
-
       const caret = label.parentElement
       if (!caret) return
 
+      // Measure caret position before touching the label's styles so that
+      // getBoundingClientRect reflects the actual DOM layout.
       const caretRect = caret.getBoundingClientRect()
-      const labelWidth = label.offsetWidth
-      const labelHeight = label.offsetHeight
-
       const caretX = caretRect.left - scrollerRect.left
       const caretY = caretRect.top - scrollerRect.top
 
-      // Flip below the caret when there isn't enough room above. Safari clips
-      // overflow above the scroller top and offsetHeight can be 0 before layout,
-      // so use lineHeight as a conservative stand-in for label height.
-      const estimatedLabelHeight = Math.max(labelHeight, lineHeight)
-      const fitsAbove = caretY - estimatedLabelHeight >= 0
-      if (fitsAbove) {
-        label.style.transform = 'translateY(-100%)'
-      } else {
-        label.style.transform = `translateY(${lineHeight}px)`
-      }
+      // Reset horizontal override only — leave transform alone until we decide.
+      label.style.left = ''
 
-      // Ideal viewport position: label's right edge aligns with the caret.
+      const labelWidth = label.offsetWidth
+
+      // Flip below when there isn't enough room above. Use lineHeight as the
+      // label height estimate: offsetHeight can be 0 in Safari before first layout.
+      const fitsAbove = caretY >= lineHeight
+      label.style.transform = fitsAbove
+        ? 'translateY(-100%)'
+        : `translateY(${lineHeight}px)`
+
+      // Ideal position: label's right edge aligns with the caret.
       let viewportX = caretX - labelWidth
 
       // Clamp: don't go past left edge of scroller content area.

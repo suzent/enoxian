@@ -66,7 +66,6 @@ const enochTheme = EditorView.theme({
     display: 'inline-block',
     top: '0',
     left: '0',
-    transform: 'translateY(-100%)',
     fontSize: '11px',
     fontFamily: "'JetBrains Mono', monospace",
     fontStyle: 'normal',
