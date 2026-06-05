@@ -662,7 +662,7 @@ function FileTree({ nodes, onSelect, onRename, onDelete, openMenu, onOpenMenu, s
                   title={`More actions for ${n.path}`}
                   aria-label={`More actions for ${n.path}`}
                 >
-                  ...
+                  ⋮
                 </button>
               </span>
             )}

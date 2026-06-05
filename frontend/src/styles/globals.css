@@ -1168,9 +1168,16 @@ body {
 
 .file-menu-trigger {
   min-width: 30px;
-  font-size: 13px !important;
+  font-size: 16px !important;
   line-height: 1;
-  letter-spacing: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none !important;
+}
+
+.file-menu-trigger:active {
+  transform: translate(2px, 2px);
 }
 
 .file-menu {
