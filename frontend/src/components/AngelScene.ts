@@ -49,7 +49,7 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
   fillLight.position.set(0, 5, 5)
   scene.add(fillLight)
 
-  renderer.outputColorSpace = THREE.LinearSRGBColorSpace
+  // Keep default SRGBColorSpace — LinearSRGBColorSpace skips gamma and shifts colors
 
   function createStoneTexture() {
     const canvas = document.createElement('canvas')
@@ -699,6 +699,7 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
   function onResize() {
     const nW = window.innerWidth
     const nH = window.innerHeight
+    renderer.setPixelRatio(window.devicePixelRatio)
     renderer.setSize(nW, nH)
     dc.setSize(nW, nH)
     camera.aspect = nW / nH

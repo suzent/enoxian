@@ -152,8 +152,9 @@ export function createDitheredComposer(
     composer,
     ditherPass,
     setSize(w, h) {
-      composer.setSize(w, h)
-      ditherPass.uniforms.uResolution.value.set(w * window.devicePixelRatio, h * window.devicePixelRatio)
+      const dpr = renderer.getPixelRatio()
+      composer.setSize(w * dpr, h * dpr)
+      ditherPass.uniforms.uResolution.value.set(w * dpr, h * dpr)
     },
     setExposure(v) {
       ditherPass.uniforms.uExposure.value = v

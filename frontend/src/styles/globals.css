@@ -332,7 +332,16 @@ select {
 
 .circle-row {
   position: relative;
-  min-height: 56px;
+  min-height: 52px;
+  border: none;
+  border-bottom: 1px solid rgba(0,0,0,0.1);
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.circle-row:last-child {
+  border-bottom: none;
 }
 
 /* Circle list icon mount — base and active states */
@@ -378,16 +387,12 @@ select {
   left: 0; right: 0;
   pointer-events: none;
   z-index: 0;
-  box-shadow: inset 4px 0 0 #000;
-  outline: 1px solid rgba(0,0,0,0.5);
-  outline-offset: -3px;
-  background: var(--bg-alabaster);
+  box-shadow: inset 3px 0 0 #000;
+  background: rgba(0,0,0,0.05);
   transition: top 200ms cubic-bezier(0.34,1.56,0.64,1), height 200ms cubic-bezier(0.34,1.56,0.64,1);
 }
 
 .circle-row-active {
-  box-shadow: none;
-  outline: none;
   background: transparent;
   z-index: 1;
 }
