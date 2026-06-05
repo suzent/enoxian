@@ -51,7 +51,8 @@ select {
   min-height: 0;
   grid-template-areas:
     "circles chat right";
-  grid-template-columns: minmax(160px, 200px) minmax(0, 1fr) minmax(220px, 280px);
+  /* Middle column now has a minimum width of 600px so it never gets crushed */
+  grid-template-columns: minmax(220px, 280px) minmax(600px, 1fr) minmax(280px, 340px);
   grid-template-rows: minmax(0, 1fr);
   gap: 12px;
   padding: 18px;
@@ -808,6 +809,19 @@ select option {
 .mobile-header-btn,
 .mobile-nav {
   display: none;
+}
+
+/* ── Intermediate Tablet/Small Desktop layout (761px - 1200px) ──────────────── */
+@media (max-width: 1200px) and (min-width: 761px) {
+  .app-shell {
+    grid-template-areas:
+      "circles chat";
+    grid-template-columns: minmax(220px, 280px) minmax(600px, 1fr);
+  }
+  
+  .app-right-panel:not(.mobile-drawer *) {
+    display: none !important;
+  }
 }
 
 /* ── Mobile layout (≤ 760px) ─────────────────────────────────────────────── */
