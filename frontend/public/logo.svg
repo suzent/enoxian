@@ -1,0 +1,27 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .shape { fill: #000000; }
+    /* 自动适应系统的深色/浅色模式 */
+    @media (prefers-color-scheme: dark) {
+      .shape { fill: #FFFFFF; }
+    }
+  </style>
+  <defs>
+    <mask id="cutout">
+      <!-- 白色部分为保留区域，黑色部分为掏空区域 -->
+      <rect width="512" height="512" fill="white"/>
+      <!-- 中间的镂空圆环 -->
+      <circle cx="256" cy="288" r="40" fill="black"/>
+    </mask>
+  </defs>
+  
+  <g mask="url(#cutout)">
+    <!-- 巨石碑 (Obelisk) 左侧 -->
+    <polygon class="shape" points="244,32 244,480 120,480 170,160"/>
+    <!-- 巨石碑 (Obelisk) 右侧 -->
+    <polygon class="shape" points="268,32 268,480 392,480 342,160"/>
+  </g>
+  
+  <!-- 中心圆点 -->
+  <circle class="shape" cx="256" cy="288" r="16"/>
+</svg>
