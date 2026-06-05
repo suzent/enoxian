@@ -18,6 +18,9 @@
   --ui-font: 16px;
   --ui-small: 14px;
   --ui-tiny: 13px;
+  --shell-padding: 18px;
+  --shell-gap: 12px;
+  --header-height: 40px;
 }
 
 * {
@@ -175,7 +178,7 @@ select {
 
 .app-header {
   background: #fff;
-  min-height: 40px;
+  min-height: var(--header-height);
   padding: 5px 10px !important;
   font-size: var(--ui-small);
   gap: 12px !important;
@@ -1257,7 +1260,7 @@ select option {
   
   .app-right-panel:not(.mobile-drawer *) {
     position: fixed;
-    top: 82px;
+    top: calc(var(--shell-padding) + var(--header-height) + var(--shell-gap));
     right: 18px;
     bottom: 18px;
     width: min(340px, calc(100vw - 36px));
