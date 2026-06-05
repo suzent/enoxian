@@ -30,7 +30,7 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
     
     // Reveal after the first rendered frame so the transition never exposes an
     // uninitialized WebGL canvas.
-    mount.style.cssText = 'position:fixed;inset:0;z-index:5000;mix-blend-mode:multiply;pointer-events:none;opacity:0;transition:opacity 220ms ease;'
+    mount.style.cssText = 'position:fixed;inset:0;z-index:5000;mix-blend-mode:multiply;pointer-events:none;opacity:0;'
     mount.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
@@ -106,7 +106,7 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
       pPos[i*3+2] = z
     }
     pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3))
-    const pMat = new THREE.PointsMaterial({ size: 0.1, color: 0x888888 })
+    const pMat = new THREE.PointsMaterial({ size: 0.1, color: 0x888888, transparent: true, opacity: 0 })
     const particles = new THREE.Points(pGeo, pMat)
     atmosGroup.add(particles)
 
@@ -134,7 +134,7 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
     const circleGroup = makeCircleGeometry(circleName)
     const circleHome = new THREE.Vector3(0, 0, 0)
     const circleBaseScale = 2.5
-    circleGroup.scale.setScalar(circleBaseScale) // Scale up to be the centerpiece
+    circleGroup.scale.setScalar(1.45)
     root.add(circleGroup)
 
     // Ethereal circular paths
@@ -178,7 +178,7 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
     const easeOutExpo = (t: number) => t >= 1 ? 1 : 1 - Math.pow(2, -10 * t)
     const easeInOut = (t: number) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
     const clamp01 = (v: number) => Math.max(0, Math.min(1, v))
-    let revealed = false
+    const introMs = 900
 
     const getDockWorldTarget = () => {
       const targetEl = document.querySelector('[data-circle-dock] canvas') ?? document.querySelector('[data-circle-dock]')
@@ -199,7 +199,8 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
     const render = (now: number) => {
       const t = (now - started) / 1000
       
-      const et = clamp01((now - started) / 1500)
+      const et = clamp01((now - started) / introMs)
+      const introMotion = easeInOut(et)
       const closeEase = closing ? clamp01((now - started - 4200) / 800) : 0
       const closeMotion = easeInOut(closeEase)
 
@@ -219,14 +220,15 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
       applyCircleRotation(circleGroup, circleName, now)
 
       // Dramatic scene rotation
-      root.rotation.y = t * 0.2 * (1 - closeMotion)
-      root.rotation.x = Math.sin(t * 0.5) * 0.1 * (1 - closeMotion)
+      root.rotation.y = t * 0.2 * introMotion * (1 - closeMotion)
+      root.rotation.x = Math.sin(t * 0.5) * 0.1 * introMotion * (1 - closeMotion)
       root.scale.setScalar(1)
 
       atmosGroup.scale.setScalar(1 + closeMotion * 0.14)
       atmosGroup.visible = closeEase < 0.98
-      ringMat.opacity = 0.6 * (1 - closeMotion * 0.82)
-      pathMaterial.opacity = 0.42 * (1 - closeMotion)
+      pMat.opacity = 0.72 * introMotion * (1 - closeMotion)
+      ringMat.opacity = 0.6 * introMotion * (1 - closeMotion * 0.82)
+      pathMaterial.opacity = 0.42 * introMotion * (1 - closeMotion)
 
       if (closing) {
         root.updateMatrixWorld(true)
@@ -238,25 +240,23 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
         }
       } else {
         circleGroup.position.copy(circleHome)
-        circleGroup.scale.setScalar(circleBaseScale)
+        circleGroup.scale.setScalar(lerp(1.45, circleBaseScale, introMotion))
       }
 
       camera.position.x = 0
       camera.position.y = 0
-      camera.position.z = lerp(4, 16, easeOutExpo(et)) + closeMotion * 1.4
+      camera.position.z = lerp(13, 16, easeOutExpo(et)) + closeMotion * 1.4
       camera.lookAt(0, 0, 0)
 
       // Keep constant exposure
       dc.setExposure(1.8)
 
       dc.composer.render()
-      if (!revealed) {
-        revealed = true
-        mount.style.opacity = '1'
-      }
       if (closing) {
         const dissolve = clamp01((closeEase - 0.72) / 0.28)
         mount.style.opacity = (1 - dissolve).toString()
+      } else {
+        mount.style.opacity = introMotion.toString()
       }
       raf = requestAnimationFrame(render)
     }
