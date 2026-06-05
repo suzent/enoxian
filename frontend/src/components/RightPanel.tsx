@@ -36,6 +36,8 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [inviteCopied, setInviteCopied] = useState(false)
   const [memberActionError, setMemberActionError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'members' | 'tasks' | 'files'>('members')
+  const [confirmModal, setConfirmModal] = useState<{ title: string; subject: string; body?: string; onConfirm: () => void } | null>(null)
+  const [renameModal, setRenameModal] = useState<{ path: string; value: string } | null>(null)
   const selectedFileRef = useRef<string | null>(selectedFile)
 
   useEffect(() => {
@@ -254,33 +256,46 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     }
   }
 
-  const handleRenameFile = async (path: string) => {
+  const handleRenameFile = (path: string) => {
     if (!activeCircleId) return
     setFileMenuOpen(null)
-    const next = window.prompt('Rename file', path)?.trim()
-    if (!next || next === path) return
+    setRenameModal({ path, value: path })
+  }
+
+  const commitRename = async () => {
+    if (!activeCircleId || !renameModal) return
+    const next = renameModal.value.trim()
+    if (!next || next === renameModal.path) { setRenameModal(null); return }
     setFileActionError(null)
     try {
-      await renameFile(activeCircleId, path, next)
+      await renameFile(activeCircleId, renameModal.path, next)
       await refreshFiles()
-      if (selectedFile === path) onFileSelect(next)
+      if (selectedFile === renameModal.path) onFileSelect(next)
+      setRenameModal(null)
     } catch (err: any) {
       setFileActionError(err.message)
+      setRenameModal(null)
     }
   }
 
-  const handleDeleteFile = async (path: string) => {
+  const handleDeleteFile = (path: string) => {
     if (!activeCircleId) return
     setFileMenuOpen(null)
-    if (!window.confirm(`Delete ${path}?`)) return
-    setFileActionError(null)
-    try {
-      await deleteFile(activeCircleId, path)
-      await refreshFiles()
-      if (selectedFile === path) onFileSelect(null)
-    } catch (err: any) {
-      setFileActionError(err.message)
-    }
+    setConfirmModal({
+      title: 'DELETE FILE',
+      subject: path,
+      onConfirm: async () => {
+        setConfirmModal(null)
+        setFileActionError(null)
+        try {
+          await deleteFile(activeCircleId, path)
+          await refreshFiles()
+          if (selectedFile === path) onFileSelect(null)
+        } catch (err: any) {
+          setFileActionError(err.message)
+        }
+      },
+    })
   }
 
   // Build a simple nested tree from flat paths
@@ -314,18 +329,26 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     }
   }
 
-  const handleLeaveCircle = async () => {
+  const handleLeaveCircle = () => {
     if (!activeCircleId || !activeCircle) return
-    if (!window.confirm(`Leave ${activeCircle.circle_name}? Local config will be removed. Workspace files are untouched.`)) return
-    try {
-      await leaveCircle(activeCircleId)
-      await reloadCircles()
-    } catch (err: any) {
-      alert(`Error leaving circle: ${err.message}`)
-    }
+    setConfirmModal({
+      title: 'LEAVE CIRCLE',
+      subject: activeCircle.circle_name,
+      body: 'Local config will be removed. Workspace files are untouched.',
+      onConfirm: async () => {
+        setConfirmModal(null)
+        try {
+          await leaveCircle(activeCircleId)
+          await reloadCircles()
+        } catch (err: any) {
+          setConfirmModal({ title: 'ERROR', subject: err.message, onConfirm: () => setConfirmModal(null) })
+        }
+      },
+    })
   }
 
   return (
+    <>
     <aside className="app-right-panel sys-window flex min-h-0 flex-col z-10 overflow-hidden">
 
       {/* ── Tab bar ─────────────────────────────────────────────────────── */}
@@ -546,6 +569,55 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
       )}
 
     </aside>
+
+    {/* ── Confirm modal (leave / delete) ──────────────────────────────── */}
+    {confirmModal && (
+      <div className="ritual-modal-backdrop">
+        <div className="ritual-panel sys-window">
+          <button onClick={() => setConfirmModal(null)} className="ritual-panel__close" aria-label="Close">×</button>
+          <div className="ritual-panel__header">{confirmModal.title}</div>
+          <div className="ritual-panel__body">
+            <div className="ritual-divider" />
+            <code className="block font-mono text-[11px] font-bold border border-obsidian px-2 py-1 mb-3 bg-white truncate">{confirmModal.subject}</code>
+            {confirmModal.body && <p className="font-mono text-[10px] text-slate mb-3 leading-relaxed">{confirmModal.body}</p>}
+            <div className="ritual-actions">
+              <button className="ritual-btn ritual-btn--primary" onClick={confirmModal.onConfirm}>CONFIRM</button>
+              <button className="ritual-btn ritual-btn--secondary" onClick={() => setConfirmModal(null)}>CANCEL</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* ── Rename modal ────────────────────────────────────────────────── */}
+    {renameModal && (
+      <div className="ritual-modal-backdrop">
+        <div className="ritual-panel sys-window">
+          <button onClick={() => setRenameModal(null)} className="ritual-panel__close" aria-label="Close">×</button>
+          <form onSubmit={e => { e.preventDefault(); commitRename() }} className="ritual-panel__form">
+            <div className="ritual-panel__header">RENAME FILE</div>
+            <div className="ritual-panel__body">
+              <div className="ritual-divider" />
+              <label className="ritual-field">
+                <span className="ritual-label">NEW NAME</span>
+                <input
+                  className="ritual-input"
+                  type="text"
+                  value={renameModal.value}
+                  onChange={e => setRenameModal(m => m ? { ...m, value: e.target.value } : null)}
+                  autoFocus
+                />
+              </label>
+              <div className="ritual-actions">
+                <button type="submit" className="ritual-btn ritual-btn--primary">RENAME</button>
+                <button type="button" className="ritual-btn ritual-btn--secondary" onClick={() => setRenameModal(null)}>CANCEL</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    )}
+    </>
   )
 }
 
