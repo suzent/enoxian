@@ -39,17 +39,17 @@ export default function CircleGlyph({ name, size = 72, className, title, voided 
 
     const group = makeCircleGeometry(name)
     applyCircleRotation(group, name)
-    group.scale.setScalar(voided ? 0.74 : 1)
+    group.scale.setScalar(1)
     scene.add(group)
 
     let ring: THREE.Mesh | null = null
     let slash: THREE.Mesh | null = null
     if (voided) {
       const { smooth } = makeDitherMaterials()
-      ring = new THREE.Mesh(new THREE.TorusGeometry(1.18, 0.045, 8, 96), smooth)
+      ring = new THREE.Mesh(new THREE.TorusGeometry(1.28, 0.045, 8, 96), smooth)
       ring.rotation.x = 0.15
       ring.rotation.z = 0.05
-      slash = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 2.7, 8), smooth.clone())
+      slash = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 3.0, 8), smooth.clone())
       slash.rotation.z = Math.PI / 4
       scene.add(ring, slash)
     }

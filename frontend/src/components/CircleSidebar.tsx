@@ -377,7 +377,7 @@ export default function CircleSidebar({ onRitual }: Props) {
               <button
                 key={circle.circle_id}
                 onClick={() => switchCircle(circle.circle_id)}
-                className={`flex items-center gap-2 p-2 border-2 border-obsidian text-left w-full ${
+                className={`circle-row flex items-center gap-2 p-2 border-2 border-obsidian text-left w-full ${
                   isActive ? 'circle-row-active bg-alabaster text-obsidian' : 'bg-alabaster text-obsidian hover:bg-obsidian/5'
                 }`}
                 style={{ transition: 'none' }}
@@ -396,9 +396,7 @@ export default function CircleSidebar({ onRitual }: Props) {
                   <span className="font-bold truncate tracking-wide">
                     {circle.circle_name}
                   </span>
-                  {circle.disabled && (
-                    <span className="text-[11px] opacity-50 font-bold">VOID</span>
-                  )}
+                  <span className={`circle-row__state${circle.disabled ? '' : ' inactive'}`}>VOID</span>
                 </div>
               </button>
             )
@@ -415,7 +413,7 @@ export default function CircleSidebar({ onRitual }: Props) {
             className={`border-t-2 border-obsidian px-3 py-2 text-[13px] font-bold tracking-widest w-full flex items-center justify-center gap-2 ${
               !activeCircle.disabled
                 ? 'bg-obsidian text-alabaster hover:opacity-80'
-                : 'bg-alabaster text-slate border-dashed hover:bg-obsidian/5'
+                : 'bg-alabaster text-slate hover:bg-obsidian/5'
             }`}
             title={activeCircle.disabled
               ? 'Summon the circle into manifest reality'

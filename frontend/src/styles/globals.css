@@ -108,10 +108,11 @@ select {
 
 /* ── Void state — circle is disabled/dormant ─────────────────────────────── */
 
-/* All panels get dashed borders and slight desaturation in void state */
 .app-shell--void .sys-window {
-  border: 2px dashed rgba(0, 0, 0, 0.45);
-  background: rgba(255, 255, 255, 0.88);
+  border: 2px solid var(--fg-obsidian);
+  background: #fff;
+  outline: 2px dashed rgba(0, 0, 0, 0.45);
+  outline-offset: -2px;
 }
 
 /* Section headers become lighter */
@@ -207,6 +208,7 @@ select {
 }
 
 .active-circle-dock {
+  position: relative;
   min-height: 116px;
   border-bottom: 2px solid #000;
   background: #fff;
@@ -222,8 +224,8 @@ select {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  align-items: flex-end;
+  gap: 4px;
   font-family: var(--font-mono);
   font-size: var(--ui-small);
   font-weight: 800;
@@ -240,10 +242,14 @@ select {
 .active-circle-dock__meta strong {
   color: var(--fg-slate);
   font-size: var(--ui-tiny);
+  font-weight: 800;
+  line-height: 1;
+  min-height: 1em;
 }
 
-.active-circle-dock__glyph {
-  flex: 0 0 auto;
+.active-circle-dock__meta strong.inactive,
+.circle-row__state.inactive {
+  visibility: hidden;
 }
 
 .active-circle-dock--void {
@@ -256,6 +262,23 @@ select {
   box-shadow: inset 7px 0 0 #000;
   outline: 1px solid #000;
   outline-offset: -5px;
+}
+
+.circle-row {
+  position: relative;
+  min-height: 56px;
+}
+
+.circle-row__state {
+  color: var(--fg-slate);
+  font-size: var(--ui-tiny);
+  font-weight: 800;
+  line-height: 1;
+  min-height: 1em;
+}
+
+.active-circle-dock__glyph {
+  flex: 0 0 auto;
 }
 
 .ritual-modal-backdrop {

@@ -172,7 +172,7 @@ export default function ChatPanel({ onMessage, variant = 'rail' }: Props) {
         <div className={`active-circle-dock${activeCircle.disabled ? ' active-circle-dock--void' : ''}`} data-circle-dock>
           <div className="active-circle-dock__meta">
             <span>{activeCircle.circle_name}</span>
-            {activeCircle.disabled && <strong>VOID</strong>}
+            <strong className={activeCircle.disabled ? '' : 'inactive'}>VOID</strong>
           </div>
           <CircleGlyph
             name={activeCircle.circle_name}
