@@ -57,6 +57,8 @@ export const constrainCursorLabels = ViewPlugin.fromClass(class {
       this.forceSafariRepaint()
     }
 
+    const lineHeight = this.view.defaultLineHeight
+
     labels.forEach(label => {
       // Reset any previous override so getBoundingClientRect is accurate.
       label.style.left = ''
@@ -67,12 +69,21 @@ export const constrainCursorLabels = ViewPlugin.fromClass(class {
 
       const caretRect = caret.getBoundingClientRect()
       const labelWidth = label.offsetWidth
+      const labelHeight = label.offsetHeight
 
       const caretX = caretRect.left - scrollerRect.left
+      const caretY = caretRect.top - scrollerRect.top
+
+      // Flip below the caret when there isn't enough room above (Safari clips
+      // overflow above the scroller top; other browsers respect overflow-clip-margin).
+      const fitsAbove = caretY - labelHeight >= 0
+      if (fitsAbove) {
+        label.style.transform = 'translateY(-100%)'
+      } else {
+        label.style.transform = `translateY(${lineHeight}px)`
+      }
 
       // Ideal viewport position: label's right edge aligns with the caret.
-      // The label itself is absolutely positioned inside the caret widget, so
-      // we clamp in scroller coordinates and convert back to caret-local left.
       let viewportX = caretX - labelWidth
 
       // Clamp: don't go past left edge of scroller content area.
@@ -84,7 +95,6 @@ export const constrainCursorLabels = ViewPlugin.fromClass(class {
       if (viewportX > maxX) viewportX = maxX
 
       label.style.left = `${viewportX - caretX}px`
-      label.style.transform = 'translateY(-100%)'
     })
   }
 })
