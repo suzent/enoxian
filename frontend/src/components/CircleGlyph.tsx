@@ -2,11 +2,15 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { applyCircleRotation, makeCircleGeometry } from '../lib/circleShape'
 import {
-  addDitherLights,
   createDitheredComposer,
-  EXPOSURE_ICON,
   makeDitherMaterials,
 } from '../lib/ditherShader'
+import {
+  CIRCLE_EXPOSURE,
+  createCircleCamera,
+  createCircleRenderer,
+  prepareCircleScene,
+} from '../lib/circleRender'
 
 interface Props {
   name: string
@@ -23,19 +27,14 @@ export default function CircleGlyph({ name, size = 72, className, title, voided 
     const canvas = canvasRef.current
     if (!canvas) return
 
-    const renderer = new THREE.WebGLRenderer({ antialias: false })
-    renderer.setPixelRatio(1)
-    renderer.setClearColor(0xffffff, 1)
-    renderer.setSize(size, size)
+    const renderer = createCircleRenderer(size, size)
     renderer.domElement.style.cssText = 'position:fixed;top:-9999px;left:-9999px;pointer-events:none;'
     document.body.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0xffffff)
-    addDitherLights(scene)
+    prepareCircleScene(scene)
 
-    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100)
-    camera.position.z = 2.8
+    const camera = createCircleCamera()
 
     const group = makeCircleGeometry(name)
     applyCircleRotation(group, name)
@@ -55,7 +54,7 @@ export default function CircleGlyph({ name, size = 72, className, title, voided 
     }
 
     const dc = createDitheredComposer(renderer, scene, camera, size, size)
-    dc.setExposure(EXPOSURE_ICON)
+    dc.setExposure(CIRCLE_EXPOSURE)
 
     let raf = 0
     const tick = () => {

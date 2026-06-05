@@ -179,7 +179,7 @@ export const EXPOSURE_FADE_START = 4.0
 /** Target exposure for the void overlay (subtle ambient dither effect). */
 export const EXPOSURE_VOID = 2.4
 /** Target exposure for icons (slightly denser to show shape at small size). */
-export const EXPOSURE_ICON = 1.1
+export const EXPOSURE_ICON = 1.45
 /** Transition peak — fully overexposed = all-white canvas (the "blackout" between circles). */
 export const EXPOSURE_TRANSITION_PEAK = 5.0
 

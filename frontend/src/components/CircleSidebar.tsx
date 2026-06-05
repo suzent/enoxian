@@ -5,16 +5,23 @@ import { initCircle, enterCircle, getIdentity } from '../api'
 import { applyCircleRotation, makeCircleGeometry } from '../lib/circleShape'
 import {
   createDitheredComposer,
-  addDitherLights,
   type DitheredComposer,
-  EXPOSURE_ICON,
   easeInOut,
 } from '../lib/ditherShader'
+import {
+  CIRCLE_EXPOSURE,
+  createCircleCamera,
+  createCircleRenderer,
+  prepareCircleScene,
+  rectCenterOnCameraPlane,
+  scaleForRect,
+} from '../lib/circleRender'
 import type { RitualMode } from './RitualTransition'
 
 interface Props {
   onRitual?: (mode: RitualMode, label?: string) => void
   ritualCircleName?: string
+  onSwitchingCircle?: (name: string | null) => void
 }
 
 const SWITCH_DUR = 720
@@ -25,7 +32,7 @@ interface SceneEntry {
   name: string
   scene: THREE.Scene
   camera: THREE.PerspectiveCamera
-  mesh: THREE.Mesh
+  mesh: THREE.Group
   dc: DitheredComposer
 }
 
@@ -34,7 +41,7 @@ interface PlanePose {
   y: number
 }
 
-export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
+export default function CircleSidebar({ onRitual, ritualCircleName, onSwitchingCircle }: Props) {
   const { circles, activeCircleId, setActiveCircleId, reloadCircles } = useApp()
 
   const [modal, setModal] = useState<Modal>(null)
@@ -72,28 +79,21 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
   // Bootstrap Three.js renderers once
   useEffect(() => {
     // Shared icon renderer (white bg — mix-blend-mode:multiply makes white transparent)
-    const iconRenderer = new THREE.WebGLRenderer({ antialias: false })
-    iconRenderer.setPixelRatio(1)
-    iconRenderer.setClearColor(0xffffff, 1)
-    iconRenderer.setSize(72, 72)
+    const iconRenderer = createCircleRenderer(72, 72)
     iconRenderer.domElement.style.cssText = 'position:fixed;top:-9999px;left:-9999px;pointer-events:none;'
     document.body.appendChild(iconRenderer.domElement)
     iconRendererRef.current = iconRenderer
 
     // Full-screen transition renderer + dithered composer (white bg → transparent
     // via mix-blend-mode:multiply; the dithered shape shows through over the UI).
-    const transRenderer = new THREE.WebGLRenderer({ antialias: false })
-    transRenderer.setSize(window.innerWidth, window.innerHeight)
-    transRenderer.setPixelRatio(1)
-    transRenderer.setClearColor(0xffffff, 1)
+    const transRenderer = createCircleRenderer(window.innerWidth, window.innerHeight)
     transRenderer.domElement.style.cssText =
       'position:fixed;inset:0;z-index:1000;pointer-events:none;display:none;mix-blend-mode:multiply;'
     document.body.appendChild(transRenderer.domElement)
     transRendererRef.current = transRenderer
 
     const transScene = transSceneRef.current
-    transScene.background = new THREE.Color(0xffffff)
-    addDitherLights(transScene)
+    prepareCircleScene(transScene)
 
     const transCamera = transCameraRef.current
     transCamera.position.z = 5
@@ -104,7 +104,7 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
       transRenderer, transScene, transCamera,
       window.innerWidth, window.innerHeight,
     )
-    transDC.setExposure(EXPOSURE_ICON)
+    transDC.setExposure(CIRCLE_EXPOSURE)
     transDCRef.current = transDC
 
     const onResize = () => {
@@ -174,11 +174,9 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
     circles.forEach(circle => {
       if (scenes.has(circle.circle_id) || !iconRendererRef.current) return
       const scene = new THREE.Scene()
-      scene.background = new THREE.Color(0xffffff)
-      addDitherLights(scene)
+      prepareCircleScene(scene)
 
-      const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100)
-      camera.position.z = 2.8
+      const camera = createCircleCamera()
 
       const group = makeCircleGeometry(circle.circle_name)
 
@@ -187,9 +185,9 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
       scene.add(group)
 
       const dc = createDitheredComposer(iconRendererRef.current, scene, camera, 72, 72)
-      dc.setExposure(EXPOSURE_ICON)
+      dc.setExposure(CIRCLE_EXPOSURE)
 
-      scenes.set(circle.circle_id, { name: circle.circle_name, scene, camera, mesh: group as unknown as THREE.Mesh, dc })
+      scenes.set(circle.circle_id, { name: circle.circle_name, scene, camera, mesh: group, dc })
     })
   }, [circles])
 
@@ -251,15 +249,7 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
     }
 
     const toPlane = (r: DOMRect): PlanePose => {
-      const ndc = new THREE.Vector3(
-        ((r.left + r.width / 2) / window.innerWidth) * 2 - 1,
-        -((r.top + r.height / 2) / window.innerHeight) * 2 + 1,
-        0.5,
-      )
-      ndc.unproject(transCamera)
-      const direction = ndc.sub(transCamera.position).normalize()
-      const distance = -transCamera.position.z / direction.z
-      const world = transCamera.position.clone().add(direction.multiplyScalar(distance))
+      const world = rectCenterOnCameraPlane(r, transCamera)
       return {
         x: world.x,
         y: world.y,
@@ -271,19 +261,10 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
 
     const outgoingShape = currentEntry ? cloneTransitionShape(currentEntry) : null
     const incomingShape = cloneTransitionShape(targetEntry)
-    const visibleHeight = 2 * transCamera.position.z * Math.tan(THREE.MathUtils.degToRad(transCamera.fov) / 2)
-    const unitsPerPixel = visibleHeight / window.innerHeight
-    const scaleFor = (shape: THREE.Object3D, rect: DOMRect) => {
-      const box = new THREE.Box3().setFromObject(shape)
-      const size = new THREE.Vector3()
-      box.getSize(size)
-      const maxDimension = Math.max(size.x, size.y, 0.001)
-      return (Math.min(rect.width, rect.height) * unitsPerPixel) / maxDimension
-    }
-    const incomingTargetScale = scaleFor(incomingShape, targetRect)
-    const incomingDockScale = scaleFor(incomingShape, dockRect)
-    const outgoingDockScale = outgoingShape ? scaleFor(outgoingShape, dockRect) : 1
-    const outgoingTargetScale = outgoingShape && currentRect ? scaleFor(outgoingShape, currentRect) : outgoingDockScale
+    const incomingTargetScale = scaleForRect(incomingShape, targetRect, transCamera)
+    const incomingDockScale = scaleForRect(incomingShape, dockRect, transCamera)
+    const outgoingDockScale = outgoingShape ? scaleForRect(outgoingShape, dockRect, transCamera) : 1
+    const outgoingTargetScale = outgoingShape && currentRect ? scaleForRect(outgoingShape, currentRect, transCamera) : outgoingDockScale
 
     if (outgoingShape) {
       outgoingShape.position.set(dockPose.x, dockPose.y, 0)
@@ -298,7 +279,9 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
     if (currentCanvas) currentCanvas.style.visibility = 'hidden'
     if (dock instanceof HTMLElement) dock.style.visibility = 'hidden'
 
-    transDC.setExposure(EXPOSURE_ICON)
+    onSwitchingCircle?.(targetEntry.name)
+    setActiveCircleId(targetId)
+    transDC.setExposure(CIRCLE_EXPOSURE)
     transRenderer.domElement.style.display = 'block'
 
     const start = performance.now()
@@ -326,7 +309,6 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
       if (p < 1) {
         requestAnimationFrame(tick)
       } else {
-        setActiveCircleId(targetId)
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
             transScene.remove(incomingShape)
@@ -335,14 +317,15 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
             if (currentCanvas) currentCanvas.style.visibility = ''
             if (dock instanceof HTMLElement) dock.style.visibility = ''
             transRenderer.domElement.style.display = 'none'
-            transDC.setExposure(EXPOSURE_ICON)
+            transDC.setExposure(CIRCLE_EXPOSURE)
+            onSwitchingCircle?.(null)
             animatingRef.current = false
           })
         })
       }
     }
     requestAnimationFrame(tick)
-  }, [activeCircleId, setActiveCircleId, circles])
+  }, [activeCircleId, setActiveCircleId, circles, onSwitchingCircle])
 
   // Modal handlers
   const handleInit = async (e: React.FormEvent) => {

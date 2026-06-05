@@ -1,7 +1,14 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
-import { addDitherLights, createDitheredComposer, EXPOSURE_ICON } from '../lib/ditherShader'
+import { createDitheredComposer } from '../lib/ditherShader'
 import { makeCircleGeometry, applyCircleRotation } from '../lib/circleShape'
+import {
+  CIRCLE_EXPOSURE,
+  objectMaxDimension,
+  prepareCircleScene,
+  rectCenterOnCameraPlane,
+  scaleForRectDimension,
+} from '../lib/circleRender'
 
 export type RitualMode = 'init' | 'enter'
 
@@ -34,19 +41,17 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
     mount.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0xffffff) // VEIL_GRAY pure white to avoid dither noise
+    prepareCircleScene(scene)
 
     const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 150)
     const baseCamPos = new THREE.Vector3(0, 0, 16)
     camera.position.copy(baseCamPos)
     camera.lookAt(0, 0, 0)
 
-    addDitherLights(scene)
-
     renderer.outputColorSpace = THREE.LinearSRGBColorSpace
 
     const dc = createDitheredComposer(renderer, scene, camera, W, H)
-    dc.setExposure(EXPOSURE_ICON)
+    dc.setExposure(CIRCLE_EXPOSURE)
 
     const root = new THREE.Group()
     scene.add(root)
@@ -121,12 +126,9 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
     const circleGroup = makeCircleGeometry(circleName)
     const circleHome = new THREE.Vector3(0, 0, 0)
     const circleBaseScale = 2.5
+    const circleMaxDimension = objectMaxDimension(circleGroup)
     circleGroup.scale.setScalar(1.45)
     root.add(circleGroup)
-    const circleBounds = new THREE.Box3().setFromObject(circleGroup)
-    const circleSize = new THREE.Vector3()
-    circleBounds.getSize(circleSize)
-    const circleMaxDimension = Math.max(circleSize.x, circleSize.y, 0.001) / 1.45
 
     // Ethereal circular paths
     const pathMaterial = new THREE.LineBasicMaterial({ color: 0x111111, transparent: true, opacity: 0.42 })
@@ -176,18 +178,8 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
       if (!targetEl) return null
 
       const rect = targetEl.getBoundingClientRect()
-      const ndc = new THREE.Vector3(
-        ((rect.left + rect.width / 2) / window.innerWidth) * 2 - 1,
-        -((rect.top + rect.height / 2) / window.innerHeight) * 2 + 1,
-        0.5,
-      )
-      ndc.unproject(camera)
-      const direction = ndc.sub(camera.position).normalize()
-      const distance = -camera.position.z / direction.z
-      const world = camera.position.clone().add(direction.multiplyScalar(distance))
-      const visibleHeight = 2 * camera.position.z * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)
-      const unitsPerPixel = visibleHeight / window.innerHeight
-      const scale = (Math.min(rect.width, rect.height) * unitsPerPixel) / circleMaxDimension
+      const world = rectCenterOnCameraPlane(rect, camera)
+      const scale = scaleForRectDimension(circleMaxDimension, rect, camera)
       return { world, scale }
     }
 
@@ -243,7 +235,7 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
       camera.position.z = lerp(13, 16, easeOutExpo(et)) + closeMotion * 1.4
       camera.lookAt(0, 0, 0)
 
-      dc.setExposure(EXPOSURE_ICON)
+      dc.setExposure(CIRCLE_EXPOSURE)
 
       dc.composer.render()
       if (closing) {

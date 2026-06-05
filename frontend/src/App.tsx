@@ -20,6 +20,7 @@ function Layout() {
   const [showLanding, setShowLanding] = useState(false)
   const [revealing, setRevealing] = useState(false)
   const [mobileDrawer, setMobileDrawer] = useState<MobileDrawer>(null)
+  const [switchingCircleName, setSwitchingCircleName] = useState<string | null>(null)
 
   const handleEntered = useCallback(() => {
     setShowLanding(false)
@@ -74,14 +75,15 @@ function Layout() {
           {/* Desktop sidebar */}
           <CircleSidebar
             onRitual={(mode, label) => setRitual({ mode, label })}
-            ritualCircleName={ritual?.label}
+            ritualCircleName={ritual?.label ?? switchingCircleName ?? undefined}
+            onSwitchingCircle={setSwitchingCircleName}
           />
 
           {/* Desktop chat */}
           <div className="desktop-chat">
             {selectedFile
               ? <EditorPanel filePath={selectedFile} onBack={() => setSelectedFile(null)} />
-              : <ChatPanel variant="main" hideActiveCircleGlyph={!!ritual} />}
+              : <ChatPanel variant="main" hideActiveCircleGlyph={!!ritual || !!switchingCircleName} />}
           </div>
 
           {/* Desktop right panel */}
@@ -92,12 +94,13 @@ function Layout() {
             <div className="mobile-main">
               {selectedFile
                 ? <EditorPanel filePath={selectedFile} onBack={() => setSelectedFile(null)} />
-              : <ChatPanel variant="main" hideActiveCircleGlyph={!!ritual} />}
+              : <ChatPanel variant="main" hideActiveCircleGlyph={!!ritual || !!switchingCircleName} />}
             </div>
             <div className={`mobile-drawer mobile-drawer--left${mobileDrawer === 'circles' ? ' open' : ''}`}>
               <CircleSidebar
                 onRitual={(mode, label) => { setRitual({ mode, label }); setMobileDrawer(null) }}
-                ritualCircleName={ritual?.label}
+                ritualCircleName={ritual?.label ?? switchingCircleName ?? undefined}
+                onSwitchingCircle={setSwitchingCircleName}
               />
             </div>
             <div className={`mobile-drawer mobile-drawer--right${mobileDrawer === 'info' ? ' open' : ''}`}>
