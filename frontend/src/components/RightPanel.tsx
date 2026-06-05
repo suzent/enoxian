@@ -486,7 +486,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
         <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
           <div className="section-header">
             <span>TASK QUEUE</span>
-            <button onClick={() => setCreating(v => !v)}>{creating ? 'CANCEL' : '+'}</button>
+            <button onClick={() => setCreating(v => !v)}>{creating ? 'x' : '+'}</button>
           </div>
           {creating && (
             <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px]">
