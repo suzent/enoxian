@@ -531,9 +531,8 @@ select {
   inset: 0;
   z-index: 5000;
   overflow: hidden;
-  background: #f7f7f2;
+  background: transparent;
   color: #111;
-  animation: ritual-arrive 460ms steps(8, end) both;
 }
 
 .ritual-canvas {
