@@ -1,5 +1,7 @@
 use crate::config;
 use anyhow::{bail, Result};
+#[cfg(unix)]
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
