@@ -844,7 +844,7 @@ function FileTree({ nodes, onSelect, onRename, onDelete, openMenu, onOpenMenu, s
               className="file-name"
               onClick={() => {
                 if (n.isDir) setOpen(s => { const ns = new Set(s); ns.has(n.path) ? ns.delete(n.path) : ns.add(n.path); return ns })
-                else onSelect(n.path)
+                else { onOpenMenu(null); onSelect(n.path) }
               }}
               title={n.path}
             >
@@ -863,8 +863,8 @@ function FileTree({ nodes, onSelect, onRename, onDelete, openMenu, onOpenMenu, s
                 </button>
                 {openMenu === n.path && (
                   <div className="file-menu file-menu-inline">
-                    <button onClick={() => onRename(n.path)}>Rename</button>
-                    <button onClick={() => onDelete(n.path)}>Delete</button>
+                    <button className="file-menu-item" onClick={() => onRename(n.path)}>Rename</button>
+                    <button className="file-menu-item" onClick={() => onDelete(n.path)}>Delete</button>
                   </div>
                 )}
               </span>

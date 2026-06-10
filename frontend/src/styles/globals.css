@@ -1079,14 +1079,14 @@ body {
   background: #fff;
 }
 
-.app-right-panel button,
+.app-right-panel button:not(.file-menu-trigger):not(.file-name):not(.file-menu-item),
 .app-circle-panel button,
 .circle-menu button {
   border-color: #000 !important;
   border-width: 1px !important;
 }
 
-.app-right-panel button:hover,
+.app-right-panel button:not(.file-menu-trigger):not(.file-name):not(.file-menu-item):hover,
 .app-circle-panel button:hover,
 .circle-menu button:hover {
   background:
@@ -1095,6 +1095,14 @@ body {
   background-size: 100% 3px !important;
   color: #000 !important;
 }
+
+.file-menu-trigger {
+  background: transparent !important;
+  background-size: unset !important;
+  color: inherit !important;
+  border: none !important;
+}
+
 
 .cm-gutters {
   background: #fff !important;
@@ -1261,8 +1269,9 @@ body {
 .file-menu button {
   border: 0 !important;
   border-bottom: 1px solid rgba(0,0,0,0.15) !important;
-  background: #fff;
-  color: #000;
+  background: #fff !important;
+  background-size: unset !important;
+  color: #000 !important;
   min-height: 28px;
   text-align: left;
   font-weight: 700;
@@ -1271,16 +1280,13 @@ body {
 }
 
 .file-menu button:hover {
-  background: #000;
-  color: #fff;
+  background: #000 !important;
+  background-size: unset !important;
+  color: #fff !important;
 }
 
 .file-menu button:last-child {
   border-bottom: 0 !important;
-}
-
-.file-row.selected .file-actions button {
-  color: #fff;
 }
 
 /* Allow cursor name labels (absolutely positioned, may paint outside scroll viewport)
