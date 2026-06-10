@@ -13,6 +13,7 @@ pub mod invite;
 pub mod lifecycle;
 pub mod network;
 pub mod presence;
+pub mod proposal;
 pub mod resolve;
 pub mod state;
 pub mod store;
