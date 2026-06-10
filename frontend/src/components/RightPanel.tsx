@@ -743,6 +743,51 @@ function buildUserGroups(members: Member[], presenceList: Presence[], selfAgentI
   return Array.from(byOwner.entries()).map(([owner, devices]) => ({ owner, devices }))
 }
 
+// ── File icons ────────────────────────────────────────────────────────────────
+
+const SvgIcon = ({ d, d2 }: { d: string; d2?: string }) => (
+  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="square" className="shrink-0 mt-px" aria-hidden="true">
+    <path d={d} />
+    {d2 && <path d={d2} />}
+  </svg>
+)
+
+function FileIcon({ name, isDir, isOpen }: { name: string; isDir: boolean; isOpen: boolean }) {
+  if (isDir) {
+    return isOpen
+      ? <SvgIcon d="M1 4.5h14v9H1zM1 4.5l2-3h5l1.5 1.5" />
+      : <SvgIcon d="M1 4.5h14v9H1zM1 4.5l2-3h4.5l1.5 1.5" />
+  }
+  const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : ''
+  // Code / markup
+  if (['ts','tsx','js','jsx','mjs','cjs'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M5.5 9.5l-2 1.5 2 1.5M10.5 9.5l2 1.5-2 1.5" />
+  if (['rs','go','py','rb','java','c','cpp','h','cs','swift','kt'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M5 8.5h6M5 11.5h4" />
+  if (['html','htm','xml','svg','vue'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M5 8l-2 2 2 2M11 8l2 2-2 2" />
+  if (['css','scss','sass','less'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M5 8.5c0-1 1.5-1.5 3-0.5s3 0.5 3-0.5" />
+  // Data / config
+  if (['json','jsonc','json5'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M6 8l-1.5 2 1.5 2M10 8l1.5 2-1.5 2M8 7v2" />
+  if (['toml','yaml','yml','env','ini','cfg','conf'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M5 7.5h6M5 10h4M5 12.5h5" />
+  // Docs
+  if (['md','mdx','txt','rst','adoc'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M5 8h6M5 10.5h6M5 13h4" />
+  if (['pdf'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M5 8.5c0 1.5 2 1.5 2 0V8M9 8v4M11 8h2" />
+  // Images
+  if (['png','jpg','jpeg','gif','webp','ico','bmp','avif'].includes(ext))
+    return <SvgIcon d="M2 2h12v12H2zM2 10l3.5-3.5 3 3 2-2 3.5 3.5" d2="M10.5 5.5a1 1 0 1 1 0 .001" />
+  // Lock / key files
+  if (['pem','key','crt','cer','p12','pfx'].includes(ext))
+    return <SvgIcon d="M5 7V5a3 3 0 0 1 6 0v2h1v6H4V7zM8 10v1.5" />
+  // Generic fallback — plain document
+  return <SvgIcon d="M2 1.5h8l4 4v9H2z" d2="M10 1.5v4h4" />
+}
+
 // ── File tree ─────────────────────────────────────────────────────────────────
 
 interface TreeNode {
@@ -803,7 +848,10 @@ function FileTree({ nodes, onSelect, onRename, onDelete, openMenu, onOpenMenu, s
               }}
               title={n.path}
             >
-              <span>{n.isDir ? (open.has(n.path) ? '[-] ' : '[+] ') : '    '}{n.name}</span>
+              <span className="flex items-center gap-1.5 min-w-0">
+                <FileIcon name={n.name} isDir={n.isDir} isOpen={open.has(n.path)} />
+                <span className="truncate">{n.name}</span>
+              </span>
             </button>
             {!n.isDir && (
               <span className="file-actions">
