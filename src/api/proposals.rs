@@ -235,6 +235,8 @@ async fn set_status(
         )
             .into_response();
     }
+    // Replicate the decision so every device reflects the new status.
+    crate::proposal::sync::publish_proposal(&state, &store, &proposal);
     let status_str = serde_json::to_value(new_status)
         .ok()
         .and_then(|v| v.as_str().map(String::from))

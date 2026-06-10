@@ -18,3 +18,4 @@ pub mod policy;
 pub mod session;
 pub mod snapshot;
 pub mod store;
+pub mod sync;

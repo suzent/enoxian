@@ -257,6 +257,8 @@ fn create_proposal(
         status,
         proposal.changed_paths.len()
     );
+    // Replicate to every peer so all devices show the same review history.
+    super::sync::publish_proposal(state, store, &proposal);
     let _ = state.events.send(CircleEvent::ProposalCreated {
         proposal_id: proposal.id,
     });
