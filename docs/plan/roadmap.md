@@ -99,7 +99,9 @@ clients. It should not be treated as a public relay endpoint.
 
 ### M14 — Local Workspace Proposals
 
-**Status:** Planned
+**Status:** In progress — ambient flow, review API, frontend, CLI, and
+cross-device replication are built. Remaining: the managed-process /
+claimed-session launch surfaces (`enox agent run`, `enox session start/finish`).
 
 Add an agent-agnostic proposal layer so local agents, editors, scripts, and
 tools can make arbitrary filesystem changes in the normal workspace while
@@ -126,28 +128,32 @@ validates the pipeline before remote triggers add complexity.
 **Tasks (in order):**
 
 1. Foundation
-   - [ ] Content-addressed blob store.
-   - [ ] Snapshot manifest format.
-   - [ ] Snapshot journal for ambient workspace edits (before-blob capture).
+   - [x] Content-addressed blob store. (`src/proposal/blob.rs`)
+   - [x] Snapshot manifest format. (`src/proposal/snapshot.rs`)
+   - [x] Snapshot journal for ambient workspace edits (before-blob capture).
+         (`src/proposal/journal.rs`)
 2. Ambient proposal flow
-   - [ ] Dirty proposal grouping by idle window/session.
-   - [ ] Snapshot diff generation.
-   - [ ] Three-way merge against current canonical state.
-   - [ ] Proposal records in the control/event layer.
-   - [ ] CLI: proposal list/show/accept/reject/revert.
+   - [x] Dirty proposal grouping by idle window/session. (`src/proposal/engine.rs`)
+   - [x] Snapshot diff generation. (`src/proposal/diff.rs`)
+   - [x] Three-way merge against current canonical state. (`src/proposal/merge.rs`)
+   - [x] Proposal records in the control/event layer, replicated cross-device.
+         (`src/proposal/sync.rs`, control-doc `proposals` map)
+   - [x] CLI: proposal list/show/accept/reject/revert.
+         (`src/commands/proposals.rs`)
 3. Sessions and attribution
-   - [ ] Local change session model with attribution confidence.
+   - [x] Local change session model with attribution confidence.
+         (`src/proposal/session.rs`)
    - [ ] CLI: session start/finish (claimed session mode).
 4. Trigger layer
-   - [ ] Circle trigger protocol: `agent_triggered` event schema, replication,
-         status replies.
-   - [ ] Daemon trigger handler: local allowlist, agent registry config,
-         launch-on-trigger.
+   - [x] Circle trigger protocol: `agent_triggered` event schema, replication,
+         status replies. (`src/trigger/`)
+   - [x] Daemon trigger handler: local allowlist, agent registry config,
+         launch-on-trigger. (`src/trigger/handler.rs`, `src/trigger/registry.rs`)
 5. Hardening and UX
    - [ ] Managed process mode (`enox agent run`) with optional sandbox.
-   - [ ] Acceptance policy: auto-accept with history for local triggers,
-         pending review for remote-member triggers.
-   - [ ] Frontend proposal review/history view.
+   - [x] Acceptance policy: auto-accept with history for local triggers,
+         pending review for remote-member triggers. (`src/proposal/policy.rs`)
+   - [x] Frontend proposal review/history view. (`frontend/.../ProposalsTab.tsx`)
    - [ ] Optional sandbox/manual fork mode for high-risk managed runs.
 
 The proposal watcher is a new layer alongside the existing CRDT sync watcher

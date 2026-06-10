@@ -128,6 +128,37 @@ pub enum AgentCommands {
     },
     /// Manage this device's identity (label, user linking)
     Identity(IdentityArgs),
+    /// Review workspace change proposals (list, show, accept, reject, revert)
+    Proposal(ProposalArgs),
+}
+
+#[derive(clap::Args)]
+pub struct ProposalArgs {
+    #[command(subcommand)]
+    pub action: ProposalAction,
+}
+
+#[derive(Subcommand)]
+pub enum ProposalAction {
+    /// List proposals (newest first)
+    List,
+    /// Show a proposal's metadata and per-file diff
+    Show {
+        /// Proposal id (full or unambiguous prefix accepted by the daemon)
+        id: String,
+    },
+    /// Accept a pending proposal (keep the changes)
+    Accept {
+        id: String,
+    },
+    /// Reject a pending proposal (restore files to their pre-change state)
+    Reject {
+        id: String,
+    },
+    /// Revert a previously accepted proposal
+    Revert {
+        id: String,
+    },
 }
 
 #[derive(clap::Args)]

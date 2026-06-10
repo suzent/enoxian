@@ -16,6 +16,7 @@ pub mod init;
 pub mod invite;
 pub mod leave;
 pub mod member;
+pub mod proposals;
 pub mod release;
 pub mod rendezvous;
 pub mod serve;
