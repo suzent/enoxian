@@ -83,6 +83,11 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     // operations trigger both.
     // Value is the author label: None = local device, Some(label) = remote peer.
     let mut interactive: BTreeMap<String, Option<String>> = BTreeMap::new();
+    // Snapshot captured when the first interactive write of a batch arrives.
+    // Diffing against this (rather than the rolling baseline) means that rapid
+    // sequential edits — e.g. add-line then revert arriving >3s apart via slow
+    // P2P sync — still collapse into a single proposal covering the net change.
+    let mut interactive_baseline: Option<Snapshot> = None;
     let mut rescan = false;
     // Paths the review API restored (reject/revert), mapped to the exact blob
     // hash the restoration wrote (None = path deleted). Changes that land on
@@ -107,7 +112,12 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             msg = interactive_rx.recv() => match msg {
-                Ok((path, author)) => { interactive.entry(path).or_insert(author); }
+                Ok((path, author)) => {
+                    if interactive_baseline.is_none() {
+                        interactive_baseline = Some(baseline.clone());
+                    }
+                    interactive.entry(path).or_insert(author);
+                }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     // Unknown interactive writes were dropped; a rescan will
                     // surface them as pending proposals — noisy but never lossy.
@@ -139,8 +149,16 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 rescan = false;
                 dirty.clear();
 
-                let diff = SnapshotDiff::between(&baseline, &result);
-                if diff.is_empty() {
+                // For ambient (agent) paths diff against the rolling baseline.
+                // For interactive paths diff against the snapshot taken when the
+                // first write of this batch arrived — this collapses multi-window
+                // round-trips (e.g. add-line then revert arriving >3s apart over
+                // slow P2P sync) into one net-change proposal instead of two.
+                let ibas = interactive_baseline.take().unwrap_or_else(|| baseline.clone());
+                let agent_diff = SnapshotDiff::between(&baseline, &result);
+                let interactive_diff = SnapshotDiff::between(&ibas, &result);
+
+                if agent_diff.is_empty() && interactive_diff.is_empty() {
                     expected.clear();
                     interactive.clear();
                     continue;
@@ -154,7 +172,9 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 // Map author_label -> paths, so each distinct author gets its own proposal.
                 let mut interactive_by_author: BTreeMap<Option<String>, Vec<String>> = BTreeMap::new();
                 let mut agent_paths: Vec<String> = Vec::new();
-                for path in diff.changed_paths() {
+
+                // Classify interactive-touched paths using the interactive diff.
+                for path in interactive_diff.changed_paths() {
                     let restored = expected.get(&path).is_some_and(|want| {
                         result.files.get(&path).map(|e| &e.hash) == want.as_ref()
                     });
@@ -162,6 +182,20 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                         folded += 1;
                     } else if let Some(author) = interactive.get(&path) {
                         interactive_by_author.entry(author.clone()).or_default().push(path);
+                    }
+                    // If interactive_diff has it but it's expected-restored, already counted.
+                }
+
+                // Classify agent-touched paths using the agent diff (paths not in interactive).
+                for path in agent_diff.changed_paths() {
+                    if interactive.contains_key(&path) {
+                        continue; // already handled above
+                    }
+                    let restored = expected.get(&path).is_some_and(|want| {
+                        result.files.get(&path).map(|e| &e.hash) == want.as_ref()
+                    });
+                    if restored {
+                        folded += 1;
                     } else {
                         agent_paths.push(path);
                     }
@@ -173,7 +207,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 for (author, paths) in interactive_by_author {
                     let label = author.as_deref().unwrap_or(&device_label);
                     create_proposal(
-                        &state, &store, &baseline, &result, paths, label,
+                        &state, &store, &ibas, &result, paths, label,
                         ProposalSource::Interactive, ProposalStatus::Accepted,
                     )?;
                 }
