@@ -10,6 +10,42 @@ interface Props {
   selectedFile: string | null
 }
 
+const TAB_ICONS = {
+  members: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square">
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M2.5 19.5c0-3.6 2.9-5.8 6.5-5.8s6.5 2.2 6.5 5.8" />
+      <circle cx="17.5" cy="9.5" r="2.5" />
+      <path d="M16.5 14.2c2.9.4 5 2.4 5 5.3" />
+    </svg>
+  ),
+  tasks: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square">
+      <path d="M3.5 5.5l2 2 3.5-4" />
+      <line x1="12" y1="6" x2="21" y2="6" />
+      <path d="M3.5 13.5l2 2 3.5-4" />
+      <line x1="12" y1="14" x2="21" y2="14" />
+      <line x1="12" y1="20" x2="21" y2="20" />
+    </svg>
+  ),
+  files: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square">
+      <path d="M6 2.5h8l4.5 4.5v14.5H6z" />
+      <path d="M14 2.5V7h4.5" />
+      <line x1="9" y1="12" x2="15.5" y2="12" />
+      <line x1="9" y1="16" x2="15.5" y2="16" />
+    </svg>
+  ),
+  changes: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square">
+      <line x1="7" y1="3.5" x2="7" y2="10.5" />
+      <line x1="3.5" y1="7" x2="10.5" y2="7" />
+      <line x1="13.5" y1="17" x2="20.5" y2="17" />
+      <line x1="3.5" y1="21" x2="20.5" y2="13.5" opacity="0.35" />
+    </svg>
+  ),
+} as const
+
 function age(isoStr: string) {
   const secs = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000)
   if (secs < 60) return 'just now'
@@ -370,19 +406,24 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
       <div className="flex shrink-0 border-b-2 border-obsidian">
         {(['members', 'tasks', 'files', 'changes'] as const).map((tab, i) => {
           const pendingProposals = proposals.filter(p => p.status === 'pending').length
-          let label: string = tab.toUpperCase()
-          if (tab === 'members' && pending.length > 0) label = `MEMBERS (${pending.length})`
-          if (tab === 'changes' && pendingProposals > 0) label = `CHANGES (${pendingProposals})`
+          const count = tab === 'members' ? pending.length : tab === 'changes' ? pendingProposals : 0
           return (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`flex-1 py-1.5 text-[9px] font-bold tracking-widest font-mono uppercase whitespace-nowrap overflow-hidden min-w-0 ${
+              className={`flex-1 py-2.5 font-bold font-mono whitespace-nowrap overflow-hidden min-w-0 flex items-center justify-center gap-1.5 ${
                 i < 3 ? 'border-r-2 border-obsidian' : ''
               } ${activeTab === tab ? 'tab-active' : 'hover:bg-obsidian/5'}`}
               style={{ transition: 'none' }}
+              title={`${tab.toUpperCase()}${count > 0 ? ` — ${count} pending` : ''}`}
+              aria-label={`${tab}${count > 0 ? ` (${count} pending)` : ''}`}
             >
-              {label}
+              <span className="flex items-center" aria-hidden="true">{TAB_ICONS[tab]}</span>
+              {count > 0 && (
+                <span className="shrink-0 text-[9px] font-bold leading-none px-1 py-0.5 border border-current" aria-hidden="true">
+                  {count > 99 ? '99+' : count}
+                </span>
+              )}
             </button>
           )
         })}
