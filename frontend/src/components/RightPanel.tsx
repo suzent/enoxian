@@ -12,7 +12,7 @@ interface Props {
 
 const TAB_ICONS = {
   members: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square">
       <circle cx="9" cy="8" r="3.5" />
       <path d="M2.5 19.5c0-3.6 2.9-5.8 6.5-5.8s6.5 2.2 6.5 5.8" />
       <circle cx="17.5" cy="9.5" r="2.5" />
@@ -20,7 +20,7 @@ const TAB_ICONS = {
     </svg>
   ),
   tasks: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square">
       <path d="M3.5 5.5l2 2 3.5-4" />
       <line x1="12" y1="6" x2="21" y2="6" />
       <path d="M3.5 13.5l2 2 3.5-4" />
@@ -29,7 +29,7 @@ const TAB_ICONS = {
     </svg>
   ),
   files: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square">
       <path d="M6 2.5h8l4.5 4.5v14.5H6z" />
       <path d="M14 2.5V7h4.5" />
       <line x1="9" y1="12" x2="15.5" y2="12" />
@@ -37,7 +37,7 @@ const TAB_ICONS = {
     </svg>
   ),
   changes: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square">
       <line x1="7" y1="3.5" x2="7" y2="10.5" />
       <line x1="3.5" y1="7" x2="10.5" y2="7" />
       <line x1="13.5" y1="17" x2="20.5" y2="17" />
@@ -407,20 +407,26 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
         {(['members', 'tasks', 'files', 'changes'] as const).map((tab, i) => {
           const pendingProposals = proposals.filter(p => p.status === 'pending').length
           const count = tab === 'members' ? pending.length : tab === 'changes' ? pendingProposals : 0
+          const isActive = activeTab === tab
           return (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`flex-1 py-2.5 font-bold font-mono whitespace-nowrap overflow-hidden min-w-0 flex items-center justify-center gap-1.5 ${
+              className={`relative flex-1 py-3.5 font-bold font-mono min-w-0 flex flex-col items-center justify-center gap-1 ${
                 i < 3 ? 'border-r-2 border-obsidian' : ''
-              } ${activeTab === tab ? 'tab-active' : 'hover:bg-obsidian/5'}`}
+              } ${isActive ? 'bg-obsidian text-alabaster' : 'hover:bg-obsidian/8 text-obsidian/60 hover:text-obsidian'}`}
               style={{ transition: 'none' }}
               title={`${tab.toUpperCase()}${count > 0 ? ` — ${count} pending` : ''}`}
               aria-label={`${tab}${count > 0 ? ` (${count} pending)` : ''}`}
             >
               <span className="flex items-center" aria-hidden="true">{TAB_ICONS[tab]}</span>
               {count > 0 && (
-                <span className="shrink-0 text-[9px] font-bold leading-none px-1 py-0.5 border border-current" aria-hidden="true">
+                <span
+                  className={`absolute top-1.5 right-1.5 text-[8px] font-bold leading-none px-1 py-0.5 border ${
+                    isActive ? 'border-alabaster/60 text-alabaster' : 'border-obsidian text-obsidian'
+                  }`}
+                  aria-hidden="true"
+                >
                   {count > 99 ? '99+' : count}
                 </span>
               )}
