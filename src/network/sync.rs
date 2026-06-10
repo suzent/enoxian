@@ -54,41 +54,6 @@ async fn write_frame<W: AsyncWriteExt + Unpin>(w: &mut W, path: &str, data: &[u8
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decodes_legacy_session_id() {
-        let session_id = 42_u64;
-        assert_eq!(
-            decode_session_hello(&session_id.to_be_bytes()).unwrap(),
-            PeerSession {
-                circle_id: None,
-                session_id,
-            }
-        );
-    }
-
-    #[test]
-    fn decodes_session_hello_with_circle_id() {
-        let hello = SessionHello {
-            circle_id: "circle-123".to_string(),
-            session_id: 99,
-        };
-        let mut bytes = SESSION_HELLO_MAGIC.to_vec();
-        bytes.extend_from_slice(&serde_json::to_vec(&hello).unwrap());
-
-        assert_eq!(
-            decode_session_hello(&bytes).unwrap(),
-            PeerSession {
-                circle_id: Some("circle-123".to_string()),
-                session_id: 99,
-            }
-        );
-    }
-}
-
 async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<(String, Vec<u8>)> {
     let mut u32buf = [0u8; 4];
     r.read_exact(&mut u32buf).await?;
@@ -748,4 +713,39 @@ async fn sync_inner(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_legacy_session_id() {
+        let session_id = 42_u64;
+        assert_eq!(
+            decode_session_hello(&session_id.to_be_bytes()).unwrap(),
+            PeerSession {
+                circle_id: None,
+                session_id,
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_session_hello_with_circle_id() {
+        let hello = SessionHello {
+            circle_id: "circle-123".to_string(),
+            session_id: 99,
+        };
+        let mut bytes = SESSION_HELLO_MAGIC.to_vec();
+        bytes.extend_from_slice(&serde_json::to_vec(&hello).unwrap());
+
+        assert_eq!(
+            decode_session_hello(&bytes).unwrap(),
+            PeerSession {
+                circle_id: Some("circle-123".to_string()),
+                session_id: 99,
+            }
+        );
+    }
 }
