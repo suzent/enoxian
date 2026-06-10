@@ -52,6 +52,11 @@ pub struct AppState {
     /// its baseline without creating proposals — they are already
     /// user-visible live edits, not reviewable agent changes.
     pub interactive_writes: broadcast::Sender<String>,
+    /// (path, expected blob hash) written by the proposal review API when a
+    /// reject/revert restores files (None = path deleted). The engine folds
+    /// matching changes into its baseline silently so review decisions never
+    /// spawn follow-up proposals.
+    pub review_writes: broadcast::Sender<(String, Option<String>)>,
     /// Per-path flag: set to true before flush_to_disk writes, cleared by watcher on receipt.
     /// Shared between the file watcher and flush_to_disk so they operate on the same flag.
     pub self_write_flags: Arc<DashMap<String, Arc<AtomicBool>>>,
@@ -68,6 +73,7 @@ impl AppState {
     pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, circle_dir: PathBuf, admin_pubkey_hex: String, agent_id: String, session_id: u64, peer_id: String, join_policy: crate::config::JoinPolicy, owner: String, mls: crate::mls::SharedMlsState) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (interactive_writes_tx, _) = broadcast::channel(EVENT_CAPACITY);
+        let (review_writes_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_awareness_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_deletes_tx, _) = broadcast::channel(EVENT_CAPACITY);
@@ -175,6 +181,7 @@ impl AppState {
             all_deletes: all_deletes_tx,
             events: events_tx,
             interactive_writes: interactive_writes_tx,
+            review_writes: review_writes_tx,
             self_write_flags: Arc::new(DashMap::new()),
             join_policy,
             owner,

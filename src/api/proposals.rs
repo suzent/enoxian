@@ -5,6 +5,8 @@
 
 use crate::control::CircleEvent;
 use crate::daemon::DaemonState;
+use crate::proposal::blob::BlobStore;
+use crate::proposal::merge::{reverse_apply, RestoreOutcome};
 use crate::proposal::model::{Proposal, ProposalStatus};
 use crate::proposal::store::ProposalStore;
 use axum::{
@@ -153,40 +155,74 @@ async fn set_status(
             .into_response();
     }
 
-    // Reject and revert both restore every changed path to its base-snapshot
-    // state before marking the proposal. The watcher sees these writes as
-    // external edits, so the restoration itself shows up as a follow-up
-    // proposal — an honest audit trail.
+    // Reject and revert reverse-apply this proposal's change — git revert,
+    // not git reset. Later edits to the same files are preserved via a
+    // line-level three-way merge; genuine overlaps abort with 409 before
+    // anything is written.
     if matches!(new_status, ProposalStatus::Rejected | ProposalStatus::Reverted) {
-        let base = match store.load_snapshot(&proposal.base_snapshot) {
-            Ok(b) => b,
-            Err(_) => {
+        let (base, result) = match (
+            store.load_snapshot(&proposal.base_snapshot),
+            store.load_snapshot(&proposal.result_snapshot),
+        ) {
+            (Ok(b), Ok(r)) => (b, r),
+            _ => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "base snapshot missing"})),
+                    Json(json!({"error": "snapshot missing for proposal"})),
                 )
                     .into_response();
             }
         };
+
+        // Dry-run every path first so a conflict aborts with nothing written.
+        let mut writes: Vec<(String, RestoreOutcome)> = Vec::new();
+        let mut conflicts: Vec<String> = Vec::new();
         for path in &proposal.changed_paths {
+            let base_bytes = base.files.get(path).and_then(|e| store.blobs.get(&e.hash).ok());
+            let result_bytes = result.files.get(path).and_then(|e| store.blobs.get(&e.hash).ok());
+            let current = std::fs::read(state.workspace.join(path)).ok();
+            match reverse_apply(base_bytes.as_deref(), result_bytes.as_deref(), current.as_deref()) {
+                RestoreOutcome::Conflict => conflicts.push(path.clone()),
+                outcome => writes.push((path.clone(), outcome)),
+            }
+        }
+        if !conflicts.is_empty() {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "later changes overlap this proposal; resolve the files manually, then retry",
+                    "conflicts": conflicts,
+                })),
+            )
+                .into_response();
+        }
+
+        for (path, outcome) in &writes {
             let abs = state.workspace.join(path);
-            match base.files.get(path).and_then(|e| store.blobs.get(&e.hash).ok()) {
-                Some(content) => {
+            match outcome {
+                RestoreOutcome::Unchanged => {}
+                RestoreOutcome::Write(content) => {
                     if let Some(parent) = abs.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
-                    if let Err(e) = std::fs::write(&abs, &content) {
+                    if let Err(e) = std::fs::write(&abs, content) {
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
                             Json(json!({"error": format!("restoring {path}: {e}")})),
                         )
                             .into_response();
                     }
+                    // Tell the engine the exact content this path lands on so
+                    // the restoration folds into the baseline silently.
+                    let _ = state
+                        .review_writes
+                        .send((path.clone(), Some(BlobStore::hash(content))));
                 }
-                // Path did not exist at the base snapshot — remove it.
-                None => {
+                RestoreOutcome::Delete => {
                     let _ = std::fs::remove_file(&abs);
+                    let _ = state.review_writes.send((path.clone(), None));
                 }
+                RestoreOutcome::Conflict => unreachable!("conflicts abort above"),
             }
         }
     }

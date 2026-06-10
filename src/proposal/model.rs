@@ -18,6 +18,10 @@ pub enum ProposalStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ProposalSource {
     Ambient,
+    /// Live edits through the daemon's own interactive surfaces (browser
+    /// editor, P2P CRDT sync, UI file operations). Auto-accepted: recorded
+    /// for history and revert, never held for review.
+    Interactive,
     ChatTrigger,
     ManagedProcess,
     ClaimedSession,

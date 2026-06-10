@@ -19,7 +19,7 @@
 //! before the live loop starts.
 
 use super::diff::SnapshotDiff;
-use super::model::Proposal;
+use super::model::{Proposal, ProposalSource, ProposalStatus};
 use super::snapshot::{FileEntry, Snapshot};
 use super::store::ProposalStore;
 use crate::control::CircleEvent;
@@ -56,7 +56,11 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 prev
             } else {
                 store.save_snapshot(&disk)?;
-                create_proposal(&state, &store, &prev, &disk, diff.changed_paths(), &device_label)?;
+                create_proposal(
+                    &state, &store, &prev, &disk, diff.changed_paths(), &device_label,
+                    ProposalSource::Ambient, ProposalStatus::Pending,
+                )?;
+                store.set_baseline(&disk.id)?;
                 disk
             }
         }
@@ -70,19 +74,19 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
 
     let mut events = state.events.subscribe();
     let mut interactive_rx = state.interactive_writes.subscribe();
+    let mut review_rx = state.review_writes.subscribe();
     let mut dirty: BTreeSet<String> = BTreeSet::new();
     // Paths written by interactive surfaces (browser editor, P2P CRDT sync,
     // UI file operations). These are live edits the user already saw happen —
-    // they fold into the baseline instead of becoming proposals. Interactive
-    // membership wins over watcher dirtiness because UI file operations
-    // trigger both.
+    // they become auto-accepted proposals (history + revert, no review).
+    // Interactive membership wins over watcher dirtiness because UI file
+    // operations trigger both.
     let mut interactive: BTreeSet<String> = BTreeSet::new();
     let mut rescan = false;
-    // Paths the review API is restoring (reject/revert), mapped to the blob
-    // hash they are expected to return to (None = the path is being deleted
-    // because it did not exist in the base snapshot). Changes that match an
-    // expectation are folded into the baseline without a new proposal —
-    // otherwise every reject would propose the opposite change, forever.
+    // Paths the review API restored (reject/revert), mapped to the exact blob
+    // hash the restoration wrote (None = path deleted). Changes that land on
+    // the announced content fold into the baseline without a proposal —
+    // otherwise every review decision would spawn a follow-up proposal.
     let mut expected: BTreeMap<String, Option<String>> = BTreeMap::new();
 
     loop {
@@ -91,20 +95,6 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
             evt = events.recv() => match evt {
                 Ok(CircleEvent::FileUpdated { path }) | Ok(CircleEvent::FileDeleted { path }) => {
                     dirty.insert(path);
-                }
-                Ok(CircleEvent::ProposalUpdated { proposal_id, status })
-                    if status == "rejected" || status == "reverted" =>
-                {
-                    if let Ok(p) = store.load_proposal(&proposal_id) {
-                        if let Ok(base) = store.load_snapshot(&p.base_snapshot) {
-                            for path in &p.changed_paths {
-                                expected.insert(
-                                    path.clone(),
-                                    base.files.get(path).map(|e| e.hash.clone()),
-                                );
-                            }
-                        }
-                    }
                 }
                 Ok(_) => {}
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -119,8 +109,17 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 Ok(path) => { interactive.insert(path); }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     // Unknown interactive writes were dropped; a rescan will
-                    // surface them as proposals — noisy but never lossy.
+                    // surface them as pending proposals — noisy but never lossy.
                     tracing::warn!("[proposal] interactive stream lagged by {n}");
+                    rescan = true;
+                    dirty.insert(String::new());
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            announced = review_rx.recv() => match announced {
+                Ok((path, hash)) => { expected.insert(path, hash); }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("[proposal] review stream lagged by {n}");
                     rescan = true;
                     dirty.insert(String::new());
                 }
@@ -145,30 +144,45 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     continue;
                 }
 
-                // Split the window into changes that fold silently into the
-                // baseline (review restorations that landed on exactly the
-                // expected content, and interactive live edits) and genuine
-                // agent/script changes that need review.
-                let (folded, changed): (Vec<String>, Vec<String>) =
-                    diff.changed_paths().into_iter().partition(|path| {
-                        interactive.contains(path)
-                            || expected.get(path).is_some_and(|want| {
-                                result.files.get(path).map(|e| &e.hash) == want.as_ref()
-                            })
+                // Three buckets per changed path:
+                //   review restoration landing on its announced content -> fold
+                //   interactive live edit  -> auto-accepted proposal
+                //   anything else          -> pending proposal for review
+                let mut folded = 0usize;
+                let mut interactive_paths: Vec<String> = Vec::new();
+                let mut agent_paths: Vec<String> = Vec::new();
+                for path in diff.changed_paths() {
+                    let restored = expected.get(&path).is_some_and(|want| {
+                        result.files.get(&path).map(|e| &e.hash) == want.as_ref()
                     });
+                    if restored {
+                        folded += 1;
+                    } else if interactive.contains(&path) {
+                        interactive_paths.push(path);
+                    } else {
+                        agent_paths.push(path);
+                    }
+                }
                 expected.clear();
                 interactive.clear();
 
                 store.save_snapshot(&result)?;
-                if changed.is_empty() {
-                    store.set_baseline(&result.id)?;
-                    tracing::info!(
-                        "[proposal] folded {} restored/interactive paths into baseline",
-                        folded.len()
-                    );
-                } else {
-                    create_proposal(&state, &store, &baseline, &result, changed, &device_label)?;
+                if !interactive_paths.is_empty() {
+                    create_proposal(
+                        &state, &store, &baseline, &result, interactive_paths, &device_label,
+                        ProposalSource::Interactive, ProposalStatus::Accepted,
+                    )?;
                 }
+                if !agent_paths.is_empty() {
+                    create_proposal(
+                        &state, &store, &baseline, &result, agent_paths, &device_label,
+                        ProposalSource::Ambient, ProposalStatus::Pending,
+                    )?;
+                }
+                if folded > 0 {
+                    tracing::info!("[proposal] folded {folded} review-restored paths into baseline");
+                }
+                store.set_baseline(&result.id)?;
                 baseline = result;
             }
         }
@@ -176,6 +190,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_proposal(
     state: &AppState,
     store: &ProposalStore,
@@ -183,6 +198,8 @@ fn create_proposal(
     result: &Snapshot,
     changed_paths: Vec<String>,
     device_label: &str,
+    source: ProposalSource,
+    status: ProposalStatus,
 ) -> anyhow::Result<()> {
     let mut proposal = Proposal::ambient(
         state.circle_id.clone(),
@@ -190,13 +207,16 @@ fn create_proposal(
         result.id.clone(),
         changed_paths,
     );
+    proposal.source = source;
+    proposal.status = status;
     proposal.origin_peer_id = state.peer_id.clone();
     proposal.origin_device = device_label.to_string();
     store.save_proposal(&proposal)?;
-    store.set_baseline(&result.id)?;
     tracing::info!(
-        "[proposal] created {} ({} paths)",
+        "[proposal] created {} ({:?}/{:?}, {} paths)",
         proposal.id,
+        source,
+        status,
         proposal.changed_paths.len()
     );
     let _ = state.events.send(CircleEvent::ProposalCreated {
