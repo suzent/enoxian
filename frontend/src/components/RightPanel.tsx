@@ -38,10 +38,8 @@ const TAB_ICONS = {
   ),
   changes: (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square">
-      <line x1="7" y1="3.5" x2="7" y2="10.5" />
-      <line x1="3.5" y1="7" x2="10.5" y2="7" />
-      <line x1="13.5" y1="17" x2="20.5" y2="17" />
-      <line x1="3.5" y1="21" x2="20.5" y2="13.5" opacity="0.35" />
+      <circle cx="12" cy="12" r="9" />
+      <polyline points="12 7 12 12 15.5 15.5" />
     </svg>
   ),
 } as const

@@ -16,13 +16,13 @@ function age(isoStr: string) {
   return `${Math.floor(secs / 3600)}h ago`
 }
 
-const STATUS_STYLE: Record<Proposal['status'], string> = {
-  pending: 'border-obsidian bg-obsidian text-alabaster',
-  accepted: 'border-obsidian',
-  synced: 'border-obsidian',
-  conflicted: 'border-obsidian text-obsidian',
-  rejected: 'border-slate text-slate',
-  reverted: 'border-slate text-slate line-through',
+const STATUS_STYLE: Record<Proposal['status'], { pill: string; dot: string }> = {
+  pending:    { pill: 'border-obsidian bg-obsidian text-alabaster', dot: 'bg-obsidian' },
+  accepted:   { pill: 'border-obsidian text-obsidian',              dot: 'bg-obsidian' },
+  synced:     { pill: 'border-obsidian text-obsidian',              dot: 'bg-obsidian' },
+  conflicted: { pill: 'border-amber-600 text-amber-700',            dot: 'bg-amber-500' },
+  rejected:   { pill: 'border-slate/40 text-slate/60',              dot: 'bg-slate/30' },
+  reverted:   { pill: 'border-slate/40 text-slate/60',              dot: 'bg-slate/30' },
 }
 
 export default function ProposalsTab({ circleId, proposals, onChanged }: Props) {
@@ -65,66 +65,82 @@ export default function ProposalsTab({ circleId, proposals, onChanged }: Props) 
       <div className="section-header">
         <span>WORKSPACE CHANGES</span>
       </div>
-      <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2 font-mono text-[11px]">
-        {proposals.length === 0 && <div className="text-slate">NO CHANGES CAPTURED</div>}
+      <div className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-2 font-mono text-[11px]">
+        {proposals.length === 0 && <div className="text-slate px-1">NO CHANGES CAPTURED</div>}
         {actionError && <div className="file-error">{actionError}</div>}
-        {proposals.map(p => (
-          <div key={p.id} className="flex flex-col gap-1 pb-2 border-b border-dashed border-obsidian/20 last:border-0">
-            <button onClick={() => toggle(p.id)} className="flex justify-between items-start gap-2 text-left w-full">
-              <span className="font-bold leading-tight truncate" title={p.changed_paths.join(', ')}>
-                {p.changed_paths.length === 1
-                  ? p.changed_paths[0]
-                  : `${p.changed_paths.length} files changed`}
-              </span>
-              <span className={`shrink-0 text-[9px] font-bold px-1 border ${STATUS_STYLE[p.status]}`}>
-                {p.status.toUpperCase()}
-              </span>
-            </button>
-            <div className="flex justify-between gap-2 text-[9px] text-slate">
-              <span className="truncate" title={p.origin_peer_id || undefined}>
-                {p.actor_id ?? p.actor_hint ?? p.source}
-                {p.origin_device ? ` @ ${p.origin_device}` : ''}
-              </span>
-              <span className="shrink-0">{age(p.created_at)}</span>
-            </div>
+        {proposals.map(p => {
+          const st = STATUS_STYLE[p.status]
+          const isExpanded = expanded === p.id
+          const actor = p.actor_id ?? p.actor_hint ?? p.source
+          const label = p.changed_paths.length === 1
+            ? p.changed_paths[0]
+            : `${p.changed_paths.length} files`
+          return (
+            <div key={p.id} className={`border border-obsidian/25 ${isExpanded ? 'border-obsidian/60' : 'hover:border-obsidian/45'}`}>
+              {/* Card header — always visible */}
+              <button
+                onClick={() => toggle(p.id)}
+                className="w-full flex items-center gap-2 px-2.5 py-2 text-left"
+              >
+                {/* Status dot */}
+                <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${st.dot}`} aria-hidden="true" />
+                {/* Filename(s) */}
+                <span className="flex-1 font-bold truncate min-w-0" title={p.changed_paths.join(', ')}>
+                  {label}
+                </span>
+                {/* Status pill */}
+                <span className={`shrink-0 text-[8px] font-bold tracking-wide px-1.5 py-0.5 border ${st.pill}`}>
+                  {p.status.toUpperCase()}
+                </span>
+              </button>
 
-            {expanded === p.id && (
-              <div className="flex flex-col gap-2 mt-1">
-                {!detail && !actionError && <div className="text-[9px] text-slate">LOADING…</div>}
-                {detail?.files.map(f => (
-                  <div key={f.path} className="border border-obsidian/30">
-                    <div className="flex justify-between px-2 py-1 border-b border-dashed border-obsidian/20">
-                      <span className="font-bold truncate" title={f.path}>{f.path}</span>
-                      <span className="text-[9px] text-slate shrink-0">{f.change.toUpperCase()}</span>
-                    </div>
-                    {f.binary ? (
-                      <div className="px-2 py-1 text-[9px] text-slate">BINARY</div>
-                    ) : (
-                      <FileDiffView file={f} />
-                    )}
-                  </div>
-                ))}
-                {p.status === 'pending' && detail && (
-                  <div className="flex gap-2">
-                    <button disabled={busy} onClick={() => act(acceptProposal, p.id)}
-                      className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold disabled:opacity-50"
-                      title="Keep these changes">ACCEPT</button>
-                    <button disabled={busy} onClick={() => act(rejectProposal, p.id)}
-                      className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold disabled:opacity-50"
-                      title="Restore all changed files to their pre-change state">REJECT</button>
-                  </div>
-                )}
-                {p.status === 'accepted' && detail && (
-                  <div className="flex gap-2">
-                    <button disabled={busy} onClick={() => act(revertProposal, p.id)}
-                      className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold disabled:opacity-50"
-                      title="Undo this accepted change — restore files to their pre-change state">REVERT</button>
-                  </div>
-                )}
+              {/* Meta row */}
+              <div className="flex items-center justify-between px-2.5 pb-2 text-[9px] text-slate/70">
+                <span className="truncate min-w-0" title={p.origin_peer_id || undefined}>
+                  {actor}{p.origin_device ? <span className="text-slate/40"> @ {p.origin_device}</span> : ''}
+                </span>
+                <span className="shrink-0 ml-2">{age(p.created_at)}</span>
               </div>
-            )}
-          </div>
-        ))}
+
+              {/* Expanded diff + actions */}
+              {isExpanded && (
+                <div className="border-t border-dashed border-obsidian/20 flex flex-col gap-2 p-2.5">
+                  {!detail && !actionError && <div className="text-[9px] text-slate">LOADING…</div>}
+                  {detail?.files.map(f => (
+                    <div key={f.path} className="border border-obsidian/30">
+                      <div className="flex justify-between px-2 py-1 bg-obsidian/4 border-b border-dashed border-obsidian/20">
+                        <span className="font-bold truncate text-[10px]" title={f.path}>{f.path}</span>
+                        <span className="text-[8px] text-slate shrink-0 ml-2">{f.change.toUpperCase()}</span>
+                      </div>
+                      {f.binary ? (
+                        <div className="px-2 py-1 text-[9px] text-slate">BINARY</div>
+                      ) : (
+                        <FileDiffView file={f} />
+                      )}
+                    </div>
+                  ))}
+                  {p.status === 'pending' && detail && (
+                    <div className="flex gap-1.5 pt-0.5">
+                      <button disabled={busy} onClick={() => act(acceptProposal, p.id)}
+                        className="text-[9px] border border-obsidian px-2.5 py-1 hover:bg-obsidian hover:text-alabaster font-bold disabled:opacity-50"
+                        title="Keep these changes">ACCEPT</button>
+                      <button disabled={busy} onClick={() => act(rejectProposal, p.id)}
+                        className="text-[9px] border border-obsidian/50 px-2.5 py-1 hover:bg-obsidian hover:text-alabaster font-bold disabled:opacity-50 text-obsidian/70"
+                        title="Restore all changed files to their pre-change state">REJECT</button>
+                    </div>
+                  )}
+                  {p.status === 'accepted' && detail && (
+                    <div className="flex gap-1.5 pt-0.5">
+                      <button disabled={busy} onClick={() => act(revertProposal, p.id)}
+                        className="text-[9px] border border-obsidian/50 px-2.5 py-1 hover:bg-obsidian hover:text-alabaster font-bold disabled:opacity-50 text-obsidian/70"
+                        title="Undo this accepted change">REVERT</button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
