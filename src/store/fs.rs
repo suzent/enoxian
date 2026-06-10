@@ -6,7 +6,8 @@ use crate::state::AppState;
 /// Flush a Y.Text document back to disk.
 /// Sets the shared per-path self_write_flag before writing so the file watcher
 /// ignores the change and avoids a re-entrancy loop.
-pub async fn flush_to_disk(state: &AppState, rel_path: &str) {
+/// `author` is `None` for local writes and `Some(device_label)` for P2P peer writes.
+pub async fn flush_to_disk(state: &AppState, rel_path: &str, author: Option<String>) {
     let doc = match state.docs.get(rel_path) {
         Some(d) => d.clone(),
         None => return,
@@ -34,6 +35,7 @@ pub async fn flush_to_disk(state: &AppState, rel_path: &str) {
 
     flag.store(true, Ordering::SeqCst);
     let _ = tokio::fs::write(&full_path, &contents).await;
+    let _ = state.interactive_writes.send((rel_path.to_string(), author));
     // Save CRDT state immediately after the file write — guarantees the saved state
     // always matches the file. Doing this here (awaited, not spawned) prevents the
     // race where a background save is killed on shutdown, leaving a stale CRDT state

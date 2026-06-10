@@ -30,7 +30,7 @@ fi
 
 if [[ -n "$FRONTEND_CHANGED" ]]; then
     step "frontend typecheck"
-    (cd frontend && npx tsc -b --noEmit -q 2>&1) || fail "TypeScript errors — run 'cd frontend && npx tsc -b --noEmit'"
+    (cd frontend && npx tsc -b --noEmit 2>&1) || fail "TypeScript errors — run 'cd frontend && npx tsc -b --noEmit'"
     ok "typecheck"
 fi
 

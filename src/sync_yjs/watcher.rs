@@ -102,7 +102,7 @@ pub async fn spawn_watcher(state: AppState, workspace: PathBuf, token: Cancellat
     Ok(())
 }
 
-fn is_ignored(rel: &str) -> bool {
+pub(crate) fn is_ignored(rel: &str) -> bool {
     let name = rel.split('/').next_back().unwrap_or(rel);
     if rel.split('/').any(|part| part.starts_with('.')) { return true; }
     // Hidden files

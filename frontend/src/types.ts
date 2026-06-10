@@ -46,6 +46,34 @@ export interface ChatMessage {
   ts: number
 }
 
+export interface Proposal {
+  id: string
+  circle_id: string
+  base_snapshot: string
+  result_snapshot: string
+  changed_paths: string[]
+  status: 'pending' | 'accepted' | 'synced' | 'conflicted' | 'rejected' | 'reverted'
+  source: string
+  actor_id: string | null
+  actor_hint: string | null
+  confidence: string
+  origin_peer_id: string
+  origin_device: string
+  created_at: string
+}
+
+export interface ProposalFileDiff {
+  path: string
+  change: 'added' | 'removed' | 'modified'
+  before: string | null
+  after: string | null
+  binary: boolean
+}
+
+export interface ProposalDetail extends Proposal {
+  files: ProposalFileDiff[]
+}
+
 export interface Task {
   task_id: string
   title: string

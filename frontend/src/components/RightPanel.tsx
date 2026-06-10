@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { Presence, Task, Member, PendingEntry } from '../types'
-import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, createFile, renameFile, deleteFile, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember, enableCircle, disableCircle, leaveCircle } from '../api'
+import type { Presence, Task, Member, PendingEntry, Proposal } from '../types'
+import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, createFile, renameFile, deleteFile, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember, enableCircle, disableCircle, leaveCircle, getProposals } from '../api'
+import ProposalsTab from './ProposalsTab'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 
@@ -8,6 +9,40 @@ interface Props {
   onFileSelect: (path: string | null) => void
   selectedFile: string | null
 }
+
+const TAB_ICONS = {
+  members: (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square">
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M2.5 19.5c0-3.6 2.9-5.8 6.5-5.8s6.5 2.2 6.5 5.8" />
+      <circle cx="17.5" cy="9.5" r="2.5" />
+      <path d="M16.5 14.2c2.9.4 5 2.4 5 5.3" />
+    </svg>
+  ),
+  tasks: (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square">
+      <path d="M3.5 5.5l2 2 3.5-4" />
+      <line x1="12" y1="6" x2="21" y2="6" />
+      <path d="M3.5 13.5l2 2 3.5-4" />
+      <line x1="12" y1="14" x2="21" y2="14" />
+      <line x1="12" y1="20" x2="21" y2="20" />
+    </svg>
+  ),
+  files: (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square">
+      <path d="M6 2.5h8l4.5 4.5v14.5H6z" />
+      <path d="M14 2.5V7h4.5" />
+      <line x1="9" y1="12" x2="15.5" y2="12" />
+      <line x1="9" y1="16" x2="15.5" y2="16" />
+    </svg>
+  ),
+  changes: (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square">
+      <circle cx="12" cy="12" r="9" />
+      <polyline points="12 7 12 12 15.5 15.5" />
+    </svg>
+  ),
+} as const
 
 function age(isoStr: string) {
   const secs = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000)
@@ -24,6 +59,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [files, setFiles] = useState<string[]>([])
   const [members, setMembers] = useState<Member[]>([])
   const [pending, setPending] = useState<PendingEntry[]>([])
+  const [proposals, setProposals] = useState<Proposal[]>([])
   const [newTaskTitle, setNewTaskTitle] = useState('')
   const [newTaskDesc, setNewTaskDesc] = useState('')
   const [creating, setCreating] = useState(false)
@@ -35,7 +71,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [inviteConnectivity, setInviteConnectivity] = useState<{peer_addr: string|null, relay_addr: string|null, rendezvous_addr: string|null} | null>(null)
   const [inviteCopied, setInviteCopied] = useState(false)
   const [memberActionError, setMemberActionError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'members' | 'tasks' | 'files'>('members')
+  const [activeTab, setActiveTab] = useState<'members' | 'tasks' | 'files' | 'changes'>('members')
   const [confirmModal, setConfirmModal] = useState<{ title: string; subject: string; body?: string; onConfirm: () => void } | null>(null)
   const [renameModal, setRenameModal] = useState<{ path: string; value: string } | null>(null)
   const selectedFileRef = useRef<string | null>(selectedFile)
@@ -63,6 +99,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     setFiles([])
     setMembers([])
     setPending([])
+    setProposals([])
     if (!activeCircleId) return
 
     let cancelled = false
@@ -81,6 +118,10 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     const refreshMembers = () => {
       getMembers(activeCircleId).then(data => { if (!cancelled) setMembers(data) }).catch(() => {})
       getPending(activeCircleId).then(data => { if (!cancelled) setPending(data) }).catch(() => {})
+    }
+
+    const refreshProposals = () => {
+      getProposals(activeCircleId).then(data => { if (!cancelled) setProposals(data) }).catch(() => {})
     }
 
     const refreshTasks = () => {
@@ -134,6 +175,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
       refreshTasks()
       refreshFilesQueued()
       refreshMembers()
+      refreshProposals()
     }
 
     refresh()
@@ -158,6 +200,9 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
         if (data.type === 'member_joined' || data.type === 'member_removed' || data.type === 'member_pending') {
           refreshMembers()
         }
+        if (data.type === 'proposal_created' || data.type === 'proposal_updated') {
+          refreshProposals()
+        }
       } catch {}
     })
     return () => {
@@ -171,6 +216,10 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 
   const refreshTasks = useCallback(() => {
     if (activeCircleId) getTasks(activeCircleId).then(setTasks).catch(() => {})
+  }, [activeCircleId])
+
+  const refreshProposalsNow = useCallback(() => {
+    if (activeCircleId) getProposals(activeCircleId).then(setProposals).catch(() => {})
   }, [activeCircleId])
 
   const submitTask = () => {
@@ -353,18 +402,35 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 
       {/* ── Tab bar ─────────────────────────────────────────────────────── */}
       <div className="flex shrink-0 border-b-2 border-obsidian">
-        {(['members', 'tasks', 'files'] as const).map((tab, i) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`flex-1 py-1.5 text-[9px] font-bold tracking-widest font-mono uppercase ${
-              i < 2 ? 'border-r-2 border-obsidian' : ''
-            } ${activeTab === tab ? 'tab-active' : 'hover:bg-obsidian/5'}`}
-            style={{ transition: 'none' }}
-          >
-            {tab === 'members' && pending.length > 0 ? `MEMBERS (${pending.length})` : tab.toUpperCase()}
-          </button>
-        ))}
+        {(['members', 'tasks', 'files', 'changes'] as const).map((tab, i) => {
+          const pendingProposals = proposals.filter(p => p.status === 'pending').length
+          const count = tab === 'members' ? pending.length : tab === 'changes' ? pendingProposals : 0
+          const isActive = activeTab === tab
+          return (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`relative flex-1 py-3.5 font-bold font-mono min-w-0 flex flex-col items-center justify-center gap-1 ${
+                i < 3 ? 'border-r-2 border-obsidian' : ''
+              } ${isActive ? 'bg-obsidian text-alabaster' : 'hover:bg-obsidian/8 text-obsidian/60 hover:text-obsidian'}`}
+              style={{ transition: 'none' }}
+              title={`${tab.toUpperCase()}${count > 0 ? ` — ${count} pending` : ''}`}
+              aria-label={`${tab}${count > 0 ? ` (${count} pending)` : ''}`}
+            >
+              <span className="flex items-center" aria-hidden="true">{TAB_ICONS[tab]}</span>
+              {count > 0 && (
+                <span
+                  className={`absolute top-1.5 right-1.5 text-[8px] font-bold leading-none px-1 py-0.5 border ${
+                    isActive ? 'border-alabaster/60 text-alabaster' : 'border-obsidian text-obsidian'
+                  }`}
+                  aria-hidden="true"
+                >
+                  {count > 99 ? '99+' : count}
+                </span>
+              )}
+            </button>
+          )
+        })}
       </div>
 
       {/* ── MEMBERS tab ─────────────────────────────────────────────────── */}
@@ -537,13 +603,26 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
             </div>
           )}
           {fileActionError && <div className="file-error">{fileActionError}</div>}
-          <div className="file-list flex-1 overflow-y-auto p-3 font-mono text-[11px]">
-            {files.length === 0 && <div className="text-slate">NO ARTIFACTS INDEXED</div>}
-            <FileTree nodes={fileTree} onSelect={onFileSelect} onRename={handleRenameFile}
-              onDelete={handleDeleteFile} openMenu={fileMenuOpen} onOpenMenu={setFileMenuOpen}
-              selected={selectedFile} depth={0} />
+          <div className="file-list flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px]">
+            {files.length === 0 && <div className="text-slate px-1">NO ARTIFACTS INDEXED</div>}
+            {files.length > 0 && (
+              <div className="border border-obsidian/30">
+                <FileTree nodes={fileTree} onSelect={onFileSelect} onRename={handleRenameFile}
+                  onDelete={handleDeleteFile} openMenu={fileMenuOpen} onOpenMenu={setFileMenuOpen}
+                  selected={selectedFile} depth={0} />
+              </div>
+            )}
           </div>
         </div>
+      )}
+
+      {/* ── CHANGES tab ─────────────────────────────────────────────────── */}
+      {activeTab === 'changes' && activeCircleId && (
+        <ProposalsTab
+          circleId={activeCircleId}
+          proposals={proposals}
+          onChanged={refreshProposalsNow}
+        />
       )}
 
       {activeCircle && (
@@ -664,6 +743,51 @@ function buildUserGroups(members: Member[], presenceList: Presence[], selfAgentI
   return Array.from(byOwner.entries()).map(([owner, devices]) => ({ owner, devices }))
 }
 
+// ── File icons ────────────────────────────────────────────────────────────────
+
+const SvgIcon = ({ d, d2 }: { d: string; d2?: string }) => (
+  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="square" className="shrink-0" aria-hidden="true">
+    <path d={d} />
+    {d2 && <path d={d2} />}
+  </svg>
+)
+
+function FileIcon({ name, isDir, isOpen }: { name: string; isDir: boolean; isOpen: boolean }) {
+  if (isDir) {
+    return isOpen
+      ? <SvgIcon d="M1 4.5h14v9H1zM1 4.5l2-3h5l1.5 1.5" />
+      : <SvgIcon d="M1 4.5h14v9H1zM1 4.5l2-3h4.5l1.5 1.5" />
+  }
+  const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : ''
+  // Code / markup
+  if (['ts','tsx','js','jsx','mjs','cjs'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M5.5 9.5l-2 1.5 2 1.5M10.5 9.5l2 1.5-2 1.5" />
+  if (['rs','go','py','rb','java','c','cpp','h','cs','swift','kt'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M5 8.5h6M5 11.5h4" />
+  if (['html','htm','xml','svg','vue'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M5 8l-2 2 2 2M11 8l2 2-2 2" />
+  if (['css','scss','sass','less'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M5 8.5c0-1 1.5-1.5 3-0.5s3 0.5 3-0.5" />
+  // Data / config
+  if (['json','jsonc','json5'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M6 8l-1.5 2 1.5 2M10 8l1.5 2-1.5 2M8 7v2" />
+  if (['toml','yaml','yml','env','ini','cfg','conf'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M5 7.5h6M5 10h4M5 12.5h5" />
+  // Docs
+  if (['md','mdx','txt','rst','adoc'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M5 8h6M5 10.5h6M5 13h4" />
+  if (['pdf'].includes(ext))
+    return <SvgIcon d="M2 2h8l4 4v8H2z" d2="M10 2v4h4M5 8.5c0 1.5 2 1.5 2 0V8M9 8v4M11 8h2" />
+  // Images
+  if (['png','jpg','jpeg','gif','webp','ico','bmp','avif'].includes(ext))
+    return <SvgIcon d="M2 2h12v12H2zM2 10l3.5-3.5 3 3 2-2 3.5 3.5" d2="M10.5 5.5a1 1 0 1 1 0 .001" />
+  // Lock / key files
+  if (['pem','key','crt','cer','p12','pfx'].includes(ext))
+    return <SvgIcon d="M5 7V5a3 3 0 0 1 6 0v2h1v6H4V7zM8 10v1.5" />
+  // Generic fallback — plain document
+  return <SvgIcon d="M2 1.5h8l4 4v9H2z" d2="M10 1.5v4h4" />
+}
+
 // ── File tree ─────────────────────────────────────────────────────────────────
 
 interface TreeNode {
@@ -720,11 +844,12 @@ function FileTree({ nodes, onSelect, onRename, onDelete, openMenu, onOpenMenu, s
               className="file-name"
               onClick={() => {
                 if (n.isDir) setOpen(s => { const ns = new Set(s); ns.has(n.path) ? ns.delete(n.path) : ns.add(n.path); return ns })
-                else onSelect(n.path)
+                else { onOpenMenu(null); onSelect(n.path) }
               }}
               title={n.path}
             >
-              <span>{n.isDir ? (open.has(n.path) ? '[-] ' : '[+] ') : '    '}{n.name}</span>
+              <FileIcon name={n.name} isDir={n.isDir} isOpen={open.has(n.path)} />
+              <span>{n.name}</span>
             </button>
             {!n.isDir && (
               <span className="file-actions">
@@ -736,15 +861,15 @@ function FileTree({ nodes, onSelect, onRename, onDelete, openMenu, onOpenMenu, s
                 >
                   ⋮
                 </button>
+                {openMenu === n.path && (
+                  <div className="file-menu file-menu-inline">
+                    <button className="file-menu-item" onClick={() => onRename(n.path)}>Rename</button>
+                    <button className="file-menu-item" onClick={() => onDelete(n.path)}>Delete</button>
+                  </div>
+                )}
               </span>
             )}
           </div>
-          {!n.isDir && openMenu === n.path && (
-            <div className="file-menu file-menu-inline">
-              <button onClick={() => onRename(n.path)}>Rename</button>
-              <button onClick={() => onDelete(n.path)}>Delete</button>
-            </div>
-          )}
           {n.isDir && open.has(n.path) && (
             <FileTree
               nodes={n.children}

@@ -150,6 +150,7 @@ pub async fn create_file(
     if !content.is_empty() {
         text.insert(&mut txn, 0, &content);
     }
+    let _ = state.interactive_writes.send((rel.clone(), None));
     let _ = state
         .events
         .send(CircleEvent::FileUpdated { path: rel.clone() });
@@ -225,6 +226,7 @@ pub async fn rename_file(
     state.remove_doc(&from);
     crate::store::crdt::delete(&state.workspace, &from).await;
     let _ = state.all_deletes.send(from.clone());
+    let _ = state.interactive_writes.send((from.clone(), None));
     let _ = state
         .events
         .send(CircleEvent::FileDeleted { path: from.clone() });
@@ -237,6 +239,7 @@ pub async fn rename_file(
             text.insert(&mut txn, 0, &content);
         }
     }
+    let _ = state.interactive_writes.send((to.clone(), None));
     let _ = state
         .events
         .send(CircleEvent::FileUpdated { path: to.clone() });
@@ -288,6 +291,7 @@ pub async fn delete_file(
     state.remove_doc(&rel);
     crate::store::crdt::delete(&state.workspace, &rel).await;
     let _ = state.all_deletes.send(rel.clone());
+    let _ = state.interactive_writes.send((rel.clone(), None));
     let _ = state
         .events
         .send(CircleEvent::FileDeleted { path: rel.clone() });
