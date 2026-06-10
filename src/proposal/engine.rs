@@ -53,7 +53,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 prev
             } else {
                 store.save_snapshot(&disk)?;
-                create_proposal(&state, &store, &prev, &disk, diff)?;
+                create_proposal(&state, &store, &prev, &disk, diff.changed_paths())?;
                 disk
             }
         }
@@ -68,6 +68,12 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     let mut events = state.events.subscribe();
     let mut dirty: BTreeSet<String> = BTreeSet::new();
     let mut rescan = false;
+    // Paths the review API is restoring (reject/revert), mapped to the blob
+    // hash they are expected to return to (None = the path is being deleted
+    // because it did not exist in the base snapshot). Changes that match an
+    // expectation are folded into the baseline without a new proposal —
+    // otherwise every reject would propose the opposite change, forever.
+    let mut expected: BTreeMap<String, Option<String>> = BTreeMap::new();
 
     loop {
         tokio::select! {
@@ -75,6 +81,20 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
             evt = events.recv() => match evt {
                 Ok(CircleEvent::FileUpdated { path }) | Ok(CircleEvent::FileDeleted { path }) => {
                     dirty.insert(path);
+                }
+                Ok(CircleEvent::ProposalUpdated { proposal_id, status })
+                    if status == "rejected" || status == "reverted" =>
+                {
+                    if let Ok(p) = store.load_proposal(&proposal_id) {
+                        if let Ok(base) = store.load_snapshot(&p.base_snapshot) {
+                            for path in &p.changed_paths {
+                                expected.insert(
+                                    path.clone(),
+                                    base.files.get(path).map(|e| e.hash.clone()),
+                                );
+                            }
+                        }
+                    }
                 }
                 Ok(_) => {}
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -98,10 +118,30 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
 
                 let diff = SnapshotDiff::between(&baseline, &result);
                 if diff.is_empty() {
+                    expected.clear();
                     continue;
                 }
+
+                // Split the window into review restorations (path landed on
+                // exactly the expected content) and genuine new changes.
+                let (restored, changed): (Vec<String>, Vec<String>) =
+                    diff.changed_paths().into_iter().partition(|path| {
+                        expected.get(path).is_some_and(|want| {
+                            result.files.get(path).map(|e| &e.hash) == want.as_ref()
+                        })
+                    });
+                expected.clear();
+
                 store.save_snapshot(&result)?;
-                create_proposal(&state, &store, &baseline, &result, diff)?;
+                if changed.is_empty() {
+                    store.set_baseline(&result.id)?;
+                    tracing::info!(
+                        "[proposal] folded review restoration into baseline ({} paths)",
+                        restored.len()
+                    );
+                } else {
+                    create_proposal(&state, &store, &baseline, &result, changed)?;
+                }
                 baseline = result;
             }
         }
@@ -114,13 +154,13 @@ fn create_proposal(
     store: &ProposalStore,
     base: &Snapshot,
     result: &Snapshot,
-    diff: SnapshotDiff,
+    changed_paths: Vec<String>,
 ) -> anyhow::Result<()> {
     let proposal = Proposal::ambient(
         state.circle_id.clone(),
         base.id.clone(),
         result.id.clone(),
-        diff.changed_paths(),
+        changed_paths,
     );
     store.save_proposal(&proposal)?;
     store.set_baseline(&result.id)?;
