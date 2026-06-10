@@ -13,4 +13,5 @@ pub mod diff;
 pub mod journal;
 pub mod merge;
 pub mod model;
+pub mod session;
 pub mod snapshot;
