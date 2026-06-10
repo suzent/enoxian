@@ -1,4 +1,4 @@
-import type { Circle, Status, Presence, ChatMessage, Task, Member, PendingEntry } from './types'
+import type { Circle, Status, Presence, ChatMessage, Task, Member, PendingEntry, Proposal, ProposalDetail } from './types'
 
 const api = (circleId: string) => `/circles/${circleId}/api`
 
@@ -54,6 +54,17 @@ export const renameFile = (id: string, from: string, to: string) =>
   post<{status: string, from: string, to: string}>(`${api(id)}/files/rename`, { from, to })
 export const deleteFile = (id: string, path: string) =>
   post<{status: string, path: string}>(`${api(id)}/files/delete`, { path })
+
+// ── Proposals (M14) ──────────────────────────────────────────────────────────
+export const getProposals = (id: string) => get<Proposal[]>(`${api(id)}/proposals`)
+export const getProposalDetail = (id: string, proposalId: string) =>
+  get<ProposalDetail>(`${api(id)}/proposals/${proposalId}`)
+export const acceptProposal = (id: string, proposalId: string) =>
+  post<{status: string}>(`${api(id)}/proposals/${proposalId}/accept`, {})
+export const rejectProposal = (id: string, proposalId: string) =>
+  post<{status: string}>(`${api(id)}/proposals/${proposalId}/reject`, {})
+export const revertProposal = (id: string, proposalId: string) =>
+  post<{status: string}>(`${api(id)}/proposals/${proposalId}/revert`, {})
 
 // ── Member management (M11) ──────────────────────────────────────────────────
 export const getMembers = (id: string) => get<Member[]>(`/circles/${id}/members`)

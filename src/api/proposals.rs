@@ -1,0 +1,221 @@
+//! Proposal review API (M14).
+//!
+//! Proposals are created by the ambient engine (`crate::proposal::engine`);
+//! this API lists them, shows per-file diffs, and applies review decisions.
+
+use crate::control::CircleEvent;
+use crate::daemon::DaemonState;
+use crate::proposal::model::{Proposal, ProposalStatus};
+use crate::proposal::store::ProposalStore;
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
+use serde::Serialize;
+use serde_json::json;
+
+fn open_store(daemon: &DaemonState, circle_id: &str) -> Result<(crate::state::AppState, ProposalStore), (StatusCode, Json<serde_json::Value>)> {
+    let state = daemon.get(circle_id).ok_or((
+        StatusCode::NOT_FOUND,
+        Json(json!({"error": "circle not found"})),
+    ))?;
+    let store = ProposalStore::open(&state.workspace).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("proposal store: {e}")})),
+        )
+    })?;
+    Ok((state, store))
+}
+
+pub async fn list_proposals(
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
+) -> impl IntoResponse {
+    match open_store(&daemon, &circle_id) {
+        Ok((_, store)) => Json(json!(store.list_proposals())).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+#[derive(Serialize)]
+struct FileDiff {
+    path: String,
+    change: &'static str, // "added" | "removed" | "modified"
+    /// UTF-8 content; None when the file is binary or absent on that side.
+    before: Option<String>,
+    after: Option<String>,
+    binary: bool,
+}
+
+#[derive(Serialize)]
+struct ProposalDetail {
+    #[serde(flatten)]
+    proposal: Proposal,
+    files: Vec<FileDiff>,
+}
+
+pub async fn get_proposal(
+    State(daemon): State<DaemonState>,
+    Path((circle_id, proposal_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let (_, store) = match open_store(&daemon, &circle_id) {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+    let proposal = match store.load_proposal(&proposal_id) {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "proposal not found"})),
+            )
+                .into_response();
+        }
+    };
+    let (base, result) = match (
+        store.load_snapshot(&proposal.base_snapshot),
+        store.load_snapshot(&proposal.result_snapshot),
+    ) {
+        (Ok(b), Ok(r)) => (b, r),
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "snapshot missing for proposal"})),
+            )
+                .into_response();
+        }
+    };
+
+    let mut files = Vec::new();
+    for path in &proposal.changed_paths {
+        let before_bytes = base
+            .files
+            .get(path)
+            .and_then(|e| store.blobs.get(&e.hash).ok());
+        let after_bytes = result
+            .files
+            .get(path)
+            .and_then(|e| store.blobs.get(&e.hash).ok());
+        let change = match (&before_bytes, &after_bytes) {
+            (None, Some(_)) => "added",
+            (Some(_), None) => "removed",
+            _ => "modified",
+        };
+        let before = before_bytes.as_ref().and_then(|b| String::from_utf8(b.clone()).ok());
+        let after = after_bytes.as_ref().and_then(|b| String::from_utf8(b.clone()).ok());
+        let binary = (before_bytes.is_some() && before.is_none())
+            || (after_bytes.is_some() && after.is_none());
+        files.push(FileDiff { path: path.clone(), change, before, after, binary });
+    }
+
+    Json(json!(ProposalDetail { proposal, files })).into_response()
+}
+
+async fn set_status(
+    daemon: DaemonState,
+    circle_id: String,
+    proposal_id: String,
+    new_status: ProposalStatus,
+) -> axum::response::Response {
+    let (state, store) = match open_store(&daemon, &circle_id) {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+    let mut proposal = match store.load_proposal(&proposal_id) {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "proposal not found"})),
+            )
+                .into_response();
+        }
+    };
+    if proposal.status != ProposalStatus::Pending {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": format!("proposal is not pending (status: {:?})", proposal.status)})),
+        )
+            .into_response();
+    }
+
+    // Revert restores every changed path to its base-snapshot state before
+    // marking the proposal. The watcher sees these writes as external edits,
+    // so the restoration itself shows up as a follow-up proposal — an honest
+    // audit trail of the revert.
+    if new_status == ProposalStatus::Reverted {
+        let base = match store.load_snapshot(&proposal.base_snapshot) {
+            Ok(b) => b,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "base snapshot missing"})),
+                )
+                    .into_response();
+            }
+        };
+        for path in &proposal.changed_paths {
+            let abs = state.workspace.join(path);
+            match base.files.get(path).and_then(|e| store.blobs.get(&e.hash).ok()) {
+                Some(content) => {
+                    if let Some(parent) = abs.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if let Err(e) = std::fs::write(&abs, &content) {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({"error": format!("restoring {path}: {e}")})),
+                        )
+                            .into_response();
+                    }
+                }
+                // Path did not exist at the base snapshot — remove it.
+                None => {
+                    let _ = std::fs::remove_file(&abs);
+                }
+            }
+        }
+    }
+
+    proposal.status = new_status;
+    if let Err(e) = store.save_proposal(&proposal) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("saving proposal: {e}")})),
+        )
+            .into_response();
+    }
+    let status_str = serde_json::to_value(new_status)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default();
+    let _ = state.events.send(CircleEvent::ProposalUpdated {
+        proposal_id: proposal.id.clone(),
+        status: status_str.clone(),
+    });
+    Json(json!({"status": status_str, "proposal_id": proposal.id})).into_response()
+}
+
+pub async fn accept_proposal(
+    State(daemon): State<DaemonState>,
+    Path((circle_id, proposal_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    set_status(daemon, circle_id, proposal_id, ProposalStatus::Accepted).await
+}
+
+pub async fn reject_proposal(
+    State(daemon): State<DaemonState>,
+    Path((circle_id, proposal_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    set_status(daemon, circle_id, proposal_id, ProposalStatus::Rejected).await
+}
+
+pub async fn revert_proposal(
+    State(daemon): State<DaemonState>,
+    Path((circle_id, proposal_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    set_status(daemon, circle_id, proposal_id, ProposalStatus::Reverted).await
+}

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { Presence, Task, Member, PendingEntry } from '../types'
-import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, createFile, renameFile, deleteFile, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember, enableCircle, disableCircle, leaveCircle } from '../api'
+import type { Presence, Task, Member, PendingEntry, Proposal } from '../types'
+import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, createFile, renameFile, deleteFile, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember, enableCircle, disableCircle, leaveCircle, getProposals } from '../api'
+import ProposalsTab from './ProposalsTab'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 
@@ -24,6 +25,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [files, setFiles] = useState<string[]>([])
   const [members, setMembers] = useState<Member[]>([])
   const [pending, setPending] = useState<PendingEntry[]>([])
+  const [proposals, setProposals] = useState<Proposal[]>([])
   const [newTaskTitle, setNewTaskTitle] = useState('')
   const [newTaskDesc, setNewTaskDesc] = useState('')
   const [creating, setCreating] = useState(false)
@@ -35,7 +37,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [inviteConnectivity, setInviteConnectivity] = useState<{peer_addr: string|null, relay_addr: string|null, rendezvous_addr: string|null} | null>(null)
   const [inviteCopied, setInviteCopied] = useState(false)
   const [memberActionError, setMemberActionError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'members' | 'tasks' | 'files'>('members')
+  const [activeTab, setActiveTab] = useState<'members' | 'tasks' | 'files' | 'changes'>('members')
   const [confirmModal, setConfirmModal] = useState<{ title: string; subject: string; body?: string; onConfirm: () => void } | null>(null)
   const [renameModal, setRenameModal] = useState<{ path: string; value: string } | null>(null)
   const selectedFileRef = useRef<string | null>(selectedFile)
@@ -63,6 +65,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     setFiles([])
     setMembers([])
     setPending([])
+    setProposals([])
     if (!activeCircleId) return
 
     let cancelled = false
@@ -81,6 +84,10 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     const refreshMembers = () => {
       getMembers(activeCircleId).then(data => { if (!cancelled) setMembers(data) }).catch(() => {})
       getPending(activeCircleId).then(data => { if (!cancelled) setPending(data) }).catch(() => {})
+    }
+
+    const refreshProposals = () => {
+      getProposals(activeCircleId).then(data => { if (!cancelled) setProposals(data) }).catch(() => {})
     }
 
     const refreshTasks = () => {
@@ -134,6 +141,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
       refreshTasks()
       refreshFilesQueued()
       refreshMembers()
+      refreshProposals()
     }
 
     refresh()
@@ -158,6 +166,9 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
         if (data.type === 'member_joined' || data.type === 'member_removed' || data.type === 'member_pending') {
           refreshMembers()
         }
+        if (data.type === 'proposal_created' || data.type === 'proposal_updated') {
+          refreshProposals()
+        }
       } catch {}
     })
     return () => {
@@ -171,6 +182,10 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 
   const refreshTasks = useCallback(() => {
     if (activeCircleId) getTasks(activeCircleId).then(setTasks).catch(() => {})
+  }, [activeCircleId])
+
+  const refreshProposalsNow = useCallback(() => {
+    if (activeCircleId) getProposals(activeCircleId).then(setProposals).catch(() => {})
   }, [activeCircleId])
 
   const submitTask = () => {
@@ -353,18 +368,24 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
 
       {/* ── Tab bar ─────────────────────────────────────────────────────── */}
       <div className="flex shrink-0 border-b-2 border-obsidian">
-        {(['members', 'tasks', 'files'] as const).map((tab, i) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`flex-1 py-1.5 text-[9px] font-bold tracking-widest font-mono uppercase ${
-              i < 2 ? 'border-r-2 border-obsidian' : ''
-            } ${activeTab === tab ? 'tab-active' : 'hover:bg-obsidian/5'}`}
-            style={{ transition: 'none' }}
-          >
-            {tab === 'members' && pending.length > 0 ? `MEMBERS (${pending.length})` : tab.toUpperCase()}
-          </button>
-        ))}
+        {(['members', 'tasks', 'files', 'changes'] as const).map((tab, i) => {
+          const pendingProposals = proposals.filter(p => p.status === 'pending').length
+          let label: string = tab.toUpperCase()
+          if (tab === 'members' && pending.length > 0) label = `MEMBERS (${pending.length})`
+          if (tab === 'changes' && pendingProposals > 0) label = `CHANGES (${pendingProposals})`
+          return (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`flex-1 py-1.5 text-[9px] font-bold tracking-widest font-mono uppercase ${
+                i < 3 ? 'border-r-2 border-obsidian' : ''
+              } ${activeTab === tab ? 'tab-active' : 'hover:bg-obsidian/5'}`}
+              style={{ transition: 'none' }}
+            >
+              {label}
+            </button>
+          )
+        })}
       </div>
 
       {/* ── MEMBERS tab ─────────────────────────────────────────────────── */}
@@ -544,6 +565,15 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
               selected={selectedFile} depth={0} />
           </div>
         </div>
+      )}
+
+      {/* ── CHANGES tab ─────────────────────────────────────────────────── */}
+      {activeTab === 'changes' && activeCircleId && (
+        <ProposalsTab
+          circleId={activeCircleId}
+          proposals={proposals}
+          onChanged={refreshProposalsNow}
+        />
       )}
 
       {activeCircle && (

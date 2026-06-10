@@ -196,4 +196,8 @@ pub enum CircleEvent {
     MessagePosted { message: ChatMessage },
     /// A message mentioned a specific agent — the agent's wake signal.
     AgentMentioned { agent_id: String, message: ChatMessage },
+    /// The proposal engine captured a workspace change (M14).
+    ProposalCreated { proposal_id: String },
+    /// A proposal's status changed (accepted / rejected / reverted).
+    ProposalUpdated { proposal_id: String, status: String },
 }

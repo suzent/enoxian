@@ -423,6 +423,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     }
 
     spawn_watcher(state.clone(), workspace, token.clone()).await?;
+    crate::proposal::engine::spawn_engine(state.clone(), token.clone());
     presence::spawn_presence(state.clone(), agent_id, token.clone());
 
     // ── Build the P2P swarm ───────────────────────────────────────────────────

@@ -6,6 +6,7 @@ pub mod lifecycle;
 pub mod lock;
 pub mod management;
 pub mod members;
+pub mod proposals;
 pub mod shutdown;
 pub mod status;
 pub mod tasks;
@@ -57,6 +58,27 @@ pub fn router(daemon: DaemonState) -> Router {
         .route(
             "/circles/{circle_id}/api/files/delete",
             post(files::delete_file),
+        )
+        // M14 proposals
+        .route(
+            "/circles/{circle_id}/api/proposals",
+            get(proposals::list_proposals),
+        )
+        .route(
+            "/circles/{circle_id}/api/proposals/{proposal_id}",
+            get(proposals::get_proposal),
+        )
+        .route(
+            "/circles/{circle_id}/api/proposals/{proposal_id}/accept",
+            post(proposals::accept_proposal),
+        )
+        .route(
+            "/circles/{circle_id}/api/proposals/{proposal_id}/reject",
+            post(proposals::reject_proposal),
+        )
+        .route(
+            "/circles/{circle_id}/api/proposals/{proposal_id}/revert",
+            post(proposals::revert_proposal),
         )
         // M9 chat
         .route(
