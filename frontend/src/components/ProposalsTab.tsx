@@ -110,12 +110,18 @@ export default function ProposalsTab({ circleId, proposals, onChanged }: Props) 
                 {p.status === 'pending' && detail && (
                   <div className="flex gap-2">
                     <button disabled={busy} onClick={() => act(acceptProposal, p.id)}
-                      className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold disabled:opacity-50">ACCEPT</button>
+                      className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold disabled:opacity-50"
+                      title="Keep these changes">ACCEPT</button>
                     <button disabled={busy} onClick={() => act(rejectProposal, p.id)}
-                      className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold disabled:opacity-50">REJECT</button>
+                      className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold disabled:opacity-50"
+                      title="Restore all changed files to their pre-change state">REJECT</button>
+                  </div>
+                )}
+                {p.status === 'accepted' && detail && (
+                  <div className="flex gap-2">
                     <button disabled={busy} onClick={() => act(revertProposal, p.id)}
                       className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold disabled:opacity-50"
-                      title="Restore all changed files to their pre-change state">REVERT</button>
+                      title="Undo this accepted change — restore files to their pre-change state">REVERT</button>
                   </div>
                 )}
               </div>

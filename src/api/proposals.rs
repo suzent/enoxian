@@ -134,19 +134,30 @@ async fn set_status(
                 .into_response();
         }
     };
-    if proposal.status != ProposalStatus::Pending {
+    // Valid transitions (Copilot/Cursor-style review semantics):
+    //   pending  -> accepted   keep the changes
+    //   pending  -> rejected   restore files to their pre-change state
+    //   accepted -> reverted   undo a previously accepted change
+    let allowed_from = match new_status {
+        ProposalStatus::Accepted | ProposalStatus::Rejected => ProposalStatus::Pending,
+        ProposalStatus::Reverted => ProposalStatus::Accepted,
+        _ => ProposalStatus::Pending,
+    };
+    if proposal.status != allowed_from {
         return (
             StatusCode::CONFLICT,
-            Json(json!({"error": format!("proposal is not pending (status: {:?})", proposal.status)})),
+            Json(json!({"error": format!(
+                "cannot move proposal from {:?} to {:?}", proposal.status, new_status
+            )})),
         )
             .into_response();
     }
 
-    // Revert restores every changed path to its base-snapshot state before
-    // marking the proposal. The watcher sees these writes as external edits,
-    // so the restoration itself shows up as a follow-up proposal — an honest
-    // audit trail of the revert.
-    if new_status == ProposalStatus::Reverted {
+    // Reject and revert both restore every changed path to its base-snapshot
+    // state before marking the proposal. The watcher sees these writes as
+    // external edits, so the restoration itself shows up as a follow-up
+    // proposal — an honest audit trail.
+    if matches!(new_status, ProposalStatus::Rejected | ProposalStatus::Reverted) {
         let base = match store.load_snapshot(&proposal.base_snapshot) {
             Ok(b) => b,
             Err(_) => {
