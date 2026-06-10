@@ -166,10 +166,17 @@ content-addressed blobs instead of raw folder mirroring.
 
 - [ ] Event schema for workspace forks, snapshots, proposals, merges, rejects, and conflicts.
 - [ ] Content blob request/response protocol over libp2p.
-- [ ] Missing-blob fetch on proposal receipt.
+- [~] Missing-blob fetch on proposal receipt. Not needed yet: each proposal
+      replicates with its referenced blobs bundled in the control doc
+      (`ProposalBundle`), so receipt never leaves a blob missing. A pull-based
+      fetch protocol is only required once blobs are decoupled from the bundle
+      (e.g. to keep large binaries out of the CRDT).
 - [ ] Snapshot materialization from event log.
 - [ ] Conflict metadata sync across peers.
-- [ ] Proposal state replication in the control doc or a dedicated event log.
+- [x] Proposal state replication in the control doc or a dedicated event log.
+      Done via the control-doc `proposals` map; see `src/proposal/sync.rs` and
+      the observer in `AppState::new`. Create + accept/reject/revert all
+      replicate, so every device shows the same review history.
 
 ### M16 — Diff And Merge Adapters
 

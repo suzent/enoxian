@@ -440,16 +440,26 @@ proposal_reverted
 proposal_conflicted
 ```
 
-Long term, peers sync:
+Peers sync:
 
 ```text
 event log
-snapshot manifests
-content-addressed blobs
-proposal metadata
+snapshot manifests       (implemented — bundled with each proposal)
+content-addressed blobs  (implemented — bundled with each proposal)
+proposal metadata        (implemented — see below)
 ```
 
 They do not blindly mirror folders.
+
+**Proposal replication (implemented).** Each proposal is packaged as a
+`ProposalBundle` (the proposal record plus its base/result snapshot manifests and
+the content blobs those manifests reference) and written into the `__control__`
+Yjs map under the `proposals` key. Because the control doc replicates over the
+existing CRDT sync path, every device materializes the same proposal into its
+local `.enox_proposals/` store and renders the identical review history — diffs
+included, even on a device that never observed the original edits. Accept /
+reject / revert update the synced record's status so review decisions propagate.
+See `src/proposal/sync.rs`.
 
 ## Diff And Merge Adapters
 

@@ -60,6 +60,7 @@ A special in-memory Yjs Doc (not a file) stores circle-wide coordination state u
 | `lock_log` | `Y.Array` | Append-only lock event entries |
 | `chat` | `Y.Array` | Replicated chat messages |
 | `member_list` | `Y.Map` | Admin-signed member records |
+| `proposals` | `Y.Map` | Proposal bundles (record + snapshots + blobs), keyed by proposal UUID, so every device shows the same review history |
 | `mls_removed` | `Y.Map` | Removed-peer tombstones checked before sync |
 
 REST API mutations write into the Control Doc via `transact_mut()`. Because it
