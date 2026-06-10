@@ -45,6 +45,9 @@ sha2 = "0.10"
 hkdf = "0.12"
 bip39 = "2"
 
+# M14 — line-level three-way merge for proposal revert/reject
+diffy = "0.4"
+
 # Error handling
 anyhow = "1"
 thiserror = "2"

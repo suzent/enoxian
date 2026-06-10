@@ -47,6 +47,19 @@ pub struct AppState {
     pub all_deletes: broadcast::Sender<String>,
     /// SSE event stream
     pub events: broadcast::Sender<CircleEvent>,
+    /// Paths written to disk by interactive surfaces (browser WS edits, P2P
+    /// CRDT sync, UI file operations). The proposal engine folds these into
+    /// its baseline without creating proposals — they are already
+    /// user-visible live edits, not reviewable agent changes.
+    /// Payload: (rel_path, author_label). author_label is None for local writes;
+    /// for P2P writes it carries the remote peer's device_label so the proposal
+    /// is attributed to the correct device instead of always stamping the local one.
+    pub interactive_writes: broadcast::Sender<(String, Option<String>)>,
+    /// (path, expected blob hash) written by the proposal review API when a
+    /// reject/revert restores files (None = path deleted). The engine folds
+    /// matching changes into its baseline silently so review decisions never
+    /// spawn follow-up proposals.
+    pub review_writes: broadcast::Sender<(String, Option<String>)>,
     /// Per-path flag: set to true before flush_to_disk writes, cleared by watcher on receipt.
     /// Shared between the file watcher and flush_to_disk so they operate on the same flag.
     pub self_write_flags: Arc<DashMap<String, Arc<AtomicBool>>>,
@@ -62,6 +75,8 @@ impl AppState {
     #[allow(clippy::too_many_arguments)]
     pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, circle_dir: PathBuf, admin_pubkey_hex: String, agent_id: String, session_id: u64, peer_id: String, join_policy: crate::config::JoinPolicy, owner: String, mls: crate::mls::SharedMlsState) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
+        let (interactive_writes_tx, _): (broadcast::Sender<(String, Option<String>)>, _) = broadcast::channel(EVENT_CAPACITY);
+        let (review_writes_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_awareness_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_deletes_tx, _) = broadcast::channel(EVENT_CAPACITY);
@@ -149,6 +164,59 @@ impl AppState {
         });
         std::mem::forget(tasks_sub);
 
+        // Observe proposals for P2P-delivered bundles. The engine that created a
+        // proposal publishes it locally and emits its own ProposalCreated event;
+        // this observer covers proposals that arrived from another device via
+        // CRDT sync, rehydrating each bundle into the local proposal store so the
+        // review API can render it, then firing an SSE event for the UI.
+        let proposals_map = control.get_or_insert_map(crate::control::PROPOSALS_KEY);
+        let events_for_proposals = events_tx.clone();
+        let workspace_for_proposals = workspace.clone();
+        let proposals_sub = proposals_map.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+            if !is_p2p { return; }
+
+            let store = match crate::proposal::store::ProposalStore::open(&workspace_for_proposals) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("[proposal] cannot open store to apply synced bundle: {e}");
+                    return;
+                }
+            };
+            for change in event.keys(txn).values() {
+                let json = match change {
+                    yrs::types::EntryChange::Inserted(yrs::Out::Any(yrs::Any::String(s)))
+                    | yrs::types::EntryChange::Updated(_, yrs::Out::Any(yrs::Any::String(s))) => s,
+                    _ => continue,
+                };
+                let bundle: crate::proposal::sync::ProposalBundle = match serde_json::from_str(json) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!("[proposal] malformed synced bundle: {e}");
+                        continue;
+                    }
+                };
+                match bundle.apply_to_store(&store) {
+                    Ok(false) => {} // no change (idempotent re-delivery)
+                    Ok(true) => {
+                        let status_str = serde_json::to_value(bundle.status())
+                            .ok()
+                            .and_then(|v| v.as_str().map(String::from))
+                            .unwrap_or_default();
+                        let _ = events_for_proposals.send(CircleEvent::ProposalUpdated {
+                            proposal_id: bundle.proposal.id.clone(),
+                            status: status_str,
+                        });
+                    }
+                    Err(e) => tracing::warn!(
+                        "[proposal] applying synced bundle {}: {e}",
+                        bundle.proposal.id
+                    ),
+                }
+            }
+        });
+        std::mem::forget(proposals_sub);
+
         Self {
             circle_id,
             circle_name,
@@ -168,6 +236,8 @@ impl AppState {
             all_awareness_updates: all_awareness_tx,
             all_deletes: all_deletes_tx,
             events: events_tx,
+            interactive_writes: interactive_writes_tx,
+            review_writes: review_writes_tx,
             self_write_flags: Arc::new(DashMap::new()),
             join_policy,
             owner,

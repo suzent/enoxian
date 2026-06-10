@@ -1,6 +1,8 @@
 use crate::config;
 use anyhow::{bail, Result};
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
 pub async fn run(dev: bool, src: Option<PathBuf>, no_pull: bool) -> Result<()> {
