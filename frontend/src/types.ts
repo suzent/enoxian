@@ -57,6 +57,8 @@ export interface Proposal {
   actor_id: string | null
   actor_hint: string | null
   confidence: string
+  origin_peer_id: string
+  origin_device: string
   created_at: string
 }
 

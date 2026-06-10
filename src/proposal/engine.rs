@@ -42,6 +42,9 @@ pub fn spawn_engine(state: AppState, token: CancellationToken) {
 
 async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     let store = ProposalStore::open(&state.workspace)?;
+    let device_label = crate::identity::DeviceIdentity::load_or_generate(None)
+        .map(|d| d.device_label)
+        .unwrap_or_default();
 
     // Establish the baseline. A pre-existing baseline whose content differs
     // from the current workspace means offline edits — propose them.
@@ -53,7 +56,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 prev
             } else {
                 store.save_snapshot(&disk)?;
-                create_proposal(&state, &store, &prev, &disk, diff.changed_paths())?;
+                create_proposal(&state, &store, &prev, &disk, diff.changed_paths(), &device_label)?;
                 disk
             }
         }
@@ -164,7 +167,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                         folded.len()
                     );
                 } else {
-                    create_proposal(&state, &store, &baseline, &result, changed)?;
+                    create_proposal(&state, &store, &baseline, &result, changed, &device_label)?;
                 }
                 baseline = result;
             }
@@ -179,13 +182,16 @@ fn create_proposal(
     base: &Snapshot,
     result: &Snapshot,
     changed_paths: Vec<String>,
+    device_label: &str,
 ) -> anyhow::Result<()> {
-    let proposal = Proposal::ambient(
+    let mut proposal = Proposal::ambient(
         state.circle_id.clone(),
         base.id.clone(),
         result.id.clone(),
         changed_paths,
     );
+    proposal.origin_peer_id = state.peer_id.clone();
+    proposal.origin_device = device_label.to_string();
     store.save_proposal(&proposal)?;
     store.set_baseline(&result.id)?;
     tracing::info!(

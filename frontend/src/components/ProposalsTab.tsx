@@ -80,9 +80,12 @@ export default function ProposalsTab({ circleId, proposals, onChanged }: Props) 
                 {p.status.toUpperCase()}
               </span>
             </button>
-            <div className="flex justify-between text-[9px] text-slate">
-              <span>{p.actor_id ?? p.actor_hint ?? p.source}</span>
-              <span>{age(p.created_at)}</span>
+            <div className="flex justify-between gap-2 text-[9px] text-slate">
+              <span className="truncate" title={p.origin_peer_id || undefined}>
+                {p.actor_id ?? p.actor_hint ?? p.source}
+                {p.origin_device ? ` @ ${p.origin_device}` : ''}
+              </span>
+              <span className="shrink-0">{age(p.created_at)}</span>
             </div>
 
             {expanded === p.id && (

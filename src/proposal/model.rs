@@ -54,6 +54,12 @@ pub struct Proposal {
     pub confidence: Confidence,
     pub trigger_id: Option<String>,
     pub session_id: Option<String>,
+    /// Peer ID of the device whose daemon captured this proposal.
+    #[serde(default)]
+    pub origin_peer_id: String,
+    /// Human-readable label of that device (e.g. "my-laptop").
+    #[serde(default)]
+    pub origin_device: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -80,6 +86,8 @@ impl Proposal {
             confidence: Confidence::Unknown,
             trigger_id: None,
             session_id: None,
+            origin_peer_id: String::new(),
+            origin_device: String::new(),
             created_at: chrono::Utc::now(),
         }
     }
