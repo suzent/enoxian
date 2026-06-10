@@ -406,6 +406,66 @@ enox [--circle <NAME>] member promote <PEER-ID>
 
 ---
 
+## Proposals
+
+Workspace changes captured by the ambient engine become reviewable proposals.
+Proposals replicate across all devices in the circle, so every device shows the
+same review history. Ids may be given as an unambiguous prefix (the 8-char form
+printed by `proposal list` works).
+
+### `proposal list`
+
+List proposals, newest first, with status, id prefix, changed files, and the
+device that authored the change.
+
+```bash
+enox [--circle <NAME>] proposal list
+```
+
+---
+
+### `proposal show`
+
+Show a proposal's metadata and a unified per-file diff.
+
+```bash
+enox [--circle <NAME>] proposal show <ID>
+```
+
+---
+
+### `proposal accept`
+
+Accept a pending proposal (keep the changes).
+
+```bash
+enox [--circle <NAME>] proposal accept <ID>
+```
+
+---
+
+### `proposal reject`
+
+Reject a pending proposal — restores the affected files to their pre-change
+state via reverse-apply (later edits to the same files are preserved by a
+line-level merge; genuine overlaps abort).
+
+```bash
+enox [--circle <NAME>] proposal reject <ID>
+```
+
+---
+
+### `proposal revert`
+
+Revert a previously accepted proposal.
+
+```bash
+enox [--circle <NAME>] proposal revert <ID>
+```
+
+---
+
 ## Events
 
 ### `watch`

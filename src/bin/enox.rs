@@ -121,6 +121,26 @@ async fn main() -> anyhow::Result<()> {
                 AgentCommands::Say { text } => {
                     enoxian::commands::say::run(&client, &base, text).await
                 }
+                AgentCommands::Proposal(args) => {
+                    use enoxian::cli::ProposalAction;
+                    match args.action {
+                        ProposalAction::List => {
+                            enoxian::commands::proposals::list(&client, &base, cli.json).await
+                        }
+                        ProposalAction::Show { id } => {
+                            enoxian::commands::proposals::show(&client, &base, id, cli.json).await
+                        }
+                        ProposalAction::Accept { id } => {
+                            enoxian::commands::proposals::decide(&client, &base, id, "accept", cli.json).await
+                        }
+                        ProposalAction::Reject { id } => {
+                            enoxian::commands::proposals::decide(&client, &base, id, "reject", cli.json).await
+                        }
+                        ProposalAction::Revert { id } => {
+                            enoxian::commands::proposals::decide(&client, &base, id, "revert", cli.json).await
+                        }
+                    }
+                }
                 // Already handled above
                 AgentCommands::Init(_)
                 | AgentCommands::Enter(_)
