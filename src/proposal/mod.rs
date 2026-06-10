@@ -9,5 +9,8 @@
 //! layer treats the same file events as proposal evidence.
 
 pub mod blob;
+pub mod diff;
 pub mod journal;
+pub mod merge;
+pub mod model;
 pub mod snapshot;
