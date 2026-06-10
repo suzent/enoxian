@@ -47,6 +47,11 @@ pub struct AppState {
     pub all_deletes: broadcast::Sender<String>,
     /// SSE event stream
     pub events: broadcast::Sender<CircleEvent>,
+    /// Paths written to disk by interactive surfaces (browser WS edits, P2P
+    /// CRDT sync, UI file operations). The proposal engine folds these into
+    /// its baseline without creating proposals — they are already
+    /// user-visible live edits, not reviewable agent changes.
+    pub interactive_writes: broadcast::Sender<String>,
     /// Per-path flag: set to true before flush_to_disk writes, cleared by watcher on receipt.
     /// Shared between the file watcher and flush_to_disk so they operate on the same flag.
     pub self_write_flags: Arc<DashMap<String, Arc<AtomicBool>>>,
@@ -62,6 +67,7 @@ impl AppState {
     #[allow(clippy::too_many_arguments)]
     pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, circle_dir: PathBuf, admin_pubkey_hex: String, agent_id: String, session_id: u64, peer_id: String, join_policy: crate::config::JoinPolicy, owner: String, mls: crate::mls::SharedMlsState) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
+        let (interactive_writes_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_awareness_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_deletes_tx, _) = broadcast::channel(EVENT_CAPACITY);
@@ -168,6 +174,7 @@ impl AppState {
             all_awareness_updates: all_awareness_tx,
             all_deletes: all_deletes_tx,
             events: events_tx,
+            interactive_writes: interactive_writes_tx,
             self_write_flags: Arc::new(DashMap::new()),
             join_policy,
             owner,

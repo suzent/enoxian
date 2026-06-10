@@ -34,6 +34,9 @@ pub async fn flush_to_disk(state: &AppState, rel_path: &str) {
 
     flag.store(true, Ordering::SeqCst);
     let _ = tokio::fs::write(&full_path, &contents).await;
+    // Tell the proposal engine this is an interactive write (WS/P2P CRDT
+    // flush) so it folds into the baseline instead of becoming a proposal.
+    let _ = state.interactive_writes.send(rel_path.to_string());
     // Save CRDT state immediately after the file write — guarantees the saved state
     // always matches the file. Doing this here (awaited, not spawned) prevents the
     // race where a background save is killed on shutdown, leaving a stale CRDT state

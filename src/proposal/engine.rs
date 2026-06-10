@@ -66,7 +66,14 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     tracing::info!("[proposal] engine started, baseline {}", baseline.id);
 
     let mut events = state.events.subscribe();
+    let mut interactive_rx = state.interactive_writes.subscribe();
     let mut dirty: BTreeSet<String> = BTreeSet::new();
+    // Paths written by interactive surfaces (browser editor, P2P CRDT sync,
+    // UI file operations). These are live edits the user already saw happen —
+    // they fold into the baseline instead of becoming proposals. Interactive
+    // membership wins over watcher dirtiness because UI file operations
+    // trigger both.
+    let mut interactive: BTreeSet<String> = BTreeSet::new();
     let mut rescan = false;
     // Paths the review API is restoring (reject/revert), mapped to the blob
     // hash they are expected to return to (None = the path is being deleted
@@ -105,13 +112,25 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
+            path = interactive_rx.recv() => match path {
+                Ok(path) => { interactive.insert(path); }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    // Unknown interactive writes were dropped; a rescan will
+                    // surface them as proposals — noisy but never lossy.
+                    tracing::warn!("[proposal] interactive stream lagged by {n}");
+                    rescan = true;
+                    dirty.insert(String::new());
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
             // Re-armed on every loop iteration, so this fires only after
             // IDLE_WINDOW of event silence — a debounce since the last event.
-            _ = tokio::time::sleep(IDLE_WINDOW), if !dirty.is_empty() => {
+            _ = tokio::time::sleep(IDLE_WINDOW), if !dirty.is_empty() || !interactive.is_empty() => {
+                let touched: BTreeSet<String> = dirty.union(&interactive).cloned().collect();
                 let result = if rescan {
                     snapshot_workspace(&state, &store)?
                 } else {
-                    snapshot_dirty(&state, &store, &baseline, &dirty)?
+                    snapshot_dirty(&state, &store, &baseline, &touched)?
                 };
                 rescan = false;
                 dirty.clear();
@@ -119,25 +138,30 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 let diff = SnapshotDiff::between(&baseline, &result);
                 if diff.is_empty() {
                     expected.clear();
+                    interactive.clear();
                     continue;
                 }
 
-                // Split the window into review restorations (path landed on
-                // exactly the expected content) and genuine new changes.
-                let (restored, changed): (Vec<String>, Vec<String>) =
+                // Split the window into changes that fold silently into the
+                // baseline (review restorations that landed on exactly the
+                // expected content, and interactive live edits) and genuine
+                // agent/script changes that need review.
+                let (folded, changed): (Vec<String>, Vec<String>) =
                     diff.changed_paths().into_iter().partition(|path| {
-                        expected.get(path).is_some_and(|want| {
-                            result.files.get(path).map(|e| &e.hash) == want.as_ref()
-                        })
+                        interactive.contains(path)
+                            || expected.get(path).is_some_and(|want| {
+                                result.files.get(path).map(|e| &e.hash) == want.as_ref()
+                            })
                     });
                 expected.clear();
+                interactive.clear();
 
                 store.save_snapshot(&result)?;
                 if changed.is_empty() {
                     store.set_baseline(&result.id)?;
                     tracing::info!(
-                        "[proposal] folded review restoration into baseline ({} paths)",
-                        restored.len()
+                        "[proposal] folded {} restored/interactive paths into baseline",
+                        folded.len()
                     );
                 } else {
                     create_proposal(&state, &store, &baseline, &result, changed)?;
