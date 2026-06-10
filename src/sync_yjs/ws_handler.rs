@@ -146,7 +146,7 @@ async fn handle_incoming(
                 }
                 Err(e) => tracing::warn!("decode update error for {doc_path}: {e}"),
             }
-            flush_to_disk(state, doc_path).await;
+            flush_to_disk(state, doc_path, None).await;
         }
 
         _ => {}

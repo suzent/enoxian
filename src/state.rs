@@ -51,7 +51,10 @@ pub struct AppState {
     /// CRDT sync, UI file operations). The proposal engine folds these into
     /// its baseline without creating proposals — they are already
     /// user-visible live edits, not reviewable agent changes.
-    pub interactive_writes: broadcast::Sender<String>,
+    /// Payload: (rel_path, author_label). author_label is None for local writes;
+    /// for P2P writes it carries the remote peer's device_label so the proposal
+    /// is attributed to the correct device instead of always stamping the local one.
+    pub interactive_writes: broadcast::Sender<(String, Option<String>)>,
     /// (path, expected blob hash) written by the proposal review API when a
     /// reject/revert restores files (None = path deleted). The engine folds
     /// matching changes into its baseline silently so review decisions never
@@ -72,7 +75,7 @@ impl AppState {
     #[allow(clippy::too_many_arguments)]
     pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, circle_dir: PathBuf, admin_pubkey_hex: String, agent_id: String, session_id: u64, peer_id: String, join_policy: crate::config::JoinPolicy, owner: String, mls: crate::mls::SharedMlsState) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
-        let (interactive_writes_tx, _) = broadcast::channel(EVENT_CAPACITY);
+        let (interactive_writes_tx, _): (broadcast::Sender<(String, Option<String>)>, _) = broadcast::channel(EVENT_CAPACITY);
         let (review_writes_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_awareness_tx, _) = broadcast::channel(EVENT_CAPACITY);

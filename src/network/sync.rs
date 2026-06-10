@@ -241,7 +241,21 @@ fn parse_frame(path: String, data: &[u8]) -> IncomingEvent {
 
 // ── Apply an update to the local CRDT ────────────────────────────────────────
 
-fn apply_update(state: &AppState, path: &str, raw: &[u8]) {
+fn device_label_for_peer(state: &AppState, peer_id: &PeerId) -> Option<String> {
+    use crate::control::{MemberEntry, MEMBER_LIST_KEY};
+    use yrs::Map;
+    let peer_str = peer_id.to_string();
+    let map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
+    let txn = state.control.transact();
+    match map.get(&txn, &peer_str) {
+        Some(Out::Any(Any::String(s))) => {
+            serde_json::from_str::<MemberEntry>(&s).ok().map(|e| e.device_label)
+        }
+        _ => None,
+    }
+}
+
+fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId) {
     let doc = if path == "__control__" {
         state.control.clone()
     } else {
@@ -257,10 +271,11 @@ fn apply_update(state: &AppState, path: &str, raw: &[u8]) {
                 return;
             }
             if path != "__control__" {
+                let author = device_label_for_peer(state, &peer_id);
                 let state = state.clone();
                 let path = path.to_string();
                 tokio::spawn(async move {
-                    crate::store::fs::flush_to_disk(&state, &path).await;
+                    crate::store::fs::flush_to_disk(&state, &path, author).await;
                 });
             }
         }
@@ -498,7 +513,7 @@ async fn sync_inner(
         for _ in 0..my_paths.len() {
             let (path, data) = read_frame(&mut rx).await?;
             if let IncomingEvent::Apply { raw_update, .. } = parse_frame(path.clone(), &data) {
-                apply_update(state, &path, &raw_update);
+                apply_update(state, &path, &raw_update, peer_id);
             }
         }
 
@@ -589,7 +604,7 @@ async fn sync_inner(
         for _ in 0..my_paths.len() {
             let (path, data) = read_frame(&mut rx).await?;
             if let IncomingEvent::Apply { raw_update, .. } = parse_frame(path.clone(), &data) {
-                apply_update(state, &path, &raw_update);
+                apply_update(state, &path, &raw_update, peer_id);
             }
         }
     }
@@ -660,7 +675,7 @@ async fn sync_inner(
             Some(event) = evt_rx.recv() => {
                 match event {
                     IncomingEvent::Apply { path, raw_update } => {
-                        apply_update(state, &path, &raw_update);
+                        apply_update(state, &path, &raw_update, peer_id);
                     }
                     IncomingEvent::ResyncRequest { path, sv } => {
                         // Peer lagged — send them our full state for this doc

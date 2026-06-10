@@ -81,7 +81,8 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     // they become auto-accepted proposals (history + revert, no review).
     // Interactive membership wins over watcher dirtiness because UI file
     // operations trigger both.
-    let mut interactive: BTreeSet<String> = BTreeSet::new();
+    // Value is the author label: None = local device, Some(label) = remote peer.
+    let mut interactive: BTreeMap<String, Option<String>> = BTreeMap::new();
     let mut rescan = false;
     // Paths the review API restored (reject/revert), mapped to the exact blob
     // hash the restoration wrote (None = path deleted). Changes that land on
@@ -105,8 +106,8 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
-            path = interactive_rx.recv() => match path {
-                Ok(path) => { interactive.insert(path); }
+            msg = interactive_rx.recv() => match msg {
+                Ok((path, author)) => { interactive.entry(path).or_insert(author); }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     // Unknown interactive writes were dropped; a rescan will
                     // surface them as pending proposals — noisy but never lossy.
@@ -128,7 +129,8 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
             // Re-armed on every loop iteration, so this fires only after
             // IDLE_WINDOW of event silence — a debounce since the last event.
             _ = tokio::time::sleep(IDLE_WINDOW), if !dirty.is_empty() || !interactive.is_empty() => {
-                let touched: BTreeSet<String> = dirty.union(&interactive).cloned().collect();
+                let interactive_keys: BTreeSet<String> = interactive.keys().cloned().collect();
+                let touched: BTreeSet<String> = dirty.union(&interactive_keys).cloned().collect();
                 let result = if rescan {
                     snapshot_workspace(&state, &store)?
                 } else {
@@ -146,10 +148,11 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
 
                 // Three buckets per changed path:
                 //   review restoration landing on its announced content -> fold
-                //   interactive live edit  -> auto-accepted proposal
+                //   interactive live edit  -> auto-accepted proposal (grouped by author)
                 //   anything else          -> pending proposal for review
                 let mut folded = 0usize;
-                let mut interactive_paths: Vec<String> = Vec::new();
+                // Map author_label -> paths, so each distinct author gets its own proposal.
+                let mut interactive_by_author: BTreeMap<Option<String>, Vec<String>> = BTreeMap::new();
                 let mut agent_paths: Vec<String> = Vec::new();
                 for path in diff.changed_paths() {
                     let restored = expected.get(&path).is_some_and(|want| {
@@ -157,8 +160,8 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     });
                     if restored {
                         folded += 1;
-                    } else if interactive.contains(&path) {
-                        interactive_paths.push(path);
+                    } else if let Some(author) = interactive.get(&path) {
+                        interactive_by_author.entry(author.clone()).or_default().push(path);
                     } else {
                         agent_paths.push(path);
                     }
@@ -167,9 +170,10 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 interactive.clear();
 
                 store.save_snapshot(&result)?;
-                if !interactive_paths.is_empty() {
+                for (author, paths) in interactive_by_author {
+                    let label = author.as_deref().unwrap_or(&device_label);
                     create_proposal(
-                        &state, &store, &baseline, &result, interactive_paths, &device_label,
+                        &state, &store, &baseline, &result, paths, label,
                         ProposalSource::Interactive, ProposalStatus::Accepted,
                     )?;
                 }
