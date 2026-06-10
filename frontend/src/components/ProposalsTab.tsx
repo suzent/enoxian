@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
-import type { Proposal, ProposalDetail } from '../types'
+import type { Proposal, ProposalDetail, ProposalFileDiff } from '../types'
 import { getProposalDetail, acceptProposal, rejectProposal, revertProposal } from '../api'
+import { lineDiff, collapseContext } from '../lib/lineDiff'
 
 interface Props {
   circleId: string
@@ -96,14 +97,7 @@ export default function ProposalsTab({ circleId, proposals, onChanged }: Props) 
                     {f.binary ? (
                       <div className="px-2 py-1 text-[9px] text-slate">BINARY</div>
                     ) : (
-                      <div className="max-h-40 overflow-y-auto text-[10px] leading-snug">
-                        {f.before !== null && f.change !== 'added' && (
-                          <pre className="px-2 py-1 whitespace-pre-wrap break-all text-slate line-through decoration-slate/40 border-b border-dashed border-obsidian/10">{f.before}</pre>
-                        )}
-                        {f.after !== null && f.change !== 'removed' && (
-                          <pre className="px-2 py-1 whitespace-pre-wrap break-all">{f.after}</pre>
-                        )}
-                      </div>
+                      <FileDiffView file={f} />
                     )}
                   </div>
                 ))}
@@ -129,6 +123,51 @@ export default function ProposalsTab({ circleId, proposals, onChanged }: Props) 
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+// ── Per-file line diff with gutters and coloring ──────────────────────────────
+
+const ROW_STYLE: Record<'context' | 'add' | 'del', { row: string; marker: string }> = {
+  context: { row: '', marker: ' ' },
+  add: { row: 'bg-green-600/15 text-green-900', marker: '+' },
+  del: { row: 'bg-red-600/15 text-red-900 line-through decoration-red-900/30', marker: '-' },
+}
+
+function FileDiffView({ file }: { file: ProposalFileDiff }) {
+  const rows = collapseContext(lineDiff(file.before, file.after))
+
+  return (
+    <div className="max-h-48 overflow-y-auto text-[10px] leading-snug font-mono">
+      <table className="w-full border-collapse">
+        <tbody>
+          {rows.map((row, idx) => {
+            if (row.type === 'skip') {
+              return (
+                <tr key={idx} className="text-slate/60">
+                  <td colSpan={4} className="px-2 py-0.5 border-y border-dashed border-obsidian/10 text-center select-none">
+                    ··· {row.text} unchanged line{row.text === '1' ? '' : 's'} ···
+                  </td>
+                </tr>
+              )
+            }
+            const style = ROW_STYLE[row.type]
+            return (
+              <tr key={idx} className={style.row}>
+                <td className="w-7 pr-1 text-right text-slate/50 select-none border-r border-obsidian/10 align-top">
+                  {row.oldLine ?? ''}
+                </td>
+                <td className="w-7 pr-1 text-right text-slate/50 select-none border-r border-obsidian/15 align-top">
+                  {row.newLine ?? ''}
+                </td>
+                <td className="w-3 text-center select-none font-bold align-top">{style.marker}</td>
+                <td className="px-1 whitespace-pre-wrap break-all align-top">{row.text || ' '}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
