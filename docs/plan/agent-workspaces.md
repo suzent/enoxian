@@ -394,6 +394,35 @@ revert local changes
 This avoids pretending that agent edits are live CRDT operations. They are
 commit-level changes.
 
+## Acceptance Policy
+
+Proposals default to auto-accept with full history, similar to git commits:
+
+```text
+agent edits files
+  -> proposal created (S0 -> S1 diff recorded)
+  -> auto-accepted into canonical state
+  -> history entry persisted
+  -> user can view the diff or revert at any time
+```
+
+Blocking on manual review breaks the flow for intentionally triggered agents,
+and most runs do not need it. The safety property comes from the audit trail
+and revert path, not from a pre-merge gate.
+
+The exception is cross-device triggers. Acceptance defaults by trigger origin:
+
+```text
+local agent triggered by local user    -> auto-accept
+local agent triggered by remote member -> pending review (configurable)
+remote agent on remote device          -> their daemon decides; only status
+                                          replies come back
+```
+
+Auto-accept is only safe once the undo path is solid. The blob store,
+snapshot diff, and revert command must land before auto-accept is enabled by
+default.
+
 ## Event Model
 
 Workspace proposals should become events:
@@ -475,6 +504,67 @@ the primary cross-device file substrate.
 A chat mention should not directly mutate files or claim that an agent has done
 work. It should create a request that a local daemon may act on.
 
+### Two-Layer Split: Circle Protocol vs Local Daemon
+
+The trigger system is split into two layers with a hard boundary:
+
+```text
+circle layer:  agent_triggered event (replicated, signed, auditable)
+                        |
+                        v
+local daemon:  allowlist check -> launch -> LocalChangeSession -> watcher
+                        |
+                        v
+circle layer:  trigger status reply (delivered/started/ignored/expired/completed)
+```
+
+The circle protocol only carries intent and status feedback. It never encodes
+how a specific agent is launched. All agent-specific logic lives in the daemon:
+
+```text
+circle event (portable):        daemon-local (machine-specific):
+  requested_agent                 which binary to run
+  task_text                       command template
+  requested_by                    working directory
+  message_id                      session timeout
+  workspace_hint                  sandbox policy
+```
+
+No webhooks are needed. The replicated control doc / event log is the delivery
+channel. This reuses the existing authenticated P2P transport (PSK-gated,
+MLS-backed), tolerates offline targets, and adds no new HTTP surface.
+
+### Local Authority
+
+The daemon on the target device is the execution boundary:
+
+```text
+1. Check allowlist: is the requested agent permitted on this device?
+2. Check requested_by: is this peer a trusted circle member?
+3. If yes -> launch agent via the agent registry, open LocalChangeSession.
+4. Emit trigger status back to the circle.
+```
+
+The allowlist of agents a device will auto-wake lives in local daemon config,
+never in synced state, so a remote peer cannot force-enable an agent on
+another device. `requested_agent` is a hint for routing, not a security
+boundary; the local allowlist is the gate.
+
+### Agent Registry
+
+The daemon maps agent names to launch commands:
+
+```text
+[agents.claude]
+command = ["claude", "--print", "-p", "{{task}}"]
+
+[agents.codex]
+command = ["codex", "{{task}}"]
+```
+
+`{{task}}` is the text after the mention. Adding a new agent is a daemon
+config change; the circle event schema never changes for it.
+
 Possible trigger outcomes:
 
 ```text
@@ -523,4 +613,6 @@ enox proposal revert <proposal-id>
 - Which diff adapters should ship first?
 - How should direct edits to the canonical workspace be grouped?
 - How much process attribution is feasible on Windows, macOS, and Linux?
-- How should users configure which chat mentions may wake local agents?
+- What is the right revert granularity (whole proposal vs per-file)?
+- Should the pending-review default for remote-member triggers be per-agent or
+  per-member?

@@ -118,20 +118,42 @@ enoxian captures those changes as reviewable proposals.
 8. Accept, reject, revert, sync, or mark conflicted
 ```
 
-**Tasks:**
+**Build order:** the file change layer lands before the trigger layer. A
+trigger without the snapshot journal can launch an agent but cannot capture or
+review what it did; the ambient proposal flow is useful on its own and
+validates the pipeline before remote triggers add complexity.
 
-- [ ] Content-addressed blob store.
-- [ ] Snapshot manifest format.
-- [ ] Snapshot journal for ambient workspace edits.
-- [ ] Dirty proposal grouping by idle window/session.
-- [ ] Chat mention trigger events for local/remote agents.
-- [ ] Local change session model with attribution confidence.
-- [ ] Snapshot diff generation.
-- [ ] Three-way merge against current canonical state.
-- [ ] Proposal records in the control/event layer.
-- [ ] CLI: session start/finish and proposal list/show/accept/reject/revert.
-- [ ] Frontend proposal review view.
-- [ ] Optional sandbox/manual fork mode for high-risk managed runs.
+**Tasks (in order):**
+
+1. Foundation
+   - [ ] Content-addressed blob store.
+   - [ ] Snapshot manifest format.
+   - [ ] Snapshot journal for ambient workspace edits (before-blob capture).
+2. Ambient proposal flow
+   - [ ] Dirty proposal grouping by idle window/session.
+   - [ ] Snapshot diff generation.
+   - [ ] Three-way merge against current canonical state.
+   - [ ] Proposal records in the control/event layer.
+   - [ ] CLI: proposal list/show/accept/reject/revert.
+3. Sessions and attribution
+   - [ ] Local change session model with attribution confidence.
+   - [ ] CLI: session start/finish (claimed session mode).
+4. Trigger layer
+   - [ ] Circle trigger protocol: `agent_triggered` event schema, replication,
+         status replies.
+   - [ ] Daemon trigger handler: local allowlist, agent registry config,
+         launch-on-trigger.
+5. Hardening and UX
+   - [ ] Managed process mode (`enox agent run`) with optional sandbox.
+   - [ ] Acceptance policy: auto-accept with history for local triggers,
+         pending review for remote-member triggers.
+   - [ ] Frontend proposal review/history view.
+   - [ ] Optional sandbox/manual fork mode for high-risk managed runs.
+
+The proposal watcher is a new layer alongside the existing CRDT sync watcher
+(`src/sync_yjs/watcher.rs`), not a replacement: the CRDT watcher keeps serving
+interactive editing, while the proposal layer treats the same file events as
+session evidence (before-blob capture, idle-window close, S0 -> S1 diff).
 
 ### M15 — Event Log And Blob Sync
 
