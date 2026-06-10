@@ -84,7 +84,7 @@ impl ProposalStore {
                 .collect()
             })
             .unwrap_or_default();
-        proposals.sort_by(|a: &Proposal, b: &Proposal| b.created_at.cmp(&a.created_at));
+        proposals.sort_by_key(|p| std::cmp::Reverse(p.created_at));
         proposals
     }
 }
