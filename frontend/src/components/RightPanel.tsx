@@ -746,7 +746,7 @@ function buildUserGroups(members: Member[], presenceList: Presence[], selfAgentI
 // ── File icons ────────────────────────────────────────────────────────────────
 
 const SvgIcon = ({ d, d2 }: { d: string; d2?: string }) => (
-  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="square" className="shrink-0 mt-px" aria-hidden="true">
+  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="square" className="shrink-0" aria-hidden="true">
     <path d={d} />
     {d2 && <path d={d2} />}
   </svg>
@@ -848,10 +848,8 @@ function FileTree({ nodes, onSelect, onRename, onDelete, openMenu, onOpenMenu, s
               }}
               title={n.path}
             >
-              <span className="flex items-center gap-1.5 min-w-0">
-                <FileIcon name={n.name} isDir={n.isDir} isOpen={open.has(n.path)} />
-                <span className="truncate">{n.name}</span>
-              </span>
+              <FileIcon name={n.name} isDir={n.isDir} isOpen={open.has(n.path)} />
+              <span>{n.name}</span>
             </button>
             {!n.isDir && (
               <span className="file-actions">
@@ -863,15 +861,15 @@ function FileTree({ nodes, onSelect, onRename, onDelete, openMenu, onOpenMenu, s
                 >
                   ⋮
                 </button>
+                {openMenu === n.path && (
+                  <div className="file-menu file-menu-inline">
+                    <button onClick={() => onRename(n.path)}>Rename</button>
+                    <button onClick={() => onDelete(n.path)}>Delete</button>
+                  </div>
+                )}
               </span>
             )}
           </div>
-          {!n.isDir && openMenu === n.path && (
-            <div className="file-menu file-menu-inline">
-              <button onClick={() => onRename(n.path)}>Rename</button>
-              <button onClick={() => onDelete(n.path)}>Delete</button>
-            </div>
-          )}
           {n.isDir && open.has(n.path) && (
             <FileTree
               nodes={n.children}

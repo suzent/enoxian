@@ -1174,8 +1174,11 @@ body {
   font: inherit;
   font-weight: 700;
   cursor: pointer;
-  padding: 6px 10px;
+  padding: 5px 8px;
   overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .file-name span {
@@ -1183,10 +1186,12 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 
 .file-actions {
-  position: relative;
+  position: static;
   display: flex;
   gap: 0;
   padding-right: 4px;
@@ -1217,15 +1222,19 @@ body {
   align-items: center;
   justify-content: center;
   border: none !important;
-  opacity: 0.5;
+  background: transparent !important;
+  color: inherit !important;
+  opacity: 0.4;
 }
 
 .file-menu-trigger:hover {
   opacity: 1;
+  background: transparent !important;
 }
 
 .file-menu-trigger:active {
   transform: translate(1px, 1px);
+  background: transparent !important;
 }
 
 .file-menu {
@@ -1241,12 +1250,11 @@ body {
 }
 
 .file-menu-inline {
-  position: relative;
-  top: auto;
-  right: auto;
-  z-index: 1;
+  position: absolute;
+  top: 100%;
+  right: 4px;
+  z-index: 200;
   width: 100px;
-  margin: 0 8px 6px auto;
   box-shadow: 2px 2px 0 #000;
 }
 
