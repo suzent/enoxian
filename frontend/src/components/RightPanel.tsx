@@ -603,11 +603,15 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
             </div>
           )}
           {fileActionError && <div className="file-error">{fileActionError}</div>}
-          <div className="file-list flex-1 overflow-y-auto p-3 font-mono text-[11px]">
-            {files.length === 0 && <div className="text-slate">NO ARTIFACTS INDEXED</div>}
-            <FileTree nodes={fileTree} onSelect={onFileSelect} onRename={handleRenameFile}
-              onDelete={handleDeleteFile} openMenu={fileMenuOpen} onOpenMenu={setFileMenuOpen}
-              selected={selectedFile} depth={0} />
+          <div className="file-list flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px]">
+            {files.length === 0 && <div className="text-slate px-1">NO ARTIFACTS INDEXED</div>}
+            {files.length > 0 && (
+              <div className="border border-obsidian/30">
+                <FileTree nodes={fileTree} onSelect={onFileSelect} onRename={handleRenameFile}
+                  onDelete={handleDeleteFile} openMenu={fileMenuOpen} onOpenMenu={setFileMenuOpen}
+                  selected={selectedFile} depth={0} />
+              </div>
+            )}
           </div>
         </div>
       )}

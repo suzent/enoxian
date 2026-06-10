@@ -1141,19 +1141,28 @@ body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
-  border: 1px solid #000;
-  background: #fff;
-  margin-bottom: 6px;
-  min-height: 30px;
+  gap: 0;
+  background: transparent;
+  min-height: 28px;
   overflow: visible;
+  border-bottom: 1px dashed rgba(0,0,0,0.12);
+}
+
+.file-row:last-child {
+  border-bottom: none;
+}
+
+.file-row:hover {
+  background: rgba(0,0,0,0.035);
 }
 
 .file-row.selected {
-  background: #fff;
-  color: #000;
-  outline: 1px solid #000;
-  outline-offset: -2px;
+  background: #000;
+  color: #fff;
+}
+
+.file-row.selected:hover {
+  background: #000;
 }
 
 .file-name {
@@ -1163,9 +1172,9 @@ body {
   color: inherit !important;
   text-align: left;
   font: inherit;
-  font-weight: 800;
+  font-weight: 700;
   cursor: pointer;
-  padding: 8px;
+  padding: 6px 10px;
   overflow: hidden;
 }
 
@@ -1179,8 +1188,14 @@ body {
 .file-actions {
   position: relative;
   display: flex;
-  gap: 5px;
-  padding-right: 8px;
+  gap: 0;
+  padding-right: 4px;
+  opacity: 0;
+}
+
+.file-row:hover .file-actions,
+.file-row.selected .file-actions {
+  opacity: 1;
 }
 
 .file-list {
@@ -1195,28 +1210,34 @@ body {
 }
 
 .file-menu-trigger {
-  min-width: 30px;
-  font-size: 16px !important;
+  min-width: 28px;
+  font-size: 14px !important;
   line-height: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   border: none !important;
+  opacity: 0.5;
+}
+
+.file-menu-trigger:hover {
+  opacity: 1;
 }
 
 .file-menu-trigger:active {
-  transform: translate(2px, 2px);
+  transform: translate(1px, 1px);
 }
 
 .file-menu {
   position: absolute;
-  top: calc(100% + 6px);
-  right: 6px;
+  top: calc(100% + 4px);
+  right: 4px;
   z-index: 200;
   display: grid;
-  min-width: 104px;
+  min-width: 100px;
   border: 1px solid #000;
   background: #fff;
+  box-shadow: 2px 2px 0 #000;
 }
 
 .file-menu-inline {
@@ -1224,19 +1245,26 @@ body {
   top: auto;
   right: auto;
   z-index: 1;
-  width: 104px;
-  margin: -2px 10px 10px auto;
+  width: 100px;
+  margin: 0 8px 6px auto;
+  box-shadow: 2px 2px 0 #000;
 }
 
 .file-menu button {
   border: 0 !important;
-  border-bottom: 1px solid #000 !important;
+  border-bottom: 1px solid rgba(0,0,0,0.15) !important;
   background: #fff;
   color: #000;
-  min-height: 30px;
+  min-height: 28px;
   text-align: left;
-  font-weight: 800;
+  font-weight: 700;
   box-shadow: none;
+  padding: 0 10px;
+}
+
+.file-menu button:hover {
+  background: #000;
+  color: #fff;
 }
 
 .file-menu button:last-child {
@@ -1244,8 +1272,7 @@ body {
 }
 
 .file-row.selected .file-actions button {
-  background: #fff;
-  color: #000;
+  color: #fff;
 }
 
 /* Allow cursor name labels (absolutely positioned, may paint outside scroll viewport)
