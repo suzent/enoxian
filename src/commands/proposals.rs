@@ -94,6 +94,10 @@ pub async fn show(client: &reqwest::Client, base: &str, id: String, json: bool) 
         let path = f["path"].as_str().unwrap_or("?");
         let change = f["change"].as_str().unwrap_or("?");
         println!("── {path}  ({change})");
+        if f["not_synced"].as_bool().unwrap_or(false) {
+            println!("   (large file — content not synced to this device)");
+            continue;
+        }
         if f["binary"].as_bool().unwrap_or(false) {
             println!("   (binary file — diff suppressed)");
             continue;
