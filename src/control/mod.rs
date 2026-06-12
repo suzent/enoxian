@@ -9,11 +9,6 @@ pub const TASKS_KEY: &str = "tasks";
 pub const PRESENCE_KEY: &str = "presence";
 pub const MEMBER_LIST_KEY: &str = "member_list";
 pub const CHAT_KEY: &str = "chat";
-/// Map[proposal_id → ProposalBundle JSON] — proposals replicated to all peers
-/// via CRDT sync so every device shows the same review history. The bundle
-/// carries the proposal record plus the snapshot manifests and content blobs
-/// needed to render its diff on a device that never saw the original edits.
-pub const PROPOSALS_KEY: &str = "proposals";
 
 // ── MLS delivery-service keys (M11) ───────────────────────────────────────
 // Stored in the __control__ Yjs map; replicated to all peers via CRDT sync.

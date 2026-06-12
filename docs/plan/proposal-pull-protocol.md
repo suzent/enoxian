@@ -89,19 +89,19 @@ status-bearing fields, e.g. `hash(status || result_snapshot_id)`. Two peers
 agree on a proposal iff ids and fingerprints match; otherwise the newer one wins
 (see §4 conflict rule).
 
-### 3.2 Framing
+### 3.2 Framing (as implemented)
 
-Reuse the existing length-prefixed frame helpers from `sync.rs`
-(`write_frame`/`read_frame`) or a small local equivalent:
+Each message is a single length-prefixed JSON value: `[u32 len][JSON]`, where the
+JSON is a `Msg` enum — `Have(Vec<Have>)`, `Want(Vec<String>)`, or
+`Bundles(Vec<ProposalBundle>)`. The exchange is three fixed round-trips
+(HAVE → WANT → BUNDLES) rather than a streamed sequence with an END sentinel:
+both sides know the next message kind, so no terminator is needed. `read_msg`
+caps the frame at 64 MB to bound a malformed/hostile length prefix.
 
-```text
-HAVE      = [u32 count][ (36-byte id)(8-byte fingerprint) ]*
-REQUEST   = [u32 count][ (36-byte id) ]*
-BUNDLE    = [u32 len][ ProposalBundle JSON ]      (one per requested id)
-END       = zero-length frame to close a direction
-```
-
-Keep it deliberately boring; this is not a hot path.
+This is deliberately boring — JSON over a one-shot exchange, not a hot path. (It
+diverges from the binary `(id)(fingerprint)` packing sketched earlier; JSON was
+simpler and the volume is small. The §7 note on large histories still applies if
+that ever changes.)
 
 ---
 
@@ -143,25 +143,20 @@ The disk store, `ProposalBundle`, `from_store`, and `apply_to_store` are all
 
 ## 6. Migration / backward compatibility
 
-Peers on the old build only replicate via the control-doc map; peers on the new
-build only via the pull protocol. A mixed circle must still converge.
+**Decision: full cutover in one change.** The control-doc map publish, observer,
+and `PROPOSALS_KEY` are all removed in the same PR that adds the pull protocol —
+no dual-path, no phased rollout.
 
-**Plan: ship the pull protocol additively first.**
+Accepted consequence: a peer still on the **old** build exchanges proposals only
+via the control-doc map, which new peers no longer write or read. So an
+old↔new pair will not sync proposals until the old peer updates. This is
+acceptable here because the circle is small and self-updated; it is the
+trade-off for the simplest code and an immediate end to map growth. (File
+content sync is unaffected — it runs on the separate `/enoxian/sync/1.0.0`
+protocol.)
 
-1. **Phase 1 (this design's first PR).** Add the pull protocol and run it
-   *alongside* the existing map publish/observe. New peers exchange via the
-   protocol; old peers still get map updates. The map is still written, so
-   nothing regresses — but new↔new pairs no longer *depend* on it. Growth is not
-   yet fixed (map still written), but the mechanism is proven.
-2. **Phase 2.** Once all peers are known to run Phase 1+, stop writing the map
-   (`publish_proposal` becomes pull-only) and drop the observer. This is the
-   change that actually fixes growth. Gate it behind a protocol-version check or
-   a config flag so a straggler old peer degrades to "no proposal sync with new
-   peers" rather than silent divergence.
-3. **Phase 3 (optional).** Remove `PROPOSALS_KEY` entirely.
-
-The two-phase split keeps each PR small and reversible, and means the risky part
-(removing the eager map) ships only after the new path is validated in the wild.
+The disk store, `ProposalBundle`, `from_store`, and `apply_to_store` are reused
+(with the §4 conflict-rule change to `apply_to_store`).
 
 ---
 
@@ -183,33 +178,33 @@ The two-phase split keeps each PR small and reversible, and means the risky part
 
 ---
 
-## 8. Suggested PR breakdown
+## 8. Implementation (single PR)
 
-1. **Add `updated_at` + status_rank conflict rule** to the model and
-   `apply_to_store`, with tests. Self-contained; improves correctness even
-   before the protocol lands. Backfills `updated_at = created_at` on load.
-2. **Add the `/enoxian/proposals/1.0.0` protocol** (accept + open wiring in
-   `lifecycle.rs`, a new `src/network/proposal_sync.rs` with the HAVE/REQUEST/
-   BUNDLE exchange), running alongside the map (Phase 1). Tests for the delta
-   computation as a pure function.
-3. **Flip to pull-only** (Phase 2): stop writing the map, drop the observer,
-   behind a version/flag gate.
-4. **Remove `PROPOSALS_KEY`** (Phase 3) after a release cycle.
+Shipped as one change:
 
-PR 1 is independently useful and low-risk; it can land first regardless of the
-rest. PR 2 is the bulk of the work. PR 3/4 are cleanups gated on rollout.
+1. **Model + conflict rule.** Add `updated_at` to `Proposal` (backfill
+   `= created_at` on load via serde default), set it on every status change.
+   Update `apply_to_store` to apply the §4 `(status_rank, updated_at)` rule
+   instead of the current "changed if status differs" overwrite.
+2. **Protocol.** New `src/network/proposal_sync.rs` implementing the
+   HAVE/REQUEST/BUNDLE exchange (§3) with the delta computation as a pure,
+   tested function. Wire `accept` + `open_stream` for `/enoxian/proposals/1.0.0`
+   in `lifecycle.rs`, mirroring the `/enoxian/sync/1.0.0` setup, behind the same
+   `mls_removed` tombstone gate.
+3. **Remove the map path.** `publish_proposal` deleted; the `PROPOSALS_KEY`
+   observer in `AppState::new` deleted; `PROPOSALS_KEY` removed from
+   `control/mod.rs`. The engine and review API call sites that published to the
+   map are dropped (the disk write remains; the new protocol replicates it).
 
 ---
 
-## 9. Open questions for review
+## 9. Resolved decisions
 
-- **Fingerprint definition.** Is `hash(status || result_snapshot_id)` enough, or
-  do we want the full bundle hash so any field drift triggers a refetch? Full
-  hash is simpler to reason about but refetches more often.
-- **Trigger cadence.** Reconcile once per connection (like the CRDT catch-up),
-  or also on a timer / on local change? Once-per-connect is simplest and matches
-  current semantics; local-change push-notify is a latency optimization.
-- **Do we keep the §1 interim pruning at all?** If the pull protocol lands soon,
-  in-map pruning is wasted work. If the protocol slips, a small bounded prune
-  (note §1 "Recommendation") is worth shipping as a stopgap. Recommendation:
-  skip interim pruning unless PR 2 is deprioritized.
+- **Fingerprint** = `hash(status || result_snapshot_id)` (status-only). Enough:
+  the only post-creation mutation is status, and the snapshot id changes if the
+  content does.
+- **Cadence** = once per connection, mirroring the CRDT catch-up. No timer / no
+  local-change push.
+- **Interim pruning** = not implemented. The pull protocol removes the growth
+  problem directly, so the stopgap bounded-prune is skipped entirely.
+- **Migration** = full cutover, one PR (see §6).

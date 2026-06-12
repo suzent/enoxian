@@ -327,8 +327,9 @@ fn create_proposal(
         status,
         proposal.changed_paths.len()
     );
-    // Replicate to every peer so all devices show the same review history.
-    super::sync::publish_proposal(state, store, &proposal);
+    // Replication is pull-based: peers fetch this proposal via the proposal
+    // pull protocol (`crate::network::proposal_sync`) when they next connect and
+    // reconcile. No eager push (per the once-per-connect design decision).
     let _ = state.events.send(CircleEvent::ProposalCreated {
         proposal_id: proposal.id,
     });

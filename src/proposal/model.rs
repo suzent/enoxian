@@ -65,6 +65,11 @@ pub struct Proposal {
     #[serde(default)]
     pub origin_device: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// When the status last changed. Drives the cross-device conflict rule
+    /// (see `resolve_status` / the proposal pull protocol). Legacy records
+    /// without this field fall back to `created_at` via `effective_updated_at`.
+    #[serde(default)]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Proposal {
@@ -93,6 +98,59 @@ impl Proposal {
             origin_peer_id: String::new(),
             origin_device: String::new(),
             created_at: chrono::Utc::now(),
+            updated_at: None,
         }
     }
+
+    /// The effective last-modified time: `updated_at` if set, else `created_at`.
+    /// Lets legacy records (no `updated_at`) participate in conflict resolution.
+    pub fn effective_updated_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.updated_at.unwrap_or(self.created_at)
+    }
+
+    /// Set the status and stamp `updated_at`. Use this rather than assigning
+    /// `status` directly so the conflict-resolution timestamp stays accurate.
+    pub fn set_status(&mut self, status: ProposalStatus) {
+        self.status = status;
+        self.updated_at = Some(chrono::Utc::now());
+    }
+
+    /// A compact fingerprint of the mutable state, used by the pull protocol to
+    /// detect when a peer's copy of this proposal has diverged (only the status
+    /// changes after creation; the result snapshot id changes iff content does).
+    /// Two peers agree on a proposal iff (id, fingerprint) match.
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.status as u8).hash(&mut h);
+        self.result_snapshot.hash(&mut h);
+        h.finish()
+    }
+}
+
+impl ProposalStatus {
+    /// Deterministic precedence for resolving concurrent status changes to the
+    /// same proposal across devices. Higher wins; ties break by
+    /// `effective_updated_at`. A terminal decision beats a pending one, and an
+    /// explicit undo (reverted) beats the accept it undid.
+    pub fn rank(self) -> u8 {
+        match self {
+            ProposalStatus::Pending => 0,
+            ProposalStatus::Conflicted => 1,
+            ProposalStatus::Accepted => 2,
+            ProposalStatus::Synced => 2,
+            ProposalStatus::Rejected => 3,
+            ProposalStatus::Reverted => 4,
+        }
+    }
+}
+
+/// Pick the winning proposal record when two devices hold the same id with
+/// different status. Greater `(status rank, effective_updated_at)` wins;
+/// returns true if `incoming` should replace `local`. Deterministic across
+/// peers regardless of clock skew on the rank component.
+pub fn incoming_status_wins(local: &Proposal, incoming: &Proposal) -> bool {
+    let l = (local.status.rank(), local.effective_updated_at());
+    let r = (incoming.status.rank(), incoming.effective_updated_at());
+    r > l
 }

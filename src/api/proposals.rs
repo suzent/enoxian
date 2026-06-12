@@ -266,7 +266,7 @@ async fn set_status(
         }
     }
 
-    proposal.status = new_status;
+    proposal.set_status(new_status);
     if let Err(e) = store.save_proposal(&proposal) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -274,8 +274,9 @@ async fn set_status(
         )
             .into_response();
     }
-    // Replicate the decision so every device reflects the new status.
-    crate::proposal::sync::publish_proposal(&state, &store, &proposal);
+    // The decision replicates to peers via the proposal pull protocol on the
+    // next reconnect/reconcile; the `updated_at` stamp set above drives the
+    // cross-device conflict rule.
     let status_str = serde_json::to_value(new_status)
         .ok()
         .and_then(|v| v.as_str().map(String::from))

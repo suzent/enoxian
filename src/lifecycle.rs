@@ -23,7 +23,7 @@ use crate::{
     mls::{MlsGroupManager, MlsIdentity, SharedMlsState},
     network::{
         behaviour::{EnochBehaviour, EnochEvent},
-        sync,
+        proposal_sync, sync,
     },
     presence,
     state::AppState,
@@ -656,6 +656,29 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         }
     });
 
+    // ── Accept incoming proposal-sync streams ─────────────────────────────────
+    let mut proposal_accept_ctrl = swarm.behaviour().stream.new_control();
+    let state_for_proposals = state.clone();
+    let proposal_accept_token = token.clone();
+    tokio::spawn(async move {
+        let mut incoming = match proposal_accept_ctrl.accept(proposal_sync::PROTOCOL) {
+            Ok(s) => s,
+            Err(e) => { warn!("[proposal-sync] accept failed: {e}"); return; }
+        };
+        loop {
+            tokio::select! {
+                _ = proposal_accept_token.cancelled() => break,
+                item = incoming.next() => match item {
+                    Some((peer_id, stream)) => {
+                        let s = state_for_proposals.clone();
+                        tokio::spawn(proposal_sync::run(peer_id, stream, s, false));
+                    }
+                    None => break,
+                }
+            }
+        }
+    });
+
     // ── Swarm event loop ──────────────────────────────────────────────────────
     let circle_id = config.circle_id.clone();
     let open_ctrl = swarm.behaviour().stream.new_control();
@@ -755,6 +778,15 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                                     match ctrl.open_stream(peer_id, sync::PROTOCOL).await {
                                         Ok(stream) => sync::run_sync(peer_id, stream, s, true).await,
                                         Err(e) => warn!("[sync] open_stream to {peer_id}: {e}"),
+                                    }
+                                });
+                                // Reconcile proposal history once per connection.
+                                let mut pctrl = open_ctrl.clone();
+                                let ps = state_for_swarm.clone();
+                                tokio::spawn(async move {
+                                    match pctrl.open_stream(peer_id, proposal_sync::PROTOCOL).await {
+                                        Ok(stream) => proposal_sync::run(peer_id, stream, ps, true).await,
+                                        Err(e) => warn!("[proposal-sync] open_stream to {peer_id}: {e}"),
                                     }
                                 });
                             }
