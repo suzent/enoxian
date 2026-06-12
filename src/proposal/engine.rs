@@ -83,11 +83,19 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     // operations trigger both.
     // Value is the author label: None = local device, Some(label) = remote peer.
     let mut interactive: BTreeMap<String, Option<String>> = BTreeMap::new();
-    // Snapshot captured when the first interactive write of a batch arrives.
-    // Diffing against this (rather than the rolling baseline) means that rapid
-    // sequential edits — e.g. add-line then revert arriving >3s apart via slow
-    // P2P sync — still collapse into a single proposal covering the net change.
+    // Snapshot captured when the first interactive write of a *settled* batch
+    // arrives, and held across idle windows until the burst goes quiet.
+    // Interactive paths diff against this rather than the rolling baseline, and
+    // emission is deferred until a path has been quiet for a full window. The
+    // two together collapse a round-trip — e.g. add-line then revert arriving
+    // more than one IDLE_WINDOW apart over slow P2P sync — into nothing,
+    // instead of one proposal per window. See `settle` logic in the idle arm.
     let mut interactive_baseline: Option<Snapshot> = None;
+    // Interactive paths written during the window that is currently open. On
+    // each idle fire, paths NOT in this set have been quiet for a full window
+    // and are ready to emit; freshly-written paths carry over to coalesce
+    // further. Drained into `interactive` membership each window.
+    let mut interactive_fresh: BTreeSet<String> = BTreeSet::new();
     let mut rescan = false;
     // Paths the review API restored (reject/revert), mapped to the exact blob
     // hash the restoration wrote (None = path deleted). Changes that land on
@@ -116,7 +124,10 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     if interactive_baseline.is_none() {
                         interactive_baseline = Some(baseline.clone());
                     }
-                    interactive.entry(path).or_insert(author);
+                    interactive.entry(path.clone()).or_insert(author);
+                    // Mark written-this-window so the idle arm defers its
+                    // emission and keeps coalescing until the path goes quiet.
+                    interactive_fresh.insert(path);
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     // Unknown interactive writes were dropped; a rescan will
@@ -149,59 +160,50 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 rescan = false;
                 dirty.clear();
 
+                // Interactive paths written during the window that just closed
+                // are still "in flight" — defer them so a round-trip spanning
+                // multiple windows keeps coalescing. Paths quiet for a full
+                // window are ready to emit. Fresh marks are consumed here.
+                let still_coalescing: BTreeSet<String> =
+                    std::mem::take(&mut interactive_fresh)
+                        .into_iter()
+                        .filter(|p| interactive.contains_key(p))
+                        .collect();
+
                 // For ambient (agent) paths diff against the rolling baseline.
-                // For interactive paths diff against the snapshot taken when the
-                // first write of this batch arrived — this collapses multi-window
-                // round-trips (e.g. add-line then revert arriving >3s apart over
-                // slow P2P sync) into one net-change proposal instead of two.
-                let ibas = interactive_baseline.take().unwrap_or_else(|| baseline.clone());
+                // For interactive paths diff against the baseline captured when
+                // the burst began, held across windows — so the net of an
+                // add-then-revert is empty no matter how the writes are spread
+                // across idle windows.
+                let ibas = interactive_baseline
+                    .clone()
+                    .unwrap_or_else(|| baseline.clone());
                 let agent_diff = SnapshotDiff::between(&baseline, &result);
                 let interactive_diff = SnapshotDiff::between(&ibas, &result);
 
                 if agent_diff.is_empty() && interactive_diff.is_empty() {
                     expected.clear();
                     interactive.clear();
+                    interactive_baseline = None;
                     continue;
                 }
 
-                // Three buckets per changed path:
-                //   review restoration landing on its announced content -> fold
-                //   interactive live edit  -> auto-accepted proposal (grouped by author)
-                //   anything else          -> pending proposal for review
-                let mut folded = 0usize;
-                // Map author_label -> paths, so each distinct author gets its own proposal.
-                let mut interactive_by_author: BTreeMap<Option<String>, Vec<String>> = BTreeMap::new();
-                let mut agent_paths: Vec<String> = Vec::new();
-
-                // Classify interactive-touched paths using the interactive diff.
-                for path in interactive_diff.changed_paths() {
-                    let restored = expected.get(&path).is_some_and(|want| {
-                        result.files.get(&path).map(|e| &e.hash) == want.as_ref()
-                    });
-                    if restored {
-                        folded += 1;
-                    } else if let Some(author) = interactive.get(&path) {
-                        interactive_by_author.entry(author.clone()).or_default().push(path);
-                    }
-                    // If interactive_diff has it but it's expected-restored, already counted.
-                }
-
-                // Classify agent-touched paths using the agent diff (paths not in interactive).
-                for path in agent_diff.changed_paths() {
-                    if interactive.contains_key(&path) {
-                        continue; // already handled above
-                    }
-                    let restored = expected.get(&path).is_some_and(|want| {
-                        result.files.get(&path).map(|e| &e.hash) == want.as_ref()
-                    });
-                    if restored {
-                        folded += 1;
-                    } else {
-                        agent_paths.push(path);
-                    }
-                }
+                let WindowPlan { folded, interactive_by_author, agent_paths } = classify_window(
+                    &agent_diff,
+                    &interactive_diff,
+                    &result,
+                    &interactive,
+                    &still_coalescing,
+                    &expected,
+                );
                 expected.clear();
-                interactive.clear();
+                // Settled interactive paths are done; coalescing ones stay so a
+                // later window can fold their round-trip against the same `ibas`.
+                interactive.retain(|p, _| still_coalescing.contains(p));
+                if still_coalescing.is_empty() {
+                    // Burst is fully quiet — start the next one fresh.
+                    interactive_baseline = None;
+                }
 
                 store.save_snapshot(&result)?;
                 for (author, paths) in interactive_by_author {
@@ -226,6 +228,74 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// The decision for one idle window: which paths fold silently, which become
+/// interactive proposals (grouped by author), and which become pending agent
+/// proposals. Pure given the diffs and state — see `classify_window`.
+struct WindowPlan {
+    folded: usize,
+    interactive_by_author: BTreeMap<Option<String>, Vec<String>>,
+    agent_paths: Vec<String>,
+}
+
+/// Classify a window's changed paths into fold / interactive / agent buckets.
+///
+/// Three rules, in order of precedence per path:
+///   1. A path still coalescing (written during the window that just closed) is
+///      held back entirely — neither emitted nor folded — so a multi-window
+///      round-trip keeps accumulating against the same interactive baseline.
+///   2. A path whose result matches the content a review restoration announced
+///      (`expected`) folds silently — a reject/revert landing where it said it
+///      would, not a new proposal.
+///   3. Otherwise: interactive paths become auto-accepted proposals grouped by
+///      author; agent paths become pending proposals.
+///
+/// Interactive paths are classified from `interactive_diff` (against the held
+/// burst baseline) so an add-then-revert whose net is empty never appears here.
+/// Agent paths come from `agent_diff` (against the rolling baseline) and exclude
+/// anything already owned by an interactive author.
+fn classify_window(
+    agent_diff: &SnapshotDiff,
+    interactive_diff: &SnapshotDiff,
+    result: &Snapshot,
+    interactive: &BTreeMap<String, Option<String>>,
+    still_coalescing: &BTreeSet<String>,
+    expected: &BTreeMap<String, Option<String>>,
+) -> WindowPlan {
+    let mut folded = 0usize;
+    let mut interactive_by_author: BTreeMap<Option<String>, Vec<String>> = BTreeMap::new();
+    let mut agent_paths: Vec<String> = Vec::new();
+
+    let is_restored = |path: &str| {
+        expected.get(path).is_some_and(|want| {
+            result.files.get(path).map(|e| &e.hash) == want.as_ref()
+        })
+    };
+
+    for path in interactive_diff.changed_paths() {
+        if still_coalescing.contains(&path) {
+            continue;
+        }
+        if is_restored(&path) {
+            folded += 1;
+        } else if let Some(author) = interactive.get(&path) {
+            interactive_by_author.entry(author.clone()).or_default().push(path);
+        }
+    }
+
+    for path in agent_diff.changed_paths() {
+        if interactive.contains_key(&path) {
+            continue; // owned by the interactive bucket above
+        }
+        if is_restored(&path) {
+            folded += 1;
+        } else {
+            agent_paths.push(path);
+        }
+    }
+
+    WindowPlan { folded, interactive_by_author, agent_paths }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -316,4 +386,141 @@ fn snapshot_dirty(
         }
     }
     Ok(Snapshot::new(files))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proposal::snapshot::FileEntry;
+
+    /// Build a snapshot from (path, content-hash) pairs. Hashes stand in for
+    /// content; classify_window only compares hashes, never reads blobs.
+    fn snap(entries: &[(&str, &str)]) -> Snapshot {
+        let mut files = BTreeMap::new();
+        for (path, hash) in entries {
+            files.insert(path.to_string(), FileEntry { hash: (*hash).into(), size: 1 });
+        }
+        Snapshot::new(files)
+    }
+
+    fn interactive(paths: &[(&str, Option<&str>)]) -> BTreeMap<String, Option<String>> {
+        paths
+            .iter()
+            .map(|(p, a)| (p.to_string(), a.map(|s| s.to_string())))
+            .collect()
+    }
+
+    fn set(paths: &[&str]) -> BTreeSet<String> {
+        paths.iter().map(|s| s.to_string()).collect()
+    }
+
+    // An interactive edit that has gone quiet emits one proposal for its author.
+    #[test]
+    fn settled_interactive_edit_emits_for_its_author() {
+        let ibas = snap(&[("hi.txt", "v0")]);
+        let result = snap(&[("hi.txt", "v1")]);
+        let idiff = SnapshotDiff::between(&ibas, &result);
+        let adiff = SnapshotDiff::between(&result, &result); // no agent baseline change
+
+        let plan = classify_window(
+            &adiff,
+            &idiff,
+            &result,
+            &interactive(&[("hi.txt", Some("macbook"))]),
+            &set(&[]), // not coalescing — quiet for a full window
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(plan.agent_paths.len(), 0);
+        assert_eq!(plan.folded, 0);
+        let by_author = &plan.interactive_by_author[&Some("macbook".to_string())];
+        assert_eq!(by_author, &vec!["hi.txt".to_string()]);
+    }
+
+    // The core cross-window fix: a path whose net change against the held burst
+    // baseline is zero (add then revert) produces NOTHING — no proposal, no
+    // fold-count — because it never appears in the interactive diff.
+    #[test]
+    fn net_zero_round_trip_emits_nothing() {
+        let ibas = snap(&[("hi.txt", "v0")]);
+        let result = snap(&[("hi.txt", "v0")]); // reverted back to origin
+        let idiff = SnapshotDiff::between(&ibas, &result);
+        assert!(idiff.is_empty(), "net change is empty");
+
+        let plan = classify_window(
+            &SnapshotDiff::default(),
+            &idiff,
+            &result,
+            &interactive(&[("hi.txt", None)]),
+            &set(&[]),
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(plan.interactive_by_author.len(), 0);
+        assert_eq!(plan.agent_paths.len(), 0);
+        assert_eq!(plan.folded, 0);
+    }
+
+    // A path written during the just-closed window is held back: even though it
+    // shows a net change now, it is neither emitted nor folded this window.
+    #[test]
+    fn coalescing_path_is_held_back() {
+        let ibas = snap(&[("hi.txt", "v0")]);
+        let result = snap(&[("hi.txt", "v1")]); // changed, but still in flight
+        let idiff = SnapshotDiff::between(&ibas, &result);
+
+        let plan = classify_window(
+            &SnapshotDiff::default(),
+            &idiff,
+            &result,
+            &interactive(&[("hi.txt", Some("suk"))]),
+            &set(&["hi.txt"]), // written this window — defer
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(plan.interactive_by_author.len(), 0, "deferred, not emitted");
+        assert_eq!(plan.agent_paths.len(), 0);
+    }
+
+    // Agent (non-interactive) paths become pending proposals via the agent diff.
+    #[test]
+    fn agent_path_becomes_pending() {
+        let baseline = snap(&[("gen.txt", "g0")]);
+        let result = snap(&[("gen.txt", "g1")]);
+        let adiff = SnapshotDiff::between(&baseline, &result);
+
+        let plan = classify_window(
+            &adiff,
+            &SnapshotDiff::default(),
+            &result,
+            &BTreeMap::new(), // no interactive paths
+            &set(&[]),
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(plan.agent_paths, vec!["gen.txt".to_string()]);
+        assert_eq!(plan.interactive_by_author.len(), 0);
+    }
+
+    // A review restoration landing on its announced content folds silently.
+    #[test]
+    fn review_restored_path_folds() {
+        let ibas = snap(&[("hi.txt", "v0")]);
+        let result = snap(&[("hi.txt", "restored")]);
+        let idiff = SnapshotDiff::between(&ibas, &result);
+        let mut expected = BTreeMap::new();
+        expected.insert("hi.txt".to_string(), Some("restored".to_string()));
+
+        let plan = classify_window(
+            &SnapshotDiff::default(),
+            &idiff,
+            &result,
+            &interactive(&[("hi.txt", None)]),
+            &set(&[]),
+            &expected,
+        );
+
+        assert_eq!(plan.folded, 1);
+        assert_eq!(plan.interactive_by_author.len(), 0);
+    }
 }

@@ -20,6 +20,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use yrs::{Map, Transact};
 
+/// Blobs at or below this size are base64-embedded in the bundle and replicate
+/// eagerly through the control doc. Larger files ship as manifest metadata only
+/// (hash + size, recorded in the snapshot) — their content is NOT synced, to
+/// keep the in-memory, fully-replicated control doc from bloating. A device that
+/// needs the content (to view or revert) must fetch it on demand; until that
+/// pull protocol exists, the diff view shows a placeholder and reject/revert
+/// fails cleanly on that device rather than corrupting the file.
+///
+/// 256 KB comfortably covers source, config, and prose; it excludes images,
+/// archives, and built artifacts — exactly the things that should not live in a
+/// CRDT control doc.
+pub const MAX_EMBEDDED_BLOB_BYTES: usize = 256 * 1024;
+
 /// A self-contained, replicable proposal: the record plus everything needed to
 /// reconstruct it in another device's [`ProposalStore`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +57,14 @@ impl ProposalBundle {
         for path in &proposal.changed_paths {
             for snap in [&base_snapshot, &result_snapshot] {
                 if let Some(entry) = snap.files.get(path) {
+                    // Size comes from the manifest, so we can skip oversized
+                    // blobs without even reading them off disk. The manifest
+                    // entry still travels in the snapshot, so the receiver knows
+                    // the path changed and how big it is — only the content is
+                    // withheld.
+                    if entry.size as usize > MAX_EMBEDDED_BLOB_BYTES {
+                        continue;
+                    }
                     if !blobs.contains_key(&entry.hash) {
                         if let Ok(bytes) = store.blobs.get(&entry.hash) {
                             blobs.insert(entry.hash.clone(), base64_encode(&bytes));
@@ -173,6 +194,39 @@ mod tests {
 
         // Re-applying the identical bundle reports no change.
         assert!(!bundle.apply_to_store(&dst).unwrap());
+    }
+
+    #[test]
+    fn oversized_blobs_are_excluded_from_the_bundle() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let src = ProposalStore::open(src_dir.path()).unwrap();
+        // base: small file. result: a blob just over the embed cap.
+        let base = snap_with(&src, "big.bin", b"small");
+        let big = vec![0u8; MAX_EMBEDDED_BLOB_BYTES + 1];
+        let result = snap_with(&src, "big.bin", &big);
+        let proposal = Proposal::ambient(
+            "c".into(),
+            base.id.clone(),
+            result.id.clone(),
+            vec!["big.bin".into()],
+        );
+        src.save_proposal(&proposal).unwrap();
+
+        let bundle = ProposalBundle::from_store(&src, &proposal).unwrap();
+        // The small base blob is embedded; the oversized result blob is not.
+        let base_hash = &bundle.base_snapshot.files["big.bin"].hash;
+        let result_hash = &bundle.result_snapshot.files["big.bin"].hash;
+        assert!(bundle.blobs.contains_key(base_hash), "small blob embedded");
+        assert!(!bundle.blobs.contains_key(result_hash), "large blob excluded");
+
+        // Applied to a fresh store, the manifest entry exists but the content
+        // is absent — exactly the "known change, unrenderable content" state.
+        let dst_dir = tempfile::tempdir().unwrap();
+        let dst = ProposalStore::open(dst_dir.path()).unwrap();
+        bundle.apply_to_store(&dst).unwrap();
+        let r = dst.load_snapshot(&result.id).unwrap();
+        assert!(r.files.contains_key("big.bin"), "manifest entry present");
+        assert!(!dst.blobs.contains(result_hash), "large content not stored");
     }
 
     #[test]

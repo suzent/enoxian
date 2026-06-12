@@ -46,10 +46,15 @@ pub async fn list_proposals(
 struct FileDiff {
     path: String,
     change: &'static str, // "added" | "removed" | "modified"
-    /// UTF-8 content; None when the file is binary or absent on that side.
+    /// UTF-8 content; None when the file is binary, absent on that side, or its
+    /// content was not synced to this device.
     before: Option<String>,
     after: Option<String>,
     binary: bool,
+    /// True when the manifest references content this device does not hold
+    /// (a large blob excluded from the proposal bundle). The change is known
+    /// to have happened, but the content cannot be rendered or reverted here.
+    not_synced: bool,
 }
 
 #[derive(Serialize)]
@@ -93,24 +98,26 @@ pub async fn get_proposal(
 
     let mut files = Vec::new();
     for path in &proposal.changed_paths {
-        let before_bytes = base
-            .files
-            .get(path)
-            .and_then(|e| store.blobs.get(&e.hash).ok());
-        let after_bytes = result
-            .files
-            .get(path)
-            .and_then(|e| store.blobs.get(&e.hash).ok());
-        let change = match (&before_bytes, &after_bytes) {
-            (None, Some(_)) => "added",
-            (Some(_), None) => "removed",
+        // Presence/absence is read from the manifest, which always has the
+        // entry even when the content blob was not synced. This keeps the
+        // add/remove/modify classification correct for large files.
+        let base_entry = base.files.get(path);
+        let result_entry = result.files.get(path);
+        let change = match (base_entry.is_some(), result_entry.is_some()) {
+            (false, true) => "added",
+            (true, false) => "removed",
             _ => "modified",
         };
+        let before_bytes = base_entry.and_then(|e| store.blobs.get(&e.hash).ok());
+        let after_bytes = result_entry.and_then(|e| store.blobs.get(&e.hash).ok());
+        // A manifest entry whose blob is missing = content not synced here.
+        let not_synced = (base_entry.is_some() && before_bytes.is_none())
+            || (result_entry.is_some() && after_bytes.is_none());
         let before = before_bytes.as_ref().and_then(|b| String::from_utf8(b.clone()).ok());
         let after = after_bytes.as_ref().and_then(|b| String::from_utf8(b.clone()).ok());
         let binary = (before_bytes.is_some() && before.is_none())
             || (after_bytes.is_some() && after.is_none());
-        files.push(FileDiff { path: path.clone(), change, before, after, binary });
+        files.push(FileDiff { path: path.clone(), change, before, after, binary, not_synced });
     }
 
     Json(json!(ProposalDetail { proposal, files })).into_response()
@@ -174,17 +181,49 @@ async fn set_status(
             }
         };
 
+        // Resolve a manifest entry to its content. A manifest entry whose blob
+        // is absent from this device's store is NOT the same as "no file at this
+        // snapshot": it means the content was never synced here (e.g. a large
+        // blob excluded from the proposal bundle — see MAX_EMBEDDED_BLOB_BYTES).
+        // Reverse-apply with such a `None` would misread it as a delete and
+        // could destroy the file, so collect these and abort instead.
+        let mut missing: Vec<String> = Vec::new();
+        let resolve = |entry: Option<&crate::proposal::snapshot::FileEntry>, path: &str, missing: &mut Vec<String>| -> Option<Vec<u8>> {
+            match entry {
+                None => None, // legitimately absent at this snapshot
+                Some(e) => match store.blobs.get(&e.hash) {
+                    Ok(bytes) => Some(bytes),
+                    Err(_) => {
+                        missing.push(path.to_string());
+                        None
+                    }
+                },
+            }
+        };
+
         // Dry-run every path first so a conflict aborts with nothing written.
         let mut writes: Vec<(String, RestoreOutcome)> = Vec::new();
         let mut conflicts: Vec<String> = Vec::new();
         for path in &proposal.changed_paths {
-            let base_bytes = base.files.get(path).and_then(|e| store.blobs.get(&e.hash).ok());
-            let result_bytes = result.files.get(path).and_then(|e| store.blobs.get(&e.hash).ok());
+            let base_bytes = resolve(base.files.get(path), path, &mut missing);
+            let result_bytes = resolve(result.files.get(path), path, &mut missing);
             let current = std::fs::read(state.workspace.join(path)).ok();
             match reverse_apply(base_bytes.as_deref(), result_bytes.as_deref(), current.as_deref()) {
                 RestoreOutcome::Conflict => conflicts.push(path.clone()),
                 outcome => writes.push((path.clone(), outcome)),
             }
+        }
+        if !missing.is_empty() {
+            missing.sort();
+            missing.dedup();
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({
+                    "error": "this proposal's content was not synced to this device (large file); review it where the change originated",
+                    "missing": missing,
+                })),
+            )
+                .into_response();
         }
         if !conflicts.is_empty() {
             return (
