@@ -6,19 +6,44 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel an in-progress run when a newer commit is pushed to the same ref, so
+# rapid pushes don't stack up paid runs (esp. the 10x-billed macOS job).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
+  # ── Decide which OSes to run on ──────────────────────────────────────────────
+  # macOS runners bill at 10x. Run them only where the coverage is worth it:
+  # pull requests (which target main) and pushes to main. Feature-branch pushes
+  # get the 1x ubuntu job only.
+  matrix:
+    name: Select runners
+    runs-on: ubuntu-latest
+    outputs:
+      os: ${{ steps.pick.outputs.os }}
+    steps:
+      - id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo 'os=["ubuntu-latest", "macos-latest"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          fi
+
   # ── Rust: test + lint ────────────────────────────────────────────────────────
   rust:
     name: Rust (${{ matrix.os }})
+    needs: matrix
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(needs.matrix.outputs.os) }}
 
     steps:
       - uses: actions/checkout@v4
