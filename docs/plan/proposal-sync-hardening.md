@@ -1,9 +1,7 @@
 # Proposal Sync Hardening — Design Note
 
-**Status:** §2 and §3 implemented; §1 still design-only. Companion to the
-proposal layer in `agent-workspaces.md`. Covers the three risks left open after
-proposal replication landed (`src/proposal/sync.rs`, control-doc `proposals`
-map).
+**Status:** all three implemented. Companion to the proposal layer in
+`agent-workspaces.md`.
 
 - **§2 (large-blob exclusion) — done.** `MAX_EMBEDDED_BLOB_BYTES` cap in
   `ProposalBundle::from_store`; reject/revert aborts cleanly on missing content
@@ -12,7 +10,12 @@ map).
   (`interactive_baseline`); the cross-window case is now closed by deferring
   emission of paths still being written and holding the burst baseline across
   windows (`classify_window` in `src/proposal/engine.rs`, with unit tests).
-- **§1 (unbounded map growth) — open.** Still design-only; see below.
+- **§1 (unbounded map growth) — done, via the pull protocol** rather than in-map
+  pruning. Proposals no longer ride the control doc at all; they replicate
+  through `/enoxian/proposals/1.0.0` (`src/network/proposal_sync.rs`), which
+  reconciles the disk stores peer-to-peer once per connection. The
+  `PROPOSALS_KEY` map, its observer, and `publish_proposal` are removed. See
+  `proposal-pull-protocol.md` for the full design.
 
 ---
 

@@ -6,19 +6,17 @@
 //! never observed locally: the proposal record, its base/result snapshot
 //! manifests, and the content blobs those manifests reference.
 //!
-//! Bundles travel inside the `__control__` Yjs map under
-//! [`crate::control::PROPOSALS_KEY`], so they replicate to all peers through the
-//! existing CRDT sync path — the same mechanism chat and tasks use.
+//! Bundles are transferred by the proposal pull protocol
+//! (`crate::network::proposal_sync`): on each connection peers exchange the ids
+//! they hold, then request and stream the bundles they lack. The disk store is
+//! the source of truth; this type is the transfer unit.
 
 use super::model::{Proposal, ProposalStatus};
 use super::snapshot::Snapshot;
 use super::store::ProposalStore;
-use crate::control::PROPOSALS_KEY;
-use crate::state::AppState;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use yrs::{Map, Transact};
 
 /// Blobs at or below this size are base64-embedded in the bundle and replicate
 /// eagerly through the control doc. Larger files ship as manifest metadata only
@@ -84,9 +82,14 @@ impl ProposalBundle {
 
     /// Persist this bundle into `store`: blobs first, then snapshots, then the
     /// proposal record. Idempotent — re-applying the same bundle is a no-op for
-    /// content-addressed blobs and overwrites the proposal/snapshot files with
-    /// identical bytes. Returns true if the proposal was newly written or its
-    /// status changed (i.e. the caller should fire an event / refresh UI).
+    /// content-addressed blobs.
+    ///
+    /// Status divergence is resolved by `incoming_status_wins`: if a local
+    /// record exists and already wins (a higher-ranked or newer decision), the
+    /// inbound record does NOT overwrite it — so pulling an older `pending` from
+    /// a peer can't undo a local `accepted`. Returns true if the local store
+    /// changed (new proposal, or a winning inbound status), i.e. the caller
+    /// should fire an event / refresh UI.
     pub fn apply_to_store(&self, store: &ProposalStore) -> Result<bool> {
         for (hash, b64) in &self.blobs {
             if let Ok(bytes) = base64_decode(b64) {
@@ -100,39 +103,27 @@ impl ProposalBundle {
         store.save_snapshot(&self.base_snapshot)?;
         store.save_snapshot(&self.result_snapshot)?;
 
-        let prev_status = store.load_proposal(&self.proposal.id).ok().map(|p| p.status);
-        let changed = prev_status != Some(self.proposal.status);
-        store.save_proposal(&self.proposal)?;
-        Ok(changed)
+        match store.load_proposal(&self.proposal.id) {
+            Ok(local) => {
+                if super::model::incoming_status_wins(&local, &self.proposal) {
+                    store.save_proposal(&self.proposal)?;
+                    Ok(true)
+                } else {
+                    // Local record is at least as authoritative — keep it.
+                    Ok(false)
+                }
+            }
+            Err(_) => {
+                // First time we've seen this proposal.
+                store.save_proposal(&self.proposal)?;
+                Ok(true)
+            }
+        }
     }
 
     pub fn status(&self) -> ProposalStatus {
         self.proposal.status
     }
-}
-
-/// Publish a proposal to the shared control doc so it replicates to every peer.
-/// Builds the bundle from `store`, then writes it under `PROPOSALS_KEY[id]`.
-/// Local writes (no "p2p" txn origin) are forwarded to peers by the control
-/// doc observer wired up in `AppState::new`.
-pub fn publish_proposal(state: &AppState, store: &ProposalStore, proposal: &Proposal) {
-    let bundle = match ProposalBundle::from_store(store, proposal) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!("[proposal] cannot build sync bundle for {}: {e}", proposal.id);
-            return;
-        }
-    };
-    let json = match serde_json::to_string(&bundle) {
-        Ok(j) => j,
-        Err(e) => {
-            tracing::warn!("[proposal] cannot serialize bundle for {}: {e}", proposal.id);
-            return;
-        }
-    };
-    let map = state.control.get_or_insert_map(PROPOSALS_KEY);
-    let mut txn = state.control.transact_mut();
-    map.insert(&mut txn, proposal.id.as_str(), json.as_str());
 }
 
 fn base64_encode(data: &[u8]) -> String {
@@ -248,9 +239,40 @@ mod tests {
         assert!(b0.apply_to_store(&dst).unwrap(), "first delivery is new");
         assert!(!b0.apply_to_store(&dst).unwrap(), "redelivery is a no-op");
 
-        proposal.status = ProposalStatus::Rejected;
+        proposal.set_status(ProposalStatus::Rejected);
         src.save_proposal(&proposal).unwrap();
         let b1 = ProposalBundle::from_store(&src, &proposal).unwrap();
-        assert!(b1.apply_to_store(&dst).unwrap(), "status flip is a change");
+        assert!(b1.apply_to_store(&dst).unwrap(), "winning status flip is a change");
+    }
+
+    // The conflict rule must not let a lower-ranked inbound status clobber a
+    // local terminal decision — e.g. pulling a stale `pending` from a peer that
+    // hasn't seen our `accepted` yet.
+    #[test]
+    fn losing_inbound_status_does_not_overwrite() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let src = ProposalStore::open(src_dir.path()).unwrap();
+        let base = snap_with(&src, "f", b"a");
+        let result = snap_with(&src, "f", b"b");
+        let pending =
+            Proposal::ambient("c".into(), base.id.clone(), result.id.clone(), vec!["f".into()]);
+
+        // Local store has already ACCEPTED this proposal.
+        let dst_dir = tempfile::tempdir().unwrap();
+        let dst = ProposalStore::open(dst_dir.path()).unwrap();
+        let mut accepted = pending.clone();
+        accepted.set_status(ProposalStatus::Accepted);
+        // Materialize snapshots/blobs in dst too so apply_to_store can run.
+        ProposalBundle::from_store(&src, &pending).unwrap().apply_to_store(&dst).unwrap();
+        dst.save_proposal(&accepted).unwrap();
+
+        // Inbound is the older PENDING version. It must not win.
+        let stale = ProposalBundle::from_store(&src, &pending).unwrap();
+        assert!(!stale.apply_to_store(&dst).unwrap(), "stale pending must not overwrite accepted");
+        assert_eq!(
+            dst.load_proposal(&pending.id).unwrap().status,
+            ProposalStatus::Accepted,
+            "local accepted decision preserved"
+        );
     }
 }

@@ -164,58 +164,11 @@ impl AppState {
         });
         std::mem::forget(tasks_sub);
 
-        // Observe proposals for P2P-delivered bundles. The engine that created a
-        // proposal publishes it locally and emits its own ProposalCreated event;
-        // this observer covers proposals that arrived from another device via
-        // CRDT sync, rehydrating each bundle into the local proposal store so the
-        // review API can render it, then firing an SSE event for the UI.
-        let proposals_map = control.get_or_insert_map(crate::control::PROPOSALS_KEY);
-        let events_for_proposals = events_tx.clone();
-        let workspace_for_proposals = workspace.clone();
-        let proposals_sub = proposals_map.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
-            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
-            if !is_p2p { return; }
-
-            let store = match crate::proposal::store::ProposalStore::open(&workspace_for_proposals) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("[proposal] cannot open store to apply synced bundle: {e}");
-                    return;
-                }
-            };
-            for change in event.keys(txn).values() {
-                let json = match change {
-                    yrs::types::EntryChange::Inserted(yrs::Out::Any(yrs::Any::String(s)))
-                    | yrs::types::EntryChange::Updated(_, yrs::Out::Any(yrs::Any::String(s))) => s,
-                    _ => continue,
-                };
-                let bundle: crate::proposal::sync::ProposalBundle = match serde_json::from_str(json) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::warn!("[proposal] malformed synced bundle: {e}");
-                        continue;
-                    }
-                };
-                match bundle.apply_to_store(&store) {
-                    Ok(false) => {} // no change (idempotent re-delivery)
-                    Ok(true) => {
-                        let status_str = serde_json::to_value(bundle.status())
-                            .ok()
-                            .and_then(|v| v.as_str().map(String::from))
-                            .unwrap_or_default();
-                        let _ = events_for_proposals.send(CircleEvent::ProposalUpdated {
-                            proposal_id: bundle.proposal.id.clone(),
-                            status: status_str,
-                        });
-                    }
-                    Err(e) => tracing::warn!(
-                        "[proposal] applying synced bundle {}: {e}",
-                        bundle.proposal.id
-                    ),
-                }
-            }
-        });
-        std::mem::forget(proposals_sub);
+        // Proposals are not replicated through the control doc. They sync via
+        // the dedicated pull protocol (`crate::network::proposal_sync`), which
+        // reconciles the disk store directly on each peer connection — keeping
+        // the (in-memory, fully-replicated) control doc free of unbounded
+        // proposal history.
 
         Self {
             circle_id,
