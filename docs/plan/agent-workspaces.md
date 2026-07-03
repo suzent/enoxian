@@ -120,28 +120,19 @@ A user may mention their own or another member's agent in a chat room:
 @alice/claude review the proposal layer
 ```
 
-This creates a trigger event, not a guaranteed process identity.
+This is an ordinary chat message, not a dedicated wire command. It carries
+intent, never a guaranteed process identity — and never an instruction that a
+remote member can force another device to obey (see
+[Two-Layer Split](#two-layer-split-chat-intent-vs-local-reaction)).
 
-```text
-agent_triggered {
-  trigger_id
-  circle_id
-  requested_agent
-  requested_by
-  message_id
-  workspace_hint
-  created_at
-}
-```
-
-If the local daemon can launch or notify the requested agent, it opens a local
-change session:
+Under a **push** reaction policy, the local daemon matches the mention against
+its allowlist and opens a local change session:
 
 ```text
 LocalChangeSession {
   session_id
-  trigger_id
   requested_agent
+  message_id        # the chat message that prompted the run
   base_snapshot
   mode: "ambient_triggered"
 }
@@ -152,9 +143,9 @@ changes appear near that session, enoxian can attribute the proposal as:
 
 ```text
 actor_id: "codex"
-source: "chat_trigger"
+source: "chat_mention"
 confidence: "session"
-trigger_id: "..."
+message_id: "..."
 ```
 
 If no process binding exists, attribution stays softer:
@@ -220,6 +211,43 @@ still wants proposals attributed.
 source: "claimed_session"
 confidence: "user_declared"
 ```
+
+#### Concurrent actors on one device
+
+Claimed sessions attribute by wall-clock window, not by process. This is fine
+for a single actor but ambiguous when two agents run on the same device at once:
+
+```text
+enox session start --actor codex   # window A
+enox session start --actor aider   # window B
+  codex writes foo.rs
+  aider writes bar.rs
+enox session finish                # which actor closed?
+```
+
+Both windows cover both files, so enoxian cannot say `foo.rs` was codex and
+`bar.rs` was aider. Two windows also make a bare `enox session finish`
+ambiguous — it needs an actor or session id.
+
+This is not a plumbing gap; it is a limit of the mode. Claimed sessions
+deliberately drop the process binding (that is what makes them `user_declared`
+rather than `verified_process`), and without that binding there is nothing to
+tie a specific file to a specific concurrent actor. The stronger modes do not
+have this problem: `agent run` (managed process) attributes by process tree, and
+sandbox/fork give each actor a separate workspace tree.
+
+Candidate resolutions, none yet chosen:
+
+- **Single-actor claimed sessions.** Reject `session start` while another is
+  open; document that concurrent agents must use `agent run` or per-agent forks.
+  Honest and cheap, but limiting.
+- **Path-scoped sessions.** `enox session start --actor X --path sub/dir` claims
+  a subtree; overlapping actors are disambiguated by which path they touch.
+  Works until two agents edit the same files, then attribution collapses again.
+- **Explicit close.** Require `enox session finish --actor X` (or a session id)
+  so at least the close is unambiguous, even if per-file attribution stays soft.
+
+See [Open Questions](#open-questions).
 
 ### 5. Sandboxed Workspace Mode
 
@@ -504,22 +532,50 @@ the primary cross-device file substrate.
 A chat mention should not directly mutate files or claim that an agent has done
 work. It should create a request that a local daemon may act on.
 
-### Two-Layer Split: Circle Protocol vs Local Daemon
+### Two-Layer Split: Chat Intent vs Local Reaction
 
 The trigger system is split into two layers with a hard boundary:
 
 ```text
-circle layer:  agent_triggered event (replicated, signed, auditable)
+circle layer:  chat message with @mention (replicated, signed, auditable)
                         |
                         v
-local daemon:  allowlist check -> launch -> LocalChangeSession -> watcher
+local policy:  each device decides how (or whether) to react to the mention
                         |
-                        v
-circle layer:  trigger status reply (delivered/started/ignored/expired/completed)
+              push ─────┴───── pull
+                |               |
+                v               v
+        daemon auto-runs   agent proactively
+        the local agent    retrieves chat and
+        (execution layer)  decides to act
 ```
 
-The circle protocol only carries intent and status feedback. It never encodes
-how a specific agent is launched. All agent-specific logic lives in the daemon:
+**The network side is not a dedicated command; it is chat.** An `@mention`
+is an ordinary chat message (M9) that replicates like any other. There is no
+imperative "run agent X on device Y" event travelling the wire — a remote
+member cannot *cause* execution anywhere. The mention is only intent.
+
+**The reaction is a local policy over the chat stream**, chosen per device:
+
+- **Push** — the daemon subscribes to chat, matches mentions against its local
+  allowlist, and auto-launches the agent through the local execution layer.
+- **Pull** — the daemon does nothing on its own. The agent proactively reads
+  the chat room on its own cadence and decides whether to act. enoxian still
+  captures whatever files it changes as proposals.
+
+Both policies converge on the same local execution layer and the same proposal
+capture; they differ only in *what initiates the run*. A device may also do
+neither (mentions are just messages until someone opts in).
+
+> Note: an earlier prototype materialized a distinct `AgentTriggered` event with
+> a `TriggerStatusReply` handshake (`src/trigger/`). That was **removed** — a
+> replicated command that lets a remote member push execution at a device is the
+> dangerous framing this model exists to avoid. The mention is plain chat; "did
+> an agent react?" is optional, local status, not a required network round-trip.
+> See roadmap M14.
+
+Whatever initiates a run, the circle layer never encodes how a specific agent
+is launched. All agent-specific logic lives in the daemon:
 
 ```text
 circle event (portable):        daemon-local (machine-specific):
@@ -538,46 +594,91 @@ MLS-backed), tolerates offline targets, and adds no new HTTP surface.
 
 The daemon on the target device is the execution boundary:
 
+Under a **push** reaction policy the daemon, on seeing a mention:
+
 ```text
-1. Check allowlist: is the requested agent permitted on this device?
-2. Check requested_by: is this peer a trusted circle member?
-3. If yes -> launch agent via the agent registry, open LocalChangeSession.
-4. Emit trigger status back to the circle.
+1. Check allowlist: is the mentioned agent permitted on this device?
+2. Check the sender: is this a trusted circle member? (affects acceptance policy)
+3. If yes -> launch agent via the local execution layer, open LocalChangeSession.
 ```
 
 The allowlist of agents a device will auto-wake lives in local daemon config,
 never in synced state, so a remote peer cannot force-enable an agent on
-another device. `requested_agent` is a hint for routing, not a security
-boundary; the local allowlist is the gate.
+another device. The mentioned agent name is a routing hint, not a security
+boundary; the local allowlist is the gate. Under a **pull** policy there is no
+step 3 — the agent itself reads the room and decides.
 
-### Agent Registry
+### Agent Config (Allowlist + Driver)
 
-The daemon maps agent names to launch commands:
+*To be built with the M14 local reaction layer.* The daemon maps agent names to
+launch config; this doubles as the push-policy allowlist:
 
 ```text
 [agents.claude]
-command = ["claude", "--print", "-p", "{{task}}"]
+command = ["claude", "--print", "-p", "{{task}}"]   # driver = "argv" (default)
 
-[agents.codex]
-command = ["codex", "{{task}}"]
+[agents.gemini]
+driver = "acp"
+command = ["gemini", "--acp"]
 ```
 
-`{{task}}` is the text after the mention. Adding a new agent is a daemon
-config change; the circle event schema never changes for it.
+`{{task}}` is the text after the mention. Adding an agent is a local config
+change; nothing on the wire changes for it. (This replaces the removed
+`src/trigger/registry.rs`, redesigned to carry a per-agent `driver`.)
 
-Possible trigger outcomes:
+If the target agent belongs to another member, the mention still travels as an
+ordinary chat message. That member's daemon (under its own push/pull policy)
+decides whether it can wake the local agent.
+
+### Local Execution Layer: Raw Argv vs ACP
+
+The registry above launches agents as **fire-and-forget argv**: substitute
+`{{task}}`, spawn, and infer the result from the snapshot journal. This is the
+universal fallback and must stay the default — it upholds the core principle
+that *agents do not need to understand enoxian*.
+
+An optional second driver is the [Agent Client Protocol
+(ACP)](https://agentclientprotocol.com/), for agents that speak it (e.g. Zed's
+ecosystem, Gemini CLI). Here **enoxian is the ACP client and the coding agent is
+the ACP agent**, over JSON-RPC/stdio to a local subprocess. ACP is a *local
+execution driver only* — it is not a trigger and not a sync transport:
 
 ```text
-delivered     # target device/agent saw it
-started       # local session opened
-ignored       # no matching agent
-expired       # no response before timeout
-completed     # proposal created
-failed        # launch or runtime error
+initiator (push policy, `enox agent run`, or local mention)
+   -> local execution layer
+        ├── argv driver:  spawn command, infer changes from snapshot journal
+        └── acp  driver:  spawn ACP agent, drive prompt turn, mediate fs writes
 ```
 
-If the target agent belongs to another member, the trigger is replicated as a
-circle event. That member's daemon decides whether it can wake the local agent.
+Why ACP is worth having as a driver:
+
+- **Real completion signal.** The ACP prompt-turn lifecycle gives a structured
+  start → stop-reason, instead of "the process exited."
+- **Strong attribution.** enoxian owns the ACP subprocess and its session, so
+  runs are `managed_process` / `verified_process` confidence — and each agent
+  gets its own session, which sidesteps the concurrent-actor ambiguity that
+  claimed sessions have (see [Claimed Session Mode](#4-claimed-session-mode)).
+- **Per-write visibility.** When the agent uses client-provided fs methods
+  (`fs/write_text_file`), enoxian sees each write as it happens instead of
+  diffing the whole workspace afterward. (An ACP agent that touches disk
+  directly falls back to the snapshot-journal path.)
+- **Policy hook.** ACP's `session/request_permission` flow is a natural place to
+  route a write through the [Acceptance Policy](#acceptance-policy) before it
+  becomes canonical — the same "mediate an effect before it lands" idea at a
+  finer grain.
+
+Caveats: ACP only covers ACP-speaking agents, so it is one launch mode among
+several, never a requirement. Its remote HTTP/WebSocket mode is editor↔agent
+remoting and is **not** a substitute for the libp2p circle transport, MLS, or
+cross-device proposal replication.
+
+The registry declares a per-agent driver so the initiator stays dumb:
+
+```text
+[agents.gemini]
+driver = "acp"                 # default: "argv"
+command = ["gemini", "--acp"]
+```
 
 This keeps authority local:
 
@@ -595,6 +696,7 @@ enox session finish
 
 enox agent run --agent codex -- codex .
 enox agent run --sandbox --agent codex -- codex .
+enox agent run --agent gemini            # registry driver = "acp"
 
 enox proposal list
 enox proposal show <proposal-id>
@@ -616,3 +718,12 @@ enox proposal revert <proposal-id>
 - What is the right revert granularity (whole proposal vs per-file)?
 - Should the pending-review default for remote-member triggers be per-agent or
   per-member?
+- How should claimed sessions handle multiple concurrent actors on one device
+  (single-actor only, path-scoped sessions, or explicit close)? See
+  [Claimed Session Mode](#4-claimed-session-mode).
+- Should the network side drop the dedicated `AgentTriggered` event and
+  `TriggerStatusReply` handshake in favor of plain chat mentions plus a local
+  push/pull reaction policy? See [Two-Layer Split](#two-layer-split-chat-intent-vs-local-reaction).
+- For the ACP driver, do we require agents to use client `fs/*` methods (rich
+  per-write capture) or also support direct-disk ACP agents via the snapshot
+  journal fallback? See [Local Execution Layer](#local-execution-layer-raw-argv-vs-acp).

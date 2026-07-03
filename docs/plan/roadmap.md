@@ -144,15 +144,27 @@ validates the pipeline before remote triggers add complexity.
    - [x] Local change session model with attribution confidence.
          (`src/proposal/session.rs`)
    - [ ] CLI: session start/finish (claimed session mode).
-4. Trigger layer
-   - [x] Circle trigger protocol: `agent_triggered` event schema, replication,
-         status replies. (`src/trigger/`)
-   - [x] Daemon trigger handler: local allowlist, agent registry config,
-         launch-on-trigger. (`src/trigger/handler.rs`, `src/trigger/registry.rs`)
+4. Local reaction layer (formerly "trigger layer")
+   - The imperative circle trigger (`src/trigger/`: `agent_triggered` event,
+     status handshake, daemon handler, registry) was **removed**. A replicated
+     command that lets a remote member push execution at a device is the
+     dangerous framing; there is no such wire event. See agent-workspaces.md →
+     Two-Layer Split.
+   - [ ] Treat agent wake-ups as plain chat mentions (M9) with a per-device
+         reaction policy — the network carries intent only, never a command.
+   - [ ] Push policy: daemon subscribes to chat, matches its local allowlist,
+         and launches the agent through the local execution layer.
+   - [ ] Pull policy: agent proactively retrieves chat and self-triggers; the
+         daemon initiates nothing.
+   - [ ] Local agent allowlist / driver config, redesigned against this model
+         (replaces the removed registry).
 5. Hardening and UX
    - [ ] Managed process mode (`enox agent run`) with optional sandbox.
-   - [x] Acceptance policy: auto-accept with history for local triggers,
-         pending review for remote-member triggers. (`src/proposal/policy.rs`)
+   - [ ] Local execution: ACP driver (`driver = "acp"`) as an alternative to
+         raw-argv launch, giving turn lifecycle, `managed_process` attribution,
+         and per-write capture. See agent-workspaces.md → Local Execution Layer.
+   - [x] Acceptance policy: auto-accept with history for locally-initiated runs,
+         pending review for remote-member-initiated runs. (`src/proposal/policy.rs`)
    - [x] Frontend proposal review/history view. (`frontend/.../ProposalsTab.tsx`)
    - [ ] Optional sandbox/manual fork mode for high-risk managed runs.
 
