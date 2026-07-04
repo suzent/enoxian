@@ -23,18 +23,20 @@ the agent can recover from: the circle chat**. On a fresh (non-resumed) session,
 enoxian hands the agent the standing brief plus recent chat so it can catch up
 from the shared history.
 
-So there are two history surfaces, related as **primary + recovery**, not as
-competing duplicates:
+The agent's ACP session is the **authoritative** memory — it is not a duplicate
+of the chat, and enoxian does not keep a parallel transcript. The circle chat is
+only the **cold-start seed**: what a *fresh* session is given so it can catch up
+when it has no memory to load.
 
 | Surface | Role | Durability |
 |---------|------|-----------|
-| ACP session | the agent's working memory (fast) | can be lost |
-| Circle chat | the durable shared record it recovers from | must persist (see below) |
+| ACP session (agent-owned) | the memory; resumed by id | can be lost |
+| Circle chat | cold-start seed for a fresh/recovered session | must persist |
 
-This is why chat persistence matters here, not just for humans: the chat is the
-agent's fallback memory. It is tracked as [control-persistence.md](control-persistence.md)
-(M14.5) — without it, an agent that loses its session on an all-offline restart
-has nothing to recover from.
+This is why chat persistence matters here, not just for humans: the chat is what
+a memory-less agent catches up from. Tracked as
+[control-persistence.md](control-persistence.md) (M14.5) — without it, an agent
+that loses its session on an all-offline restart has nothing to seed from.
 
 ---
 
@@ -43,26 +45,34 @@ has nothing to recover from.
 `src/agent/context.rs::build_prompt` already follows the model:
 
 - **Resumed session** — the agent holds the brief and prior turns in its own
-  memory. Send only a lean per-turn cue (`{sender} mentioned you … continue from
-  your prior context`). **Do not** re-inject the chat transcript — duplicating
-  what the agent already has produced the "greeting soup" bug (multiple messages
-  run together) and wastes context.
+  memory. `session/load` restores that memory **silently** — verified: the
+  adapter emits no `session/update` replay between load and the prompt turn. So
+  we send only a lean per-turn cue and **do not** re-inject the chat transcript;
+  the agent already has the context, and re-feeding it wastes tokens.
 - **Fresh session (also the recovery path)** — inject the full standing brief +
   recent chat so the agent catches up from the durable record, then the task.
 
-Combined with the reply-segmentation fix (post the agent's *final* message, not
-a concatenation of every streamed message), replies are clean.
+**On the "greeting soup" bug (corrected).** Earlier this was misattributed to
+`session/load` replaying history. It was not — load is silent (see above). The
+run-together greetings were the agent *genuinely* answering each piece of
+injected context conversationally on a **fresh** session ("Hello! …" to the
+brief, "Hi!" to a chat line) before doing the task, and the capture concatenated
+all of it. The reply-segmentation fix (post the agent's *final* message, not a
+concatenation) resolves the symptom. The remaining rough edge is
+**prompt construction** — injected brief + chat reads like conversation the
+agent feels obliged to reply to. See the open question below.
 
 ---
 
-## Known limitation: unbounded ACP session growth
+## Session memory is agent-owned
 
-A persistent ACP session accumulates every turn, and `session/load` replays the
-whole history on each resume — O(history) work per mention, growing without
-bound. This is acceptable for now (the reply fix hides the symptom; adapters cap
-context internally) but is the main cost of the stateful default. Options if it
-becomes a problem: periodic compaction, a max-age reset, or capping resumes and
-falling back to a fresh+chat-recovery session.
+The ACP agent (e.g. `claude-code-acp`) owns the conversation state; enoxian only
+persists the **session id** and hands it back via `session/load`. Same id →
+same memory, restored on the agent's side. enoxian does not accumulate or replay
+history itself — there is no enoxian-side transcript store for the agent beyond
+the (separate) circle chat. So the earlier worry about "unbounded ACP history
+replayed to us per mention" does not apply: growth and compaction are the
+adapter's concern, and load is O(1) from enoxian's side.
 
 ---
 
@@ -93,7 +103,13 @@ agents), and should be designed together.
 
 ## Open questions
 
-- ACP session growth: leave unbounded, compact, or cap-and-recover?
+- **Prompt construction on fresh sessions.** The brief + injected chat reads
+  like conversation the agent answers turn-by-turn (the greeting-soup cause).
+  Should the cold-start context be delivered as a *system/context* block the
+  agent treats as background rather than prompt text it replies to? (ACP has no
+  standard system-message slot, so this may mean phrasing the injected block as
+  explicit non-conversational context, or a leading instruction like "the
+  following is background; do not respond to it, only to the request.")
 - Should losing a session be surfaced to the user (e.g. "claude started fresh —
   its prior memory was unavailable"), or stay silent?
 - Chat inbox: push (agent subscribes) vs. pull (agent polls) — and does the
