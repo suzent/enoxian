@@ -39,7 +39,7 @@ Two things are deliberately separate:
 - **Who runs it** — only the target device's local daemon, under its own
   policy. A remote member can never force execution on your machine.
 
-See [plan/agent-workspaces.md](plan/agent-workspaces.md) for the design rationale
+See [plan/agent-workspaces.md](../plan/agent-workspaces.md) for the design rationale
 behind this split.
 
 ---
@@ -264,6 +264,6 @@ full world context, since it runs standalone without the live circle state.)
 ## Reference
 
 - Config example: [examples/agents.toml](examples/agents.toml)
-- Design rationale: [plan/agent-workspaces.md](plan/agent-workspaces.md)
+- Design rationale: [plan/agent-workspaces.md](../plan/agent-workspaces.md)
 - Proposal review: [cli.md](cli.md) (`enox proposal …`)
-- Security model: [security.md](security.md)
+- Security model: [security.md](../concepts/security.md)

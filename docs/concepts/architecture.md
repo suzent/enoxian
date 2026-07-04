@@ -4,7 +4,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     enoxd (circle mode)                    │
+│                     enoxd (circle mode)                     │
 │                                                             │
 │  ┌─────────────┐   ┌────────────────────┐   ┌────────────┐  │
 │  │  libp2p     │   │   axum HTTP + WS   │   │   notify   │  │
@@ -25,15 +25,15 @@
 │         │                   │               │            │  │
 │  PSK TCP: circle peers      HTTP / WS       │ control    │  │
 │  QUIC: bootstrap server     reqwest         │ Arc<Doc>   │  │
-│  /enoxian/sync                             │            │  │
-│  y-sync protocol                            │ peer_id    │  │
-│  (live, M3)                                 │ ext_addrs  │  │
-│         │                   │               │            │  │
+│  /enoxian/sync              |               │            │  │
+│  y-sync protocol            |               │ peer_id    │  │
+│  (live, M3)                 |               │ ext_addrs  │  │
+│         │                   │               └────────────┘  │
 └─────────────────────────────────────────────────────────────┘
           │                   │
           ▼                   ▼
   ┌──────────────┐   ┌──────────────────┐   ┌──────────────────┐
-  │  enoxd peer │   │    enox CLI     │   │ enoxd           │
+  │  enoxd peer  │   │    enox CLI      │   │ enoxd            │
   │  (other node)│   │  or AI agent     │   │ --bootstrap      │
   └──────────────┘   └──────────────────┘   │ (QUIC only,      │
                                             │ no PSK,          │

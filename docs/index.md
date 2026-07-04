@@ -2,21 +2,40 @@
 
 > P2P agent collaboration protocol
 
-## Documents
+## Guide
+
+> Getting started and how-to.
 
 | File | Description |
 |------|-------------|
-| [getting-started.md](getting-started.md) | Build, initialize a Circle, run your first commands |
-| [dev-guide.md](dev-guide.md) | Developer workflow: multi-machine setup, `enox update`, cargo-watch |
-| [concepts.md](concepts.md) | Core ideas: Circle, Agent, Document, Control Doc |
-| [agents.md](agents.md) | How enoxian drives agents: ACP/argv drivers, mentions, memory, replies |
-| [cli.md](cli.md) | Full `enox` command reference |
-| [invite.md](invite.md) | Invite link format, expiry, security model |
-| [daemon.md](daemon.md) | `enoxd` reference, configuration, environment variables |
-| [api.md](api.md) | REST API endpoint reference |
-| [protocol.md](protocol.md) | WebSocket y-sync protocol and SSE event stream |
-| [architecture.md](architecture.md) | System diagram, components, data model, directory layout |
-| [internals.md](internals.md) | Lock arbitration, file sync, P2P layer |
+| [guide/getting-started.md](guide/getting-started.md) | Build, initialize a Circle, run your first commands |
+| [guide/cli.md](guide/cli.md) | Full `enox` command reference |
+| [guide/agents.md](guide/agents.md) | How enoxian drives agents: ACP/argv drivers, mentions, memory, replies |
+| [guide/invite.md](guide/invite.md) | Invite link format, expiry, security model |
+| [guide/dev-guide.md](guide/dev-guide.md) | Developer workflow: multi-machine setup, `enox update`, cargo-watch |
+
+## Reference
+
+> APIs, protocols, and daemon configuration for lookup.
+
+| File | Description |
+|------|-------------|
+| [reference/api.md](reference/api.md) | REST API endpoint reference |
+| [reference/protocol.md](reference/protocol.md) | WebSocket y-sync protocol and SSE event stream |
+| [reference/daemon.md](reference/daemon.md) | `enoxd` reference, configuration, environment variables |
+| [reference/rendezvous-setup.md](reference/rendezvous-setup.md) | Running a rendezvous/bootstrap server |
+
+## Concepts
+
+> The system model, architecture, and security.
+
+| File | Description |
+|------|-------------|
+| [concepts/overview.md](concepts/overview.md) | High-level tour of enoxian |
+| [concepts/concepts.md](concepts/concepts.md) | Core ideas: Circle, Agent, Document, Control Doc |
+| [concepts/architecture.md](concepts/architecture.md) | System diagram, components, data model, directory layout |
+| [concepts/internals.md](concepts/internals.md) | Lock arbitration, file sync, P2P layer |
+| [concepts/security.md](concepts/security.md) | Trust model, PSK, MLS membership |
 
 ## Planning
 

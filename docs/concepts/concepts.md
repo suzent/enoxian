@@ -26,7 +26,7 @@ identity so the same device presents a stable peer ID in the same circle.
 
 The next planned layer treats agents as untrusted local editor processes: they
 receive isolated workspaces, mutate ordinary files, and enoxian turns the result
-into a proposal. See [plan/agent-workspaces.md](plan/agent-workspaces.md).
+into a proposal. See [plan/agent-workspaces.md](../plan/agent-workspaces.md).
 
 ---
 
@@ -82,4 +82,4 @@ Locks are released either explicitly (via `POST /api/release`) or by re-running 
 
 The daemon emits **Circle Events** over an SSE stream (`GET /api/events`). Every mutation produces at least one event. Events are broadcast in-process via a `tokio::sync::broadcast` channel with capacity 256.
 
-See [protocol.md](protocol.md#sse-event-stream) for the full event type list.
+See [protocol.md](../reference/protocol.md#sse-event-stream) for the full event type list.

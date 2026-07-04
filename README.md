@@ -80,17 +80,18 @@ export ENOXIAN_API=http://127.0.0.1:36521
 
 All docs are in the [`docs/`](docs/) folder:
 
+See [docs/index.md](docs/index.md) for the full documentation index.
+
 | Doc | Description |
 |-----|-------------|
-| [docs/overview.md](docs/overview.md) | **Start here** — intuitive walkthrough with diagrams |
-| [docs/getting-started.md](docs/getting-started.md) | Build, initialize, first commands |
-| [docs/concepts.md](docs/concepts.md) | Circle, Agent, Document, Control Doc |
-| [docs/cli.md](docs/cli.md) | Full `enox` command reference |
-| [docs/daemon.md](docs/daemon.md) | `enoxd` reference and configuration |
-| [docs/api.md](docs/api.md) | REST API endpoint reference |
-| [docs/protocol.md](docs/protocol.md) | WebSocket y-sync and SSE event stream |
-| [docs/architecture.md](docs/architecture.md) | System diagram, components, data model |
-| [docs/internals.md](docs/internals.md) | Lock arbitration, file sync, P2P layer |
+| [docs/concepts/overview.md](docs/concepts/overview.md) | **Start here** — intuitive walkthrough with diagrams |
+| [docs/guide/getting-started.md](docs/guide/getting-started.md) | Build, initialize, first commands |
+| [docs/guide/cli.md](docs/guide/cli.md) | Full `enox` command reference |
+| [docs/guide/agents.md](docs/guide/agents.md) | How enoxian drives agents (ACP, mentions, memory) |
+| [docs/concepts/concepts.md](docs/concepts/concepts.md) | Circle, Agent, Document, Control Doc |
+| [docs/concepts/architecture.md](docs/concepts/architecture.md) | System diagram, components, data model |
+| [docs/reference/api.md](docs/reference/api.md) | REST API endpoint reference |
+| [docs/reference/daemon.md](docs/reference/daemon.md) | `enoxd` reference and configuration |
 
 For AI agents: see [AGENTS.md](AGENTS.md).
 

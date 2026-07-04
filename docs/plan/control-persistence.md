@@ -191,7 +191,7 @@ plan (who can see whose cursor) and should be designed alongside it, not before.
 2. Wire retention config (window length) into daemon config; default
    conservative (e.g. 30 days of chat).
 3. Document the all-offline-recovery behavior and the no-read-signal trade-off
-   in `docs/architecture.md` / `docs/security.md` (plaintext-at-rest note for
+   in `docs/concepts/architecture.md` / `docs/concepts/security.md` (plaintext-at-rest note for
    the pre-M17 window).
 4. Revisit 4b (sub-docs) only if 4a's restore semantics prove insufficient.
 5. Tier B (read cursors) only on demand, designed with M17.

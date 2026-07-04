@@ -2,7 +2,7 @@
 
 This document describes the current security model. Older notes that mention
 deriving the transport PSK from each MLS epoch are obsolete; the authoritative
-identity rationale lives in [plan/identity.md](plan/identity.md).
+identity rationale lives in [plan/identity.md](../plan/identity.md).
 
 ## Trust Boundaries
 

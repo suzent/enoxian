@@ -196,7 +196,7 @@ An agent-agnostic proposal layer: local agents, editors, scripts, and tools make
 arbitrary filesystem changes in the normal workspace, and enoxian captures them
 as reviewable proposals. Extended during development into a full agent-execution
 layer over the Agent Client Protocol. Verified end to end against real ACP agents
-(Claude Code, Codex). User guide: [../../agents.md](../../agents.md); design:
+(Claude Code, Codex). User guide: [../../agents.md](../../guide/agents.md); design:
 [../agent-workspaces.md](../agent-workspaces.md).
 
 Completed work:

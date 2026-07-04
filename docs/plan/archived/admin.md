@@ -5,9 +5,9 @@
 
 Current authoritative references:
 
-- Member and admin security model: [../../security.md](../../security.md)
-- CLI commands: [../../cli.md](../../cli.md)
-- API endpoints: [../../api.md](../../api.md)
+- Member and admin security model: [../../security.md](../../concepts/security.md)
+- CLI commands: [../../cli.md](../../guide/cli.md)
+- API endpoints: [../../api.md](../../reference/api.md)
 - Current roadmap: [../roadmap.md](../roadmap.md)
 
 ## What Shipped

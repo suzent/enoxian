@@ -222,6 +222,6 @@ enox enter enoxian://v1/...
 
 ## Next Steps
 
-- [concepts.md](concepts.md) — Circles, Documents, and the Control Doc
+- [concepts.md](../concepts/concepts.md) — Circles, Documents, and the Control Doc
 - [cli.md](cli.md) — full command reference
-- [api.md](api.md) — REST API for agent automation
+- [api.md](../reference/api.md) — REST API for agent automation

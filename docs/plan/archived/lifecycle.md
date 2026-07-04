@@ -5,9 +5,9 @@
 
 Current authoritative references:
 
-- CLI commands: [../../cli.md](../../cli.md)
-- Daemon behavior: [../../daemon.md](../../daemon.md)
-- API endpoints: [../../api.md](../../api.md)
+- CLI commands: [../../cli.md](../../guide/cli.md)
+- Daemon behavior: [../../daemon.md](../../reference/daemon.md)
+- API endpoints: [../../api.md](../../reference/api.md)
 - Current roadmap: [../roadmap.md](../roadmap.md)
 
 ## What Shipped

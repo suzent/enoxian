@@ -5,10 +5,10 @@
 
 Current authoritative references:
 
-- Core concepts: [../../concepts.md](../../concepts.md)
-- Getting started: [../../getting-started.md](../../getting-started.md)
-- CLI commands: [../../cli.md](../../cli.md)
-- Daemon configuration: [../../daemon.md](../../daemon.md)
+- Core concepts: [../../concepts.md](../../concepts/concepts.md)
+- Getting started: [../../getting-started.md](../../guide/getting-started.md)
+- CLI commands: [../../cli.md](../../guide/cli.md)
+- Daemon configuration: [../../daemon.md](../../reference/daemon.md)
 
 ## What Shipped
 

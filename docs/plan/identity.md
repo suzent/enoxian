@@ -3,7 +3,7 @@
 **Status:** design / to implement. This document reconciles two conflicting
 descriptions in the existing docs and introduces a stable device/user identity
 layer. It **supersedes** the epoch→PSK rotation described in
-[`../security.md`](../security.md) §"MLS — RFC 9420 access revocation".
+[`../security.md`](../concepts/security.md) §"MLS — RFC 9420 access revocation".
 
 ---
 
@@ -14,7 +14,7 @@ Two docs disagree about what the PSK is:
 - [`archived/admin.md`](archived/admin.md): *"PSK = transport filter (can you reach the swarm)"*,
   and explicitly *"PSK rotation is not required"* — eviction is the signed
   member list.
-- [`security.md`](../security.md): PSK is **rotated on every MLS epoch**, and
+- [`security.md`](../concepts/security.md): PSK is **rotated on every MLS epoch**, and
   rotation is the eviction mechanism.
 
 The implementation followed `security.md`. In practice that coupling is the root

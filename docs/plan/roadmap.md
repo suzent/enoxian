@@ -21,7 +21,7 @@ The current implementation already has:
   cross-device replication
 - agent execution over ACP: chat-mention reactions, `enox agent run`, session
   memory, world-context injection, and CLI/frontend agent config
-  (see [../agents.md](../agents.md))
+  (see [../agents.md](../guide/agents.md))
 
 The next design layer is:
 
@@ -110,7 +110,7 @@ context, agent config, replay-safety) are built and verified against real ACP
 agents. Only an *optional* sandbox/fork mode is deferred.
 
 - Milestone record: [archived/milestones.md](archived/milestones.md) → M14
-- User guide: [../agents.md](../agents.md)
+- User guide: [../agents.md](../guide/agents.md)
 - Design: [agent-workspaces.md](agent-workspaces.md)
 
 ### M14.5 — Control-Doc Persistence
@@ -211,7 +211,7 @@ Ship `enoxd` and `enox` as ready-to-use binaries for major platforms.
 
 ## Reference
 
-- Current security model: [../security.md](../security.md)
-- System architecture: [../architecture.md](../architecture.md)
+- Current security model: [../security.md](../concepts/security.md)
+- System architecture: [../architecture.md](../concepts/architecture.md)
 - Completed milestones: [archived/milestones.md](archived/milestones.md)
 - Agent workspace proposal design: [agent-workspaces.md](agent-workspaces.md)
