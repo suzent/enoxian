@@ -84,3 +84,20 @@ export interface Task {
   created_at: string
   updated_at: string
 }
+
+// Read-only view of this device's ~/.enoxian/agents.toml — how it reacts to
+// chat @mentions. Editing stays file-only (the `push` reaction is the toggle
+// that lets a mention run a local process).
+export interface AgentSummary {
+  name: string
+  driver: string
+  command: string[]
+  working_dir: string | null
+}
+
+export interface AgentConfigView {
+  reaction: 'push' | 'pull'
+  config_path: string
+  configured: boolean
+  agents: AgentSummary[]
+}

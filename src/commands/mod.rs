@@ -1,5 +1,7 @@
+pub mod agent;
 pub mod bind;
 pub mod identity;
+pub mod session;
 pub mod open;
 pub mod chat;
 pub mod say;

@@ -57,20 +57,35 @@ pub async fn post_chat(
         None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
     };
 
-    let mentions = parse_mentions(&req.text);
+    let sender = req.agent_id.unwrap_or_else(|| "unknown".to_string());
+    match post_message(&state, sender, req.text) {
+        Ok(id) => (StatusCode::CREATED, Json(json!({ "id": id }))).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "serialize failed"}))).into_response(),
+    }
+}
+
+/// Post a chat message into the circle's control CRDT and fire the same events
+/// a user post would. Reused by the HTTP handler and by the agent reaction loop
+/// (so an agent's reply appears in the room and replicates to peers exactly like
+/// any other message). Mentions in `text` are parsed and re-fired, so an agent
+/// can address another agent — beware of loops when wiring auto-replies.
+///
+/// Returns the new message id.
+pub fn post_message(
+    state: &crate::state::AppState,
+    sender: String,
+    text: String,
+) -> Result<String, serde_json::Error> {
+    let mentions = crate::agent::mention::extract(&text);
     let msg = ChatMessage {
         id: uuid::Uuid::new_v4().to_string(),
-        agent_id: req.agent_id.unwrap_or_else(|| "unknown".to_string()),
-        text: req.text,
+        agent_id: sender,
+        text,
         mentions: mentions.clone(),
         ts: chrono::Utc::now().timestamp(),
     };
 
-    let json_str = match serde_json::to_string(&msg) {
-        Ok(s) => s,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "serialize failed"}))).into_response(),
-    };
-
+    let json_str = serde_json::to_string(&msg)?;
     {
         let arr: ArrayRef = state.control.get_or_insert_array(CHAT_KEY);
         let mut txn = state.control.transact_mut();
@@ -78,7 +93,6 @@ pub async fn post_chat(
     }
 
     let _ = state.events.send(CircleEvent::MessagePosted { message: msg.clone() });
-
     for mentioned in &mentions {
         let _ = state.events.send(CircleEvent::AgentMentioned {
             agent_id: mentioned.clone(),
@@ -86,7 +100,7 @@ pub async fn post_chat(
         });
     }
 
-    (StatusCode::CREATED, Json(json!({ "id": msg.id }))).into_response()
+    Ok(msg.id)
 }
 
 pub async fn chat_stream(
@@ -109,18 +123,3 @@ pub async fn chat_stream(
     Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
 }
 
-fn parse_mentions(text: &str) -> Vec<String> {
-    let mut mentions = Vec::new();
-    for word in text.split_whitespace() {
-        if let Some(rest) = word.strip_prefix('@') {
-            let mention: String = rest
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-                .collect();
-            if !mention.is_empty() {
-                mentions.push(mention);
-            }
-        }
-    }
-    mentions
-}

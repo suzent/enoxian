@@ -99,9 +99,10 @@ clients. It should not be treated as a public relay endpoint.
 
 ### M14 — Local Workspace Proposals
 
-**Status:** In progress — ambient flow, review API, frontend, CLI, and
-cross-device replication are built. Remaining: the managed-process /
-claimed-session launch surfaces (`enox agent run`, `enox session start/finish`).
+**Status:** In progress — ambient flow, review API, frontend, CLI,
+cross-device replication, the local reaction layer (chat-mention push/pull),
+the ACP execution driver, `enox agent run`, and `enox session start/finish`
+are built. Remaining: an optional sandbox/fork mode for high-risk managed runs.
 
 Add an agent-agnostic proposal layer so local agents, editors, scripts, and
 tools can make arbitrary filesystem changes in the normal workspace while
@@ -143,26 +144,31 @@ validates the pipeline before remote triggers add complexity.
 3. Sessions and attribution
    - [x] Local change session model with attribution confidence.
          (`src/proposal/session.rs`)
-   - [ ] CLI: session start/finish (claimed session mode).
+   - [x] CLI: session start/finish (claimed session mode). Persists one open
+         claimed session per workspace. (`src/commands/session.rs`)
 4. Local reaction layer (formerly "trigger layer")
    - The imperative circle trigger (`src/trigger/`: `agent_triggered` event,
      status handshake, daemon handler, registry) was **removed**. A replicated
      command that lets a remote member push execution at a device is the
      dangerous framing; there is no such wire event. See agent-workspaces.md →
      Two-Layer Split.
-   - [ ] Treat agent wake-ups as plain chat mentions (M9) with a per-device
+   - [x] Treat agent wake-ups as plain chat mentions (M9) with a per-device
          reaction policy — the network carries intent only, never a command.
-   - [ ] Push policy: daemon subscribes to chat, matches its local allowlist,
+         (`src/agent/reaction.rs`, driven by `CircleEvent::AgentMentioned`)
+   - [x] Push policy: daemon subscribes to chat, matches its local allowlist,
          and launches the agent through the local execution layer.
-   - [ ] Pull policy: agent proactively retrieves chat and self-triggers; the
-         daemon initiates nothing.
-   - [ ] Local agent allowlist / driver config, redesigned against this model
-         (replaces the removed registry).
+         (`src/agent/reaction.rs`, `Reaction::Push`)
+   - [x] Pull policy (default): daemon initiates nothing; an agent is expected
+         to retrieve chat and self-trigger. (`Reaction::Pull`)
+   - [x] Local agent allowlist / driver config, redesigned against this model.
+         (`src/agent/config.rs`, `~/.enoxian/agents.toml`)
 5. Hardening and UX
-   - [ ] Managed process mode (`enox agent run`) with optional sandbox.
-   - [ ] Local execution: ACP driver (`driver = "acp"`) as an alternative to
+   - [x] Managed process mode (`enox agent run`). (`src/commands/agent.rs`,
+         `src/agent/driver.rs`; ambient engine captures the result as a
+         `managed_process` proposal)
+   - [x] Local execution: ACP driver (`driver = "acp"`) as an alternative to
          raw-argv launch, giving turn lifecycle, `managed_process` attribution,
-         and per-write capture. See agent-workspaces.md → Local Execution Layer.
+         and per-write capture. (`src/agent/acp.rs`, `src/agent/driver.rs`)
    - [x] Acceptance policy: auto-accept with history for locally-initiated runs,
          pending review for remote-member-initiated runs. (`src/proposal/policy.rs`)
    - [x] Frontend proposal review/history view. (`frontend/.../ProposalsTab.tsx`)

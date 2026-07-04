@@ -55,6 +55,26 @@ async fn main() -> anyhow::Result<()> {
         }
         AgentCommands::Identity(args) => enoxian::commands::identity::run(args),
 
+        // Local workspace commands — operate on the circle's files/config
+        // directly, no daemon API round-trip. Handled before the API-base
+        // resolution below since they need neither the daemon nor a base URL.
+        AgentCommands::Agent(args) => {
+            use enoxian::cli::AgentAction;
+            let AgentAction::Run { agent, task } = args.action;
+            enoxian::commands::agent::run(cli.circle.as_deref(), agent, task).await
+        }
+        AgentCommands::Session(args) => {
+            use enoxian::cli::SessionAction;
+            match args.action {
+                SessionAction::Start { actor } => {
+                    enoxian::commands::session::start(cli.circle.as_deref(), actor).await
+                }
+                SessionAction::Finish => {
+                    enoxian::commands::session::finish(cli.circle.as_deref()).await
+                }
+            }
+        }
+
         // All other commands need a resolved circle
         cmd => {
             // Lifecycle commands hit daemon_root directly (not per-circle /api)
@@ -153,7 +173,9 @@ async fn main() -> anyhow::Result<()> {
                 | AgentCommands::Start { .. }
                 | AgentCommands::Stop
                 | AgentCommands::Update { .. }
-                | AgentCommands::Identity(_) => unreachable!(),
+                | AgentCommands::Identity(_)
+                | AgentCommands::Agent(_)
+                | AgentCommands::Session(_) => unreachable!(),
             }
         }
     }

@@ -1,0 +1,33 @@
+# Example daemon-local agent config for enoxian.
+#
+# Copy to ~/.enoxian/agents.toml to enable it. This file is NEVER synced across
+# the circle — it only controls how THIS device reacts to chat @mentions. A
+# remote member can mention an agent, but only your local config decides whether
+# (and how) to run it. See docs/plan/agent-workspaces.md → Two-Layer Split.
+
+# How this device reacts to @mentions:
+#   "pull"  (default) — do nothing automatically; an agent is expected to read
+#                       chat and act on its own. Safe: no mention runs anything.
+#   "push"            — when a mention names an agent below, launch it.
+reaction = "push"
+
+# ── Claude Code over ACP ──────────────────────────────────────────────────────
+# enoxian speaks the Agent Client Protocol to the Zed Claude Code adapter.
+# enoxian is the ACP client; claude-code-acp is the agent. Requires Node/npx and
+# a working Claude Code auth on this machine.
+#
+# Mention "@claude fix the typos in README.md" in the circle chat and, under the
+# push policy above, the daemon runs this agent in the workspace. Whatever files
+# it writes are captured by the ambient proposal engine as a managed-process
+# proposal — review with `enox proposal list`.
+[agents.claude]
+driver = "acp"
+command = ["npx", "@zed-industries/claude-code-acp"]
+
+# ── A plain argv agent (fallback driver) ──────────────────────────────────────
+# No ACP: enoxian just spawns the command with {{task}} substituted and captures
+# whatever it writes to disk. The agent needs to know nothing about enoxian.
+[agents.codex]
+driver = "argv"
+command = ["codex", "{{task}}"]
+# working_dir = "src"   # optional, relative to the workspace root

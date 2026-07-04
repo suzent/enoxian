@@ -113,12 +113,25 @@ Hints can improve attribution but must not be treated as security facts:
 
 ### 2. Chat-Triggered Agent Mode
 
-A user may mention their own or another member's agent in a chat room:
+A user may mention their own or another member's agent in a chat room. Mentions
+address the member hierarchy at three levels (`src/agent/mention.rs`):
 
 ```text
-@codex please fix the sync docs
-@alice/claude review the proposal layer
+@codex please fix the sync docs        # bare agent — any device that
+                                        # allowlists `codex` may react
+@alice/laptop/claude review the layer   # a specific device's agent — only
+                                        # that device reacts
+@alice            / @alice/laptop       # a user / a device — notify only,
+                                        # launches nothing (for now)
 ```
+
+Only agent-level targets launch. A device-scoped agent mention runs *only* on
+the device whose owner and label match — a device never runs an agent addressed
+to a different device. Bare `@agent` keeps the original any-allowlisting-device
+behavior. The frontend chat box offers a `@` autocomplete over the
+user → device → agent tree, marking which agents are currently reachable
+(online + advertised); reachability is a hint, not a guarantee, since a remote
+device's push/pull policy is never synced.
 
 This is an ordinary chat message, not a dedicated wire command. It carries
 intent, never a guaranteed process identity — and never an instruction that a

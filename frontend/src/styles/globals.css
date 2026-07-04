@@ -166,6 +166,17 @@ select {
   background: rgba(17, 17, 17, 0.06);
 }
 
+/* The agent-id badge is a button (opens device settings) — make that legible
+   next to the read-only "docs N" badge beside it. */
+.header-settings-btn {
+  cursor: pointer;
+}
+
+.header-settings-btn:hover {
+  background: var(--fg-obsidian);
+  color: var(--bg-alabaster);
+}
+
 .sys-badge {
   border: 1px solid var(--fg-obsidian);
   background: var(--bg-alabaster);
@@ -1497,4 +1508,103 @@ select option {
   .cm-content {
     padding: 14px 12px !important;
   }
+}
+
+/* ── Mention autocomplete popup ─────────────────────────────────────────── */
+.mention-popup {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 12px;
+  right: 12px;
+  max-width: 420px;
+  z-index: 200;
+  border: 2px solid var(--fg-obsidian);
+  background-color: var(--bg-alabaster);
+  max-height: 260px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mention-popup__hint {
+  font-family: var(--font-mono, monospace);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--fg-slate);
+  padding: 4px 8px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.2);
+  background: var(--stripe-soft);
+}
+
+.mention-popup__list {
+  overflow-y: auto;
+}
+
+.mention-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 5px 8px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--fg-obsidian);
+  border-bottom: 1px dashed rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+}
+
+.mention-row:last-child {
+  border-bottom: 0;
+}
+
+.mention-row.active,
+.mention-row:hover {
+  background-color: var(--fg-obsidian);
+  color: var(--bg-alabaster);
+}
+
+.mention-row__prefix {
+  font-weight: 700;
+  opacity: 0.5;
+  width: 10px;
+  flex-shrink: 0;
+}
+
+.mention-row__label {
+  font-weight: 700;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-row__tag {
+  font-size: 8px;
+  font-weight: 700;
+  border: 1px solid currentColor;
+  padding: 0 3px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.mention-row__mark {
+  font-size: 9px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.mention-row__mark.ok {
+  color: #1f7a1f;
+}
+
+.mention-row.active .mention-row__mark.ok {
+  color: #7ee27e;
+}
+
+.mention-row__mark.off {
+  color: var(--fg-slate);
+  opacity: 0.7;
 }

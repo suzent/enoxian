@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { ChatMessage, Member } from '../types'
-import { getChat, postChat, chatStream, getMembers } from '../api'
+import type { ChatMessage, Member, Presence } from '../types'
+import { getChat, postChat, chatStream, getMembers, getWho } from '../api'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 import CircleGlyph from './CircleGlyph'
+import MentionPopup, { buildMentionItems, type MentionItem } from './MentionPopup'
 
 interface Props {
   onMessage?: () => void
@@ -66,7 +67,17 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   const { activeCircleId, circles, status } = useApp()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [members, setMembers] = useState<Member[]>([])
+  const [presence, setPresence] = useState<Presence[]>([])
   const [input, setInput] = useState('')
+  // Mention autocomplete state. `mentionStart` is the index of the '@' being
+  // completed (or null when the popup is closed); `mentionIndex` is the
+  // highlighted row.
+  const [mentionStart, setMentionStart] = useState<number | null>(null)
+  const [mentionIndex, setMentionIndex] = useState(0)
+  // True once the user has navigated the popup with arrows — only then does
+  // Enter accept a suggestion instead of sending the message.
+  const [mentionActive, setMentionActive] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const seenRef = useRef(new Set<string>())
   const latestTsRef = useRef<number | null>(null)
@@ -86,8 +97,13 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     latestTsRef.current = null
     setMessages([])
     setMembers([])
+    setPresence([])
 
-    getMembers(activeCircleId).then(m => { if (!cancelled) setMembers(m) }).catch(() => {})
+    const refreshRoster = () => {
+      getMembers(activeCircleId).then(m => { if (!cancelled) setMembers(m) }).catch(() => {})
+      getWho(activeCircleId).then(p => { if (!cancelled) setPresence(p) }).catch(() => {})
+    }
+    refreshRoster()
 
     const catchUp = () => {
       const since = latestTsRef.current === null ? undefined : Math.max(0, latestTsRef.current - 1)
@@ -102,8 +118,8 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
       try {
         const data = JSON.parse(e.data)
         if (data.type === 'message_posted') addMsg(data.message)
-        if (data.type === 'member_joined' || data.type === 'member_removed') {
-          getMembers(activeCircleId).then(m => { if (!cancelled) setMembers(m) }).catch(() => {})
+        if (data.type === 'member_added' || data.type === 'member_removed' || data.type === 'presence_changed') {
+          refreshRoster()
         }
       } catch {}
     })
@@ -156,7 +172,98 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     const text = input.trim()
     if (!text || !activeCircleId || !status) return
     setInput('')
+    setMentionStart(null)
+    setMentionActive(false)
     postChat(activeCircleId, text, status.agent_id).catch(() => {})
+  }
+
+  // The `@fragment` currently being typed, or null. A mention token runs from an
+  // '@' (at start or after whitespace) up to the cursor, with no whitespace in
+  // between. The fragment may contain '/' for scoped mentions.
+  const mentionFragment = (() => {
+    if (mentionStart === null) return null
+    const upToCursor = input.slice(mentionStart + 1)
+    // Close the popup if whitespace was typed after the '@'.
+    if (/\s/.test(upToCursor)) return null
+    return upToCursor
+  })()
+
+  const mentionOpen = mentionFragment !== null
+
+  const onInputChange = (value: string, caret: number) => {
+    setInput(value)
+    // Find an '@' immediately starting a token at or before the caret.
+    const before = value.slice(0, caret)
+    const at = before.lastIndexOf('@')
+    if (at >= 0 && (at === 0 || /\s/.test(before[at - 1])) && !/\s/.test(before.slice(at + 1))) {
+      setMentionStart(at)
+      setMentionIndex(0)
+      // Typing changes the filter — reset navigation so Enter sends until the
+      // user explicitly arrows into the list again.
+      setMentionActive(false)
+    } else {
+      setMentionStart(null)
+      setMentionActive(false)
+    }
+  }
+
+  const applyMention = (item: MentionItem) => {
+    if (mentionStart === null) return
+    // Replace @<fragment> with @<insert> plus a trailing space.
+    const fragEnd = mentionStart + 1 + (mentionFragment?.length ?? 0)
+    const next = `${input.slice(0, mentionStart)}@${item.insert} ${input.slice(fragEnd)}`
+    setInput(next)
+    setMentionStart(null)
+    setMentionActive(false)
+    // Restore focus + caret after the inserted mention.
+    requestAnimationFrame(() => {
+      const el = inputRef.current
+      if (el) {
+        const pos = mentionStart + item.insert.length + 2
+        el.focus()
+        el.setSelectionRange(pos, pos)
+      }
+    })
+  }
+
+  const onInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (mentionOpen) {
+      const items = buildMentionItems(members, presence, mentionFragment ?? '')
+      if (items.length > 0) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          setMentionActive(true)
+          setMentionIndex(i => (mentionActive ? (i + 1) % items.length : 0))
+          return
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault()
+          setMentionActive(true)
+          setMentionIndex(i => (mentionActive ? (i - 1 + items.length) % items.length : items.length - 1))
+          return
+        }
+        // Tab always accepts the highlighted suggestion.
+        if (e.key === 'Tab') {
+          e.preventDefault()
+          applyMention(items[Math.min(mentionIndex, items.length - 1)])
+          return
+        }
+        // Enter accepts a suggestion ONLY if the user has navigated the popup
+        // with the arrow keys. Otherwise Enter sends the message as typed — so
+        // "@claude do it" + Enter posts, it doesn't silently autocomplete.
+        if (e.key === 'Enter' && mentionActive) {
+          e.preventDefault()
+          applyMention(items[Math.min(mentionIndex, items.length - 1)])
+          return
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          setMentionStart(null)
+          return
+        }
+      }
+    }
+    if (e.key === 'Enter') send()
   }
 
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
@@ -212,12 +319,23 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
         <div ref={bottomRef} />
       </div>
 
-      <div className="border-t-2 border-obsidian p-3 flex flex-wrap gap-2" style={{ backgroundColor: 'var(--bg-alabaster)' }}>
+      <div className="border-t-2 border-obsidian p-3 flex flex-wrap gap-2 relative" style={{ backgroundColor: 'var(--bg-alabaster)' }}>
+        {mentionOpen && (
+          <MentionPopup
+            members={members}
+            presence={presence}
+            fragment={mentionFragment ?? ''}
+            activeIndex={mentionIndex}
+            onSelect={applyMention}
+            onHover={setMentionIndex}
+          />
+        )}
         <input
+          ref={inputRef}
           value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && send()}
-          placeholder="Inject command..."
+          onChange={e => onInputChange(e.target.value, e.target.selectionStart ?? e.target.value.length)}
+          onKeyDown={onInputKeyDown}
+          placeholder="Inject command...  (@ to mention)"
           className="min-w-[160px] flex-1 bg-transparent border border-obsidian font-mono text-[11px] px-2 py-2
                      text-obsidian placeholder:text-slate focus:outline-none focus:bg-obsidian/5"
         />

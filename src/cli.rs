@@ -130,6 +130,48 @@ pub enum AgentCommands {
     Identity(IdentityArgs),
     /// Review workspace change proposals (list, show, accept, reject, revert)
     Proposal(ProposalArgs),
+    /// Run a configured agent in the workspace under a change session
+    Agent(AgentRunArgs),
+    /// Declare a local change session (claimed session mode)
+    Session(SessionArgs),
+}
+
+#[derive(clap::Args)]
+pub struct AgentRunArgs {
+    #[command(subcommand)]
+    pub action: AgentAction,
+}
+
+#[derive(Subcommand)]
+pub enum AgentAction {
+    /// Launch an agent from `~/.enoxian/agents.toml` and run a task.
+    /// enoxian owns the process, so its file changes become an attributed
+    /// (managed-process) proposal.
+    Run {
+        /// Agent name as configured in agents.toml (e.g. "claude").
+        agent: String,
+        /// The task/prompt text passed to the agent.
+        task: String,
+    },
+}
+
+#[derive(clap::Args)]
+pub struct SessionArgs {
+    #[command(subcommand)]
+    pub action: SessionAction,
+}
+
+#[derive(Subcommand)]
+pub enum SessionAction {
+    /// Open a claimed session: changes to the workspace until `session finish`
+    /// are attributed to `--actor` (user-declared confidence).
+    Start {
+        /// Who to attribute changes to (e.g. an agent or tool name).
+        #[arg(long)]
+        actor: String,
+    },
+    /// Close the open claimed session on this workspace.
+    Finish,
 }
 
 #[derive(clap::Args)]

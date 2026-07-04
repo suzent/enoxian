@@ -82,9 +82,39 @@ impl LocalChangeSession {
         self.finished_at.is_none()
     }
 
-    // TODO(M14): `enox session start --actor X` / `enox session finish` CLI,
-    // session persistence under the daemon state dir, and timeout handling
-    // for chat-triggered sessions that never produce changes.
+    /// Path of the single "current claimed session" record for a circle dir.
+    /// One open claimed session per workspace keeps attribution unambiguous;
+    /// concurrent actors are an open design question (see agent-workspaces.md →
+    /// Claimed Session Mode).
+    pub fn claimed_path(circle_dir: &std::path::Path) -> std::path::PathBuf {
+        circle_dir.join("claimed_session.json")
+    }
+
+    /// Persist this session as the circle's current claimed session.
+    pub fn save_claimed(&self, circle_dir: &std::path::Path) -> anyhow::Result<()> {
+        std::fs::create_dir_all(circle_dir)?;
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(Self::claimed_path(circle_dir), json)?;
+        Ok(())
+    }
+
+    /// Load the circle's current claimed session, if one is recorded.
+    pub fn load_claimed(circle_dir: &std::path::Path) -> Option<Self> {
+        let text = std::fs::read_to_string(Self::claimed_path(circle_dir)).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    /// Remove the claimed-session record (called on `session finish`).
+    pub fn clear_claimed(circle_dir: &std::path::Path) -> anyhow::Result<()> {
+        let path = Self::claimed_path(circle_dir);
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    // TODO(M14): timeout handling for chat-triggered sessions that never
+    // produce changes, and the concurrent-actor question for claimed sessions.
 }
 
 #[cfg(test)]

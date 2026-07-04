@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod api;
 pub mod defaults;
 pub mod identity;

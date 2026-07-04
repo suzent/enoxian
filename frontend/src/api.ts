@@ -1,4 +1,4 @@
-import type { Circle, Status, Presence, ChatMessage, Task, Member, PendingEntry, Proposal, ProposalDetail } from './types'
+import type { Circle, Status, Presence, ChatMessage, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView } from './types'
 
 const api = (circleId: string) => `/circles/${circleId}/api`
 
@@ -34,6 +34,8 @@ async function post<T>(url: string, body: unknown): Promise<T> {
 
 
 export const getCircles = () => get<Circle[]>('/circles')
+// Device-level (not circle-scoped): how this device reacts to chat mentions.
+export const getAgentConfig = () => get<AgentConfigView>('/api/agent-config')
 export const getStatus = (id: string) => get<Status>(`${api(id)}/status`)
 export const getWho = (id: string) => get<Presence[]>(`${api(id)}/who`)
 export const getChat = (id: string, since?: number) =>
