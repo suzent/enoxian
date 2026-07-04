@@ -24,10 +24,23 @@ reaction = "push"
 driver = "acp"
 command = ["npx", "@zed-industries/claude-code-acp"]
 
-# ── A plain argv agent (fallback driver) ──────────────────────────────────────
-# No ACP: enoxian just spawns the command with {{task}} substituted and captures
-# whatever it writes to disk. The agent needs to know nothing about enoxian.
+# ── Codex over ACP ────────────────────────────────────────────────────────────
+# enoxian speaks ACP to the Codex adapter (same mechanism as claude above).
+# Requires Node/npx AND OpenAI auth: either `codex login` (ChatGPT) or a
+# CODEX_API_KEY / OPENAI_API_KEY env var visible to the daemon. Without auth it
+# fails at the prompt turn.
 [agents.codex]
-driver = "argv"
-command = ["codex", "{{task}}"]
+driver = "acp"
+command = ["npx", "@agentclientprotocol/codex-acp"]
+
+# ── A plain argv agent (fallback driver) ──────────────────────────────────────
+# The "argv" driver is the universal fallback for any tool that does NOT speak
+# ACP: enoxian spawns the command with {{task}} substituted and captures
+# whatever it writes to disk as a proposal. No streaming reply, no memory — the
+# agent needs to know nothing about enoxian. Uncomment and point at a real
+# command to use it.
+#
+# [agents.mytool]
+# driver = "argv"
+# command = ["mytool", "--prompt", "{{task}}"]
 # working_dir = "src"   # optional, relative to the workspace root
