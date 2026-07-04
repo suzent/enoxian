@@ -188,6 +188,48 @@ Completed work:
 - `enox invite` auto-embeds connectivity hints.
 - `GET /api/status` exposes P2P address metadata.
 
+## M14 — Local Workspace Proposals And Agent Execution
+
+**Status:** Complete (core). Only an optional sandbox/fork mode is deferred.
+
+An agent-agnostic proposal layer: local agents, editors, scripts, and tools make
+arbitrary filesystem changes in the normal workspace, and enoxian captures them
+as reviewable proposals. Extended during development into a full agent-execution
+layer over the Agent Client Protocol. Verified end to end against real ACP agents
+(Claude Code, Codex). User guide: [../../agents.md](../../agents.md); design:
+[../agent-workspaces.md](../agent-workspaces.md).
+
+Completed work:
+
+- Foundation: content-addressed blob store, snapshot manifest format, and a
+  snapshot journal capturing before-blobs for ambient edits.
+  (`src/proposal/{blob,snapshot,journal}.rs`)
+- Ambient proposal flow: dirty grouping by idle window, snapshot diff, three-way
+  merge against canonical state, and cross-device replication via the proposal
+  pull protocol. (`src/proposal/{engine,diff,merge,sync}.rs`)
+- CLI: `enox proposal list/show/accept/reject/revert`; frontend review/history
+  view. (`src/commands/proposals.rs`, `frontend/.../ProposalsTab.tsx`)
+- Sessions and attribution: local change session model with confidence levels;
+  `enox session start/finish` (claimed session mode). (`src/proposal/session.rs`,
+  `src/commands/session.rs`)
+- Local reaction layer: agent wake-ups are plain chat mentions with a per-device
+  push/pull policy; the imperative circle-trigger was removed (a replicated
+  command that lets a remote member push execution is the dangerous framing).
+  (`src/agent/reaction.rs`, `src/agent/config.rs`)
+- Local execution: `enox agent run`; ACP driver (`session/new`/`load`/`prompt`,
+  fs + permission callbacks) and an argv fallback driver.
+  (`src/agent/{driver,acp,spawn}.rs`)
+- Acceptance policy: auto-accept for locally-initiated runs, pending review for
+  remote-member-initiated runs. (`src/proposal/policy.rs`)
+- Agent experience: ACP session memory (resume per circle+agent), world-context
+  injection, hierarchical `@owner/device/agent` mentions with `@` autocomplete
+  and atomic chips, agents advertising their configured agents, agent config via
+  CLI and frontend, process reaping, and mention-replay safety (durable dedup +
+  `ts` cutoff so a restart never re-triggers past mentions; agent replies never
+  wake other agents).
+  (`src/agent/{memory,context,mention,handled}.rs`, `src/api/agent_config.rs`,
+  `src/commands/agent.rs`, `frontend/.../MentionInput.tsx`)
+
 ## Historical Planned Items Folded Into Current Roadmap
 
 Some earlier planned work has been reframed:

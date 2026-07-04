@@ -102,105 +102,16 @@ clients. It should not be treated as a public relay endpoint.
 - [ ] Add local API authentication for CLI and browser clients.
 - [ ] Document safe remote access patterns.
 
-### M14 — Local Workspace Proposals
+### M14 — Local Workspace Proposals And Agent Execution
 
-**Status:** Complete (core). Ambient flow, review API/frontend, CLI,
-cross-device replication, the local reaction layer (chat-mention push/pull),
-the ACP execution driver, `enox agent run`, `enox session start/finish`, agent
-session memory, world-context injection, and CLI/frontend agent config are all
-built and verified end-to-end against real ACP agents (Claude Code, Codex).
-Only an *optional* sandbox/fork mode remains, deferred as a later enhancement.
+**Status:** Complete (core) — archived. The proposal layer and the full ACP
+agent-execution stack (mentions, `enox agent run`, session memory, world
+context, agent config, replay-safety) are built and verified against real ACP
+agents. Only an *optional* sandbox/fork mode is deferred.
 
-Add an agent-agnostic proposal layer so local agents, editors, scripts, and
-tools can make arbitrary filesystem changes in the normal workspace while
-enoxian captures those changes as reviewable proposals.
-
-**MVP flow:**
-
-```text
-1. Workspace is clean at snapshot S0
-2. Agent/editor/script mutates normal workspace files
-3. Watcher captures before blobs for touched paths
-4. Idle window closes or session finishes
-5. Snapshot result S1
-6. Generate S0 -> S1 diffs
-7. Create shadow proposal
-8. Accept, reject, revert, sync, or mark conflicted
-```
-
-**Build order:** the file change layer lands before the trigger layer. A
-trigger without the snapshot journal can launch an agent but cannot capture or
-review what it did; the ambient proposal flow is useful on its own and
-validates the pipeline before remote triggers add complexity.
-
-**Tasks (in order):**
-
-1. Foundation
-   - [x] Content-addressed blob store. (`src/proposal/blob.rs`)
-   - [x] Snapshot manifest format. (`src/proposal/snapshot.rs`)
-   - [x] Snapshot journal for ambient workspace edits (before-blob capture).
-         (`src/proposal/journal.rs`)
-2. Ambient proposal flow
-   - [x] Dirty proposal grouping by idle window/session. (`src/proposal/engine.rs`)
-   - [x] Snapshot diff generation. (`src/proposal/diff.rs`)
-   - [x] Three-way merge against current canonical state. (`src/proposal/merge.rs`)
-   - [x] Proposal records in the control/event layer, replicated cross-device.
-         (`src/proposal/sync.rs`, control-doc `proposals` map)
-   - [x] CLI: proposal list/show/accept/reject/revert.
-         (`src/commands/proposals.rs`)
-3. Sessions and attribution
-   - [x] Local change session model with attribution confidence.
-         (`src/proposal/session.rs`)
-   - [x] CLI: session start/finish (claimed session mode). Persists one open
-         claimed session per workspace. (`src/commands/session.rs`)
-4. Local reaction layer (formerly "trigger layer")
-   - The imperative circle trigger (`src/trigger/`: `agent_triggered` event,
-     status handshake, daemon handler, registry) was **removed**. A replicated
-     command that lets a remote member push execution at a device is the
-     dangerous framing; there is no such wire event. See agent-workspaces.md →
-     Two-Layer Split.
-   - [x] Treat agent wake-ups as plain chat mentions (M9) with a per-device
-         reaction policy — the network carries intent only, never a command.
-         (`src/agent/reaction.rs`, driven by `CircleEvent::AgentMentioned`)
-   - [x] Push policy: daemon subscribes to chat, matches its local allowlist,
-         and launches the agent through the local execution layer.
-         (`src/agent/reaction.rs`, `Reaction::Push`)
-   - [x] Pull policy (default): daemon initiates nothing; an agent is expected
-         to retrieve chat and self-trigger. (`Reaction::Pull`)
-   - [x] Local agent allowlist / driver config, redesigned against this model.
-         (`src/agent/config.rs`, `~/.enoxian/agents.toml`)
-5. Hardening and UX
-   - [x] Managed process mode (`enox agent run`). (`src/commands/agent.rs`,
-         `src/agent/driver.rs`; ambient engine captures the result as a
-         `managed_process` proposal)
-   - [x] Local execution: ACP driver (`driver = "acp"`) as an alternative to
-         raw-argv launch, giving turn lifecycle, `managed_process` attribution,
-         and per-write capture. (`src/agent/acp.rs`, `src/agent/driver.rs`)
-   - [x] Acceptance policy: auto-accept with history for locally-initiated runs,
-         pending review for remote-member-initiated runs. (`src/proposal/policy.rs`)
-   - [x] Frontend proposal review/history view. (`frontend/.../ProposalsTab.tsx`)
-   - [ ] Optional sandbox/manual fork mode for high-risk managed runs. (deferred)
-6. Agent experience (built after the original plan)
-   - [x] ACP session memory: persist the session id per (circle, agent) and
-         resume on the next mention. (`src/agent/memory.rs`, `acp.rs` session/load)
-   - [x] World-context injection: brief + roster + recent chat on fresh sessions,
-         lean header on resumed ones. (`src/agent/context.rs`)
-   - [x] Hierarchical mentions (`@owner/device/agent`) with a `@` autocomplete
-         and atomic chips. (`src/agent/mention.rs`, `frontend/.../MentionInput.tsx`)
-   - [x] Agents advertise their configured agents so mentions can target them.
-         (`read_local_agents` merges `agents.toml`)
-   - [x] Configure agents via CLI and frontend (`enox agent add/remove/list/
-         reaction`, editable Device Settings). (`src/commands/agent.rs`,
-         `src/api/agent_config.rs`)
-   - [x] Process reaping (`kill_tree`) and mention-replay safety: durable dedup +
-         `ts` cutoff so a restart never re-triggers past mentions; agent replies
-         never wake other agents. (`src/agent/handled.rs`, `spawn.rs`)
-   - Guide: [../agents.md](../agents.md).
-
-The proposal watcher is a new layer alongside the existing CRDT sync watcher
-(`src/sync_yjs/watcher.rs`), not a replacement: the CRDT watcher keeps serving
-interactive editing, while the proposal layer treats the same file events as
-session evidence (before-blob capture, idle-window close, S0 -> S1 diff).
+- Milestone record: [archived/milestones.md](archived/milestones.md) → M14
+- User guide: [../agents.md](../agents.md)
+- Design: [agent-workspaces.md](agent-workspaces.md)
 
 ### M14.5 — Control-Doc Persistence
 

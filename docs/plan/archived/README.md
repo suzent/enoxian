@@ -5,7 +5,7 @@ on active work.
 
 | File | Description |
 |------|-------------|
-| [milestones.md](milestones.md) | Completed milestone archive |
+| [milestones.md](milestones.md) | Completed milestone archive (M1–M12, M14) |
 | [workspace.md](workspace.md) | Completed M1 workspace folder design |
 | [lifecycle.md](lifecycle.md) | Completed M4 circle lifecycle design |
 | [admin.md](admin.md) | Completed M6 admin and member management design |
