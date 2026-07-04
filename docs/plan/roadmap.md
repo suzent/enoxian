@@ -144,7 +144,12 @@ alongside M17 content encryption (and the agent chat-inbox, see
 
 ### M15 — Event Log And Blob Sync
 
-**Status:** Planned
+**Status:** Planned — design-pending, deliberately not rushed. This is a new
+libp2p subsystem (a blob request/response protocol, an event schema, snapshot
+materialization) whose correctness needs multi-peer testing; it should be
+designed and built carefully, not fast-drafted. The proposal pull protocol
+([proposal-pull-protocol.md](proposal-pull-protocol.md)) is the nearest existing
+piece to build on.
 
 Move cross-device workspace coordination toward events, snapshot manifests, and
 content-addressed blobs instead of raw folder mirroring.
@@ -160,23 +165,30 @@ content-addressed blobs instead of raw folder mirroring.
 
 ### M16 — Diff And Merge Adapters
 
-**Status:** Planned
-
-Make proposal diffs document-aware without requiring agents to produce
-structured patches.
+**Status:** Complete. Proposal diffs are document-aware without agents producing
+structured patches. `src/proposal/adapters/` dispatches by file type/content and
+the structured diff is surfaced in the proposal detail API (`FileDiff.diff`).
 
 **Adapters:**
 
-- [ ] Text line diff.
-- [ ] Markdown heading/paragraph diff.
-- [ ] JSON/YAML object-path diff.
-- [ ] Code-aware diff for function/class-level changes.
-- [ ] Binary/hash-only diff.
-- [ ] Formatter-noise detection.
+- [x] Text line diff. (`adapters/text.rs`, via diffy)
+- [x] Markdown heading/paragraph diff. (`adapters/markdown.rs`)
+- [x] JSON object-path diff. (`adapters/json.rs`; YAML falls back to text — no
+      YAML parser dependency yet)
+- [x] Code-aware diff for function/class-level changes. (`adapters/code.rs`,
+      heuristic across common languages, not a full parser)
+- [x] Binary/hash-only diff. (`adapters/binary.rs`)
+- [x] Formatter-noise detection. (`formatting_only` on every adapter)
 
 ### M17 — Layer 4 Content Encryption
 
-**Status:** Planned
+**Status:** Planned — design-pending, deliberately not rushed. This is the
+highest-stakes cryptographic work in the project: a subtle bug silently breaks
+the security guarantees everything else assumes. It must be designed and
+reviewed carefully, not fast-drafted, and lands after M15 (it encrypts the event
+log / blobs that M15 introduces). Note: control-doc chat is currently persisted
+**plaintext** at rest (M14.5) pending this milestone — see
+[../concepts/security.md](../concepts/security.md) → Data At Rest.
 
 Encrypt CRDT updates, event log entries, proposal metadata, and blob chunks with
 MLS-derived content keys. This provides cryptographic future secrecy after
@@ -193,18 +205,19 @@ member removal while keeping transport connectivity decoupled from membership.
 
 ### M18 — Packaging And Distribution
 
-**Status:** Planned
-
-Ship `enoxd` and `enox` as ready-to-use binaries for major platforms.
+**Status:** In progress. CI, release binaries, and a bootstrap Docker image are
+in place; install-script and Homebrew items remain. Note: the workflows and
+Docker build have not been exercised on live runners — a real CI run should
+confirm before relying on them.
 
 **Tasks:**
 
-- [ ] GitHub Actions CI across Linux, macOS, and Windows.
-- [ ] Release workflow for tagged builds.
-- [ ] macOS universal binary and archive.
-- [ ] Linux static or portable binaries.
-- [ ] Windows zip or installer.
-- [ ] Docker image for bootstrap/relay nodes.
+- [x] GitHub Actions CI across Linux, macOS, and Windows. (`.github/workflows/ci.yml`)
+- [x] Release workflow for tagged builds. (`.github/workflows/release.yml`)
+- [x] macOS binaries (aarch64 + x86_64 archives). (universal-lipo bundle: future)
+- [x] Linux static/portable binaries (musl x86_64 + aarch64).
+- [x] Windows zip. (installer: future)
+- [x] Docker image for bootstrap/relay nodes. (`Dockerfile`)
 - [ ] Quick-install scripts.
 - [ ] Homebrew formula.
 
