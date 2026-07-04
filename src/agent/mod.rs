@@ -16,6 +16,7 @@ pub mod acp;
 pub mod config;
 pub mod context;
 pub mod driver;
+pub mod handled;
 pub mod memory;
 pub mod mention;
 pub mod reaction;

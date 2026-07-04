@@ -34,26 +34,37 @@ pub fn spawn_reaction(state: AppState, token: CancellationToken) {
 
 async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     let mut events = state.events.subscribe();
-    tracing::info!("[agent] reaction loop started for circle {}", state.circle_id);
 
-    // Dedup: the same mention can surface more than once (e.g. the local HTTP
-    // post and the CRDT observer both emit AgentMentioned, or a message
-    // re-delivers). Launching an agent is expensive and side-effectful, so act
-    // at most once per (message id, target). Bounded FIFO to cap memory.
-    let mut handled: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    // Durable dedup: act on each (message, mention) at most once *ever*, not
+    // just once per run. On reconnect, P2P sync replays the whole chat history
+    // as fresh CRDT updates and the observer fires AgentMentioned for every
+    // historical message; without a persisted guard, every past mention would
+    // re-launch its agent on each restart. This survives restarts.
+    let handled = super::handled::HandledMentions::load(&state.circle_dir);
+
+    // Cheap first-line filter: a mention older than daemon start is almost
+    // certainly replayed history. The durable set is the real guard; this just
+    // avoids logging/looking up ancient messages. Grace of 2s for clock skew.
+    let cutoff = chrono::Utc::now().timestamp() - 2;
+    tracing::info!(
+        "[agent] reaction loop started for circle {} (fresh cutoff ts={cutoff})",
+        state.circle_id
+    );
 
     loop {
         tokio::select! {
             _ = token.cancelled() => break,
             evt = events.recv() => match evt {
                 Ok(CircleEvent::AgentMentioned { agent_id, message }) => {
-                    let dedup_key = format!("{}::{}", message.id, agent_id);
-                    if handled.contains(&dedup_key) {
-                        tracing::debug!("[agent] mention {dedup_key} already handled — skipping duplicate");
+                    // Old message (replayed history) — skip cheaply.
+                    if message.ts < cutoff {
                         continue;
                     }
-                    handled.push_back(dedup_key);
-                    if handled.len() > 256 { handled.pop_front(); }
+                    // Never act on the same mention twice, across restarts.
+                    if !handled.mark_new(&message.id, &agent_id) {
+                        tracing::debug!("[agent] mention {}::{agent_id} already handled — skipping", message.id);
+                        continue;
+                    }
 
                     // `agent_id` is the stored mention body — possibly scoped as
                     // owner/device/agent. Only agent-level targets launch; user-
@@ -173,10 +184,10 @@ async fn react(
     // proposal (via the ambient engine + pull protocol); this is the
     // conversational half.
     if let Some(reply) = outcome.reply.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        // Post under the agent's name. NOTE: if a reply itself contains an
-        // @mention it will re-fire AgentMentioned — keep agent replies from
-        // mentioning runnable agents to avoid trigger loops.
-        let _ = crate::api::chat::post_message(state, agent_id.to_string(), reply.to_string());
+        // Post under the agent's name WITHOUT firing mention triggers: an
+        // agent's reply must never wake another agent, or two agents ping-pong
+        // forever. (fire_mentions = false)
+        let _ = crate::api::chat::post_message(state, agent_id.to_string(), reply.to_string(), false);
     } else {
         tracing::debug!("[agent] `{agent_id}` produced no text reply to post");
     }

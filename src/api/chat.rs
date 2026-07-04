@@ -58,23 +58,28 @@ pub async fn post_chat(
     };
 
     let sender = req.agent_id.unwrap_or_else(|| "unknown".to_string());
-    match post_message(&state, sender, req.text) {
+    // A user/UI post fires mention triggers.
+    match post_message(&state, sender, req.text, true) {
         Ok(id) => (StatusCode::CREATED, Json(json!({ "id": id }))).into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "serialize failed"}))).into_response(),
     }
 }
 
-/// Post a chat message into the circle's control CRDT and fire the same events
-/// a user post would. Reused by the HTTP handler and by the agent reaction loop
-/// (so an agent's reply appears in the room and replicates to peers exactly like
-/// any other message). Mentions in `text` are parsed and re-fired, so an agent
-/// can address another agent — beware of loops when wiring auto-replies.
+/// Post a chat message into the circle's control CRDT.
+///
+/// `fire_mentions` controls whether an `AgentMentioned` trigger event is emitted
+/// for each mention in the text. User/UI posts pass `true` (a mention should
+/// wake an agent). **Agent replies pass `false`** — otherwise an agent that
+/// mentions another agent (or itself) in its reply sets off an endless
+/// trigger loop. Mentions are always *stored* on the message (for chip
+/// rendering) regardless; only the trigger side effect is gated.
 ///
 /// Returns the new message id.
 pub fn post_message(
     state: &crate::state::AppState,
     sender: String,
     text: String,
+    fire_mentions: bool,
 ) -> Result<String, serde_json::Error> {
     let mentions = crate::agent::mention::extract(&text);
     let msg = ChatMessage {
@@ -93,11 +98,13 @@ pub fn post_message(
     }
 
     let _ = state.events.send(CircleEvent::MessagePosted { message: msg.clone() });
-    for mentioned in &mentions {
-        let _ = state.events.send(CircleEvent::AgentMentioned {
-            agent_id: mentioned.clone(),
-            message: msg.clone(),
-        });
+    if fire_mentions {
+        for mentioned in &mentions {
+            let _ = state.events.send(CircleEvent::AgentMentioned {
+                agent_id: mentioned.clone(),
+                message: msg.clone(),
+            });
+        }
     }
 
     Ok(msg.id)
