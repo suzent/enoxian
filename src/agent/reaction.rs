@@ -103,9 +103,10 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                         Initiator::RemoteMember
                     };
 
+                    let sender = message.agent_id.clone();
                     let state = state.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = react(&state, &agent_id, &cmd, &task, initiator).await {
+                        if let Err(e) = react(&state, &agent_id, &cmd, &task, &sender, initiator).await {
                             tracing::warn!("[agent] run of `{agent_id}` failed: {e:#}");
                         }
                     });
@@ -126,6 +127,7 @@ async fn react(
     agent_id: &str,
     cmd: &super::config::AgentCommand,
     task: &str,
+    sender: &str,
     initiator: Initiator,
 ) -> anyhow::Result<()> {
     // Anchor the change session on the engine's current baseline (S0) so the
@@ -133,16 +135,33 @@ async fn react(
     let store = ProposalStore::open(&state.workspace)?;
     let base_snapshot = store.baseline_id().unwrap_or_default();
 
-    let outcome = driver::launch(
-        agent_id,
+    // Resume the agent's prior conversation if we remember one. Best-effort:
+    // the driver falls back to a fresh session if the id no longer loads.
+    let resume = super::memory::load(&state.circle_dir, agent_id);
+
+    // Give the agent enough context about where it is. On a resumed session the
+    // agent already has history, so we send a lean per-turn header; on a fresh
+    // session we include the standing brief about the enoxian environment.
+    let prompt = super::context::build_prompt(state, agent_id, sender, task, resume.is_some());
+
+    let outcome = driver::launch(driver::LaunchRequest {
+        agent_name: agent_id,
         cmd,
-        task,
-        &state.workspace,
-        &base_snapshot,
-        &state.circle_id,
+        task: &prompt,
+        workspace: &state.workspace,
+        base_snapshot: &base_snapshot,
+        circle_id: &state.circle_id,
         initiator,
-    )
+        resume: resume.as_deref(),
+    })
     .await?;
+
+    // Remember the ACP session so the next mention continues the conversation.
+    if let Some(sid) = &outcome.acp_session_id {
+        if let Err(e) = super::memory::save(&state.circle_dir, agent_id, sid) {
+            tracing::warn!("[agent] failed to persist session for `{agent_id}`: {e}");
+        }
+    }
 
     tracing::info!(
         "[agent] `{agent_id}` finished: session={} {}",

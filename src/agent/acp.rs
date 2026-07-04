@@ -94,19 +94,27 @@ pub struct AcpSession<H: ClientHooks> {
     /// Agent-initiated requests/notifications, delivered by the reader task.
     req_rx: mpsc::UnboundedReceiver<Value>,
     session_id: Option<String>,
+    /// Whether the agent advertised the `loadSession` capability at init.
+    load_session_cap: bool,
     workspace: PathBuf,
     hooks: H,
     next_id: u64,
 }
 
 impl<H: ClientHooks> AcpSession<H> {
-    /// Spawn the agent command and complete the ACP handshake through
-    /// `session/new`, leaving a session ready for `prompt`.
+    /// Spawn the agent command and complete the ACP handshake, leaving a
+    /// session ready for `prompt`.
     ///
     /// `command` is argv (e.g. `["npx", "@zed-industries/claude-code-acp"]`).
     /// `workspace` is the absolute directory the agent operates in; all
     /// client-mediated file access is confined to it.
-    pub async fn start(command: &[String], workspace: &Path, hooks: H) -> Result<Self> {
+    ///
+    /// `resume` is a prior `sessionId` to continue. When present and the agent
+    /// advertises the `loadSession` capability, we call `session/load` to
+    /// restore the conversation. If loading fails (e.g. the agent no longer
+    /// knows that session after a restart), we fall back to `session/new` — so
+    /// resume is best-effort continuity, never a hard dependency.
+    pub async fn start(command: &[String], workspace: &Path, hooks: H, resume: Option<&str>) -> Result<Self> {
         let (program, args) = command
             .split_first()
             .ok_or_else(|| anyhow!("empty agent command"))?;
@@ -164,13 +172,33 @@ impl<H: ClientHooks> AcpSession<H> {
             resp_rx,
             req_rx,
             session_id: None,
+            load_session_cap: false,
             workspace: workspace.to_path_buf(),
             hooks,
             next_id: 1,
         };
 
         session.initialize().await?;
-        session.new_session().await?;
+
+        // Try to resume a prior conversation; fall back to a fresh session.
+        match resume {
+            Some(prior) if session.load_session_cap => {
+                match session.load_session(prior).await {
+                    Ok(()) => {
+                        tracing::info!("[acp] resumed session {prior}");
+                    }
+                    Err(e) => {
+                        tracing::warn!("[acp] resume of {prior} failed ({e}); starting fresh");
+                        session.new_session().await?;
+                    }
+                }
+            }
+            Some(prior) => {
+                tracing::info!("[acp] agent lacks loadSession; ignoring prior session {prior}");
+                session.new_session().await?;
+            }
+            None => session.new_session().await?,
+        }
         Ok(session)
     }
 
@@ -187,8 +215,35 @@ impl<H: ClientHooks> AcpSession<H> {
                 }),
             )
             .await?;
-        tracing::info!("[acp] initialized: {}", compact(&result));
+        self.load_session_cap = result
+            .get("agentCapabilities")
+            .and_then(|c| c.get("loadSession"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        tracing::info!("[acp] initialized (loadSession={}): {}", self.load_session_cap, compact(&result));
         Ok(())
+    }
+
+    /// Resume a prior conversation via `session/load`. The agent replays its
+    /// history as `session/update` notifications, which our hooks observe.
+    async fn load_session(&mut self, session_id: &str) -> Result<()> {
+        let cwd = self
+            .workspace
+            .to_str()
+            .ok_or_else(|| anyhow!("workspace path is not valid UTF-8"))?
+            .to_string();
+        self.call(
+            "session/load",
+            json!({ "sessionId": session_id, "cwd": cwd, "mcpServers": [] }),
+        )
+        .await?;
+        self.session_id = Some(session_id.to_string());
+        Ok(())
+    }
+
+    /// The active session id (for persistence so the next run can resume).
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
     }
 
     async fn new_session(&mut self) -> Result<()> {
@@ -238,6 +293,12 @@ impl<H: ClientHooks> AcpSession<H> {
     /// Terminate the agent subprocess.
     pub async fn shutdown(mut self) {
         let _ = self.stdin.shutdown().await;
+        // Kill the whole process tree: `npx` spawns `node`, which spawns the
+        // real agent. start_kill() alone would reap only the launcher and orphan
+        // the descendants (the stray node/claude processes seen in testing).
+        if let Some(pid) = self.child.id() {
+            super::spawn::kill_tree(pid);
+        }
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
     }

@@ -73,6 +73,33 @@ fn needs_cmd_wrapper(program: &str) -> bool {
         .is_some()
 }
 
+/// Kill a process and all its descendants by PID. `npx`/`node` launchers spawn
+/// the real agent as a child, so killing only the launcher orphans the tree;
+/// this reaps the whole subtree so a finished or aborted run leaves nothing
+/// behind.
+pub fn kill_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        // taskkill /T kills the tree, /F forces it. Detached, output ignored.
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(unix)]
+    {
+        // Negative pid targets the process group; the child is a group leader
+        // only if spawned that way, so also try the pid directly as a fallback.
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &format!("-{pid}")])
+            .status();
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+    }
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;

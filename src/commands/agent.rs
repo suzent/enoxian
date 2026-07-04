@@ -26,20 +26,35 @@ pub async fn run(circle: Option<&str>, agent: String, task: String) -> Result<()
     let store = ProposalStore::open(&workspace)?;
     let base_snapshot = store.baseline_id().unwrap_or_default();
 
+    // Resume the agent's remembered conversation for this circle, if any.
+    let circle_dir = crate::config::circle_dir(&circle_id)?;
+    let resume = crate::agent::memory::load(&circle_dir, &agent);
+
     println!("→ running agent '{agent}' ({:?}) in {}", cmd.driver, workspace.display());
-    let outcome = driver::launch(
-        &agent,
-        &cmd,
-        &task,
-        &workspace,
-        &base_snapshot,
-        &circle_id,
-        Initiator::Local,
-    )
+    if resume.is_some() {
+        println!("  resuming previous session");
+    }
+    let outcome = driver::launch(driver::LaunchRequest {
+        agent_name: &agent,
+        cmd: &cmd,
+        task: &task,
+        workspace: &workspace,
+        base_snapshot: &base_snapshot,
+        circle_id: &circle_id,
+        initiator: Initiator::Local,
+        resume: resume.as_deref(),
+    })
     .await
     .context("agent run failed")?;
 
+    if let Some(sid) = &outcome.acp_session_id {
+        let _ = crate::agent::memory::save(&circle_dir, &agent, sid);
+    }
+
     println!("✓ agent finished ({})", outcome.detail);
+    if let Some(reply) = &outcome.reply {
+        println!("\n{reply}\n");
+    }
     println!("  session {} — any file changes will surface as a proposal.", outcome.session_id);
     println!("  run `enox proposal list` to review.");
     Ok(())

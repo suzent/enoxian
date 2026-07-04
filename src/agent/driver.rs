@@ -19,6 +19,7 @@ use crate::proposal::session::{LocalChangeSession, SessionMode};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Where the run was initiated from — decides the session mode and, downstream,
@@ -42,6 +43,9 @@ pub struct LaunchOutcome {
     /// The agent's streamed text reply, if any (ACP driver only). The caller
     /// posts this to chat so the mention reads like a conversation.
     pub reply: Option<String>,
+    /// The ACP session id after this run (ACP driver only). Persist it so the
+    /// next mention of this agent can resume the conversation.
+    pub acp_session_id: Option<String>,
 }
 
 /// Permission hook that defers every ACP permission request to a fixed policy
@@ -52,6 +56,10 @@ struct PolicyHooks {
     /// Accumulates the agent's streamed message text so the reply can be posted
     /// to chat after the turn. `&self`-only trait, hence the shared mutable cell.
     reply: Arc<Mutex<String>>,
+    /// When false, streamed agent text is ignored. Used to drop the conversation
+    /// history the agent replays during `session/load` — only the reply to the
+    /// *current* prompt should be captured and posted to chat.
+    capturing: Arc<AtomicBool>,
 }
 
 impl ClientHooks for PolicyHooks {
@@ -65,8 +73,10 @@ impl ClientHooks for PolicyHooks {
     }
     fn on_update(&self, update: &Value) {
         if let Some(text) = agent_message_text(update) {
-            if let Ok(mut buf) = self.reply.lock() {
-                buf.push_str(&text);
+            if self.capturing.load(Ordering::Relaxed) {
+                if let Ok(mut buf) = self.reply.lock() {
+                    buf.push_str(&text);
+                }
             }
         } else {
             tracing::debug!("[agent] session update: {}", compact(update));
@@ -74,34 +84,47 @@ impl ClientHooks for PolicyHooks {
     }
 }
 
-/// Launch a permitted agent against `workspace`, running the given task under a
-/// change session. Returns once the agent finishes its work.
-pub async fn launch(
-    agent_name: &str,
-    cmd: &AgentCommand,
-    task: &str,
-    workspace: &Path,
-    base_snapshot: &str,
-    circle_id: &str,
-    initiator: Initiator,
-) -> Result<LaunchOutcome> {
-    let mode = match initiator {
+/// One agent run request.
+pub struct LaunchRequest<'a> {
+    pub agent_name: &'a str,
+    pub cmd: &'a AgentCommand,
+    /// The full prompt handed to the agent (task + any injected world context).
+    pub task: &'a str,
+    pub workspace: &'a Path,
+    pub base_snapshot: &'a str,
+    pub circle_id: &'a str,
+    pub initiator: Initiator,
+    /// Prior ACP session id to resume, if one is remembered for this agent.
+    pub resume: Option<&'a str>,
+}
+
+/// Launch a permitted agent, running the given task under a change session.
+/// Returns once the agent finishes its work.
+pub async fn launch(req: LaunchRequest<'_>) -> Result<LaunchOutcome> {
+    let mode = match req.initiator {
         // A managed run enoxian owns the process tree for → verified process.
         Initiator::Local | Initiator::RemoteMember => SessionMode::ManagedProcess,
     };
-    let mut session = LocalChangeSession::start(circle_id.to_string(), base_snapshot.to_string(), mode);
-    session.requested_agent = Some(agent_name.to_string());
-    session.actor_id = Some(agent_name.to_string());
+    let mut session = LocalChangeSession::start(
+        req.circle_id.to_string(),
+        req.base_snapshot.to_string(),
+        mode,
+    );
+    session.requested_agent = Some(req.agent_name.to_string());
+    session.actor_id = Some(req.agent_name.to_string());
     tracing::info!(
-        "[agent] launching `{agent_name}` ({:?}) session={} task={:?}",
-        cmd.driver, session.session_id, task
+        "[agent] launching `{}` ({:?}) session={} resume={:?} task_len={}",
+        req.agent_name, req.cmd.driver, session.session_id, req.resume, req.task.len()
     );
 
-    let run_dir = working_dir(workspace, cmd.working_dir.as_deref());
+    let run_dir = working_dir(req.workspace, req.cmd.working_dir.as_deref());
 
-    let (detail, reply) = match cmd.driver {
-        Driver::Argv => (run_argv(cmd, task, &run_dir).await?, None),
-        Driver::Acp => run_acp(cmd, initiator, task, &run_dir).await?,
+    let (detail, reply, acp_session_id) = match req.cmd.driver {
+        Driver::Argv => (run_argv(req.cmd, req.task, &run_dir).await?, None, None),
+        Driver::Acp => {
+            let r = run_acp(req.cmd, req.initiator, req.task, &run_dir, req.resume).await?;
+            (r.detail, r.reply, r.acp_session_id)
+        }
     };
 
     session.finish();
@@ -110,7 +133,14 @@ pub async fn launch(
         mode,
         detail,
         reply,
+        acp_session_id,
     })
+}
+
+struct AcpRun {
+    detail: String,
+    reply: Option<String>,
+    acp_session_id: Option<String>,
 }
 
 async fn run_argv(cmd: &AgentCommand, task: &str, run_dir: &Path) -> Result<String> {
@@ -128,27 +158,43 @@ async fn run_argv(cmd: &AgentCommand, task: &str, run_dir: &Path) -> Result<Stri
 
 async fn run_acp(
     cmd: &AgentCommand,
-    _task_initiator: Initiator,
+    _initiator: Initiator,
     task: &str,
     run_dir: &Path,
-) -> Result<(String, Option<String>)> {
+    resume: Option<&str>,
+) -> Result<AcpRun> {
     // Always allow the agent to act *within the workspace* — that is its job,
     // and enoxian captures whatever it writes as a proposal. Deny-at-tool-call
     // would just make a mentioned agent unable to do anything. The local-vs-
     // remote safety distinction lives one layer up, in the acceptance policy
     // (auto-accept vs pending-review of the resulting proposal), not here.
     let reply = Arc::new(Mutex::new(String::new()));
-    let hooks = PolicyHooks { allow: true, reply: reply.clone() };
+    // Start with capture OFF so the history replayed during session/load is not
+    // mistaken for the current reply. Turned on just before we prompt.
+    let capturing = Arc::new(AtomicBool::new(false));
+    let hooks = PolicyHooks {
+        allow: true,
+        reply: reply.clone(),
+        capturing: capturing.clone(),
+    };
 
-    let mut acp = AcpSession::start(&cmd.command, run_dir, hooks)
+    let mut acp = AcpSession::start(&cmd.command, run_dir, hooks, resume)
         .await
         .context("ACP handshake failed")?;
+
+    // Now capture only the reply to *this* prompt.
+    capturing.store(true, Ordering::Relaxed);
     let result = acp.prompt(task).await;
+    let acp_session_id = acp.session_id().map(str::to_string);
     acp.shutdown().await;
     let turn = result.context("ACP prompt turn failed")?;
 
     let text = reply.lock().ok().map(|b| b.trim().to_string()).filter(|s| !s.is_empty());
-    Ok((format!("stop_reason={}", turn.stop_reason), text))
+    Ok(AcpRun {
+        detail: format!("stop_reason={}", turn.stop_reason),
+        reply: text,
+        acp_session_id,
+    })
 }
 
 fn working_dir(workspace: &Path, rel: Option<&str>) -> PathBuf {
