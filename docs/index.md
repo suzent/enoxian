@@ -43,4 +43,5 @@ behavior.
 | [plan/roadmap.md](plan/roadmap.md) | Current roadmap and next milestones |
 | [plan/agent-workspaces.md](plan/agent-workspaces.md) | Local workspace proposal layer for ambient and triggered agents |
 | [plan/control-persistence.md](plan/control-persistence.md) | Persisting chat/tasks/members so an all-offline restart doesn't lose them |
+| [plan/agent-memory.md](plan/agent-memory.md) | Stateful agents, chat-based recovery, and the future chat-inbox feature |
 | [plan/identity.md](plan/identity.md) | Device identity, stable PSK, MLS membership, future content encryption |

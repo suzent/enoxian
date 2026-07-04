@@ -27,17 +27,28 @@ pub fn build_prompt(
 ) -> String {
     let mut out = String::new();
 
+    // Memory model: the agent is stateful by default (persistent ACP session
+    // per circle+agent). On a resumed session it already holds the standing
+    // brief and prior conversation in its own memory, so we send only a lean
+    // per-turn cue and do NOT re-inject the chat transcript — that would
+    // duplicate what it already has and muddy the reply.
+    //
+    // A fresh session is also the *recovery* path: when an agent has lost its
+    // session, it starts fresh and we hand it the full brief plus recent chat so
+    // it can catch up from the durable record. (A future "chat inbox" — see
+    // docs/plan/agent-memory.md — would let a pull-policy agent pull unhandled
+    // mentions on its own, making recovery proactive rather than mention-driven.)
     if resumed {
-        // Agent already has the standing brief in its resumed history.
         out.push_str(&format!(
-            "[enoxian] {sender} mentioned you (@{agent_id}) in circle \"{}\".\n\n",
+            "[enoxian] {sender} mentioned you (@{agent_id}) in circle \"{}\". \
+             Continue from your prior context.\n\n",
             state.circle_name
         ));
     } else {
         out.push_str(&standing_brief(state, agent_id));
         let recent = recent_chat(state);
         if !recent.is_empty() {
-            out.push_str("\nRecent conversation in this room:\n");
+            out.push_str("\nRecent conversation in this room (to catch up on):\n");
             out.push_str(&recent);
             out.push('\n');
         }
