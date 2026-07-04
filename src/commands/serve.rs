@@ -56,25 +56,74 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         });
     }
 
-    let mut app = api::router(daemon.clone());
+    // Local API auth token — generated on first start, presented by the CLI and
+    // the frontend. The API is a privileged control plane; the token stops a
+    // local process (e.g. a malicious webpage) from driving it. See api::auth.
+    let token = api::auth::load_or_create().context("initializing API token")?;
+    info!("API token at {}", api::auth::token_path()?.display());
 
-    // Serve the compiled frontend at /app (built by `npm run build` in frontend/)
-    let static_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap_or(&std::path::PathBuf::from("."))
-        .join("static");
-    if static_dir.exists() {
-        use tower_http::services::{ServeDir, ServeFile};
-        let serve = ServeDir::new(&static_dir)
-            .fallback(ServeFile::new(static_dir.join("index.html")));
-        app = app.nest_service("/app", serve);
+    // The API router is token-guarded. The frontend static assets must NOT be
+    // (the browser loads them before it has the token), so they are built as a
+    // separate un-authed router and merged. The token defense for the browser is
+    // that the token is injected into the served HTML, which a cross-origin page
+    // cannot read — not that the HTML itself is auth-gated.
+    let api_app = api::router(daemon.clone(), Some(token.clone()));
+
+    let mut app = api_app;
+
+    // Serve the compiled frontend at /app (built by `npm run build` in frontend/,
+    // output to <repo>/static). Try the crate-root static dir first, then the
+    // parent (workspace) layout, so it resolves in both dev and packaged builds.
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let static_dir = [manifest.join("static"), manifest.parent().map(|p| p.join("static")).unwrap_or_default()]
+        .into_iter()
+        .find(|p| p.join("index.html").exists())
+        .unwrap_or_else(|| manifest.join("static"));
+    if static_dir.join("index.html").exists() {
+        use tower_http::services::ServeDir;
+        // The HTML entry point injects the API token as window.__ENOX_TOKEN__.
+        let index_html = std::fs::read_to_string(static_dir.join("index.html")).unwrap_or_default();
+        let injected = index_html.replacen(
+            "</head>",
+            &format!("<script>window.__ENOX_TOKEN__=\"{token}\";</script></head>"),
+            1,
+        );
+        let index_route = || {
+            axum::routing::get({
+                let html = injected.clone();
+                move || async move { axum::response::Html(html) }
+            })
+        };
+        // The built SPA references its assets at absolute root paths (/assets/…,
+        // /logo.svg). So: serve the token-injected HTML at /app, and let any
+        // otherwise-unmatched path fall through to ServeDir (which serves those
+        // root assets and 404s for the rest). Neither is auth-gated; the token
+        // lives in the HTML, which a cross-origin page cannot read.
+        app = app
+            .route("/app", index_route())
+            .route("/app/", index_route())
+            .fallback_service(ServeDir::new(&static_dir));
         info!("Serving frontend at /app from {}", static_dir.display());
     }
 
-    let http_addr = SocketAddr::from(([0, 0, 0, 0], args.port));
+    // Bind to loopback by default — the API is a privileged control plane, not
+    // a public endpoint. `--bind <ip>` or `--bind-lan` opt into wider exposure.
+    let ip = match args.bind {
+        Some(ip) => ip,
+        None if args.bind_lan => std::net::IpAddr::from([0, 0, 0, 0]),
+        None => std::net::IpAddr::from([127, 0, 0, 1]),
+    };
+    if !ip.is_loopback() {
+        warn!(
+            "API bound to {ip} (non-loopback) — this control plane is now reachable off-host. \
+             Ensure the network is trusted; the API token is required but exposure widens risk."
+        );
+    }
+    let http_addr = SocketAddr::new(ip, args.port);
     let listener = tokio::net::TcpListener::bind(http_addr)
         .await
-        .with_context(|| format!("failed to bind HTTP server on :{}", args.port))?;
-    info!("HTTP/WS listening on :{}", args.port);
+        .with_context(|| format!("failed to bind HTTP server on {http_addr}"))?;
+    info!("HTTP/WS listening on {http_addr}");
 
     let shutdown = daemon.shutdown_token.clone();
     axum::serve(listener, app)

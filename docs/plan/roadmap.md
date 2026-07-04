@@ -89,18 +89,19 @@ forward encrypted events and blob chunks.
 
 ### M13 — Local API Hardening
 
-**Status:** Planned
-
-The local HTTP/WebSocket API is a privileged control plane for CLI and browser
-clients. It should not be treated as a public relay endpoint.
+**Status:** Complete. The local HTTP/WS API is a privileged control plane and is
+now guarded accordingly. See [../reference/daemon.md](../reference/daemon.md) →
+Local API security.
 
 **Tasks:**
 
-- [ ] Default `enoxd` HTTP/WS listener to loopback.
-- [ ] Add an explicit flag for LAN/public binding.
-- [ ] Replace permissive CORS with a local origin allowlist.
-- [ ] Add local API authentication for CLI and browser clients.
-- [ ] Document safe remote access patterns.
+- [x] Default `enoxd` HTTP/WS listener to loopback. (`src/commands/serve.rs`)
+- [x] Add explicit flags for LAN/public binding (`--bind-lan`, `--bind <ip>`).
+- [x] Replace permissive CORS with a local origin allowlist. (`src/api/mod.rs`)
+- [x] Local API token auth for CLI and browser clients. (`src/api/auth.rs`;
+      CLI sends `Authorization: Bearer`, frontend gets the token injected into
+      its HTML, WS/SSE use `?token=`)
+- [x] Document safe remote access patterns (SSH tunnel loopback).
 
 ### M14 — Local Workspace Proposals And Agent Execution
 

@@ -2,8 +2,23 @@ import type { Circle, Status, Presence, ChatMessage, Task, Member, PendingEntry,
 
 const api = (circleId: string) => `/circles/${circleId}/api`
 
+// The daemon injects the local API token into the served HTML as
+// window.__ENOX_TOKEN__. Every API call presents it; WebSocket/EventSource
+// (which cannot set headers) append it as ?token=.
+const TOKEN: string = (window as unknown as { __ENOX_TOKEN__?: string }).__ENOX_TOKEN__ ?? ''
+
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  return TOKEN ? { Authorization: `Bearer ${TOKEN}`, ...extra } : { ...extra }
+}
+
+/** Append the token as a query param for WS/SSE URLs that can't send headers. */
+export function withToken(url: string): string {
+  if (!TOKEN) return url
+  return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN)
+}
+
 async function get<T>(url: string): Promise<T> {
-  const res = await fetch(url)
+  const res = await fetch(url, { headers: authHeaders() })
   if (!res.ok) {
     let msg = `${res.status} ${url}`
     try {
@@ -18,7 +33,7 @@ async function get<T>(url: string): Promise<T> {
 async function post<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
   })
   if (!res.ok) {
@@ -97,11 +112,11 @@ export const disableCircle = (id: string) =>
 export const leaveCircle = (id: string) =>
   post<{status: string}>(`${api(id)}/leave`, {})
 export function chatStream(circleId: string): EventSource {
-  return new EventSource(`${api(circleId)}/chat/stream`)
+  return new EventSource(withToken(`${api(circleId)}/chat/stream`))
 }
 
 export function eventStream(circleId: string): EventSource {
-  return new EventSource(`${api(circleId)}/events`)
+  return new EventSource(withToken(`${api(circleId)}/events`))
 }
 
 // ── Identity (global, no circle required) ────────────────────────────────────
@@ -129,5 +144,5 @@ export const createUserIdentity = (user_handle: string) =>
 
 export function wsYjsUrl(circleId: string, filePath: string): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${location.host}/circles/${circleId}/ws/yjs?path=${encodeURIComponent(filePath)}`
+  return withToken(`${proto}://${location.host}/circles/${circleId}/ws/yjs?path=${encodeURIComponent(filePath)}`)
 }

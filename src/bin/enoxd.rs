@@ -14,6 +14,11 @@ async fn main() -> anyhow::Result<()> {
     if cli.bootstrap {
         enoxian::bootstrap::run(cli.port).await
     } else {
-        enoxian::commands::serve::run(ServeArgs { port: cli.port }).await
+        enoxian::commands::serve::run(ServeArgs {
+            port: cli.port,
+            bind_lan: cli.bind_lan,
+            bind: cli.bind,
+        })
+        .await
     }
 }

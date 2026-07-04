@@ -29,7 +29,19 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = AgentCli::parse();
-    let client = reqwest::Client::new();
+    // Present the local API token on every request (the daemon requires it).
+    // Read from ~/.enoxian/api.token, written by the daemon on first start.
+    let client = {
+        let mut builder = reqwest::Client::builder();
+        if let Some(token) = enoxian::api::auth::load() {
+            let mut headers = reqwest::header::HeaderMap::new();
+            if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}")) {
+                headers.insert(reqwest::header::AUTHORIZATION, val);
+            }
+            builder = builder.default_headers(headers);
+        }
+        builder.build().unwrap_or_else(|_| reqwest::Client::new())
+    };
     let root = daemon_root();
 
     match cli.command {

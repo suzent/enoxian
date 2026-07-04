@@ -1,4 +1,5 @@
 pub mod agent_config;
+pub mod auth;
 pub mod chat;
 pub mod events;
 pub mod files;
@@ -31,8 +32,11 @@ async fn list_circles(State(_daemon): State<DaemonState>) -> Json<serde_json::Va
     Json(json!(circles))
 }
 
-pub fn router(daemon: DaemonState) -> Router {
-    Router::new()
+/// Build the API router. `token`, when `Some`, is required on every request as
+/// `Authorization: Bearer <token>` (or `?token=` for WebSocket/SSE, which cannot
+/// set headers). `None` disables auth — only for tests.
+pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
+    let base = Router::new()
         .route("/shutdown", post(shutdown::shutdown))
         .route("/circles", get(list_circles))
         .route("/circles/{circle_id}/ws/yjs", get(ws_yjs_handler))
@@ -145,6 +149,44 @@ pub fn router(daemon: DaemonState) -> Router {
             "/circles/{circle_id}/api/leave",
             post(management::leave_circle),
         )
-        .with_state(daemon)
-        .layer(tower_http::cors::CorsLayer::permissive())
+        .with_state(daemon);
+
+    // CORS: allow only local origins (the frontend served from this daemon, and
+    // localhost dev servers). A permissive policy would let any website's
+    // scripts read authenticated responses from this control plane.
+    let cors = tower_http::cors::CorsLayer::new()
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(|origin, _req| {
+            origin
+                .to_str()
+                .map(is_local_origin)
+                .unwrap_or(false)
+        }))
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any);
+
+    // Token auth via `route_layer`: applies ONLY to the routes defined in this
+    // router, so when the caller merges an (un-authed) frontend router the static
+    // assets are not affected. `None` (tests only) skips auth.
+    let base = match token {
+        Some(t) => base.route_layer(axum::middleware::from_fn_with_state(
+            std::sync::Arc::new(t),
+            auth::require_token,
+        )),
+        None => base,
+    };
+
+    base.layer(cors)
+}
+
+/// Whether an `Origin` header value is a local address (loopback host, any
+/// port/scheme). Used by the CORS allowlist.
+fn is_local_origin(origin: &str) -> bool {
+    // Strip scheme.
+    let host = origin
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(origin);
+    // Strip port.
+    let host = host.split(':').next().unwrap_or(host);
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
 }

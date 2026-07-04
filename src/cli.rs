@@ -17,6 +17,14 @@ pub struct DaemonCli {
     /// Circle members connect via QUIC — no PSK required.
     #[arg(long)]
     pub bootstrap: bool,
+
+    /// Bind the HTTP/WS API to all interfaces (0.0.0.0) instead of loopback.
+    #[arg(long)]
+    pub bind_lan: bool,
+
+    /// Explicit bind address (overrides --bind-lan). E.g. 127.0.0.1 or 0.0.0.0.
+    #[arg(long)]
+    pub bind: Option<std::net::IpAddr>,
 }
 
 // ── Agent CLI ──────────────────────────────────────────────────────────────
@@ -391,4 +399,15 @@ pub struct ServeArgs {
     /// Port to listen on
     #[arg(long, default_value = "36521")]
     pub port: u16,
+
+    /// Bind the HTTP/WS API to all interfaces (0.0.0.0) instead of loopback.
+    /// The API is a privileged control plane; only expose it on a LAN you trust,
+    /// and prefer tunnelling loopback over exposing it directly. Requires the
+    /// API token for every request regardless.
+    #[arg(long)]
+    pub bind_lan: bool,
+
+    /// Explicit bind address (overrides --bind-lan). E.g. 127.0.0.1 or 0.0.0.0.
+    #[arg(long)]
+    pub bind: Option<std::net::IpAddr>,
 }

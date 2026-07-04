@@ -120,6 +120,44 @@ RUST_LOG=warn  enoxd          # errors and warnings only
 
 ---
 
+## Local API security
+
+The HTTP/WS API is a **privileged control plane** — it can add agents, arm
+push-mode (letting a chat mention run a process), start/stop circles, and edit
+config. It is not a public endpoint. Three defenses guard it:
+
+**Loopback by default.** `enoxd` binds `127.0.0.1` only, so nothing off-host can
+reach it. Opt into wider exposure explicitly:
+
+```bash
+enoxd                       # 127.0.0.1 (default)
+enoxd --bind-lan            # 0.0.0.0 — reachable on the LAN (logs a warning)
+enoxd --bind 192.168.1.5    # a specific interface
+```
+
+**Token auth.** Every API request must present a token (generated on first start,
+stored at `~/.enoxian/api.token`, owner-readable). Missing/wrong token → `401`.
+
+- The `enox` CLI reads the file and sends `Authorization: Bearer <token>`.
+- The frontend receives the token injected into its served HTML
+  (`window.__ENOX_TOKEN__`); a cross-origin page cannot read that response, so it
+  cannot steal the token. WebSocket/SSE connections (which cannot set headers)
+  pass it as `?token=<token>`.
+
+**CORS allowlist.** Only local origins (`localhost`, `127.0.0.1`, `[::1]`) may
+make cross-origin requests. A permissive policy would let any website's scripts
+read authenticated responses from this control plane.
+
+**Safe remote access.** Do **not** expose the API directly to the internet.
+Prefer tunnelling loopback to the remote machine:
+
+```bash
+ssh -L 36521:127.0.0.1:36521 user@host   # then use http://127.0.0.1:36521 locally
+```
+
+`--bind-lan` is acceptable only on a network you fully trust; the token is still
+required, but widening the bind widens the attack surface.
+
 ## Bootstrap mode
 
 `enoxd --bootstrap` runs a public rendezvous + circuit relay server. It does not
