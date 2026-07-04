@@ -52,15 +52,21 @@ that loses its session on an all-offline restart has nothing to seed from.
 - **Fresh session (also the recovery path)** — inject the full standing brief +
   recent chat so the agent catches up from the durable record, then the task.
 
-**On the "greeting soup" bug (corrected).** Earlier this was misattributed to
-`session/load` replaying history. It was not — load is silent (see above). The
-run-together greetings were the agent *genuinely* answering each piece of
-injected context conversationally on a **fresh** session ("Hello! …" to the
-brief, "Hi!" to a chat line) before doing the task, and the capture concatenated
-all of it. The reply-segmentation fix (post the agent's *final* message, not a
-concatenation) resolves the symptom. The remaining rough edge is
-**prompt construction** — injected brief + chat reads like conversation the
-agent feels obliged to reply to. See the open question below.
+**On the "greeting soup" bug (root-caused and fixed).** Earlier this was
+misattributed to `session/load` replaying history. It was not — load is silent
+(see above). The run-together greetings were the agent *genuinely* answering each
+piece of injected context conversationally on a **fresh** session ("Hello! …" to
+the brief, "Hi!" to a chat line) before doing the task. Two fixes:
+
+1. **Prompt construction (root fix).** The cold-start context is now fenced in a
+   `<context>` block prefaced by "Do NOT reply to it," and the prompt ends with a
+   single labelled REQUEST. The agent treats the background as background and
+   answers only the request. See *Prompt structure* in
+   `src/agent/context.rs` (module docs) — verified: a fresh session now replies
+   with just the answer, no greetings.
+2. **Reply segmentation (belt-and-braces).** The capture still posts the agent's
+   *final* message rather than a concatenation, so any stray preamble is dropped
+   regardless.
 
 ---
 
@@ -103,13 +109,6 @@ agents), and should be designed together.
 
 ## Open questions
 
-- **Prompt construction on fresh sessions.** The brief + injected chat reads
-  like conversation the agent answers turn-by-turn (the greeting-soup cause).
-  Should the cold-start context be delivered as a *system/context* block the
-  agent treats as background rather than prompt text it replies to? (ACP has no
-  standard system-message slot, so this may mean phrasing the injected block as
-  explicit non-conversational context, or a leading instruction like "the
-  following is background; do not respond to it, only to the request.")
 - Should losing a session be surfaced to the user (e.g. "claude started fresh —
   its prior memory was unavailable"), or stay silent?
 - Chat inbox: push (agent subscribes) vs. pull (agent polls) — and does the

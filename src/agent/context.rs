@@ -1,13 +1,42 @@
 //! Building the prompt enoxian hands to a mentioned agent.
 //!
-//! Two kinds of context (see the design discussion): the agent's own *memory*
-//! is carried by ACP session resume; this module supplies the *world context* —
-//! what the agent needs to know about the enoxian environment it is acting in.
+//! The agent's own *memory* is carried by ACP session resume (agent-owned,
+//! restored silently on `session/load`). This module supplies the *world
+//! context* — what the agent needs to know about the enoxian environment — and,
+//! crucially, frames it so the agent does not conversationally reply to the
+//! background instead of doing the task.
 //!
-//! On a fresh session we prepend a standing brief (what enoxian is, that file
-//! changes become reviewable proposals, who is in the room). On a resumed
-//! session the agent already has that history, so we send only a lean per-turn
-//! header (who mentioned it now) plus the task.
+//! ## Prompt structure
+//!
+//! Every prompt ends with a single REQUEST the agent should answer. Anything
+//! before it is background, wrapped in an explicit CONTEXT block the agent is
+//! told not to reply to. This is what prevents the "greeting soup" (the agent
+//! answering the brief and each chat line before doing the work).
+//!
+//! Fresh session (or a session that was lost — the recovery path):
+//!
+//! ```text
+//! The block between <context> tags below is background about your environment.
+//! Do NOT reply to it; use it only to inform your response to the REQUEST.
+//! <context>
+//! <standing brief: who you are, the circle, proposals, that replies go to chat>
+//! <member roster>
+//! Recent conversation in this room:
+//!   <sender>: <text>
+//!   ...
+//! </context>
+//!
+//! REQUEST from <sender> (@mention). Respond only to this:
+//! <task>
+//! ```
+//!
+//! Resumed session — the agent already holds the brief and history in its own
+//! memory, so the CONTEXT block is omitted entirely; only the REQUEST is sent:
+//!
+//! ```text
+//! REQUEST from <sender> (@mention) in circle "<name>". Respond only to this:
+//! <task>
+//! ```
 
 use crate::control::{ChatMessage, MemberEntry, CHAT_KEY, MEMBER_LIST_KEY};
 use crate::state::AppState;
@@ -16,8 +45,10 @@ use yrs::{Any, Array, ArrayRef, Map, Out, Transact};
 /// How many recent chat lines to include as conversational context.
 const RECENT_CHAT_LINES: usize = 12;
 
-/// Compose the full prompt: world context (brief and/or per-turn header) + the
-/// user's task. `resumed` selects the lean header vs. the full standing brief.
+/// Compose the prompt. `resumed` omits the background CONTEXT block (the agent
+/// already has it via its restored session). See the module docs for the exact
+/// shape. The invariant: the prompt always ends with a single REQUEST the agent
+/// is told to answer, and any background is fenced as non-conversational.
 pub fn build_prompt(
     state: &AppState,
     agent_id: &str,
@@ -25,36 +56,50 @@ pub fn build_prompt(
     task: &str,
     resumed: bool,
 ) -> String {
+    // Gather the environment context from the control doc, then compose. The
+    // composition itself is pure (`compose`) so it can be unit-tested without an
+    // AppState.
+    let brief = (!resumed).then(|| standing_brief(state, agent_id));
+    let recent = (!resumed).then(|| recent_chat(state)).filter(|s| !s.is_empty());
+    compose(&state.circle_name, sender, task, brief.as_deref(), recent.as_deref())
+}
+
+/// Pure prompt composition. `brief`/`recent` are `Some` only for a fresh session
+/// (the background CONTEXT block); a resumed session passes `None` for both and
+/// gets a request-only prompt. See the module docs for the shape.
+fn compose(
+    circle_name: &str,
+    sender: &str,
+    task: &str,
+    brief: Option<&str>,
+    recent: Option<&str>,
+) -> String {
     let mut out = String::new();
 
-    // Memory model: the agent is stateful by default (persistent ACP session
-    // per circle+agent). On a resumed session it already holds the standing
-    // brief and prior conversation in its own memory, so we send only a lean
-    // per-turn cue and do NOT re-inject the chat transcript — that would
-    // duplicate what it already has and muddy the reply.
-    //
-    // A fresh session is also the *recovery* path: when an agent has lost its
-    // session, it starts fresh and we hand it the full brief plus recent chat so
-    // it can catch up from the durable record. (A future "chat inbox" — see
-    // docs/plan/agent-memory.md — would let a pull-policy agent pull unhandled
-    // mentions on its own, making recovery proactive rather than mention-driven.)
-    if resumed {
-        out.push_str(&format!(
-            "[enoxian] {sender} mentioned you (@{agent_id}) in circle \"{}\". \
-             Continue from your prior context.\n\n",
-            state.circle_name
-        ));
-    } else {
-        out.push_str(&standing_brief(state, agent_id));
-        let recent = recent_chat(state);
-        if !recent.is_empty() {
-            out.push_str("\nRecent conversation in this room (to catch up on):\n");
-            out.push_str(&recent);
+    if brief.is_some() || recent.is_some() {
+        // Background, fenced and explicitly marked "do not reply to this" so the
+        // agent does not answer the brief/chat conversationally before the task.
+        out.push_str(
+            "The block between <context> tags below is background about your \
+             environment. Do NOT reply to it; use it only to inform your response \
+             to the REQUEST that follows.\n<context>\n",
+        );
+        if let Some(brief) = brief {
+            out.push_str(brief);
+        }
+        if let Some(recent) = recent {
+            out.push_str("\nRecent conversation in this room:\n");
+            out.push_str(recent);
             out.push('\n');
         }
-        out.push_str(&format!("\n{sender} mentioned you with this request:\n"));
+        out.push_str("</context>\n\n");
     }
 
+    // The single REQUEST the agent should answer — always last, always the only
+    // thing framed as something to respond to.
+    out.push_str(&format!(
+        "REQUEST from {sender} (@mention) in circle \"{circle_name}\". Respond only to this:\n"
+    ));
     out.push_str(task);
     out
 }
@@ -130,4 +175,49 @@ fn recent_chat(state: &AppState) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compose;
+
+    #[test]
+    fn fresh_prompt_fences_context_and_ends_with_request() {
+        let p = compose(
+            "delta",
+            "suzy",
+            "make a test file",
+            Some("You are claude, an agent…\n"),
+            Some("  suzy: hi\n  claude: hello"),
+        );
+        // Background is fenced and flagged do-not-reply.
+        assert!(p.contains("Do NOT reply to it"));
+        assert!(p.contains("<context>") && p.contains("</context>"));
+        assert!(p.contains("Recent conversation in this room:"));
+        // The request is present, labelled, and LAST.
+        assert!(p.contains("REQUEST from suzy"));
+        assert!(p.trim_end().ends_with("make a test file"));
+        // The context block comes before the request.
+        assert!(p.find("<context>").unwrap() < p.find("REQUEST from").unwrap());
+    }
+
+    #[test]
+    fn resumed_prompt_is_request_only() {
+        let p = compose("delta", "suzy", "make a test file", None, None);
+        // No background block on a resumed session.
+        assert!(!p.contains("<context>"));
+        assert!(!p.contains("Do NOT reply"));
+        // Just the request + task.
+        assert!(p.starts_with("REQUEST from suzy (@mention) in circle \"delta\""));
+        assert!(p.trim_end().ends_with("make a test file"));
+    }
+
+    #[test]
+    fn brief_without_recent_chat_still_fences() {
+        let p = compose("delta", "suzy", "do it", Some("brief text\n"), None);
+        assert!(p.contains("<context>"));
+        assert!(p.contains("brief text"));
+        assert!(!p.contains("Recent conversation")); // no chat section
+        assert!(p.contains("REQUEST from suzy"));
+    }
 }
