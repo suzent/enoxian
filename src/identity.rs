@@ -272,14 +272,25 @@ pub fn read_identity_display() -> Option<(String, Option<String>)> {
         .map(|f| (f.device_label, f.user_handle))
 }
 
-/// Read the registered agents list from the local identity file.
-/// Returns an empty vec if none are configured.
+/// The agents this device advertises to the circle: the explicit list in
+/// `identity.toml` merged with the agents configured in `agents.toml` (the
+/// allowlist of what a mention can actually launch here). Merging means a
+/// device automatically advertises what it can run, without duplicating the
+/// list by hand. Deduplicated, order-stable (identity first, then config).
 pub fn read_local_agents() -> Vec<String> {
-    identity_path().ok()
+    let mut agents: Vec<String> = identity_path().ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| toml::from_str::<IdentityFile>(&s).ok())
         .map(|f| f.agents)
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    // Merge in the configured runnable agents (agents.toml keys).
+    for name in crate::agent::config::AgentConfig::load().agents.keys() {
+        if !agents.iter().any(|a| a == name) {
+            agents.push(name.clone());
+        }
+    }
+    agents
 }
 
 /// These tests access private fields (`seed`, `IdentityFile`) and must live

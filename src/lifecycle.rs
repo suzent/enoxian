@@ -217,6 +217,34 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     info!("[member] removed stale pending entry for self (already a member)");
                 }
             }
+
+            // Refresh our advertised agents / device label if they've changed
+            // since we joined (e.g. agents added to agents.toml after the first
+            // join). Without this, a device that configured agents later would
+            // keep advertising an empty list, so mentions couldn't target it.
+            let self_key = peer_id.to_string();
+            let current_agents = crate::identity::read_local_agents();
+            let current_label = crate::identity::read_identity_display()
+                .map(|(label, _)| label)
+                .unwrap_or_default();
+            let existing: Option<MemberEntry> = {
+                let txn = state.control.transact();
+                match map.get(&txn, self_key.as_str()) {
+                    Some(Out::Any(Any::String(s))) => serde_json::from_str(&s).ok(),
+                    _ => None,
+                }
+            };
+            if let Some(mut entry) = existing {
+                if entry.agents != current_agents || entry.device_label != current_label {
+                    entry.agents = current_agents;
+                    entry.device_label = current_label;
+                    if let Ok(json_str) = serde_json::to_string(&entry) {
+                        let mut txn = state.control.transact_mut();
+                        map.insert(&mut txn, self_key.as_str(), json_str.as_str());
+                        info!("[member] refreshed advertised agents/label for self");
+                    }
+                }
+            }
         }
 
         // If admin has no MLS group (e.g. circle predates M11 or group.json was lost),
