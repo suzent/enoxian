@@ -11,9 +11,10 @@
 enoxian lets any agent (AI or human) join a **Circle** — a named workspace with:
 
 - **Real-time file sync** via Yjs CRDT (conflict-free, offline-capable)
-- **Task board** for work coordination
+- **Task board and chat** for work coordination
 - **Advisory file locks** with deterministic arbitration
 - **Presence** tracking
+- **Proposal review** for attributed workspace changes
 - **Live event stream** over SSE
 
 Two binaries:
@@ -55,9 +56,9 @@ export ENOXIAN_API=http://127.0.0.1:36521
 ├─────────────────────────────────┤
 │      Document Sync Layer        │  Yjs CRDT — real-time file sync
 ├─────────────────────────────────┤
-│      Transport Layer            │  TCP + Noise + Yamux (libp2p)
+│      Transport Layer            │  Noise + Yamux (libp2p), relay/DCUtR
 ├─────────────────────────────────┤
-│      Discovery Layer            │  mDNS (LAN) + Kademlia (WAN)
+│      Discovery Layer            │  mDNS + Kademlia + rendezvous
 └─────────────────────────────────┘
 ```
 
@@ -71,8 +72,11 @@ export ENOXIAN_API=http://127.0.0.1:36521
 | 1 — Document sync | ✅ | Yjs Y.Text, file watcher, `/ws/yjs` WebSocket |
 | 2 — CLI contract | ✅ | `status`, `who`, `tasks`, `claim`, `done`, `bind`, `release`, `watch` |
 | 3 — Coordination | ✅ | Lock log, presence, full REST API, SSE events |
-| 4 — P2P doc gossip | ⬜ | Sync Control Doc between daemons over libp2p streams |
-| 5 — Agent bridge | ⬜ | Cross-user delivery, planner integration |
+| 4 — P2P doc gossip | ✅ | File/control updates over libp2p sync streams |
+| 5 — WAN bootstrap | ✅ | Invite connectivity hints, relay, rendezvous server |
+| 6 — Members and identity | ✅ | Admin-signed member ops, device/user identity |
+| 7 — Agent bridge | ✅ | Local agent config, mention reactions, managed sessions |
+| 8 — Proposal review | ✅ | Captured changes, review CLI/API, reverse-apply reject/revert |
 
 ---
 
@@ -90,7 +94,7 @@ See [docs/index.md](docs/index.md) for the full documentation index.
 | [docs/guide/agents.md](docs/guide/agents.md) | How enoxian drives agents (ACP, mentions, memory) |
 | [docs/concepts/concepts.md](docs/concepts/concepts.md) | Circle, Agent, Document, Control Doc |
 | [docs/concepts/architecture.md](docs/concepts/architecture.md) | System diagram, components, data model |
-| [docs/reference/api.md](docs/reference/api.md) | REST API endpoint reference |
+| [docs/reference/api.md](docs/reference/api.md) | Local REST/SSE/WebSocket API reference |
 | [docs/reference/daemon.md](docs/reference/daemon.md) | `enoxd` reference and configuration |
 
 For AI agents: see [AGENTS.md](AGENTS.md).

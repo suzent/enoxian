@@ -1,6 +1,8 @@
 # REST API Reference
 
-`enoxd` exposes a single HTTP server (default port `36521`). Routes are split between **daemon-level** (no circle context) and **per-circle** (scoped to a specific circle ID).
+`enoxd` exposes a single HTTP server (default port `36521`). Routes are split
+between daemon-level routes, device-local routes, and per-circle routes scoped
+to a circle ID.
 
 This API is the local daemon control plane for the CLI and web UI. It can read
 and mutate circle state, so deployments should treat it as privileged local
@@ -14,12 +16,12 @@ All request and response bodies are JSON. Errors return `{ "error": "<message>" 
 
 ### `GET /circles`
 
-List all active circles.
+List all configured circles.
 
 **Response `200`:**
 ```json
 [
-  { "circle_id": "8e563c41-...", "circle_name": "MyCircle" }
+  { "circle_id": "8e563c41-...", "circle_name": "MyCircle", "disabled": false }
 ]
 ```
 
@@ -51,7 +53,18 @@ Circle overview.
   "circle_name": "MyCircle",
   "workspace":   "/home/user/enoxian/MyCircle",
   "agent_id":    "mymac-KRhAf4ug",
-  "docs":        3
+  "device_label": "mymac",
+  "user_handle": "alice",
+  "docs":        3,
+  "conflicts":   [],
+  "p2p": {
+    "peer_id": "12D3KooW...",
+    "listen_addrs": ["/ip4/192.168.1.10/tcp/49822"],
+    "external_addrs": [],
+    "relay_addrs": [],
+    "rendezvous_addrs": [],
+    "recent_conn_errors": []
+  }
 }
 ```
 
@@ -216,6 +229,20 @@ Release a file lock.
 
 ---
 
+## Files
+
+File endpoints are used by the local UI. Paths are relative to the workspace;
+absolute paths and `..` segments are rejected.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/circles/<id>/api/files` | List tracked workspace files |
+| `POST` | `/circles/<id>/api/files/create` | Create a file with optional `content` |
+| `POST` | `/circles/<id>/api/files/rename` | Rename a file from `from` to `to` |
+| `POST` | `/circles/<id>/api/files/delete` | Delete a file |
+
+---
+
 ## Chat
 
 Chat messages are stored in a Yjs Y.Array in the control doc and replicated to all peers automatically.
@@ -362,6 +389,79 @@ Promote a member to admin. Requires a valid admin signature.
 
 ---
 
+### `GET /circles/<id>/members/pending`
+
+List pending join requests.
+
+---
+
+### `POST /circles/<id>/members/approve`
+
+Approve a pending member. Requires a valid admin signature.
+
+**Request:**
+```json
+{
+  "peer_id": "12D3KooW...",
+  "role": "member",
+  "owner": "alice",
+  "signature": "<hex>"
+}
+```
+
+---
+
+### `POST /circles/<id>/members/reject`
+
+Reject a pending member.
+
+**Request:**
+```json
+{ "peer_id": "12D3KooW..." }
+```
+
+---
+
+## Proposals
+
+Proposal endpoints read and update the local proposal store in the workspace.
+Proposal IDs can be full IDs or unambiguous prefixes.
+
+### `GET /circles/<id>/api/proposals`
+
+List proposals.
+
+---
+
+### `GET /circles/<id>/api/proposals/<proposal_id>`
+
+Return proposal metadata plus per-file diffs.
+
+---
+
+### `POST /circles/<id>/api/proposals/<proposal_id>/accept`
+
+Accept a pending proposal.
+
+**Response `200`:**
+```json
+{ "status": "accepted", "proposal_id": "..." }
+```
+
+---
+
+### `POST /circles/<id>/api/proposals/<proposal_id>/reject`
+
+Reject a pending proposal and reverse-apply its changes.
+
+---
+
+### `POST /circles/<id>/api/proposals/<proposal_id>/revert`
+
+Revert a previously accepted proposal.
+
+---
+
 ## Circle Lifecycle
 
 ### `POST /circles/<id>/stop`
@@ -383,6 +483,66 @@ Start a stopped or newly-enabled circle without restarting the daemon.
 ```json
 { "status": "started" }
 ```
+
+---
+
+### `POST /circles/<id>/api/enable`
+
+Enable a disabled circle and start it if possible.
+
+**Response `200`:**
+```json
+{ "status": "enabled" }
+```
+
+---
+
+### `POST /circles/<id>/api/disable`
+
+Disable a circle and stop it.
+
+**Response `200`:**
+```json
+{ "status": "disabled" }
+```
+
+---
+
+### `POST /circles/<id>/api/leave`
+
+Stop a circle and remove the local circle config directory.
+
+**Response `200`:**
+```json
+{ "status": "left" }
+```
+
+---
+
+### `POST /circles/<id>/api/invite`
+
+Generate a 7-day invite for a circle. The response contains `invite_uri` and a
+`connectivity` object describing embedded peer, relay, and rendezvous addresses.
+
+---
+
+## Device-Local Routes
+
+These routes are not scoped to a circle. They edit this machine's local
+configuration and identity.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/identity` | Read device label, user handle, and user-key status |
+| `POST` | `/api/identity` | Set device label and/or user handle |
+| `POST` | `/api/identity/create-user` | Create a user identity and return a mnemonic |
+| `POST` | `/api/identity/link` | Link this device to a user identity |
+| `GET` | `/api/agent-config` | Read local agent launch config |
+| `POST` | `/api/agent-config/reaction` | Set mention reaction: `pull` or `push` |
+| `POST` | `/api/agent-config/agents` | Add or replace an agent launcher |
+| `POST` | `/api/agent-config/agents/remove` | Remove an agent launcher |
+| `POST` | `/api/init` | Frontend helper for `enox init` |
+| `POST` | `/api/enter` | Frontend helper for `enox enter` |
 
 ---
 
@@ -408,6 +568,7 @@ data: <json>\n\n
 | `type` | Fields | Trigger |
 |--------|--------|---------|
 | `file_updated` | `path` | A workspace file changed |
+| `file_deleted` | `path` | A workspace file was deleted |
 | `lock_acquired` | `path`, `agent_id` | File lock acquired |
 | `lock_released` | `path`, `agent_id` | File lock released |
 | `task_created` | `task_id` | New task created |
@@ -418,6 +579,8 @@ data: <json>\n\n
 | `member_removed` | `peer_id` | Member removed from circle |
 | `message_posted` | `message` | Chat message posted |
 | `agent_mentioned` | `agent_id`, `message` | An agent was @mentioned in chat |
+| `proposal_created` | `proposal_id` | Workspace change captured as a proposal |
+| `proposal_updated` | `proposal_id`, `status` | Proposal status changed |
 
 **`message` object shape:**
 ```json

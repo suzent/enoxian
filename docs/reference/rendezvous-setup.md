@@ -72,12 +72,11 @@ The deploy script downloads the latest pre-built binary from GitHub Releases and
 ```
 
 This will:
-1. Build `enoxd` locally (`cargo build --release --bin enoxd`)
-2. Copy the binary to the VPS
-3. Create a `enoxian` system user
-4. Install a systemd service (`enoxd-bootstrap`)
-5. Open port `36521` on ufw/firewalld
-6. Start the service and print the server address
+1. Download the latest `enoxd-linux-<arch>` release asset to the VPS
+2. Create an `enoxian` system user
+3. Install a systemd service (`enoxd-bootstrap`)
+4. Open port `36521` on ufw/firewalld
+5. Start the service and print the server address
 
 Output at the end:
 
@@ -123,6 +122,13 @@ If you need to deploy unreleased code, build inside Docker on the VPS:
 
 Requires Docker on the VPS.
 
+You can also cross-compile locally and upload the result:
+
+```bash
+./scripts/deploy-rendezvous.sh user@your-vps --local
+.\scripts\deploy-rendezvous.ps1 user@your-vps -Local
+```
+
 ---
 
 ## Using the server
@@ -134,13 +140,13 @@ Once deployed, pass the hostname or IP to `enox invite` or `enox enter` — the 
 enox invite <circle> --rendezvous 12.34.56.78
 
 # Or use a hostname
-enox invite <circle> --rendezvous enox.suzent.com
+enox invite <circle> --rendezvous enox.yourdomain.com
 
 # Join a circle that has a rendezvous embedded in the invite
 enox enter <invite>
 
 # Override the rendezvous server when joining
-enox enter <invite> --rendezvous enox.suzent.com
+enox enter <invite> --rendezvous enox.yourdomain.com
 ```
 
 The CLI calls `GET http://<host>:36521/peer-id`, gets the peer ID, and constructs the full multiaddr automatically. **After the first member joins, the rendezvous address is saved in their config and auto-embedded in every invite they generate** — no one else needs to type it.

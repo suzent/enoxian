@@ -198,7 +198,7 @@ Serialized to JSON (`{"type":"task_created", ...}`) for the SSE stream.
 └── circles/
     └── <circle-id>/
         ├── config.toml          # Circle config, node keypair, PSK, workspace path
-        └── admin.key            # Admin Ed25519 keypair hex (creator only; unenforced until M6)
+        └── admin.key            # Admin Ed25519 keypair hex (admin machines only)
 
 ~/enoxian/                      # Default workspace root (configurable via --dir or workspace_dir)
 └── <circle-name>/               # One directory per circle

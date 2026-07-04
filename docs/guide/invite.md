@@ -142,7 +142,7 @@ When a rendezvous multiaddr is embedded in an invite:
 5. Direct PSK-TCP connections are attempted between discovered members
 6. If direct dialing fails, peers can use the bootstrap node's circuit relay as a fallback
 
-**Setting up `enox.suzent.com`:**
+**Setting up a rendezvous host:**
 
 ```bash
 # On the VPS:

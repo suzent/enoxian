@@ -46,32 +46,6 @@ enox stop
 
 ---
 
-## Bootstrap server (`enoxd --bootstrap`)
-
-Run `enoxd` in bootstrap mode: a public rendezvous + relay node that circle members can use for peer discovery when both sides are behind NAT. The bootstrap server does not join any circle and holds no PSK.
-
-```bash
-enoxd --bootstrap [--port <PORT>]
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--port` | `36521` | UDP port for the QUIC listener |
-
-On first start, a stable Ed25519 keypair is generated at `~/.enoxian/bootstrap.key`. The peer ID is stable across restarts. The startup log prints:
-
-```
-Bootstrap listening on /ip4/0.0.0.0/udp/36521/quic-v1
-Rendezvous + relay address for circle members:
-  /ip4/0.0.0.0/udp/36521/quic-v1/p2p/<PEER_ID>
-```
-
-Replace `0.0.0.0` with the server's public IP. Give that full multiaddr to circle members via `enox invite --rendezvous <addr>`.
-
-**What the bootstrap server learns:** only libp2p peer IDs and the circle UUID used as the rendezvous namespace. It cannot read any circle content.
-
----
-
 ### `update`
 
 Pull the latest code and reinstall `enox` and `enoxd`.
@@ -261,6 +235,57 @@ Agents not seen in 90 seconds are shown as stale.
 
 ---
 
+### `open`
+
+Open the local Circle UI in the default browser.
+
+```bash
+enox [--circle <NAME>] open
+```
+
+---
+
+## Identity
+
+Identity commands edit this device's local identity file. Restart `enoxd` after
+changing the label or user handle if you want presence IDs to reflect the change
+immediately.
+
+### `identity show`
+
+```bash
+enox identity show
+```
+
+### `identity set-label`
+
+```bash
+enox identity set-label <LABEL>
+```
+
+### `identity set-user`
+
+```bash
+enox identity set-user <HANDLE>
+```
+
+### `identity create-user`
+
+Create a user identity, link this device to it, and print a 24-word mnemonic for
+linking other devices.
+
+```bash
+enox identity create-user <HANDLE>
+```
+
+### `identity link-user`
+
+```bash
+enox identity link-user <HANDLE> "<24-word mnemonic>"
+```
+
+---
+
 ## Tasks
 
 ### `tasks`
@@ -406,6 +431,46 @@ enox [--circle <NAME>] member promote <PEER-ID>
 
 ---
 
+### `member pending`
+
+List pending join requests.
+
+```bash
+enox [--circle <NAME>] member pending
+```
+
+---
+
+### `member approve`
+
+Approve a pending member. Requires `admin.key`.
+
+```bash
+enox [--circle <NAME>] member approve <PEER-ID> [--role member|admin] [--owner <OWNER>]
+```
+
+---
+
+### `member reject`
+
+Reject a pending join request.
+
+```bash
+enox [--circle <NAME>] member reject <PEER-ID>
+```
+
+---
+
+### `member remove-by-owner`
+
+Remove all peers associated with an owner.
+
+```bash
+enox [--circle <NAME>] member remove-by-owner <OWNER>
+```
+
+---
+
 ## Proposals
 
 Workspace changes captured by the ambient engine become reviewable proposals.
@@ -462,6 +527,66 @@ Revert a previously accepted proposal.
 
 ```bash
 enox [--circle <NAME>] proposal revert <ID>
+```
+
+---
+
+## Agents
+
+Agent commands manage this device's local `~/.enoxian/agents.toml`. See
+[agents.md](agents.md) for policy and driver details.
+
+### `agent list`
+
+```bash
+enox agent list
+```
+
+### `agent add`
+
+```bash
+enox agent add claude --driver acp -- npx @zed-industries/claude-code-acp
+enox agent add helper --driver argv -- pwsh -Command ./scripts/helper.ps1
+```
+
+### `agent remove`
+
+```bash
+enox agent remove <NAME>
+```
+
+### `agent reaction`
+
+```bash
+enox agent reaction pull
+enox agent reaction push
+```
+
+### `agent run`
+
+Launch a configured agent under a managed change session.
+
+```bash
+enox [--circle <NAME>] agent run <AGENT> "<TASK>"
+```
+
+---
+
+## Sessions
+
+Claimed sessions attribute workspace changes to a declared actor until the
+session is finished.
+
+### `session start`
+
+```bash
+enox [--circle <NAME>] session start --actor <ACTOR>
+```
+
+### `session finish`
+
+```bash
+enox [--circle <NAME>] session finish
 ```
 
 ---

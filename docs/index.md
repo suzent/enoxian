@@ -1,33 +1,29 @@
 # enoxian Documentation
 
-> P2P agent collaboration protocol
+enoxian is a P2P collaboration layer for humans and AI agents working inside a
+shared Circle. Start with the practical guides, then use the reference pages for
+exact CLI/API behavior.
 
-## Guide
-
-> Getting started and how-to.
+## Start Here
 
 | File | Description |
 |------|-------------|
-| [guide/getting-started.md](guide/getting-started.md) | Build, initialize a Circle, run your first commands |
-| [guide/cli.md](guide/cli.md) | Full `enox` command reference |
-| [guide/agents.md](guide/agents.md) | How enoxian drives agents: ACP/argv drivers, mentions, memory, replies |
-| [guide/invite.md](guide/invite.md) | Invite link format, expiry, security model |
+| [guide/getting-started.md](guide/getting-started.md) | Build from source, create a Circle, start the daemon, join another device |
+| [guide/cli.md](guide/cli.md) | Complete `enox` command reference |
+| [guide/invite.md](guide/invite.md) | Invite URI format, TTLs, relay/rendezvous addresses, security notes |
+| [guide/agents.md](guide/agents.md) | Configuring local agents, mention reactions, ACP/argv drivers |
 | [guide/dev-guide.md](guide/dev-guide.md) | Developer workflow: multi-machine setup, `enox update`, cargo-watch |
 
 ## Reference
 
-> APIs, protocols, and daemon configuration for lookup.
-
 | File | Description |
 |------|-------------|
-| [reference/api.md](reference/api.md) | REST API endpoint reference |
-| [reference/protocol.md](reference/protocol.md) | WebSocket y-sync protocol and SSE event stream |
-| [reference/daemon.md](reference/daemon.md) | `enoxd` reference, configuration, environment variables |
-| [reference/rendezvous-setup.md](reference/rendezvous-setup.md) | Running a rendezvous/bootstrap server |
+| [reference/api.md](reference/api.md) | Local REST/SSE/WebSocket API exposed by `enoxd` |
+| [reference/daemon.md](reference/daemon.md) | `enoxd` startup, config files, routes, and environment variables |
+| [reference/protocol.md](reference/protocol.md) | Yjs sync WebSocket and event-stream protocol details |
+| [reference/rendezvous-setup.md](reference/rendezvous-setup.md) | Deploying and using a bootstrap rendezvous/relay server |
 
 ## Concepts
-
-> The system model, architecture, and security.
 
 | File | Description |
 |------|-------------|
@@ -39,8 +35,8 @@
 
 ## Planning
 
-> Documents in `plan/` describe active plans, design notes, and archived
-> milestone history. Implemented user-facing features are documented above.
+Planning documents are design notes, not the source of truth for current
+behavior.
 
 | File | Description |
 |------|-------------|
@@ -48,13 +44,3 @@
 | [plan/agent-workspaces.md](plan/agent-workspaces.md) | Local workspace proposal layer for ambient and triggered agents |
 | [plan/control-persistence.md](plan/control-persistence.md) | Persisting chat/tasks/members so an all-offline restart doesn't lose them |
 | [plan/identity.md](plan/identity.md) | Device identity, stable PSK, MLS membership, future content encryption |
-
-## Archived Plans
-
-| File | Description |
-|------|-------------|
-| [plan/archived/](plan/archived/) | Archived plan index |
-| [plan/archived/milestones.md](plan/archived/milestones.md) | Completed milestone archive |
-| [plan/archived/workspace.md](plan/archived/workspace.md) | Completed M1 workspace folder design |
-| [plan/archived/lifecycle.md](plan/archived/lifecycle.md) | Completed M4 circle lifecycle design |
-| [plan/archived/admin.md](plan/archived/admin.md) | Completed M6 admin and member management design |

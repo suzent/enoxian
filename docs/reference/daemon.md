@@ -7,6 +7,7 @@ Usage: enoxd [OPTIONS]
 
 Options:
   --port <PORT>    HTTP port [default: 36521]
+  --bootstrap      Run as a public rendezvous + relay server, not as a circle daemon
   -h, --help
 ```
 
@@ -15,16 +16,19 @@ Options:
 ## Startup sequence
 
 1. Scan `~/.enoxian/circles/*/config.toml` and load all known circles
-2. For each circle:
-   a. Create in-memory state (CRDT doc store, `all_updates` broadcast, `self_write_flags`)
-   b. Spawn a file watcher on the circle's workspace directory
-   c. Build a libp2p swarm with PSK-enforced transport (XSalsa20 via `pnet`) + Noise + Yamux + mDNS + Kademlia + Identify + Ping + Rendezvous + Stream, on a random port
-   d. Spawn the stream accept task (listens for incoming `/enoxian/sync/1.0.0` streams)
-   e. Spawn the swarm event loop (dials mDNS peers, opens sync streams on connect)
-   f. Register the circle in the shared daemon state
-3. Start a single HTTP/WS server on `--port` serving all circles
+2. Skip circles whose config has `disabled = true`
+3. For each enabled circle:
+   - Create in-memory state for documents, broadcasts, file-write suppression, and proposal sync
+   - Spawn a file watcher on the circle's workspace directory
+   - Build a libp2p swarm with Noise/Yamux, mDNS, Kademlia, Identify, Ping, Rendezvous, Relay/DCUtR, and stream protocols
+   - Dial configured peers, relay addresses, and rendezvous servers
+   - Spawn the stream accept task for `/enoxian/sync/1.0.0`
+   - Spawn the swarm event loop and register the circle in shared daemon state
+4. Start a single HTTP/WS server on `--port` serving all circles
 
-Each circle's P2P swarm is isolated by its PSK — peers from a different circle are rejected at the transport layer before any protocol negotiation.
+The circle PSK is a stable per-circle network credential. Member removal is
+enforced by the replicated member/tombstone state; content-layer cryptographic
+revocation is still future work.
 
 ---
 
@@ -44,6 +48,19 @@ All per-circle endpoints are prefixed with `/circles/<circle-id>`:
 | `POST /circles/<id>/api/bind` | Acquire file lock |
 | `POST /circles/<id>/api/release` | Release file lock |
 | `GET /circles/<id>/api/events` | SSE event stream |
+| `GET /circles/<id>/api/files` | List tracked files |
+| `POST /circles/<id>/api/files/create` | Create a file |
+| `POST /circles/<id>/api/files/rename` | Rename a file |
+| `POST /circles/<id>/api/files/delete` | Delete a file |
+| `GET /circles/<id>/api/chat` | Read chat |
+| `POST /circles/<id>/api/chat` | Post chat |
+| `GET /circles/<id>/api/proposals` | List proposals |
+| `GET /circles/<id>/api/proposals/<proposal_id>` | Show proposal details |
+| `POST /circles/<id>/api/proposals/<proposal_id>/accept` | Accept proposal |
+| `POST /circles/<id>/api/proposals/<proposal_id>/reject` | Reject proposal |
+| `POST /circles/<id>/api/proposals/<proposal_id>/revert` | Revert proposal |
+| `GET /circles/<id>/members` | List members |
+| `GET /circles/<id>/members/pending` | List pending join requests |
 | `GET /circles/<id>/ws/yjs?path=<file>` | Yjs WebSocket sync |
 
 ---
@@ -58,12 +75,22 @@ circle_name       = "MyCircle"
 psk_hex           = "d2d89de6..."        # 256-bit pre-shared key (circle membership)
 keypair_proto_hex = "0802..."            # Ed25519 node keypair, protobuf-encoded hex
 workspace_dir     = "/Users/suzy/enoxian/MyCircle"
-admin_pubkey_hex  = "0803..."            # Ed25519 admin pubkey (enforced in M6)
+admin_pubkey_hex  = "0803..."            # Ed25519 admin pubkey
+disabled          = false                # skip this circle on daemon startup
+peers             = []                   # direct peer multiaddrs to dial
+relay_addrs       = []                   # circuit relay multiaddrs
+rendezvous_addrs  = []                   # QUIC rendezvous server multiaddrs
+join_policy       = "auto"               # auto or manual
+owner             = "alice"              # human/device owner label
 ```
 
-> Do not share `keypair_proto_hex`. The `psk_hex` is the circle membership credential — every member holds it and any member can generate invite links (until M6 restricts invite authority to the admin keypair).
+> Do not share `keypair_proto_hex`. The `psk_hex` is the circle network
+> credential and is embedded in invite links.
 
-The `admin_pubkey_hex` is generated at `enox init` and stored in `admin.key` (private) alongside `config.toml`. It is replicated into joining members' configs via the invite flow. It is currently stored but not enforced — enforcement of invite signing and member lists is planned for M6.
+The `admin_pubkey_hex` is generated at `enox init`; the private admin key lives
+in `admin.key` alongside `config.toml` on admin machines. Member API operations
+require admin signatures, and the CLI signs automatically when `admin.key` is
+present.
 
 ---
 
@@ -93,8 +120,28 @@ RUST_LOG=warn  enoxd          # errors and warnings only
 
 ---
 
+## Bootstrap mode
+
+`enoxd --bootstrap` runs a public rendezvous + circuit relay server. It does not
+load circles and holds no circle PSKs.
+
+```bash
+enoxd --bootstrap --port 36521
+```
+
+The server listens over QUIC for libp2p rendezvous/relay traffic and exposes
+`GET /peer-id` over HTTP on the same port so `enox invite --rendezvous <host>`
+can resolve the server's peer ID. Its stable keypair is stored at
+`~/.enoxian/bootstrap.key`.
+
+---
+
 ## Environment variables
 
 | Variable | Effect |
 |----------|--------|
 | `RUST_LOG` | Tracing log filter |
+| `ENOXIAN_AGENT_ID` | Local presence/agent ID prefix |
+| `ENOXIAN_API` | Base URL used by the `enox` CLI |
+| `ENOXIAN_CIRCLE` | Default circle target used by the `enox` CLI |
+| `ENOXIAN_SRC` | Source path used by `enox update --dev` |

@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust 1.83+
+- Rust 1.83 or newer
 - Cargo
 
 ## Build
@@ -27,21 +27,24 @@ cargo build --release
 # target/release/enoxd  target/release/enox
 ```
 
-### Install to PATH (development)
+### Install to PATH
 
-To use `enox` and `enoxd` as plain commands without a path prefix, do a one-time install from source:
+To use `enox` and `enoxd` as plain commands without a path prefix, install both
+binaries from source:
 
 ```bash
 cargo install --path . --bins
 ```
 
-After that, rebuild and reinstall in one step using the CLI itself:
+After that, rebuild and reinstall in one step:
 
 ```bash
 enox update --dev --src .
 ```
 
-On subsequent runs the `--src` path is remembered, so just `enox update --dev` is enough. On Windows, the running `enox.exe` is replaced via a deferred PowerShell script after the process exits; `enoxd` is restarted automatically.
+On subsequent runs the `--src` path is remembered, so `enox update --dev` is
+enough. On Windows, the running `enox.exe` is replaced via a deferred PowerShell
+script after the process exits; `enoxd` is restarted automatically.
 
 ---
 
@@ -50,7 +53,7 @@ On subsequent runs the `--src` path is remembered, so just `enox update --dev` i
 A Circle is the shared workspace. Run this once on any machine:
 
 ```bash
-./target/debug/enox init --name "MyCircle"
+./target/debug/enox init --name MyCircle
 ```
 
 ```
@@ -65,9 +68,11 @@ A Circle is the shared workspace. Run this once on any machine:
   Generate a new link anytime: enox invite "MyCircle"
 ```
 
-The workspace directory (`~/enoxian/MyCircle`) is created automatically — this is where shared files live. The invite link encodes the circle ID and secret key. Share it over a trusted channel.
+The workspace directory (`~/enoxian/MyCircle`) is created automatically. This is
+where shared files live. The invite link encodes the circle ID, PSK, expiry, and
+optional connectivity hints; share it over a trusted channel.
 
-To use a different location:
+To use a different workspace directory:
 
 ```bash
 enox init --name "MyCircle" --dir ~/projects/myapp
@@ -77,7 +82,8 @@ enox init --name "MyCircle" --dir ~/projects/myapp
 
 ## Step 2 — Start the Daemon
 
-`enoxd` loads **all** circles automatically from `~/.enoxian/circles/`. Just start it:
+`enoxd` loads all enabled circles from `~/.enoxian/circles/` and serves them over
+one local HTTP/WebSocket API port:
 
 ```bash
 # bash / MSYS2
@@ -86,6 +92,12 @@ RUST_LOG=info ./target/debug/enoxd
 # PowerShell
 $env:RUST_LOG = "info"
 .\target\debug\enoxd.exe
+```
+
+You can also start it in the background:
+
+```bash
+enox start
 ```
 
 By default the daemon identifies its local editor/user presence as
@@ -110,11 +122,12 @@ Expected output:
 ```
 INFO  Starting enoxd — 1 circle(s) found
 INFO    Circle 'MyCircle' (8e563c41-...) — PeerID: 12D3KooW... — Workspace: /Users/suzy/enoxian/MyCircle
-INFO  HTTP/WS listening on :36521
+INFO  HTTP/WS listening on 127.0.0.1:36521
 INFO  [8e563c41-...] P2P listening on /ip4/192.168.1.x/tcp/<random>
 ```
 
-All circles share one HTTP port. Each gets its own P2P swarm on a random port.
+All circles share one HTTP port. Each enabled circle gets its own P2P swarm on a
+random port.
 
 > **After any `cargo build`** restart `enoxd` to pick up the new binary.
 
@@ -158,10 +171,8 @@ List all known circles:
 # Circle overview
 enox status
 
-# Create a task (via REST)
-curl -X POST http://127.0.0.1:36521/circles/8e563c41-.../api/tasks \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Write integration tests","created_by":"agent-alpha"}'
+# Create a task
+enox task-create "Write integration tests" --description "Cover lock arbitration"
 
 # List tasks
 enox tasks
@@ -176,6 +187,9 @@ enox release src/main.rs
 
 # Watch live events
 enox watch
+
+# Open the local web UI
+enox open
 ```
 
 ---
@@ -198,7 +212,8 @@ enox enter enoxian://v1/CRxkUjpNaBcDeFgH...
   Then: enox --circle "MyCircle" status
 ```
 
-Then start `enoxd` on the second machine — it picks up the saved circle and connects via mDNS automatically.
+Then start `enoxd` on the second machine. It picks up the saved circle and
+connects over mDNS on the same LAN.
 
 **Name conflict:** if you already have a local circle named `MyCircle` with a different ID, the workspace is auto-disambiguated:
 ```
@@ -211,12 +226,17 @@ Then start `enoxd` on the second machine — it picks up the saved circle and co
 ✦ Already a member of 'MyCircle' — nothing to do.
 ```
 
-**WAN:** embed a peer address in the invite so the joiner can connect without mDNS:
+**WAN:** current invites try to embed relay/rendezvous addresses automatically
+when available. You can also pass an explicit peer, relay, or rendezvous address:
 
 ```bash
 enox invite MyCircle --peer /ip4/1.2.3.4/tcp/9091
+enox invite MyCircle --rendezvous enox.yourdomain.com
 enox enter enoxian://v1/...
 ```
+
+See [invite.md](invite.md) and
+[rendezvous-setup.md](../reference/rendezvous-setup.md) for WAN setup.
 
 ---
 
