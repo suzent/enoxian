@@ -17,6 +17,11 @@ The current implementation already has:
 - Yjs-based text sync for interactive local editing
 - presence, tasks, locks, chat, members, and frontend UI
 - MLS membership state and `mls_removed` tombstone sync gate
+- the local workspace proposal layer (M14): ambient capture, review, and
+  cross-device replication
+- agent execution over ACP: chat-mention reactions, `enox agent run`, session
+  memory, world-context injection, and CLI/frontend agent config
+  (see [../agents.md](../agents.md))
 
 The next design layer is:
 
@@ -99,10 +104,12 @@ clients. It should not be treated as a public relay endpoint.
 
 ### M14 — Local Workspace Proposals
 
-**Status:** In progress — ambient flow, review API, frontend, CLI,
+**Status:** Complete (core). Ambient flow, review API/frontend, CLI,
 cross-device replication, the local reaction layer (chat-mention push/pull),
-the ACP execution driver, `enox agent run`, and `enox session start/finish`
-are built. Remaining: an optional sandbox/fork mode for high-risk managed runs.
+the ACP execution driver, `enox agent run`, `enox session start/finish`, agent
+session memory, world-context injection, and CLI/frontend agent config are all
+built and verified end-to-end against real ACP agents (Claude Code, Codex).
+Only an *optional* sandbox/fork mode remains, deferred as a later enhancement.
 
 Add an agent-agnostic proposal layer so local agents, editors, scripts, and
 tools can make arbitrary filesystem changes in the normal workspace while
@@ -172,12 +179,56 @@ validates the pipeline before remote triggers add complexity.
    - [x] Acceptance policy: auto-accept with history for locally-initiated runs,
          pending review for remote-member-initiated runs. (`src/proposal/policy.rs`)
    - [x] Frontend proposal review/history view. (`frontend/.../ProposalsTab.tsx`)
-   - [ ] Optional sandbox/manual fork mode for high-risk managed runs.
+   - [ ] Optional sandbox/manual fork mode for high-risk managed runs. (deferred)
+6. Agent experience (built after the original plan)
+   - [x] ACP session memory: persist the session id per (circle, agent) and
+         resume on the next mention. (`src/agent/memory.rs`, `acp.rs` session/load)
+   - [x] World-context injection: brief + roster + recent chat on fresh sessions,
+         lean header on resumed ones. (`src/agent/context.rs`)
+   - [x] Hierarchical mentions (`@owner/device/agent`) with a `@` autocomplete
+         and atomic chips. (`src/agent/mention.rs`, `frontend/.../MentionInput.tsx`)
+   - [x] Agents advertise their configured agents so mentions can target them.
+         (`read_local_agents` merges `agents.toml`)
+   - [x] Configure agents via CLI and frontend (`enox agent add/remove/list/
+         reaction`, editable Device Settings). (`src/commands/agent.rs`,
+         `src/api/agent_config.rs`)
+   - [x] Process reaping (`kill_tree`) and mention-replay safety: durable dedup +
+         `ts` cutoff so a restart never re-triggers past mentions; agent replies
+         never wake other agents. (`src/agent/handled.rs`, `spawn.rs`)
+   - Guide: [../agents.md](../agents.md).
 
 The proposal watcher is a new layer alongside the existing CRDT sync watcher
 (`src/sync_yjs/watcher.rs`), not a replacement: the CRDT watcher keeps serving
 interactive editing, while the proposal layer treats the same file events as
 session evidence (before-blob capture, idle-window close, S0 -> S1 diff).
+
+### M14.5 — Control-Doc Persistence
+
+**Status:** Design done, implementation pending. Surfaced during M14 agent work,
+not in the original plan. See [control-persistence.md](control-persistence.md).
+
+The `__control__` CRDT (chat, tasks, members, presence) is **in-memory only** —
+if every member is offline and a daemon restarts, that circle's chat/task/member
+history is lost, because nothing persisted it and no peer remains to re-sync
+from. Files are persisted; coordination state is not. This is a correctness gap,
+not a feature.
+
+**Tasks (Tier A — selective durability):**
+
+- [ ] Persist tasks and member list to disk; restore before the swarm connects.
+- [ ] Persist chat, time-boxed by a retention window (never unbounded).
+- [ ] Never persist presence (stale-on-restore is wrong).
+- [ ] Reconcile with the mention-replay guards (`handled.rs`) so restored chat
+      never re-triggers agents.
+- [ ] Document all-offline recovery + plaintext-at-rest (pre-M17) in
+      `security.md` / `architecture.md`.
+
+**Deferred (Tier B):** a per-member delivery/read cursor for unread indicators
+and delivery-based pruning — no artifact carries a read signal today. Designed
+alongside M17 content encryption, not before.
+
+**Open product decisions before implementing:** chat retention window; whether
+plaintext chat-at-rest is acceptable before M17. See the design doc's §8.
 
 ### M15 — Event Log And Blob Sync
 
