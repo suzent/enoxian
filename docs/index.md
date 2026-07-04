@@ -9,6 +9,7 @@
 | [getting-started.md](getting-started.md) | Build, initialize a Circle, run your first commands |
 | [dev-guide.md](dev-guide.md) | Developer workflow: multi-machine setup, `enox update`, cargo-watch |
 | [concepts.md](concepts.md) | Core ideas: Circle, Agent, Document, Control Doc |
+| [agents.md](agents.md) | How enoxian drives agents: ACP/argv drivers, mentions, memory, replies |
 | [cli.md](cli.md) | Full `enox` command reference |
 | [invite.md](invite.md) | Invite link format, expiry, security model |
 | [daemon.md](daemon.md) | `enoxd` reference, configuration, environment variables |
