@@ -51,14 +51,49 @@ pub struct LaunchOutcome {
 /// Permission hook that defers every ACP permission request to a fixed policy
 /// decision. The daemon-level acceptance policy still governs whether the
 /// resulting proposal auto-accepts; this only gates the agent's in-turn actions.
+/// Segments the streamed assistant output into discrete messages. ACP streams
+/// one assistant message as many `agent_message_chunk`s; a *different* kind of
+/// update (a tool call, a user-message echo, a resumed-history user turn) marks
+/// the boundary between messages. We keep each completed message separately so
+/// the final reply is the agent's *last* message — its actual answer — not a
+/// concatenation of every "let me look…" preamble and any replayed history.
+#[derive(Default)]
+struct ReplyBuf {
+    /// Completed messages, in order.
+    messages: Vec<String>,
+    /// The message currently being streamed.
+    current: String,
+}
+
+impl ReplyBuf {
+    fn push_chunk(&mut self, text: &str) {
+        self.current.push_str(text);
+    }
+    /// A non-agent-message update arrived — close the current message.
+    fn boundary(&mut self) {
+        let done = std::mem::take(&mut self.current);
+        if !done.trim().is_empty() {
+            self.messages.push(done);
+        }
+    }
+    /// The reply to post: the last non-empty message (the agent's final answer).
+    fn into_reply(mut self) -> Option<String> {
+        self.boundary(); // flush any trailing in-progress message
+        self.messages
+            .into_iter()
+            .rev()
+            .find(|m| !m.trim().is_empty())
+            .map(|m| m.trim().to_string())
+    }
+}
+
 struct PolicyHooks {
     allow: bool,
-    /// Accumulates the agent's streamed message text so the reply can be posted
-    /// to chat after the turn. `&self`-only trait, hence the shared mutable cell.
-    reply: Arc<Mutex<String>>,
-    /// When false, streamed agent text is ignored. Used to drop the conversation
-    /// history the agent replays during `session/load` — only the reply to the
-    /// *current* prompt should be captured and posted to chat.
+    /// Segmented capture of the agent's streamed messages. `&self`-only trait,
+    /// hence the shared mutable cell.
+    reply: Arc<Mutex<ReplyBuf>>,
+    /// When false, streamed text is ignored (during `session/load` history
+    /// replay, before the current prompt turn).
     capturing: Arc<AtomicBool>,
 }
 
@@ -72,14 +107,19 @@ impl ClientHooks for PolicyHooks {
         }
     }
     fn on_update(&self, update: &Value) {
+        if !self.capturing.load(Ordering::Relaxed) {
+            return;
+        }
         if let Some(text) = agent_message_text(update) {
-            if self.capturing.load(Ordering::Relaxed) {
-                if let Ok(mut buf) = self.reply.lock() {
-                    buf.push_str(&text);
-                }
+            if let Ok(mut buf) = self.reply.lock() {
+                buf.push_chunk(&text);
             }
         } else {
-            tracing::debug!("[agent] session update: {}", compact(update));
+            // Any non-message update ends the current assistant message.
+            if let Ok(mut buf) = self.reply.lock() {
+                buf.boundary();
+            }
+            tracing::debug!("[agent] session update: {:?}", crate::agent::acp::update_kind(update));
         }
     }
 }
@@ -168,7 +208,7 @@ async fn run_acp(
     // would just make a mentioned agent unable to do anything. The local-vs-
     // remote safety distinction lives one layer up, in the acceptance policy
     // (auto-accept vs pending-review of the resulting proposal), not here.
-    let reply = Arc::new(Mutex::new(String::new()));
+    let reply = Arc::new(Mutex::new(ReplyBuf::default()));
     // Start with capture OFF so the history replayed during session/load is not
     // mistaken for the current reply. Turned on just before we prompt.
     let capturing = Arc::new(AtomicBool::new(false));
@@ -189,7 +229,8 @@ async fn run_acp(
     acp.shutdown().await;
     let turn = result.context("ACP prompt turn failed")?;
 
-    let text = reply.lock().ok().map(|b| b.trim().to_string()).filter(|s| !s.is_empty());
+    // The reply is the agent's final message this turn (see ReplyBuf).
+    let text = std::mem::take(&mut *reply.lock().unwrap()).into_reply();
     Ok(AcpRun {
         detail: format!("stop_reason={}", turn.stop_reason),
         reply: text,
@@ -206,4 +247,43 @@ fn working_dir(workspace: &Path, rel: Option<&str>) -> PathBuf {
 
 fn compact(v: &Value) -> String {
     serde_json::to_string(v).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reply_is_final_message_not_concatenation() {
+        let mut buf = ReplyBuf::default();
+        // A greeting message (streamed as chunks), then a boundary, then the
+        // real answer. The reply must be the answer, not "greeting...answer".
+        buf.push_chunk("Hello! ");
+        buf.push_chunk("What can I do for you?");
+        buf.boundary(); // e.g. a tool call happened
+        buf.push_chunk("Done — I created ");
+        buf.push_chunk("test.txt.");
+        assert_eq!(buf.into_reply().as_deref(), Some("Done — I created test.txt."));
+    }
+
+    #[test]
+    fn single_message_survives() {
+        let mut buf = ReplyBuf::default();
+        buf.push_chunk("just one message");
+        assert_eq!(buf.into_reply().as_deref(), Some("just one message"));
+    }
+
+    #[test]
+    fn empty_trailing_messages_ignored() {
+        let mut buf = ReplyBuf::default();
+        buf.push_chunk("the answer");
+        buf.boundary();
+        buf.push_chunk("   "); // whitespace-only trailing message
+        assert_eq!(buf.into_reply().as_deref(), Some("the answer"));
+    }
+
+    #[test]
+    fn no_output_is_none() {
+        assert_eq!(ReplyBuf::default().into_reply(), None);
+    }
 }

@@ -50,15 +50,20 @@ pub trait ClientHooks: Send + 'static {
     fn on_update(&self, _update: &Value) {}
 }
 
+/// The discriminator of a `session/update` (`sessionUpdate` or legacy `type`).
+pub fn update_kind(update: &Value) -> Option<&str> {
+    update
+        .get("sessionUpdate")
+        .or_else(|| update.get("type"))
+        .and_then(Value::as_str)
+}
+
 /// Extract the plain text from a `session/update` notification's `update`
 /// object, if it carries an agent message chunk. Handles both the
 /// `sessionUpdate` discriminator and a plain `type`, and returns `None` for
 /// non-text updates (tool calls, plans, etc.).
 pub fn agent_message_text(update: &Value) -> Option<String> {
-    let kind = update
-        .get("sessionUpdate")
-        .or_else(|| update.get("type"))
-        .and_then(Value::as_str);
+    let kind = update_kind(update);
     // Only accumulate the agent's own message chunks — not tool output or user
     // echoes.
     if !matches!(kind, Some("agent_message_chunk") | Some("agent_message")) {
