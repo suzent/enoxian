@@ -5,11 +5,40 @@ import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 import CircleGlyph from './CircleGlyph'
 import MentionPopup, { buildMentionItems, type MentionItem } from './MentionPopup'
+import MentionInput, { type MentionInputHandle } from './MentionInput'
 
 interface Props {
   onMessage?: () => void
   variant?: 'rail' | 'main'
   hideActiveCircleGlyph?: boolean
+}
+
+/**
+ * Render message text with recognized @mentions as chips. `mentions` is the
+ * server-parsed list (owner/device/agent bodies) — the ground truth for "this
+ * registered as a mention". A `@token` in the text is chipped only if it is in
+ * that list, so a typo that matched nothing stays plain text.
+ */
+function renderWithMentions(text: string, mentions: string[]): React.ReactNode {
+  if (!mentions || mentions.length === 0) return text
+  // Match @ followed by mention-body chars (letters, digits, -, _, /).
+  const parts: React.ReactNode[] = []
+  const re = /@([A-Za-z0-9_\-/]+)/g
+  let last = 0
+  let m: RegExpExecArray | null
+  let key = 0
+  while ((m = re.exec(text)) !== null) {
+    const body = m[1]
+    if (!mentions.includes(body)) continue // unrecognized — leave as plain text
+    if (m.index > last) parts.push(text.slice(last, m.index))
+    parts.push(
+      <span key={key++} className="mention-chip mention-chip--msg">@{body}</span>,
+    )
+    last = m.index + m[0].length
+  }
+  if (last === 0) return text // nothing chipped
+  if (last < text.length) parts.push(text.slice(last))
+  return parts
 }
 
 function formatTime(ts: number) {
@@ -56,7 +85,7 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender }: BubbleProps) {
         }`}
         style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
       >
-        {msg.text}
+        {renderWithMentions(msg.text, msg.mentions)}
       </div>
       <span className="text-[9px] text-slate/50 font-mono px-0.5">{formatTime(msg.ts)}</span>
     </div>
@@ -68,16 +97,15 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [members, setMembers] = useState<Member[]>([])
   const [presence, setPresence] = useState<Presence[]>([])
+  // Plaintext value of the input, mirrored from MentionInput for send.
   const [input, setInput] = useState('')
-  // Mention autocomplete state. `mentionStart` is the index of the '@' being
-  // completed (or null when the popup is closed); `mentionIndex` is the
-  // highlighted row.
-  const [mentionStart, setMentionStart] = useState<number | null>(null)
+  // The active `@fragment` under the caret (drives the popup), or null.
+  const [fragment, setFragment] = useState<string | null>(null)
   const [mentionIndex, setMentionIndex] = useState(0)
   // True once the user has navigated the popup with arrows — only then does
   // Enter accept a suggestion instead of sending the message.
   const [mentionActive, setMentionActive] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<MentionInputHandle>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const seenRef = useRef(new Set<string>())
   const latestTsRef = useRef<number | null>(null)
@@ -171,64 +199,34 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   const send = () => {
     const text = input.trim()
     if (!text || !activeCircleId || !status) return
+    inputRef.current?.clear()
     setInput('')
-    setMentionStart(null)
+    setFragment(null)
     setMentionActive(false)
     postChat(activeCircleId, text, status.agent_id).catch(() => {})
   }
 
-  // The `@fragment` currently being typed, or null. A mention token runs from an
-  // '@' (at start or after whitespace) up to the cursor, with no whitespace in
-  // between. The fragment may contain '/' for scoped mentions.
-  const mentionFragment = (() => {
-    if (mentionStart === null) return null
-    const upToCursor = input.slice(mentionStart + 1)
-    // Close the popup if whitespace was typed after the '@'.
-    if (/\s/.test(upToCursor)) return null
-    return upToCursor
-  })()
+  const mentionOpen = fragment !== null
 
-  const mentionOpen = mentionFragment !== null
-
-  const onInputChange = (value: string, caret: number) => {
-    setInput(value)
-    // Find an '@' immediately starting a token at or before the caret.
-    const before = value.slice(0, caret)
-    const at = before.lastIndexOf('@')
-    if (at >= 0 && (at === 0 || /\s/.test(before[at - 1])) && !/\s/.test(before.slice(at + 1))) {
-      setMentionStart(at)
-      setMentionIndex(0)
-      // Typing changes the filter — reset navigation so Enter sends until the
-      // user explicitly arrows into the list again.
-      setMentionActive(false)
-    } else {
-      setMentionStart(null)
-      setMentionActive(false)
-    }
+  // MentionInput reports the plaintext value and the active @fragment together.
+  const onInputChange = (text: string, frag: string | null) => {
+    setInput(text)
+    setFragment(frag)
+    // Typing changes the filter — reset navigation so Enter sends until the
+    // user explicitly arrows into the list again.
+    setMentionActive(false)
+    setMentionIndex(0)
   }
 
   const applyMention = (item: MentionItem) => {
-    if (mentionStart === null) return
-    // Replace @<fragment> with @<insert> plus a trailing space.
-    const fragEnd = mentionStart + 1 + (mentionFragment?.length ?? 0)
-    const next = `${input.slice(0, mentionStart)}@${item.insert} ${input.slice(fragEnd)}`
-    setInput(next)
-    setMentionStart(null)
+    inputRef.current?.insertMention(item.insert)
+    setFragment(null)
     setMentionActive(false)
-    // Restore focus + caret after the inserted mention.
-    requestAnimationFrame(() => {
-      const el = inputRef.current
-      if (el) {
-        const pos = mentionStart + item.insert.length + 2
-        el.focus()
-        el.setSelectionRange(pos, pos)
-      }
-    })
   }
 
-  const onInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const onInputKeyDown = (e: React.KeyboardEvent) => {
     if (mentionOpen) {
-      const items = buildMentionItems(members, presence, mentionFragment ?? '')
+      const items = buildMentionItems(members, presence, fragment ?? '')
       if (items.length > 0) {
         if (e.key === 'ArrowDown') {
           e.preventDefault()
@@ -258,12 +256,15 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
         }
         if (e.key === 'Escape') {
           e.preventDefault()
-          setMentionStart(null)
+          setFragment(null)
           return
         }
       }
     }
-    if (e.key === 'Enter') send()
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      send()
+    }
   }
 
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
@@ -324,20 +325,19 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
           <MentionPopup
             members={members}
             presence={presence}
-            fragment={mentionFragment ?? ''}
+            fragment={fragment ?? ''}
             activeIndex={mentionIndex}
             onSelect={applyMention}
             onHover={setMentionIndex}
           />
         )}
-        <input
+        <MentionInput
           ref={inputRef}
-          value={input}
-          onChange={e => onInputChange(e.target.value, e.target.selectionStart ?? e.target.value.length)}
+          onChange={onInputChange}
           onKeyDown={onInputKeyDown}
           placeholder="Inject command...  (@ to mention)"
-          className="min-w-[160px] flex-1 bg-transparent border border-obsidian font-mono text-[11px] px-2 py-2
-                     text-obsidian placeholder:text-slate focus:outline-none focus:bg-obsidian/5"
+          className="min-w-[160px] flex-1 border border-obsidian font-mono text-[11px] px-2 py-2
+                     text-obsidian focus:outline-none focus:bg-obsidian/5"
         />
         <button onClick={send} className="enox-btn">{variant === 'main' ? 'SEND' : 'EXEC'}</button>
       </div>

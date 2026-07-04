@@ -1608,3 +1608,45 @@ select option {
   color: var(--fg-slate);
   opacity: 0.7;
 }
+
+/* ── Mention input (contentEditable) + chips ────────────────────────────── */
+.mention-input {
+  background: transparent;
+  min-height: 20px;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  outline: none;
+  cursor: text;
+}
+
+/* Placeholder for the empty contentEditable. */
+.mention-input:empty::before {
+  content: attr(data-placeholder);
+  color: var(--fg-slate);
+  pointer-events: none;
+}
+
+/* Atomic mention chip — in the input and in message bubbles. */
+.mention-chip {
+  display: inline-block;
+  padding: 0 4px;
+  margin: 0 1px;
+  border: 1px solid var(--fg-obsidian);
+  background: var(--fg-obsidian);
+  color: var(--bg-alabaster);
+  font-weight: 700;
+  border-radius: 2px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* In a message bubble the chip inherits the bubble's colors better as an
+   outline, so it reads on both light (received) and dark (mine) bubbles. */
+.mention-chip--msg {
+  background: transparent;
+  border-color: currentColor;
+  color: inherit;
+  user-select: text;
+}
