@@ -60,8 +60,17 @@ async fn main() -> anyhow::Result<()> {
         // resolution below since they need neither the daemon nor a base URL.
         AgentCommands::Agent(args) => {
             use enoxian::cli::AgentAction;
-            let AgentAction::Run { agent, task } = args.action;
-            enoxian::commands::agent::run(cli.circle.as_deref(), agent, task).await
+            match args.action {
+                AgentAction::Run { agent, task } => {
+                    enoxian::commands::agent::run(cli.circle.as_deref(), agent, task).await
+                }
+                AgentAction::List => enoxian::commands::agent::list(),
+                AgentAction::Add { name, driver, working_dir, command } => {
+                    enoxian::commands::agent::add(name, driver, working_dir, command)
+                }
+                AgentAction::Remove { name } => enoxian::commands::agent::remove(name),
+                AgentAction::Reaction { mode } => enoxian::commands::agent::reaction(mode),
+            }
         }
         AgentCommands::Session(args) => {
             use enoxian::cli::SessionAction;

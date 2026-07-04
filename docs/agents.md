@@ -73,11 +73,40 @@ The allowlist is the security gate: a mention of an agent not listed here is
 ignored. Missing file = pull, no agents = the device reacts to nothing. The
 daemon reloads this file **per mention**, so edits take effect without a restart.
 
-A read-only view of the effective config is in the frontend under the device
-badge → **Device Settings** (editing stays file-only, on purpose — `push` is the
-toggle that lets a mention run a local process).
+You can edit this file three ways:
+
+- **By hand** — it is plain TOML.
+- **CLI** — `enox agent list`, `enox agent add`, `enox agent remove`,
+  `enox agent reaction push|pull` (see below).
+- **Frontend** — the device badge → **Device Settings** panel lets you add and
+  remove agents and toggle the reaction (switching to `push` asks for
+  confirmation, since it lets a mention run a local process).
+
+> Editing via CLI or frontend rewrites the file and does not preserve comments;
+> the values are kept exactly.
 
 See [examples/agents.toml](examples/agents.toml) for a fuller annotated example.
+
+### Managing agents from the CLI
+
+```bash
+# Show the reaction policy and configured agents.
+enox agent list
+
+# Add (or replace) an agent. Everything after `--` is the launch command.
+enox agent add claude --driver acp -- npx @zed-industries/claude-code-acp
+enox agent add codex  --driver acp -- npx @agentclientprotocol/codex-acp
+
+# A non-ACP tool via the argv driver.
+enox agent add mytool --driver argv -- mytool --prompt "{{task}}"
+
+# Remove an agent.
+enox agent remove codex
+
+# Set how this device reacts to mentions.
+enox agent reaction push    # auto-run mentioned agents
+enox agent reaction pull    # do nothing on mention (default)
+```
 
 ---
 

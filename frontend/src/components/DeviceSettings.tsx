@@ -1,30 +1,75 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import type { AgentConfigView } from '../types'
-import { getAgentConfig } from '../api'
+import { getAgentConfig, setAgentReaction, addAgent, removeAgent } from '../api'
 
 interface Props {
   onClose: () => void
 }
 
 /**
- * Read-only device settings. Surfaces this device's agent-reaction config
- * (~/.enoxian/agents.toml) so the operator can see how chat @mentions are
- * handled — without exposing the risky `push` toggle as a click. Editing stays
- * a deliberate file edit; see docs/plan/agent-workspaces.md → Two-Layer Split.
+ * Device settings — view and edit this device's agent config
+ * (~/.enoxian/agents.toml) over the loopback API. Edits this machine's own
+ * config only; never synced. Switching to `push` (which lets a chat mention run
+ * a local process) is gated behind a confirm; adding/removing agents is
+ * ordinary launcher config. See docs/plan/agent-workspaces.md → Two-Layer Split.
  */
 export default function DeviceSettings({ onClose }: Props) {
   const [cfg, setCfg] = useState<AgentConfigView | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
+  // Add-agent form state.
+  const [showAdd, setShowAdd] = useState(false)
+  const [name, setName] = useState('')
+  const [driver, setDriver] = useState<'acp' | 'argv'>('acp')
+  const [command, setCommand] = useState('')
+
+  const refresh = useCallback(() => {
     getAgentConfig().then(setCfg).catch(e => setError(e.message))
   }, [])
 
+  useEffect(() => { refresh() }, [refresh])
+
   const isPush = cfg?.reaction === 'push'
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await fn()
+      refresh()
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggleReaction = () => {
+    if (!cfg) return
+    if (!isPush) {
+      // Arming push is the sensitive action — confirm before enabling.
+      const ok = window.confirm(
+        'Enable PUSH?\n\nWith push on, any circle member who @mentions one of your ' +
+        'configured agents can run it as a process on THIS machine. Only enable if you ' +
+        'trust the circle and the agents below.',
+      )
+      if (!ok) return
+    }
+    run(() => setAgentReaction(isPush ? 'pull' : 'push'))
+  }
+
+  const submitAdd = () => {
+    const parts = command.trim().split(/\s+/).filter(Boolean)
+    if (!name.trim() || parts.length === 0) return
+    run(() => addAgent(name.trim(), driver, parts)).then(() => {
+      setName(''); setCommand(''); setDriver('acp'); setShowAdd(false)
+    })
+  }
 
   return (
     <div className="ritual-modal-backdrop" onClick={onClose}>
-      <div className="ritual-panel sys-window" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+      <div className="ritual-panel sys-window" onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
         <button onClick={onClose} className="ritual-panel__close" aria-label="Close">×</button>
         <div className="ritual-panel__header">DEVICE SETTINGS</div>
         <div className="ritual-panel__body">
@@ -42,36 +87,68 @@ export default function DeviceSettings({ onClose }: Props) {
 
           {cfg && (
             <>
-              {/* Reaction policy — shown, not toggled. */}
+              {/* Reaction policy — clickable toggle, confirm before arming push. */}
               <div className="flex items-center gap-2 mb-3 font-mono text-[11px]">
                 <span className="text-[9px] font-bold text-slate">REACTION</span>
-                <span
-                  className={`text-[10px] font-bold px-2 py-0.5 border ${
+                <button
+                  onClick={toggleReaction}
+                  disabled={busy}
+                  className={`text-[10px] font-bold px-2 py-0.5 border cursor-pointer disabled:opacity-50 ${
                     isPush
                       ? 'border-obsidian bg-obsidian text-alabaster'
-                      : 'border-obsidian text-obsidian'
+                      : 'border-obsidian text-obsidian hover:bg-obsidian/10'
                   }`}
-                  title={isPush
-                    ? 'A mention auto-runs the named agent on this device.'
-                    : 'Mentions run nothing automatically; an agent must retrieve chat itself.'}
+                  title="Click to toggle push/pull"
                 >
                   {cfg.reaction.toUpperCase()}
-                </span>
+                </button>
                 <span className="text-[9px] text-slate">
-                  {isPush ? 'mentions auto-run agents' : 'mentions do nothing here'}
+                  {isPush ? 'mentions auto-run agents · click to disable' : 'mentions do nothing · click to enable'}
                 </span>
               </div>
 
               {isPush && (
                 <div className="mb-3 border border-obsidian/40 px-2 py-1.5 font-mono text-[9px] text-slate leading-relaxed">
                   ⚠ PUSH is active — a circle member's mention can run one of the
-                  agents below on this machine. To change this, edit the config
-                  file (below).
+                  agents below on this machine.
                 </div>
               )}
 
-              {/* Configured agents (the allowlist). */}
-              <div className="group-label">CONFIGURED AGENTS</div>
+              {/* Configured agents — each removable. */}
+              <div className="group-label flex items-center justify-between">
+                <span>CONFIGURED AGENTS</span>
+                <button
+                  onClick={() => setShowAdd(v => !v)}
+                  className="text-[10px] font-bold px-1 border border-obsidian hover:bg-obsidian hover:text-alabaster"
+                  title={showAdd ? 'Cancel' : 'Add an agent'}
+                >{showAdd ? '×' : '+'}</button>
+              </div>
+
+              {showAdd && (
+                <div className="border border-dashed border-obsidian/50 p-2 mb-3 flex flex-col gap-2 font-mono text-[11px]">
+                  <input
+                    autoFocus value={name} onChange={e => setName(e.target.value)}
+                    placeholder="name (e.g. claude)"
+                    className="border border-obsidian px-2 py-1 text-[11px] focus:outline-none focus:bg-obsidian/5"
+                  />
+                  <div className="flex gap-2 items-center">
+                    <span className="text-[9px] text-slate">DRIVER</span>
+                    {(['acp', 'argv'] as const).map(d => (
+                      <button key={d} onClick={() => setDriver(d)}
+                        className={`text-[9px] font-bold px-2 py-0.5 border ${driver === d ? 'bg-obsidian text-alabaster border-obsidian' : 'border-obsidian/40 text-slate'}`}
+                      >{d.toUpperCase()}</button>
+                    ))}
+                  </div>
+                  <input
+                    value={command} onChange={e => setCommand(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && submitAdd()}
+                    placeholder="command, e.g. npx @zed-industries/claude-code-acp"
+                    className="border border-obsidian px-2 py-1 text-[11px] focus:outline-none focus:bg-obsidian/5"
+                  />
+                  <button onClick={submitAdd} disabled={busy} className="enox-btn self-start disabled:opacity-50">ADD</button>
+                </div>
+              )}
+
               {cfg.agents.length === 0 ? (
                 <div className="text-slate font-mono text-[11px] mb-3">
                   {cfg.configured
@@ -84,9 +161,17 @@ export default function DeviceSettings({ onClose }: Props) {
                     <div key={a.name} className="border border-obsidian/30 px-2 py-1.5 font-mono text-[11px]">
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-bold">@{a.name}</span>
-                        <span className="text-[9px] font-bold border border-obsidian/40 px-1 text-slate">
-                          {a.driver.toUpperCase()}
-                        </span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-[9px] font-bold border border-obsidian/40 px-1 text-slate">
+                            {a.driver.toUpperCase()}
+                          </span>
+                          <button
+                            onClick={() => run(() => removeAgent(a.name))}
+                            disabled={busy}
+                            className="text-[9px] text-slate hover:text-obsidian font-bold px-1 disabled:opacity-50"
+                            title={`Remove @${a.name}`}
+                          >×</button>
+                        </div>
                       </div>
                       <div className="text-[9px] text-slate mt-1 break-all">
                         {a.command.join(' ')}
@@ -97,11 +182,11 @@ export default function DeviceSettings({ onClose }: Props) {
                 </div>
               )}
 
-              {/* Where to edit — editing is file-only, on purpose. */}
+              {/* The underlying file — still hand-editable; edits here rewrite it. */}
               <div className="group-label">CONFIG FILE</div>
               <p className="font-mono text-[9px] text-slate leading-relaxed">
-                Edit to change agents or the reaction policy — this is deliberately
-                not editable here, since PUSH lets a mention run a local process.
+                Edits here rewrite this file (comments are not preserved). You can
+                also edit it by hand.
               </p>
               <code className="block font-mono text-[10px] font-bold border border-obsidian px-2 py-1 mt-1 bg-white break-all">
                 {cfg.config_path || '~/.enoxian/agents.toml'}

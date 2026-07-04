@@ -153,6 +153,35 @@ pub enum AgentAction {
         /// The task/prompt text passed to the agent.
         task: String,
     },
+    /// List this device's configured agents and reaction policy.
+    List,
+    /// Add or replace an agent in agents.toml.
+    ///
+    /// Example:
+    ///   enox agent add claude --driver acp -- npx @zed-industries/claude-code-acp
+    Add {
+        /// Name to mention (e.g. "claude").
+        name: String,
+        /// Launch driver: "acp" (Agent Client Protocol) or "argv" (plain spawn).
+        #[arg(long, default_value = "acp")]
+        driver: String,
+        /// Working directory relative to the workspace root.
+        #[arg(long)]
+        working_dir: Option<String>,
+        /// The command and arguments to launch. Everything after `--`.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
+    /// Remove an agent from agents.toml.
+    Remove {
+        name: String,
+    },
+    /// Set how this device reacts to @mentions: "push" (auto-run) or "pull"
+    /// (do nothing). push lets a circle member's mention run a local process.
+    Reaction {
+        #[arg(value_parser = ["push", "pull"])]
+        mode: String,
+    },
 }
 
 #[derive(clap::Args)]

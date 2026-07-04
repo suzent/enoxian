@@ -1,17 +1,21 @@
-//! Read-only device agent-config endpoint.
+//! Device agent-config endpoint (read + local edit).
 //!
-//! Surfaces `~/.enoxian/agents.toml` (the reaction policy and configured
-//! agents) so the frontend can *show* how this device reacts to chat mentions.
-//! It is intentionally read-only: the `push` reaction is the toggle that lets a
-//! chat mention run a local process, so arming it stays a deliberate file edit,
-//! not a UI click (see docs/plan/agent-workspaces.md → Two-Layer Split).
+//! Surfaces and edits `~/.enoxian/agents.toml` (the reaction policy and
+//! configured agents). This is a **device-local control-plane** route served
+//! over the loopback API, like `/api/identity` — it edits this machine's own
+//! config, never synced state, so a remote peer cannot change it.
 //!
-//! This is a device-level route (not circle-scoped), like `/api/identity`.
+//! The `push` reaction is the one sensitive setting (it lets a chat mention run
+//! a local process). Editing agents is ordinary launcher config; the frontend
+//! keeps a confirm step in front of switching to `push`, but the API itself
+//! just applies what it is asked. See docs/plan/agent-workspaces.md →
+//! Two-Layer Split.
 
-use axum::{response::IntoResponse, Json};
-use serde::Serialize;
+use axum::{http::StatusCode, response::IntoResponse, Json};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 
-use crate::agent::config::AgentConfig;
+use crate::agent::config::{AgentCommand, AgentConfig, Driver, Reaction};
 
 #[derive(Serialize)]
 struct AgentSummary {
@@ -59,4 +63,93 @@ pub async fn get_agent_config() -> impl IntoResponse {
         configured,
         agents,
     })
+}
+
+// ── Editing ────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct SetReactionRequest {
+    /// "push" or "pull".
+    pub reaction: String,
+}
+
+pub async fn set_reaction(Json(req): Json<SetReactionRequest>) -> impl IntoResponse {
+    let reaction = match req.reaction.as_str() {
+        "push" => Reaction::Push,
+        "pull" => Reaction::Pull,
+        other => return bad_request(format!("invalid reaction '{other}'")),
+    };
+    edit(|cfg| { cfg.reaction = reaction; Ok(()) })
+}
+
+#[derive(Deserialize)]
+pub struct AddAgentRequest {
+    pub name: String,
+    /// "acp" (default) or "argv".
+    #[serde(default)]
+    pub driver: Option<String>,
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub working_dir: Option<String>,
+}
+
+pub async fn add_agent(Json(req): Json<AddAgentRequest>) -> impl IntoResponse {
+    let driver = match req.driver.as_deref().unwrap_or("acp") {
+        "acp" => Driver::Acp,
+        "argv" => Driver::Argv,
+        other => return bad_request(format!("invalid driver '{other}'")),
+    };
+    if req.name.trim().is_empty() {
+        return bad_request("agent name is required".into());
+    }
+    if req.command.is_empty() {
+        return bad_request("command is required".into());
+    }
+    let name = req.name.clone();
+    edit(move |cfg| {
+        cfg.set_agent(&name, AgentCommand {
+            command: req.command.clone(),
+            driver,
+            working_dir: req.working_dir.clone(),
+        });
+        Ok(())
+    })
+}
+
+#[derive(Deserialize)]
+pub struct RemoveAgentRequest {
+    pub name: String,
+}
+
+pub async fn remove_agent(Json(req): Json<RemoveAgentRequest>) -> impl IntoResponse {
+    edit(move |cfg| {
+        if cfg.remove_agent(&req.name) {
+            Ok(())
+        } else {
+            Err(format!("no agent named '{}'", req.name))
+        }
+    })
+}
+
+/// Load-for-edit, apply a mutation, save. Refuses to touch an unparseable file
+/// so a hand-edit in progress is never clobbered.
+fn edit<F>(mutate: F) -> axum::response::Response
+where
+    F: FnOnce(&mut AgentConfig) -> Result<(), String>,
+{
+    let mut cfg = match AgentConfig::load_for_edit() {
+        Ok(c) => c,
+        Err(e) => return bad_request(e.to_string()),
+    };
+    if let Err(e) = mutate(&mut cfg) {
+        return bad_request(e);
+    }
+    match cfg.save() {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+fn bad_request(msg: String) -> axum::response::Response {
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response()
 }

@@ -36,6 +36,12 @@ async function post<T>(url: string, body: unknown): Promise<T> {
 export const getCircles = () => get<Circle[]>('/circles')
 // Device-level (not circle-scoped): how this device reacts to chat mentions.
 export const getAgentConfig = () => get<AgentConfigView>('/api/agent-config')
+export const setAgentReaction = (reaction: 'push' | 'pull') =>
+  post('/api/agent-config/reaction', { reaction })
+export const addAgent = (name: string, driver: string, command: string[], working_dir?: string) =>
+  post('/api/agent-config/agents', { name, driver, command, working_dir })
+export const removeAgent = (name: string) =>
+  post('/api/agent-config/agents/remove', { name })
 export const getStatus = (id: string) => get<Status>(`${api(id)}/status`)
 export const getWho = (id: string) => get<Presence[]>(`${api(id)}/who`)
 export const getChat = (id: string, since?: number) =>

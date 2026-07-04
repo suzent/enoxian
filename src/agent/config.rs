@@ -119,6 +119,44 @@ impl AgentConfig {
             Err(_) => Self::default(),
         }
     }
+
+    /// Load the config for editing. Unlike [`load`], a parse error here is a
+    /// hard failure rather than a silent default — we must not overwrite an
+    /// unparseable file the user is mid-editing and clobber their work.
+    pub fn load_for_edit() -> anyhow::Result<Self> {
+        let path = Self::path()?;
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Self::from_toml(&text)
+                .map_err(|e| anyhow::anyhow!("{} is not valid TOML ({e}); fix it by hand first", path.display())),
+            // Missing file is fine — start from an empty config.
+            Err(_) => Ok(Self::default()),
+        }
+    }
+
+    /// Write the config back to `agents.toml`.
+    ///
+    /// Note: this serializes the struct, so any comments in a hand-edited file
+    /// are dropped. That is an accepted trade-off for programmatic editing; the
+    /// values are preserved exactly.
+    pub fn save(&self) -> anyhow::Result<()> {
+        let path = Self::path()?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let toml = toml::to_string_pretty(self)?;
+        std::fs::write(&path, toml)?;
+        Ok(())
+    }
+
+    /// Add or replace an agent. `driver`/`command` fully define how it launches.
+    pub fn set_agent(&mut self, name: &str, cmd: AgentCommand) {
+        self.agents.insert(name.to_string(), cmd);
+    }
+
+    /// Remove an agent. Returns true if it existed.
+    pub fn remove_agent(&mut self, name: &str) -> bool {
+        self.agents.remove(name).is_some()
+    }
 }
 
 #[cfg(test)]
@@ -150,6 +188,28 @@ mod tests {
         assert_eq!(codex.driver, Driver::Argv, "driver defaults to argv");
         assert_eq!(codex.render("fix docs"), vec!["codex", "fix docs"]);
         assert_eq!(codex.working_dir.as_deref(), Some("src"));
+    }
+
+    #[test]
+    fn edit_roundtrips_through_toml() {
+        let mut cfg = AgentConfig::default();
+        cfg.reaction = Reaction::Push;
+        cfg.set_agent("claude", AgentCommand {
+            command: vec!["npx".into(), "@zed-industries/claude-code-acp".into()],
+            driver: Driver::Acp,
+            working_dir: None,
+        });
+        // Serialize and reparse — values survive a save/load cycle.
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let back = AgentConfig::from_toml(&text).unwrap();
+        assert_eq!(back.reaction, Reaction::Push);
+        assert_eq!(back.resolve("claude").unwrap().driver, Driver::Acp);
+
+        // Removal.
+        let mut cfg2 = back;
+        assert!(cfg2.remove_agent("claude"));
+        assert!(!cfg2.remove_agent("claude"));
+        assert!(cfg2.resolve("claude").is_none());
     }
 
     #[test]

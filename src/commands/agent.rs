@@ -5,11 +5,74 @@
 //! reaction: enoxian owns the process, so whatever the agent writes becomes an
 //! attributed proposal via the ambient engine.
 
-use crate::agent::config::AgentConfig;
+use crate::agent::config::{AgentCommand, AgentConfig, Driver, Reaction};
 use crate::agent::driver::{self, Initiator};
 use crate::proposal::store::ProposalStore;
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
+
+/// `enox agent list` — show configured agents and the reaction policy.
+pub fn list() -> Result<()> {
+    let cfg = AgentConfig::load();
+    println!("reaction: {:?}", cfg.reaction);
+    println!("config:   {}", AgentConfig::path()?.display());
+    if cfg.agents.is_empty() {
+        println!("\n(no agents configured — mentions match nothing)");
+        return Ok(());
+    }
+    println!("\nagents:");
+    for (name, cmd) in &cfg.agents {
+        let wd = cmd.working_dir.as_deref().map(|d| format!("  (in {d})")).unwrap_or_default();
+        println!("  @{name}  [{:?}]  {}{wd}", cmd.driver, cmd.command.join(" "));
+    }
+    Ok(())
+}
+
+/// `enox agent add <name> --driver <d> -- <command...>`.
+pub fn add(name: String, driver: String, working_dir: Option<String>, command: Vec<String>) -> Result<()> {
+    let driver = match driver.as_str() {
+        "acp" => Driver::Acp,
+        "argv" => Driver::Argv,
+        other => bail!("unknown driver '{other}' (expected 'acp' or 'argv')"),
+    };
+    let mut cfg = AgentConfig::load_for_edit()?;
+    let existed = cfg.resolve(&name).is_some();
+    cfg.set_agent(&name, AgentCommand { command, driver, working_dir });
+    cfg.save()?;
+    println!("{} agent '@{name}'", if existed { "updated" } else { "added" });
+    println!("mention @{name} in chat (needs reaction = push) or run `enox agent run {name} \"...\"`");
+    Ok(())
+}
+
+/// `enox agent remove <name>`.
+pub fn remove(name: String) -> Result<()> {
+    let mut cfg = AgentConfig::load_for_edit()?;
+    if !cfg.remove_agent(&name) {
+        bail!("no agent named '{name}' is configured");
+    }
+    cfg.save()?;
+    println!("removed agent '@{name}'");
+    Ok(())
+}
+
+/// `enox agent reaction push|pull`.
+pub fn reaction(mode: String) -> Result<()> {
+    let reaction = match mode.as_str() {
+        "push" => Reaction::Push,
+        "pull" => Reaction::Pull,
+        other => bail!("unknown reaction '{other}' (expected 'push' or 'pull')"),
+    };
+    let mut cfg = AgentConfig::load_for_edit()?;
+    cfg.reaction = reaction;
+    cfg.save()?;
+    match reaction {
+        Reaction::Push => println!(
+            "reaction set to PUSH — a circle member's @mention can now run a configured agent on this device."
+        ),
+        Reaction::Pull => println!("reaction set to PULL — mentions run nothing here automatically."),
+    }
+    Ok(())
+}
 
 pub async fn run(circle: Option<&str>, agent: String, task: String) -> Result<()> {
     let (circle_id, workspace) = resolve_circle_workspace(circle)?;
