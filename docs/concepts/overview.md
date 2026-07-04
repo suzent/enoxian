@@ -13,10 +13,10 @@ The unit of collaboration is called a **Circle**.
 ```
   Alice's laptop          Bob's desktop           Alice's suzent agent
   ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
-  │  enoxd     │◄───────►│  enoxd     │◄───────►│  enoxd     │
+  │  enoxd      │◄───────►│  enoxd      │◄───────►│  enoxd      │
   │  ~/project/ │  P2P    │  ~/project/ │  P2P    │  ~/project/ │
   │             │  mesh   │             │  mesh   │             │
-  │  enox CLI  │         │  enox CLI  │         │  API calls  │
+  │  enox CLI   │         │  enox CLI  │          │  API calls  │
   └─────────────┘         └─────────────┘         └─────────────┘
         ▲                        ▲                        ▲
         │ HTTP                   │ HTTP                   │ HTTP
