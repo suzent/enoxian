@@ -68,9 +68,9 @@ fn needs_cmd_wrapper(program: &str) -> bool {
     // Extensionless: let cmd resolve it (covers npx/npm/pnpm/yarn wrappers).
     // A program given as an absolute path to a real binary would normally carry
     // .exe; extensionless absolute paths are unusual and safe to route via cmd.
-    !std::path::Path::new(program)
+    std::path::Path::new(program)
         .extension()
-        .is_some()
+        .is_none()
 }
 
 /// Kill a process and all its descendants by PID. `npx`/`node` launchers spawn
