@@ -8,6 +8,7 @@
 //! not in place of it: the CRDT watcher serves interactive editing, while this
 //! layer treats the same file events as proposal evidence.
 
+pub mod adapters;
 pub mod blob;
 pub mod diff;
 pub mod engine;

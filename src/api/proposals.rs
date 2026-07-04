@@ -55,6 +55,11 @@ struct FileDiff {
     /// (a large blob excluded from the proposal bundle). The change is known
     /// to have happened, but the content cannot be rendered or reverted here.
     not_synced: bool,
+    /// Document-aware structured diff (M16), present for modified files whose
+    /// content is available on both sides. `before`/`after` remain for clients
+    /// that render their own diff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diff: Option<crate::proposal::adapters::FileChange>,
 }
 
 #[derive(Serialize)]
@@ -117,7 +122,16 @@ pub async fn get_proposal(
         let after = after_bytes.as_ref().and_then(|b| String::from_utf8(b.clone()).ok());
         let binary = (before_bytes.is_some() && before.is_none())
             || (after_bytes.is_some() && after.is_none());
-        files.push(FileDiff { path: path.clone(), change, before, after, binary, not_synced });
+        // Document-aware diff for modified files with both sides present.
+        let diff = if change == "modified" && !not_synced {
+            match (&before_bytes, &after_bytes) {
+                (Some(b), Some(a)) => Some(crate::proposal::adapters::diff_file(path, b, a)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        files.push(FileDiff { path: path.clone(), change, before, after, binary, not_synced, diff });
     }
 
     Json(json!(ProposalDetail { proposal, files })).into_response()
