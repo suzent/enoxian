@@ -79,6 +79,15 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         mls.clone(),
     );
 
+    // Restore persisted coordination state (chat / tasks / members) BEFORE the
+    // swarm connects and before observers/reaction loop start, so a cold-started
+    // circle keeps its history even if no peer is online to re-sync. Restored
+    // chat carries its original (old) timestamps, so the agent reaction loop's
+    // `ts` cutoff skips it — a restored mention never re-triggers an agent.
+    if let Err(e) = crate::store::control::restore(&cdir, &state.control) {
+        warn!("[control] restore failed: {e}");
+    }
+
     let token = CancellationToken::new();
 
     // Publish MLS key package
@@ -454,6 +463,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     crate::proposal::engine::spawn_engine(state.clone(), token.clone());
     crate::agent::reaction::spawn_reaction(state.clone(), token.clone());
     presence::spawn_presence(state.clone(), agent_id, token.clone());
+    spawn_control_persist(state.clone(), cdir.clone(), token.clone());
 
     // ── Build the P2P swarm ───────────────────────────────────────────────────
     let pnet_config = pnet::PnetConfig::new(pnet::PreSharedKey::new(psk_bytes));
@@ -931,6 +941,34 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
 
     daemon.insert_circle(config.circle_id.clone(), state, token);
     Ok(())
+}
+
+/// Periodically persist the durable control-doc state (chat/tasks/members) to
+/// disk, and once more on clean shutdown. Debounced by a fixed interval — the
+/// control doc changes often (presence heartbeats), but those are excluded from
+/// the snapshot, so a periodic full save is cheap and simple. See
+/// `crate::store::control`.
+fn spawn_control_persist(state: AppState, circle_dir: std::path::PathBuf, token: CancellationToken) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        interval.tick().await; // skip the immediate first tick
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    // Final save on shutdown so the latest state is durable.
+                    if let Err(e) = crate::store::control::save(&circle_dir, &state.control) {
+                        warn!("[control] shutdown save failed: {e}");
+                    }
+                    break;
+                }
+                _ = interval.tick() => {
+                    if let Err(e) = crate::store::control::save(&circle_dir, &state.control) {
+                        warn!("[control] periodic save failed: {e}");
+                    }
+                }
+            }
+        }
+    });
 }
 
 async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::SharedMlsState) {

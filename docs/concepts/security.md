@@ -178,3 +178,20 @@ mDNS announces peer IDs and listen addresses on the local network. It does not
 expose circle content or the PSK. On networks where peer discovery metadata is
 sensitive, use explicit peer/rendezvous addresses and disable mDNS once the
 planned flag exists.
+
+## Data At Rest
+
+Circle content is stored **unencrypted** on each device:
+
+- Workspace files live in the workspace directory as plain files.
+- CRDT state (per-file docs) is persisted under `.enox_crdt/`.
+- Coordination state — chat (last 30 days), tasks, and the member list — is
+  persisted to `<circle_dir>/control.json` so it survives an all-offline restart
+  (M14.5). Chat is written **plaintext**.
+
+This is consistent with the current threat model: transport is authenticated and
+PSK-gated, but there is no at-rest encryption yet. Anyone with filesystem access
+to a member's device can read that circle's content. **Content encryption is
+M17** (MLS-derived keys); until then, treat local disk as trusted and note that
+persisting chat widened what is written to disk. Full-disk encryption on the
+host is the recommended interim mitigation.

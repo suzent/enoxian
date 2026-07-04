@@ -116,31 +116,31 @@ agents. Only an *optional* sandbox/fork mode is deferred.
 
 ### M14.5 — Control-Doc Persistence
 
-**Status:** Design done, implementation pending. Surfaced during M14 agent work,
-not in the original plan. See [control-persistence.md](control-persistence.md).
+**Status:** Complete (Tier A). The durable control-doc state now survives an
+all-offline restart. See [control-persistence.md](control-persistence.md).
 
-The `__control__` CRDT (chat, tasks, members, presence) is **in-memory only** —
-if every member is offline and a daemon restarts, that circle's chat/task/member
-history is lost, because nothing persisted it and no peer remains to re-sync
-from. Files are persisted; coordination state is not. This is a correctness gap,
-not a feature.
+Previously the `__control__` CRDT (chat, tasks, members, presence) was in-memory
+only — an all-offline restart lost it. Now the durable subset persists to
+`<circle_dir>/control.json` and restores before the swarm connects.
 
 **Tasks (Tier A — selective durability):**
 
-- [ ] Persist tasks and member list to disk; restore before the swarm connects.
-- [ ] Persist chat, time-boxed by a retention window (never unbounded).
-- [ ] Never persist presence (stale-on-restore is wrong).
-- [ ] Reconcile with the mention-replay guards (`handled.rs`) so restored chat
-      never re-triggers agents.
-- [ ] Document all-offline recovery + plaintext-at-rest (pre-M17) in
-      `security.md` / `architecture.md`.
+- [x] Persist tasks and member list to disk; restore before the swarm connects.
+      (`src/store/control.rs`, wired in `lifecycle.rs`)
+- [x] Persist chat, time-boxed to 30 days (never unbounded).
+- [x] Never persist presence (stale-on-restore is wrong) or MLS scratch.
+- [x] Reconcile with the mention-replay guards: restored chat keeps its old
+      timestamps, so the reaction loop's `ts` cutoff skips it — a restored
+      mention never re-triggers an agent.
+- [x] Verified live: post chat+task, hard-kill (no peer, no clean shutdown),
+      restart → both restored from disk.
+- Product decisions taken: 30-day time-window retention; plaintext at rest is
+  acceptable pre-M17 (documented in `concepts/security.md`).
 
 **Deferred (Tier B):** a per-member delivery/read cursor for unread indicators
 and delivery-based pruning — no artifact carries a read signal today. Designed
-alongside M17 content encryption, not before.
-
-**Open product decisions before implementing:** chat retention window; whether
-plaintext chat-at-rest is acceptable before M17. See the design doc's §8.
+alongside M17 content encryption (and the agent chat-inbox, see
+[agent-memory.md](agent-memory.md)), not before.
 
 ### M15 — Event Log And Blob Sync
 
