@@ -16,7 +16,7 @@ The unit of collaboration is called a **Circle**.
   │  enoxd      │◄───────►│  enoxd      │◄───────►│  enoxd      │
   │  ~/project/ │  P2P    │  ~/project/ │  P2P    │  ~/project/ │
   │             │  mesh   │             │  mesh   │             │
-  │  enox CLI   │         │  enox CLI  │          │  API calls  │
+  │  enox CLI   │         │  enox CLI   │         │  API calls  │
   └─────────────┘         └─────────────┘         └─────────────┘
         ▲                        ▲                        ▲
         │ HTTP                   │ HTTP                   │ HTTP
@@ -235,7 +235,7 @@ Peers connect to each other over libp2p with a layered transport:
          ▼                              ▼
   ┌──────────────────────────────────────────────────────┐
   │                   Bootstrap Server                   │
-  │              enoxd --bootstrap (public VPS)         │
+  │              enoxd --bootstrap (public VPS)          │
   │                                                      │
   │   QUIC only (no PSK) — not a circle member           │
   │   Rendezvous: peers register & discover each other   │
