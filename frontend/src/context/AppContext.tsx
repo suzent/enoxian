@@ -2,6 +2,12 @@ import { createContext, useContext, useState, useEffect, useCallback, type React
 import type { Circle, Status } from '../types'
 import { getCircles, getStatus } from '../api'
 
+const ACTIVE_CIRCLE_KEY = 'enoxian.activeCircleId'
+
+const loadPersistedCircleId = (): string | null => {
+  try { return localStorage.getItem(ACTIVE_CIRCLE_KEY) } catch { return null }
+}
+
 interface AppContextValue {
   circles: Circle[]
   circlesLoaded: boolean
@@ -23,7 +29,7 @@ const AppContext = createContext<AppContextValue>({
 export function AppProvider({ children }: { children: ReactNode }) {
   const [circles, setCircles] = useState<Circle[]>([])
   const [circlesLoaded, setCirclesLoaded] = useState(false)
-  const [activeCircleId, setActiveCircleIdState] = useState<string | null>(null)
+  const [activeCircleId, setActiveCircleIdState] = useState<string | null>(loadPersistedCircleId)
   const [status, setStatus] = useState<Status | null>(null)
 
   const reloadCircles = useCallback(async () => {
@@ -44,6 +50,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     reloadCircles()
   }, [])
+
+  // Persist the active circle so a reload restores the last selection instead of
+  // jumping back to circles[0]. Covers every mutation path (manual switch and the
+  // stale-circle fallback in reloadCircles).
+  useEffect(() => {
+    try {
+      if (activeCircleId) localStorage.setItem(ACTIVE_CIRCLE_KEY, activeCircleId)
+      else localStorage.removeItem(ACTIVE_CIRCLE_KEY)
+    } catch {}
+  }, [activeCircleId])
 
   const setActiveCircleId = useCallback((id: string | null) => {
     setActiveCircleIdState(id)
