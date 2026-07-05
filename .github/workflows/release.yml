@@ -116,12 +116,12 @@ jobs:
       - name: Compute SHAs and rewrite formula
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          base="https://github.com/${{ github.repository }}/releases/download/${TAG}"
 
-          # asset name -> which sha256 line to replace (matched by URL substring).
+          # asset name -> slug used in the formula url line.
           declare -A assets=(
             [enoxian-macos-aarch64.tar.gz]=macos-aarch64
             [enoxian-macos-x86_64.tar.gz]=macos-x86_64
@@ -132,13 +132,21 @@ jobs:
           # Update the version line.
           sed -i -E "s/^  version \"[^\"]*\"/  version \"${version}\"/" Formula/enoxian.rb
 
+          mkdir -p /tmp/assets
           for asset in "${!assets[@]}"; do
             slug="${assets[$asset]}"
             echo "fetching $asset"
-            curl -fsSL "${base}/${asset}" -o "/tmp/${asset}"
-            sha="$(sha256sum "/tmp/${asset}" | cut -d' ' -f1)"
-            # Replace the sha256 on the line following the matching url (…$slug…).
-            # Use awk: when a url line contains the slug, rewrite the next sha256.
+            # Use `gh release download` (authenticated, via the API) rather than
+            # the public browser_download_url, which can 404 for anonymous curl
+            # right after publish. Retry a few times for propagation safety.
+            for attempt in 1 2 3 4 5; do
+              if gh release download "$TAG" --repo "${{ github.repository }}" \
+                   --pattern "$asset" --dir /tmp/assets --clobber; then
+                break
+              fi
+              echo "attempt $attempt failed; retrying in 10s"; sleep 10
+            done
+            sha="$(sha256sum "/tmp/assets/${asset}" | cut -d' ' -f1)"
             awk -v needle="enoxian-${slug}.tar.gz" -v sha="$sha" '
               index(prev, needle) > 0 && $0 ~ /sha256/ {
                 sub(/"[0-9a-f]{64}"/, "\"" sha "\"")
