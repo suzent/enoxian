@@ -6,12 +6,12 @@
 #   -Local           Cross-compile locally using cross (Docker) or WSL2
 #
 # Usage:
-#   .\scripts\deploy-rendezvous.ps1 user@host [-Port N] [-BuildOnRemote] [-Local] [-Update]
+#   .\scripts\rendezvous\deploy-rendezvous.ps1 user@host [-Port N] [-BuildOnRemote] [-Local] [-Update]
 #
 # Examples:
-#   .\scripts\deploy-rendezvous.ps1 root@sg.example.com
-#   .\scripts\deploy-rendezvous.ps1 root@sg.example.com -Update
-#   .\scripts\deploy-rendezvous.ps1 root@sg.example.com -BuildOnRemote
+#   .\scripts\rendezvous\deploy-rendezvous.ps1 root@sg.example.com
+#   .\scripts\rendezvous\deploy-rendezvous.ps1 root@sg.example.com -Update
+#   .\scripts\rendezvous\deploy-rendezvous.ps1 root@sg.example.com -BuildOnRemote
 param(
     [Parameter(Mandatory)][string]$Target,
     [int]$Port = 36521,
@@ -23,7 +23,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RepoDir = Split-Path $PSScriptRoot -Parent
+$ScriptsDir = Split-Path $PSScriptRoot -Parent
+$RepoDir = Split-Path $ScriptsDir -Parent
 $Repo    = "suzent/enoxian"
 
 # Load .env from repo root if token not already provided

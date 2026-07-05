@@ -63,12 +63,12 @@ The deploy script downloads the latest pre-built binary from GitHub Releases and
 
 **macOS / Linux:**
 ```bash
-./scripts/deploy-rendezvous.sh user@your-vps
+./scripts/rendezvous/deploy-rendezvous.sh user@your-vps
 ```
 
 **Windows (PowerShell):**
 ```powershell
-.\scripts\deploy-rendezvous.ps1 user@your-vps
+.\scripts\rendezvous\deploy-rendezvous.ps1 user@your-vps
 ```
 
 This will:
@@ -92,8 +92,8 @@ Output at the end:
 ### Custom port
 
 ```bash
-./scripts/deploy-rendezvous.sh user@your-vps --port 36521
-.\scripts\deploy-rendezvous.ps1 user@your-vps -Port 36521
+./scripts/rendezvous/deploy-rendezvous.sh user@your-vps --port 36521
+.\scripts\rendezvous\deploy-rendezvous.ps1 user@your-vps -Port 36521
 ```
 
 ### Updating after a code change
@@ -107,8 +107,8 @@ git tag v0.2.0 && git push origin v0.2.0
 GitHub Actions builds the binaries automatically. Once the release is published, deploy:
 
 ```bash
-./scripts/deploy-rendezvous.sh user@your-vps --update
-.\scripts\deploy-rendezvous.ps1 user@your-vps -Update
+./scripts/rendezvous/deploy-rendezvous.sh user@your-vps --update
+.\scripts\rendezvous\deploy-rendezvous.ps1 user@your-vps -Update
 ```
 
 ### Building manually (no release tag)
@@ -116,8 +116,8 @@ GitHub Actions builds the binaries automatically. Once the release is published,
 If you need to deploy unreleased code, build inside Docker on the VPS:
 
 ```bash
-./scripts/deploy-rendezvous.sh user@your-vps --build-on-remote
-.\scripts\deploy-rendezvous.ps1 user@your-vps -BuildOnRemote
+./scripts/rendezvous/deploy-rendezvous.sh user@your-vps --build-on-remote
+.\scripts\rendezvous\deploy-rendezvous.ps1 user@your-vps -BuildOnRemote
 ```
 
 Requires Docker on the VPS.
@@ -125,8 +125,8 @@ Requires Docker on the VPS.
 You can also cross-compile locally and upload the result:
 
 ```bash
-./scripts/deploy-rendezvous.sh user@your-vps --local
-.\scripts\deploy-rendezvous.ps1 user@your-vps -Local
+./scripts/rendezvous/deploy-rendezvous.sh user@your-vps --local
+.\scripts\rendezvous\deploy-rendezvous.ps1 user@your-vps -Local
 ```
 
 ---

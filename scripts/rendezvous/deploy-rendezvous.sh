@@ -7,12 +7,12 @@
 #   --local           Cross-compile locally using cross (Docker)
 #
 # Usage:
-#   ./scripts/deploy-rendezvous.sh user@host [--port PORT] [--build-on-remote] [--local] [--update]
+#   ./scripts/rendezvous/deploy-rendezvous.sh user@host [--port PORT] [--build-on-remote] [--local] [--update]
 #
 # Examples:
-#   ./scripts/deploy-rendezvous.sh root@sg.example.com
-#   ./scripts/deploy-rendezvous.sh root@sg.example.com --update
-#   ./scripts/deploy-rendezvous.sh root@sg.example.com --build-on-remote
+#   ./scripts/rendezvous/deploy-rendezvous.sh root@sg.example.com
+#   ./scripts/rendezvous/deploy-rendezvous.sh root@sg.example.com --update
+#   ./scripts/rendezvous/deploy-rendezvous.sh root@sg.example.com --build-on-remote
 set -euo pipefail
 
 if [[ $# -lt 1 || "$1" == --* ]]; then
@@ -41,7 +41,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 ASSET="enoxd-linux-$ARCH"
 
 # Load GITHUB_TOKEN from .env if not already set
@@ -124,6 +124,6 @@ if $UPDATE_ONLY; then
     "
 else
     echo "▶ Running setup on $SSH_TARGET..."
-    scp "$REPO_DIR/scripts/setup-rendezvous.sh" "$SSH_TARGET:/tmp/setup-rendezvous.sh"
+    scp "$REPO_DIR/scripts/rendezvous/setup-rendezvous.sh" "$SSH_TARGET:/tmp/setup-rendezvous.sh"
     ssh "$SSH_TARGET" "bash /tmp/setup-rendezvous.sh --port $PORT"
 fi
