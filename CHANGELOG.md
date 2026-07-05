@@ -4,6 +4,37 @@ All notable changes to enoxian are recorded here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+<!--
+## How to update this changelog
+
+Rules (keep them so releases stay clean — the release notes are built from this
+file, see below):
+
+1. **Every user-facing change adds a line under `## [Unreleased]`.** Put it in
+   the right group: **Added**, **Changed**, **Deprecated**, **Removed**,
+   **Fixed**, or **Security**. Omit empty groups.
+2. **Write for users, not commits.** One line per change, describing the effect
+   ("Restarting the daemon no longer re-triggers past mentions"), not the diff.
+   Bundle several commits into one entry when they serve one change.
+3. **Skip pure-internal churn** — refactors, test-only changes, docs typos, CI
+   tweaks that users never see. If a user can't observe it, it doesn't belong.
+4. **Security-relevant changes always go under `Security`,** even small ones.
+5. **At release time, cut a version section:** rename `[Unreleased]` you were
+   filling to `## [x.y.z] — YYYY-MM-DD`, add a fresh empty `## [Unreleased]`
+   above it, and update the compare links at the bottom. (`scripts/bump.sh` does
+   not do this yet — it is a manual step.)
+6. **Versioning:** breaking change → major; new feature → minor; fix only →
+   patch (pre-1.0, minor also absorbs features that aren't clearly breaking).
+
+## How release notes are built
+
+On a tagged release, `.github/workflows/release.yml` uses the matching version
+section from THIS file as the top of the GitHub release notes, followed by the
+auto-generated commit/PR list. So: curated summary here, full commit list
+appended automatically. Keep the section for a version accurate before tagging.
+-->
+
+
 ## [Unreleased]
 
 ## [0.2.0] — 2026-07-05

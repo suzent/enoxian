@@ -90,12 +90,57 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/enoxd.exe" dist/
           Compress-Archive -Path dist/enox.exe, dist/enoxd.exe -DestinationPath ${{ matrix.asset }}
 
-      - name: Upload to release
+      - name: Upload asset to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: ${{ matrix.asset }}
-          generate_release_notes: true
+          # Notes are set once by the `notes` job below (CHANGELOG + auto list),
+          # not regenerated per asset upload.
+          generate_release_notes: false
+
+  # ── Release notes = CHANGELOG section + auto-generated commit list ────────────
+  # The curated section for this version from CHANGELOG.md becomes the top of the
+  # release body; GitHub's auto-generated commit/PR notes are appended below.
+  notes:
+    name: Compose release notes
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and set release body
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+
+          # Extract this version's section from CHANGELOG.md: lines from the
+          # `## [x.y.z]` header up to (not including) the next `## `. Literal
+          # index match (not regex) so the dots in the version aren't wildcards.
+          section="$(awk -v hdr="## [${version}]" '
+            index($0, hdr) == 1 { grab=1; next }
+            grab && /^## / { exit }
+            grab { print }
+          ' CHANGELOG.md)"
+
+          # Auto-generated notes (commit/PR list since the previous tag).
+          auto="$(gh api "repos/${{ github.repository }}/releases/generate-notes" \
+                    -f tag_name="$TAG" --jq '.body' 2>/dev/null || true)"
+
+          {
+            if [ -n "${section// /}" ]; then
+              printf '%s\n\n' "$section"
+            fi
+            printf '%s\n' "$auto"
+          } > /tmp/body.md
+
+          # Set the release body (the release already exists — build jobs made it).
+          gh release edit "$TAG" --repo "${{ github.repository }}" --notes-file /tmp/body.md
 
   # ── Update the Homebrew formula ──────────────────────────────────────────────
   # Runs after every build job. Downloads the just-published macOS/Linux tarballs,
