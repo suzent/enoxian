@@ -6,7 +6,7 @@ use libp2p::{
     core::muxing::StreamMuxerBox,
     dcutr, futures::StreamExt,
     identify, kad, mdns, noise, pnet, quic, relay, rendezvous, tcp, yamux,
-    swarm::{dial_opts::{DialOpts, PeerCondition}, SwarmEvent},
+    swarm::{behaviour::toggle::Toggle, dial_opts::{DialOpts, PeerCondition}, SwarmEvent},
     Multiaddr, PeerId, SwarmBuilder,
 };
 use std::collections::HashSet;
@@ -509,7 +509,10 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         .with_behaviour(move |key| {
             let pid = key.public().to_peer_id();
             Ok(EnochBehaviour {
-                mdns: mdns::tokio::Behaviour::new(mdns::Config::default(), pid)?,
+                // Disabled: see EnochBehaviour::mdns. Re-enable by wrapping
+                // `mdns::tokio::Behaviour::new(mdns::Config::default(), pid)?` in
+                // `Toggle::from(Some(..))`.
+                mdns: Toggle::from(None::<mdns::tokio::Behaviour>),
                 kad: {
                     let mut kad = kad::Behaviour::new(
                         pid,
@@ -731,6 +734,14 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         let mut reregister = tokio::time::interval(std::time::Duration::from_secs(3600));
         reregister.tick().await; // skip the immediate first tick
 
+        // The background resolver tasks feeding these channels drop their senders
+        // once they finish (resolve or fail). A closed `mpsc::Receiver` returns
+        // `recv() => Ready(None)` *immediately and forever*, so without these
+        // guards the `select!` would spin at 100% CPU polling a dead channel.
+        // Disable each branch the first time its channel closes.
+        let mut rdvz_open = true;
+        let mut relay_open = true;
+
         loop {
             tokio::select! {
                 _ = swarm_token.cancelled() => {
@@ -741,16 +752,17 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     break;
                 }
                 // Background-resolved rendezvous address arrived (e.g. default server).
-                item = rdvz_rx.recv() => {
-                    if let Some((addr, peer_id)) = item {
+                item = rdvz_rx.recv(), if rdvz_open => match item {
+                    Some((addr, peer_id)) => {
                         rendezvous_peers.write().unwrap().insert(peer_id);
                         info!("[{}] dialing background-resolved rendezvous: {addr}", circle_id);
                         let _ = swarm.dial(addr);
                     }
-                }
+                    None => rdvz_open = false, // sender dropped — stop polling this branch
+                },
                 // Background-resolved relay address arrived — reserve circuit slot (WAN fallback).
-                item = relay_rx.recv() => {
-                    if let Some(relay_addr) = item {
+                item = relay_rx.recv(), if relay_open => match item {
+                    Some(relay_addr) => {
                         let circuit_addr = relay_addr
                             .clone()
                             .with(libp2p::multiaddr::Protocol::P2pCircuit);
@@ -759,7 +771,8 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             warn!("[{}] relay circuit listen failed: {e}", circle_id);
                         }
                     }
-                }
+                    None => relay_open = false, // sender dropped — stop polling this branch
+                },
                 _ = reregister.tick() => {
                     for &rdvz_peer in &*rendezvous_peers.read().unwrap() {
                         if swarm.is_connected(&rdvz_peer) {

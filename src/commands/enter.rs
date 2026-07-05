@@ -3,7 +3,7 @@ use libp2p::{
     core::muxing::StreamMuxerBox,
     dcutr, futures::StreamExt,
     identify, noise, pnet, quic, relay, tcp, yamux,
-    swarm::SwarmEvent,
+    swarm::{behaviour::toggle::Toggle, SwarmEvent},
     Multiaddr, SwarmBuilder,
 };
 use tracing::{info, warn};
@@ -237,10 +237,9 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         .with_behaviour(|key| {
             let pid = key.public().to_peer_id();
             Ok(EnochBehaviour {
-                mdns: libp2p::mdns::tokio::Behaviour::new(
-                    libp2p::mdns::Config { ttl: std::time::Duration::from_secs(1), ..Default::default() },
-                    pid,
-                )?,
+                // Disabled: `enter` dials the invite address directly, so it
+                // needs no LAN discovery. See EnochBehaviour::mdns.
+                mdns: Toggle::from(None::<libp2p::mdns::tokio::Behaviour>),
                 kad: kad::Behaviour::new(pid, kad::store::MemoryStore::new(pid)),
                 identify: identify::Behaviour::new(identify::Config::new(
                     "/enoxian/1.0.0".to_string(),

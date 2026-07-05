@@ -1,10 +1,18 @@
-use libp2p::{dcutr, identify, kad, mdns, ping, relay, rendezvous, swarm::NetworkBehaviour};
+use libp2p::{
+    dcutr, identify, kad, mdns, ping, relay, rendezvous,
+    swarm::{behaviour::toggle::Toggle, NetworkBehaviour},
+};
 use libp2p_stream as stream;
 
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "EnochEvent")]
 pub struct EnochBehaviour {
-    pub mdns: mdns::tokio::Behaviour,
+    /// mDNS LAN auto-discovery. Optional (`Toggle`) and disabled by default:
+    /// circle membership is invitation-based (bootstrap/relay/rendezvous addrs
+    /// carried in the invite), so mDNS is only a same-LAN optimization — and
+    /// libp2p-mdns 0.48's tokio timer livelocks on hosts with many virtual
+    /// interfaces (Docker/VM/Tailscale), spinning CPU while doing zero work.
+    pub mdns: Toggle<mdns::tokio::Behaviour>,
     pub kad: kad::Behaviour<kad::store::MemoryStore>,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
