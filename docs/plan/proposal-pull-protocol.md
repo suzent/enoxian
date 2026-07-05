@@ -1,19 +1,20 @@
 # Proposal Pull Protocol — Design (§1 root fix)
 
-**Status:** Design only. Addresses §1 of `proposal-sync-hardening.md` (unbounded
-growth of the control-doc `proposals` map). This is the "cheaper root-fix: move
-to a pull protocol" route — it removes the growth problem instead of managing it
-with in-map pruning.
+**Status:** Implemented. Addresses §1 of `proposal-sync-hardening.md`
+(unbounded growth of the control-doc `proposals` map). This is the "cheaper
+root-fix: move to a pull protocol" route — it removes the growth problem instead
+of managing it with in-map pruning.
 
 **Relationship to the roadmap:** this is the concrete realization of M15's
 "Content blob request/response protocol over libp2p" and "Missing-blob fetch on
-proposal receipt," scoped to proposals.
+proposal receipt," scoped to proposals. It does not yet replace the broader
+workspace with a general event log.
 
 ---
 
 ## 1. Problem recap
 
-Today every proposal is published as a `ProposalBundle` JSON into the
+Previously every proposal was published as a `ProposalBundle` JSON into the
 `__control__` Yjs map under `PROPOSALS_KEY` (`src/proposal/sync.rs`). That map:
 
 - is **in memory** and never pruned, so it grows without bound;
@@ -40,9 +41,8 @@ on any peer staying online.
 - Not changing the on-disk store format.
 - Not changing the proposal/bundle data model (the `ProposalBundle` payload is
   reused verbatim as the transfer unit).
-- Not solving large-binary transfer beyond what §2's size cap already does — a
-  bundle still excludes oversized blobs; this protocol transfers bundles, so the
-  same exclusion applies. (A future extension can add per-blob fetch.)
+- Not materializing the whole workspace from an event log. This protocol syncs
+  review proposals and their referenced blobs.
 
 ---
 
@@ -92,11 +92,13 @@ agree on a proposal iff ids and fingerprints match; otherwise the newer one wins
 ### 3.2 Framing (as implemented)
 
 Each message is a single length-prefixed JSON value: `[u32 len][JSON]`, where the
-JSON is a `Msg` enum — `Have(Vec<Have>)`, `Want(Vec<String>)`, or
-`Bundles(Vec<ProposalBundle>)`. The exchange is three fixed round-trips
-(HAVE → WANT → BUNDLES) rather than a streamed sequence with an END sentinel:
-both sides know the next message kind, so no terminator is needed. `read_msg`
-caps the frame at 64 MB to bound a malformed/hostile length prefix.
+JSON is a `Msg` enum — `Have(Vec<Have>)`, `Want(Vec<String>)`,
+`Bundles(Vec<ProposalBundle>)`, `WantBlobs(Vec<String>)`, or
+`Blobs(Vec<BlobPayload>)`. The exchange is four fixed round-trips
+(HAVE → WANT → BUNDLES → WANT_BLOBS → BLOBS) rather than a streamed sequence
+with an END sentinel: both sides know the next message kind, so no terminator is
+needed. `read_msg` caps the frame at 64 MB to bound a malformed/hostile length
+prefix.
 
 This is deliberately boring — JSON over a one-shot exchange, not a hot path. (It
 diverges from the binary `(id)(fingerprint)` packing sketched earlier; JSON was
@@ -117,15 +119,16 @@ last-write-wins; the pull protocol must define this explicitly.
 - proposals gain an `updated_at` timestamp (new field; defaults to `created_at`
   for legacy records), set whenever status changes;
 - `status_rank` breaks ties deterministically so all peers converge to the same
-  choice regardless of clock skew — suggested order: `reverted > rejected >
-  accepted > pending` (a terminal decision beats a pending one; among terminals,
-  a later explicit action wins by `updated_at`).
+  choice regardless of clock skew — implemented order:
+  `reverted > rejected > accepted/synced > conflicted > pending` (a terminal
+  decision beats a pending one; among same-rank statuses, the later explicit
+  action wins by `updated_at`).
 
 This is a behavioral change worth calling out for review: today divergent
 decisions resolve by Yjs clock; here they resolve by an explicit, auditable
-rule. `apply_to_store` must be updated to apply this rule instead of the current
-"changed if status differs" overwrite — i.e. **do not** blindly overwrite a
-local terminal status with an inbound one of lower rank.
+rule. `apply_to_store` applies this rule instead of the old "changed if status
+differs" overwrite — i.e. it does **not** blindly overwrite a local terminal
+status with an inbound one of lower rank.
 
 ---
 
@@ -165,9 +168,10 @@ The disk store, `ProposalBundle`, `from_store`, and `apply_to_store` are reused
 - **Empty/None blobs.** Already handled by `apply_to_store` (verifies hash before
   storing); unchanged.
 - **Oversized blobs.** Bundle already excludes them (§2). A pulled bundle for a
-  large file lands as manifest-only; reject/revert on that device already aborts
-  cleanly (§2 fix). No new handling needed here, but a *future* per-blob pull
-  could fetch the content on demand — out of scope.
+  large file lands as manifest-only; the blob round then requests missing hashes
+  and applies any returned content after verifying it hashes to the advertised
+  key. If no connected peer can serve a blob, reject/revert still aborts cleanly
+  on that device rather than misreading missing content as deletion.
 - **Evicted peers.** The pull protocol must sit behind the same `mls_removed`
   tombstone gate as `sync_inner` — an evicted peer must not be able to pull
   proposals. Reuse that check at the top of the accept handler.
@@ -182,15 +186,17 @@ The disk store, `ProposalBundle`, `from_store`, and `apply_to_store` are reused
 
 Shipped as one change:
 
-1. **Model + conflict rule.** Add `updated_at` to `Proposal` (backfill
+1. **Model + conflict rule.** Added `updated_at` to `Proposal` (backfill
    `= created_at` on load via serde default), set it on every status change.
-   Update `apply_to_store` to apply the §4 `(status_rank, updated_at)` rule
+   Updated `apply_to_store` to apply the §4 `(status_rank, updated_at)` rule
    instead of the current "changed if status differs" overwrite.
-2. **Protocol.** New `src/network/proposal_sync.rs` implementing the
+2. **Protocol.** Added `src/network/proposal_sync.rs` implementing the
    HAVE/REQUEST/BUNDLE exchange (§3) with the delta computation as a pure,
-   tested function. Wire `accept` + `open_stream` for `/enoxian/proposals/1.0.0`
+   tested function. Wired `accept` + `open_stream` for `/enoxian/proposals/1.0.0`
    in `lifecycle.rs`, mirroring the `/enoxian/sync/1.0.0` setup, behind the same
-   `mls_removed` tombstone gate.
+   `mls_removed` tombstone gate. Extended the same protocol with
+   WANT_BLOBS/BLOBS so peers fetch missing content-addressed blobs referenced by
+   proposal manifests.
 3. **Remove the map path.** `publish_proposal` deleted; the `PROPOSALS_KEY`
    observer in `AppState::new` deleted; `PROPOSALS_KEY` removed from
    `control/mod.rs`. The engine and review API call sites that published to the

@@ -19,6 +19,9 @@ The current implementation already has:
 - MLS membership state and `mls_removed` tombstone sync gate
 - the local workspace proposal layer (M14): ambient capture, review, and
   cross-device replication
+- the proposal pull protocol: peer-to-peer anti-entropy for proposal records and
+  missing proposal blobs, replacing the old fully replicated control-doc
+  proposal map
 - agent execution over ACP: chat-mention reactions, `enox agent run`, session
   memory, world-context injection, and CLI/frontend agent config
   (see [../agents.md](../guide/agents.md))
@@ -144,24 +147,42 @@ alongside M17 content encryption (and the agent chat-inbox, see
 
 ### M15 — Event Log And Blob Sync
 
-**Status:** Planned — design-pending, deliberately not rushed. This is a new
-libp2p subsystem (a blob request/response protocol, an event schema, snapshot
-materialization) whose correctness needs multi-peer testing; it should be
-designed and built carefully, not fast-drafted. The proposal pull protocol
-([proposal-pull-protocol.md](proposal-pull-protocol.md)) is the nearest existing
-piece to build on.
+**Status:** In progress. The proposal anti-entropy/blob slice is complete:
+`/enoxian/proposals/1.0.0` now reconciles on-disk proposal stores on each peer
+connection and transfers only missing or status-diverged proposal bundles
+(`src/network/proposal_sync.rs`). Proposal status conflicts converge via the
+explicit `(status_rank, updated_at)` rule in `src/proposal/model.rs`, and
+proposal data no longer rides the fully replicated control doc. After proposal
+manifests are applied, peers request any missing content-addressed blobs so
+large proposal files can become reviewable and revertible away from the origin
+device.
+
+The remaining work is the broader event-log layer: an event schema for workspace
+state, snapshot materialization, and conflict metadata. That layer is still
+design-pending and should be built carefully with multi-peer tests.
 
 Move cross-device workspace coordination toward events, snapshot manifests, and
 content-addressed blobs instead of raw folder mirroring.
 
 **Tasks:**
 
+- [x] Proposal pull protocol over libp2p for missing proposal bundles and status
+      divergence. (`src/network/proposal_sync.rs`;
+      [proposal-pull-protocol.md](proposal-pull-protocol.md))
+- [x] Content blob request/response round over the proposal protocol for blobs
+      that are not embedded in a proposal bundle. (`src/network/proposal_sync.rs`)
+- [x] Missing-blob fetch after proposal receipt, so large proposal files can be
+      rendered/rejected/reverted once a peer with the content is online.
+- [x] Remove proposal replication from the control doc; keep the on-disk
+      proposal store as the source of truth. (`src/proposal/sync.rs`,
+      `src/state.rs`)
+- [x] Deterministic proposal status conflict rule using
+      `(status_rank, updated_at)`. (`src/proposal/model.rs`)
 - [ ] Event schema for workspace forks, snapshots, proposals, merges, rejects, and conflicts.
-- [ ] Content blob request/response protocol over libp2p.
-- [ ] Missing-blob fetch on proposal receipt.
 - [ ] Snapshot materialization from event log.
 - [ ] Conflict metadata sync across peers.
-- [ ] Proposal state replication in the control doc or a dedicated event log.
+- [ ] Promote proposal status changes into the dedicated event log once that log
+      exists, replacing the connection-time-only reconciliation model.
 
 ### M16 — Diff And Merge Adapters
 
