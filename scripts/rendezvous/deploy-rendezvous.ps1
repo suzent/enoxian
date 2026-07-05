@@ -36,7 +36,7 @@ if (-not $Token) {
         }
     }
 }
-$Asset   = "enoxd-linux-$Arch"
+$Asset   = "enoxian-linux-${Arch}.tar.gz"
 
 # ── Get binary ────────────────────────────────────────────────────────────────
 if ($BuildOnRemote) {
@@ -49,13 +49,7 @@ if ($BuildOnRemote) {
     if ($LASTEXITCODE -ne 0) { throw "tar failed" }
 
     Write-Host "▶ Building on remote via Docker (piping source)..."
-    Get-Content $TarFile -AsByteStream | ssh $Target @"
-docker run --rm -i \
-    -v enoxian-cargo-cache:/usr/local/cargo/registry \
-    -v enoxian-out:/out \
-    rust:alpine \
-    sh -c 'apk add --no-cache musl-dev && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --release --bin enoxd && cp target/release/enoxd /out/enoxd'
-"@
+    Get-Content $TarFile -AsByteStream | ssh $Target "docker run --rm -i -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=gcc -v enoxian-cargo-cache:/usr/local/cargo/registry -v enoxian-out:/out rust:alpine sh -c 'apk add --no-cache musl-dev gcc build-base && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --target x86_64-unknown-linux-musl --release --bin enoxd && cp target/x86_64-unknown-linux-musl/release/enoxd /out/enoxd'"
     if ($LASTEXITCODE -ne 0) { throw "Remote build failed" }
 
     ssh $Target "docker run --rm -v enoxian-out:/out busybox cp /out/enoxd /tmp/enoxd && chmod +x /tmp/enoxd"
@@ -120,7 +114,7 @@ cargo build --release --bin enoxd --target $LinuxTarget 2>&1
     $apiUrl   = "https://api.github.com/repos/$Repo/releases/assets/$($assetObj.id)"
     Write-Host "  $($release.tag_name): $($assetObj.name)"
     $curlAuth = if ($Token) { "-H 'Authorization: Bearer $Token'" } else { "" }
-    ssh $Target "curl -fsSL $curlAuth -H 'Accept: application/octet-stream' '$apiUrl' -o /tmp/enoxd && chmod +x /tmp/enoxd"
+    ssh $Target "mkdir -p /tmp/enoxian-release && curl -fsSL $curlAuth -H 'Accept: application/octet-stream' '$apiUrl' -o /tmp/enoxian.tar.gz && tar -xzf /tmp/enoxian.tar.gz -C /tmp/enoxian-release && find /tmp/enoxian-release -name enoxd -type f -exec cp {} /tmp/enoxd \; && chmod +x /tmp/enoxd && rm -rf /tmp/enoxian-release /tmp/enoxian.tar.gz"
     if ($LASTEXITCODE -ne 0) { throw "Download failed" }
 }
 

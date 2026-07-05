@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # Run this on the VPS to install enoxd as a systemd bootstrap service.
 # The enoxd binary must already be present in the same directory as this script,
 # or at /tmp/enoxd (deploy-rendezvous.sh puts it there).
@@ -24,20 +24,19 @@ BINARY_DST="/usr/local/bin/enoxd"
 SERVICE_FILE="/etc/systemd/system/enoxd-bootstrap.service"
 SERVICE_USER="enoxian"
 
-echo "▶ Setting up enoxian rendezvous server on port $PORT"
+echo "Setting up enoxian rendezvous server on port $PORT"
 
-# ── Install binary ────────────────────────────────────────────────────────────
-if [[ ! -f "$BINARY_SRC" ]]; then
+# Install binary
     echo "Error: binary not found at $BINARY_SRC"
     echo "Run deploy-rendezvous.sh from your local machine instead."
     exit 1
 fi
 
-echo "  Installing binary → $BINARY_DST"
+echo "  Installing binary $BINARY_DST"
 cp "$BINARY_SRC" "$BINARY_DST"
 chmod +x "$BINARY_DST"
 
-# ── Create system user ────────────────────────────────────────────────────────
+# Create system user
 if ! id "$SERVICE_USER" &>/dev/null; then
     echo "  Creating system user '$SERVICE_USER'"
     useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
@@ -49,7 +48,7 @@ enoxian_DIR="/home/$SERVICE_USER/.enoxian"
 mkdir -p "$enoxian_DIR"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$enoxian_DIR"
 
-# ── Write systemd service ─────────────────────────────────────────────────────
+# Write systemd service
 echo "  Writing $SERVICE_FILE"
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
@@ -70,7 +69,7 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-# ── Firewall ──────────────────────────────────────────────────────────────────
+# Firewall
 echo "  Opening port $PORT (UDP + TCP)"
 if command -v ufw &>/dev/null; then
     ufw allow "$PORT/udp" comment "enoxian rendezvous QUIC" 2>/dev/null || true
@@ -80,10 +79,10 @@ elif command -v firewall-cmd &>/dev/null; then
     firewall-cmd --permanent --add-port="$PORT/tcp" 2>/dev/null || true
     firewall-cmd --reload 2>/dev/null || true
 else
-    echo "  (no ufw/firewalld found — open port $PORT/udp and $PORT/tcp manually)"
+    echo "  (no ufw/firewalld found 鈥?open port $PORT/udp and $PORT/tcp manually)"
 fi
 
-# ── Enable and start ──────────────────────────────────────────────────────────
+# Enable and start
 echo "  Enabling and starting service"
 systemctl daemon-reload
 systemctl enable enoxd-bootstrap
@@ -94,11 +93,11 @@ systemctl start enoxd-bootstrap
 sleep 1
 if systemctl is-active --quiet enoxd-bootstrap; then
     echo ""
-    echo "✦ Rendezvous server running on port $PORT"
+    echo "Rendezvous server running on port $PORT"
     echo ""
     echo "  Peer ID:"
     curl -sf "http://localhost:$PORT/peer-id" | grep -o '"peer_id":"[^"]*"' | cut -d'"' -f4 \
-        && echo "" || echo "  (starting up — try again in a moment)"
+        && echo "" || echo "  (starting up 鈥?try again in a moment)"
     echo ""
     echo "  To embed in invites from your local machine:"
     echo "    enox invite <circle> --rendezvous $(curl -sf https://api4.my-ip.io/ip 2>/dev/null || hostname -I | awk '{print $1}')"

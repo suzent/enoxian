@@ -57,10 +57,11 @@ if $BUILD_ON_REMOTE; then
         -C "$REPO_DIR" . | \
     ssh "$SSH_TARGET" \
         "docker run --rm -i \
+            -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=gcc \
             -v enoxian-cargo-cache:/usr/local/cargo/registry \
             -v enoxian-out:/out \
             rust:alpine \
-            sh -c 'apk add --no-cache musl-dev && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --release --bin enoxd && cp target/release/enoxd /out/enoxd'"
+            sh -c 'apk add --no-cache musl-dev gcc build-base && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --target x86_64-unknown-linux-musl --release --bin enoxd && cp target/x86_64-unknown-linux-musl/release/enoxd /out/enoxd'"
 
     ssh "$SSH_TARGET" \
         "docker run --rm -v enoxian-out:/out busybox cp /out/enoxd /tmp/enoxd && chmod +x /tmp/enoxd"
