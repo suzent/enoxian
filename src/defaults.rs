@@ -8,7 +8,7 @@
 ///
 /// The value is resolved at runtime via `GET http://<host>/peer-id` so the peer ID
 /// doesn't need to be hard-coded here — it is fetched fresh on each daemon start.
-pub const DEFAULT_RENDEZVOUS: Option<&str> = Some("enoxian.com");
+pub const DEFAULT_RENDEZVOUS: Option<&str> = Some("relay.enoxian.com");
 
 /// Default relay server for WAN NAT traversal.
 ///
@@ -19,4 +19,4 @@ pub const DEFAULT_RENDEZVOUS: Option<&str> = Some("enoxian.com");
 /// Set to the same host as `DEFAULT_RENDEZVOUS` if the same server runs
 /// both services (the default `enoxd --bootstrap` setup does this).
 /// Set to `None` to disable automatic relay reservation.
-pub const DEFAULT_RELAY: Option<&str> = Some("enoxian.com");
+pub const DEFAULT_RELAY: Option<&str> = Some("relay.enoxian.com");
