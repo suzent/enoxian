@@ -124,6 +124,7 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
         )
         // Identity (global, no circle required)
         .route("/api/agent-config", get(agent_config::get_agent_config))
+        .route("/api/agent-config/discover", get(agent_config::discover_agents))
         .route("/api/agent-config/reaction", post(agent_config::set_reaction))
         .route("/api/agent-config/agents", post(agent_config::add_agent))
         .route("/api/agent-config/agents/remove", post(agent_config::remove_agent))

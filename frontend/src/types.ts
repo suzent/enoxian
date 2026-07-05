@@ -93,6 +93,8 @@ export interface AgentSummary {
   driver: string
   command: string[]
   working_dir: string | null
+  // Whether command[0] resolves on this machine's PATH right now.
+  installed: boolean
 }
 
 export interface AgentConfigView {
@@ -100,4 +102,14 @@ export interface AgentConfigView {
   config_path: string
   configured: boolean
   agents: AgentSummary[]
+}
+
+// A well-known agent candidate the backend probed for on this machine.
+export interface DiscoveredAgent {
+  name: string
+  driver: 'acp' | 'argv'
+  command: string[]
+  about: string
+  installed: boolean
+  configured: boolean
 }

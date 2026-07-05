@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { AgentConfigView } from '../types'
-import { getAgentConfig, setAgentReaction, addAgent, removeAgent } from '../api'
+import type { AgentConfigView, DiscoveredAgent } from '../types'
+import { getAgentConfig, discoverAgents, setAgentReaction, addAgent, removeAgent } from '../api'
 
 interface Props {
   onClose: () => void
@@ -15,6 +15,7 @@ interface Props {
  */
 export default function DeviceSettings({ onClose }: Props) {
   const [cfg, setCfg] = useState<AgentConfigView | null>(null)
+  const [discovered, setDiscovered] = useState<DiscoveredAgent[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -26,6 +27,8 @@ export default function DeviceSettings({ onClose }: Props) {
 
   const refresh = useCallback(() => {
     getAgentConfig().then(setCfg).catch(e => setError(e.message))
+    // Discovery is best-effort — a failure here shouldn't block config editing.
+    discoverAgents().then(r => setDiscovered(r.agents)).catch(() => setDiscovered([]))
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
@@ -114,6 +117,41 @@ export default function DeviceSettings({ onClose }: Props) {
                 </div>
               )}
 
+              {/* Discovered agents — well-known candidates the daemon probed
+                  for on this machine's PATH. Only installed, not-yet-configured
+                  ones offer a one-click add. */}
+              {discovered && discovered.some(d => d.installed && !d.configured) && (
+                <>
+                  <div className="group-label">DETECTED ON THIS MACHINE</div>
+                  <p className="font-mono text-[9px] text-slate mb-2 leading-relaxed">
+                    Agents found on your <code>PATH</code>. Adding one writes it to
+                    the config below — nothing runs until a mention triggers it.
+                  </p>
+                  <div className="flex flex-col gap-2 mb-3">
+                    {discovered.filter(d => d.installed && !d.configured).map(d => (
+                      <div key={d.name} className="border border-dashed border-obsidian/40 px-2 py-1.5 font-mono text-[11px]">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold">@{d.name}</span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-[9px] font-bold border border-obsidian/40 px-1 text-slate">
+                              {d.driver.toUpperCase()}
+                            </span>
+                            <button
+                              onClick={() => run(() => addAgent(d.name, d.driver, d.command))}
+                              disabled={busy}
+                              className="enox-btn text-[9px] px-1.5 py-0.5 disabled:opacity-50"
+                              title={`Add @${d.name}`}
+                            >+ ADD</button>
+                          </div>
+                        </div>
+                        <div className="text-[9px] text-slate mt-1 leading-relaxed">{d.about}</div>
+                        <div className="text-[9px] text-slate mt-0.5 break-all opacity-70">{d.command.join(' ')}</div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
               {/* Configured agents — each removable. */}
               <div className="group-label flex items-center justify-between">
                 <span>CONFIGURED AGENTS</span>
@@ -162,6 +200,12 @@ export default function DeviceSettings({ onClose }: Props) {
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-bold">@{a.name}</span>
                         <div className="flex items-center gap-2 shrink-0">
+                          {!a.installed && (
+                            <span
+                              className="text-[9px] font-bold border border-obsidian px-1 bg-obsidian text-alabaster"
+                              title={`${a.command[0]} was not found on PATH — this agent would fail to launch`}
+                            >MISSING</span>
+                          )}
                           <span className="text-[9px] font-bold border border-obsidian/40 px-1 text-slate">
                             {a.driver.toUpperCase()}
                           </span>

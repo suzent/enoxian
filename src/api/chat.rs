@@ -121,10 +121,21 @@ pub async fn chat_stream(
     let rx = state.events.subscribe();
     let stream = BroadcastStream::new(rx).filter_map(|result| {
         result.ok().and_then(|ev| {
-            matches!(ev, CircleEvent::MessagePosted { .. } | CircleEvent::AgentMentioned { .. })
-                .then(|| serde_json::to_string(&ev).ok())
-                .flatten()
-                .map(|data| Ok::<_, std::convert::Infallible>(Event::default().data(data)))
+            // Chat messages/mentions drive the transcript; roster events let the
+            // mention picker re-fetch members/presence live (e.g. when an agent
+            // is added to a device's config). The frontend ignores any type it
+            // doesn't handle, so forwarding these is safe.
+            matches!(
+                ev,
+                CircleEvent::MessagePosted { .. }
+                    | CircleEvent::AgentMentioned { .. }
+                    | CircleEvent::MemberAdded { .. }
+                    | CircleEvent::MemberRemoved { .. }
+                    | CircleEvent::PresenceChanged { .. }
+            )
+            .then(|| serde_json::to_string(&ev).ok())
+            .flatten()
+            .map(|data| Ok::<_, std::convert::Infallible>(Event::default().data(data)))
         })
     });
     Sse::new(stream).keep_alive(KeepAlive::default()).into_response()

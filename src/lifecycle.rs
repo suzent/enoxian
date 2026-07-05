@@ -1225,6 +1225,55 @@ pub async fn rotate_psk_and_restart(circle_id: &str, new_psk: [u8; 32], daemon: 
     });
 }
 
+/// Re-publish this device's advertised agents / label into every active
+/// circle's member list, so a change to `agents.toml` (e.g. an agent added via
+/// the settings API) becomes visible to peers without a daemon restart.
+///
+/// Startup already syncs the self-entry once during join (see the refresh block
+/// in `spawn_circle`); this is the same update triggered on demand. It is a
+/// no-op for any circle where we don't yet have a member entry (still pending),
+/// and for entries already in sync.
+pub fn readvertise_local_agents(daemon: &DaemonState) {
+    use yrs::{Any, Map, Out, Transact};
+
+    let current_agents = crate::identity::read_local_agents();
+    let current_label = crate::identity::read_identity_display()
+        .map(|(label, _)| label)
+        .unwrap_or_default();
+
+    for state in daemon.list() {
+        let map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
+        let self_key = state.peer_id.clone();
+
+        let existing: Option<MemberEntry> = {
+            let txn = state.control.transact();
+            match map.get(&txn, self_key.as_str()) {
+                Some(Out::Any(Any::String(s))) => serde_json::from_str(&s).ok(),
+                _ => None,
+            }
+        };
+
+        if let Some(mut entry) = existing {
+            if entry.agents != current_agents || entry.device_label != current_label {
+                entry.agents = current_agents.clone();
+                entry.device_label = current_label.clone();
+                if let Ok(json_str) = serde_json::to_string(&entry) {
+                    {
+                        let mut txn = state.control.transact_mut();
+                        map.insert(&mut txn, self_key.as_str(), json_str.as_str());
+                    }
+                    // Nudge subscribers (incl. this device's own chat stream) to
+                    // re-fetch the roster so mention pickers show the new agent.
+                    let _ = state.events.send(crate::control::CircleEvent::MemberAdded {
+                        peer_id: self_key.clone(),
+                    });
+                    info!("[member] re-advertised agents/label for self in {}", state.circle_id);
+                }
+            }
+        }
+    }
+}
+
 /// Deterministic TCP listen port for a circle, in the IANA dynamic/private
 /// range (49152–61151). Derived from the circle_id via FNV-1a so every device
 /// in the circle is predictable and the same across daemon restarts — which is

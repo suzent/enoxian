@@ -1,0 +1,199 @@
+//! Discovery of locally-installed agent binaries.
+//!
+//! `agents.toml` is entirely hand/UI-configured: nothing here decides *which*
+//! agents a device will run. But the frontend can't ask a user to "add
+//! `claude-code-acp`" if it has no idea what's installed. This module answers a
+//! narrower, read-only question — *is this program resolvable on this machine?*
+//! — and offers a small catalog of well-known agents so the UI can suggest
+//! one-click adds and badge configured entries as installed / missing.
+//!
+//! Detection is a `PATH` lookup only (plus `PATHEXT` on Windows). It never runs
+//! the program: presence on `PATH` is a cheap, honest proxy for "installed",
+//! and actually launching a candidate to version-check it would be both slow and
+//! a surprising side effect of opening a settings panel.
+
+use std::path::PathBuf;
+
+/// A well-known agent the UI can suggest adding. `command[0]` is the program
+/// whose presence on `PATH` decides whether it's [`installed`].
+pub struct Candidate {
+    /// Suggested agent name (the `@handle` used in chat mentions).
+    pub name: &'static str,
+    /// "acp" or "argv" — matches [`crate::agent::config::Driver`].
+    pub driver: &'static str,
+    /// Full launch command. For argv agents this includes the `{{task}}`
+    /// placeholder so the added entry works without further editing.
+    pub command: &'static [&'static str],
+    /// One-line description shown in the picker.
+    pub about: &'static str,
+}
+
+/// The built-in catalog of agents worth suggesting. Adding an entry here makes
+/// it appear in `/api/agent-config/discover` whenever its program is on `PATH`.
+pub const CATALOG: &[Candidate] = &[
+    Candidate {
+        name: "claude",
+        driver: "acp",
+        command: &["npx", "@zed-industries/claude-code-acp"],
+        about: "Claude Code over the Agent Client Protocol (per-write visibility).",
+    },
+    Candidate {
+        name: "codex",
+        driver: "argv",
+        command: &["codex", "{{task}}"],
+        about: "OpenAI Codex CLI, fire-and-forget with the task text as its prompt.",
+    },
+];
+
+/// The program (`command[0]`) a candidate is detected by.
+impl Candidate {
+    pub fn program(&self) -> &str {
+        // A catalog entry always has at least the program itself.
+        self.command.first().copied().unwrap_or("")
+    }
+}
+
+/// Whether `program` is resolvable as an executable on this machine.
+///
+/// - Absolute/relative paths are checked directly (with `PATHEXT` expansion on
+///   Windows for extensionless paths).
+/// - Bare names are searched across every `PATH` entry, applying `PATHEXT` so
+///   `npx` matches `npx.cmd`, `codex` matches `codex.exe`, etc.
+///
+/// This mirrors what a shell does before spawning, so it agrees with whether
+/// [`crate::agent::spawn::command`] would actually find the program.
+pub fn is_installed(program: &str) -> bool {
+    if program.is_empty() {
+        return false;
+    }
+
+    let candidate = std::path::Path::new(program);
+    // An explicit path (contains a separator) is resolved as-is, not searched.
+    if candidate.components().count() > 1 || candidate.is_absolute() {
+        return resolves_as_file(candidate.to_path_buf());
+    }
+
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| resolves_as_file(dir.join(program)))
+}
+
+/// True if `base` resolves to a runnable executable, trying each `PATHEXT`
+/// extension on Windows when `base` has none (so `dir/npx` matches
+/// `dir/npx.cmd`). On Unix, a match must additionally be executable — a shell
+/// won't run a non-`+x` file, so neither should we claim it's "installed".
+fn resolves_as_file(base: PathBuf) -> bool {
+    if is_executable_file(&base) {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // Only extensionless names get PATHEXT expansion; an explicit ".exe"
+        // was already tried above.
+        if base.extension().is_none() {
+            let exts = std::env::var("PATHEXT")
+                .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+            for ext in exts.split(';').filter(|e| !e.is_empty()) {
+                // PATHEXT entries include the leading dot.
+                let mut with_ext = base.clone().into_os_string();
+                with_ext.push(ext);
+                if std::path::Path::new(&with_ext).is_file() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// A regular file that this OS would actually execute. Windows decides
+/// runnability by extension (handled by the `PATHEXT` loop in the caller), so
+/// existence-as-a-file is enough here. Unix requires the execute bit set for
+/// at least one class, matching what a shell checks before spawning.
+fn is_executable_file(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        match std::fs::metadata(path) {
+            // `metadata` follows symlinks, so a symlinked binary resolves to its
+            // target's type and mode — the common Homebrew/apt layout works.
+            Ok(m) => m.is_file() && (m.permissions().mode() & 0o111 != 0),
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_program_is_not_installed() {
+        assert!(!is_installed(""));
+    }
+
+    #[test]
+    fn missing_program_is_not_installed() {
+        assert!(!is_installed("definitely-not-a-real-agent-xyz"));
+    }
+
+    #[test]
+    fn catalog_entries_carry_a_program() {
+        for c in CATALOG {
+            assert!(!c.program().is_empty(), "{} has no program", c.name);
+        }
+    }
+
+    #[test]
+    fn finds_a_program_that_exists_on_path() {
+        // Every platform we target has *some* always-present executable on PATH.
+        #[cfg(windows)]
+        assert!(is_installed("cmd"));
+        #[cfg(not(windows))]
+        assert!(is_installed("sh"));
+    }
+
+    #[test]
+    fn resolves_an_explicit_path_directly() {
+        // A path with a separator is checked as-is, not searched on PATH.
+        #[cfg(windows)]
+        {
+            let sys = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+            assert!(is_installed(&format!("{sys}\\System32\\cmd.exe")));
+        }
+        #[cfg(not(windows))]
+        {
+            // /bin/sh exists on every unix we target; a bare "sh" would be
+            // PATH-searched, so this specifically exercises the explicit branch.
+            assert!(is_installed("/bin/sh"));
+        }
+        assert!(!is_installed("./definitely-not-here-xyz"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_requires_the_execute_bit() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("enox-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("faux-agent");
+        std::fs::File::create(&file).unwrap().write_all(b"#!/bin/sh\n").unwrap();
+
+        // A non-executable regular file is present but must NOT count as installed.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!resolves_as_file(file.clone()), "non-+x file counted as installed");
+
+        // Flip the execute bit and it should now resolve.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(resolves_as_file(file.clone()), "+x file not detected");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
