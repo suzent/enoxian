@@ -96,3 +96,65 @@ jobs:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: ${{ matrix.asset }}
           generate_release_notes: true
+
+  # ── Update the Homebrew formula ──────────────────────────────────────────────
+  # Runs after every build job. Downloads the just-published macOS/Linux tarballs,
+  # computes their SHA256s, rewrites Formula/enoxian.rb (version + per-asset
+  # sha256), and commits to main. The formula's SHAs cannot be known until the
+  # artifacts exist, so this is a post-build step rather than part of `bump`.
+  formula:
+    name: Update Homebrew formula
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Compute SHAs and rewrite formula
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          base="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+
+          # asset name -> which sha256 line to replace (matched by URL substring).
+          declare -A assets=(
+            [enoxian-macos-aarch64.tar.gz]=macos-aarch64
+            [enoxian-macos-x86_64.tar.gz]=macos-x86_64
+            [enoxian-linux-aarch64.tar.gz]=linux-aarch64
+            [enoxian-linux-x86_64.tar.gz]=linux-x86_64
+          )
+
+          # Update the version line.
+          sed -i -E "s/^  version \"[^\"]*\"/  version \"${version}\"/" Formula/enoxian.rb
+
+          for asset in "${!assets[@]}"; do
+            slug="${assets[$asset]}"
+            echo "fetching $asset"
+            curl -fsSL "${base}/${asset}" -o "/tmp/${asset}"
+            sha="$(sha256sum "/tmp/${asset}" | cut -d' ' -f1)"
+            # Replace the sha256 on the line following the matching url (…$slug…).
+            # Use awk: when a url line contains the slug, rewrite the next sha256.
+            awk -v needle="enoxian-${slug}.tar.gz" -v sha="$sha" '
+              index(prev, needle) > 0 && $0 ~ /sha256/ {
+                sub(/"[0-9a-f]{64}"/, "\"" sha "\"")
+              }
+              { print; prev=$0 }
+            ' Formula/enoxian.rb > Formula/enoxian.rb.tmp && mv Formula/enoxian.rb.tmp Formula/enoxian.rb
+          done
+
+      - name: Commit formula
+        run: |
+          set -euo pipefail
+          if git diff --quiet Formula/enoxian.rb; then
+            echo "formula unchanged"; exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/enoxian.rb
+          git commit -m "chore(release): update Homebrew formula for ${{ github.event.inputs.tag || github.ref_name }}"
+          git push origin main
