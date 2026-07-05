@@ -1,9 +1,37 @@
 # Getting Started
 
-## Prerequisites
+## Install (prebuilt binaries)
+
+The quickest path — downloads the latest release for your platform and installs
+`enox` and `enoxd`.
+
+**Linux / macOS:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/suzent/enoxian/main/scripts/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/suzent/enoxian/main/scripts/install.ps1 | iex
+```
+
+**Homebrew** (once the tap is published):
+
+```sh
+brew install suzent/tap/enoxian
+```
+
+Pin a version with `ENOXIAN_VERSION=v0.1.4` (or `$env:ENOXIAN_VERSION`), or set
+`ENOXIAN_BIN_DIR` to change the install directory. To build from source instead,
+see below.
+
+## Prerequisites (build from source)
 
 - Rust 1.83 or newer
 - Cargo
+- Node.js (only for building the frontend in release mode)
 
 ## Build
 

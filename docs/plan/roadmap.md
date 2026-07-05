@@ -205,10 +205,11 @@ member removal while keeping transport connectivity decoupled from membership.
 
 ### M18 — Packaging And Distribution
 
-**Status:** In progress. CI, release binaries, and a bootstrap Docker image are
-in place; install-script and Homebrew items remain. Note: the workflows and
-Docker build have not been exercised on live runners — a real CI run should
-confirm before relying on them.
+**Status:** Complete (pending live validation). CI, cross-platform release
+binaries, a bootstrap Docker image, install scripts, and a Homebrew formula are
+all in place. Two release-time caveats: the workflows and Docker build have not
+been exercised on live runners, and the Homebrew formula's per-asset SHA256s are
+TODO placeholders that must be filled when the first release is published.
 
 **Tasks:**
 
@@ -218,8 +219,8 @@ confirm before relying on them.
 - [x] Linux static/portable binaries (musl x86_64 + aarch64).
 - [x] Windows zip. (installer: future)
 - [x] Docker image for bootstrap/relay nodes. (`Dockerfile`)
-- [ ] Quick-install scripts.
-- [ ] Homebrew formula.
+- [x] Quick-install scripts. (`scripts/install.sh`, `scripts/install.ps1`)
+- [x] Homebrew formula. (`Formula/enoxian.rb` — SHAs are release-time TODOs)
 
 ---
 
