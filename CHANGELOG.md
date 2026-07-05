@@ -37,6 +37,12 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- Proposal sync now fetches missing content-addressed blobs after proposal
+  manifests arrive, so large proposal files omitted from bundles can become
+  reviewable and revertible on other peers.
+
 ## [0.2.0] — 2026-07-05
 
 ### Added

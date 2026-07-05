@@ -13,6 +13,8 @@
 //! 4. each streams BUNDLE { ProposalBundle } for every id the peer wanted
 //! 5. received bundles are applied via ProposalBundle::apply_to_store, whose
 //!    status conflict rule decides whether an inbound record wins
+//! 6. each side requests any content-addressed blobs referenced by local
+//!    proposal manifests but missing from its blob store
 //! ```
 //!
 //! Runs once per connection (no timer, no eager push). The disk store is the
@@ -21,7 +23,7 @@
 use anyhow::{Context, Result};
 use libp2p::{PeerId, Stream, StreamProtocol};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{debug, warn};
@@ -46,6 +48,16 @@ enum Msg {
     Have(Vec<Have>),
     Want(Vec<String>),
     Bundles(Vec<ProposalBundle>),
+    WantBlobs(Vec<String>),
+    Blobs(Vec<BlobPayload>),
+}
+
+/// A content-addressed blob transferred after proposal manifests are present.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlobPayload {
+    pub hash: String,
+    /// Base64 keeps the length-prefixed JSON frame binary-safe.
+    pub bytes_b64: String,
 }
 
 // ── Pure delta computation (unit-tested) ─────────────────────────────────────
@@ -56,8 +68,10 @@ enum Msg {
 /// record actually replaces the local one is decided later by the conflict rule
 /// in `apply_to_store` — here we only decide what is worth fetching.
 pub fn compute_wants(local: &[Have], peer: &[Have]) -> Vec<String> {
-    let local_by_id: BTreeMap<&str, u64> =
-        local.iter().map(|h| (h.id.as_str(), h.fingerprint)).collect();
+    let local_by_id: BTreeMap<&str, u64> = local
+        .iter()
+        .map(|h| (h.id.as_str(), h.fingerprint))
+        .collect();
     peer.iter()
         .filter(|p| local_by_id.get(p.id.as_str()) != Some(&p.fingerprint))
         .map(|p| p.id.clone())
@@ -70,7 +84,10 @@ fn local_haves(store: &ProposalStore) -> Vec<Have> {
     store
         .list_proposals()
         .into_iter()
-        .map(|p| Have { id: p.id.clone(), fingerprint: p.fingerprint() })
+        .map(|p| Have {
+            id: p.id.clone(),
+            fingerprint: p.fingerprint(),
+        })
         .collect()
 }
 
@@ -79,6 +96,70 @@ fn bundles_for(store: &ProposalStore, ids: &[String]) -> Vec<ProposalBundle> {
         .filter_map(|id| store.load_proposal(id).ok())
         .filter_map(|p| ProposalBundle::from_store(store, &p).ok())
         .collect()
+}
+
+fn proposal_blob_hashes(store: &ProposalStore) -> BTreeSet<String> {
+    let mut hashes = BTreeSet::new();
+    for proposal in store.list_proposals() {
+        let Ok(base) = store.load_snapshot(&proposal.base_snapshot) else {
+            continue;
+        };
+        let Ok(result) = store.load_snapshot(&proposal.result_snapshot) else {
+            continue;
+        };
+        for path in &proposal.changed_paths {
+            if let Some(entry) = base.files.get(path) {
+                hashes.insert(entry.hash.clone());
+            }
+            if let Some(entry) = result.files.get(path) {
+                hashes.insert(entry.hash.clone());
+            }
+        }
+    }
+    hashes
+}
+
+pub fn missing_blob_hashes(store: &ProposalStore) -> Vec<String> {
+    proposal_blob_hashes(store)
+        .into_iter()
+        .filter(|hash| !store.blobs.contains(hash))
+        .collect()
+}
+
+fn blob_payloads_for(store: &ProposalStore, hashes: &[String]) -> Vec<BlobPayload> {
+    hashes
+        .iter()
+        .filter_map(|hash| {
+            let bytes = store.blobs.get(hash).ok()?;
+            // Verify before serving so the content-addressed invariant is
+            // preserved even if the local store was corrupted out of band.
+            if crate::proposal::blob::BlobStore::hash(&bytes) != *hash {
+                return None;
+            }
+            Some(BlobPayload {
+                hash: hash.clone(),
+                bytes_b64: base64_encode(&bytes),
+            })
+        })
+        .collect()
+}
+
+fn apply_blob_payloads(store: &ProposalStore, blobs: &[BlobPayload]) -> Result<usize> {
+    let mut applied = 0usize;
+    for blob in blobs {
+        let bytes = match base64_decode(&blob.bytes_b64) {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+        if crate::proposal::blob::BlobStore::hash(&bytes) != blob.hash {
+            continue;
+        }
+        if !store.blobs.contains(&blob.hash) {
+            store.blobs.put(&bytes)?;
+            applied += 1;
+        }
+    }
+    Ok(applied)
 }
 
 // ── Wire framing: [u32 len][JSON] ────────────────────────────────────────────
@@ -195,30 +276,86 @@ async fn run_inner(
                     .ok()
                     .and_then(|v| v.as_str().map(String::from))
                     .unwrap_or_default();
-                let _ = state.events.send(crate::control::CircleEvent::ProposalUpdated {
-                    proposal_id: bundle.proposal.id.clone(),
-                    status,
-                });
+                let _ = state
+                    .events
+                    .send(crate::control::CircleEvent::ProposalUpdated {
+                        proposal_id: bundle.proposal.id.clone(),
+                        status,
+                    });
             }
             Ok(false) => {}
             Err(e) => warn!("[proposal-sync] applying {}: {e}", bundle.proposal.id),
         }
     }
+
+    // After manifests arrive, fetch the missing content-addressed blobs they
+    // reference. This is what lets oversized proposal files become reviewable
+    // and revertible on peers that did not originate the change.
+    let want_blobs = missing_blob_hashes(&store);
+    let peer_want_blobs = if is_initiator {
+        write_msg(&mut tx, &Msg::WantBlobs(want_blobs.clone())).await?;
+        match read_msg(&mut rx).await? {
+            Msg::WantBlobs(w) => w,
+            _ => return Err(anyhow::anyhow!("expected WANT_BLOBS")),
+        }
+    } else {
+        let w = match read_msg(&mut rx).await? {
+            Msg::WantBlobs(w) => w,
+            _ => return Err(anyhow::anyhow!("expected WANT_BLOBS")),
+        };
+        write_msg(&mut tx, &Msg::WantBlobs(want_blobs.clone())).await?;
+        w
+    };
+
+    let outgoing_blobs = blob_payloads_for(&store, &peer_want_blobs);
+    let incoming_blobs = if is_initiator {
+        write_msg(&mut tx, &Msg::Blobs(outgoing_blobs)).await?;
+        match read_msg(&mut rx).await? {
+            Msg::Blobs(b) => b,
+            _ => return Err(anyhow::anyhow!("expected BLOBS")),
+        }
+    } else {
+        let b = match read_msg(&mut rx).await? {
+            Msg::Blobs(b) => b,
+            _ => return Err(anyhow::anyhow!("expected BLOBS")),
+        };
+        write_msg(&mut tx, &Msg::Blobs(outgoing_blobs)).await?;
+        b
+    };
+
+    let applied_blobs = apply_blob_payloads(&store, &incoming_blobs)?;
     if applied > 0 || !peer_want.is_empty() {
         debug!(
-            "[proposal-sync] {peer_id}: sent {}, applied {applied}",
-            peer_want.len()
+            "[proposal-sync] {peer_id}: sent {}, applied {applied}, wanted blobs {}, applied blobs {applied_blobs}",
+            peer_want.len(),
+            want_blobs.len()
         );
     }
     Ok(())
 }
 
+fn base64_encode(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+fn base64_decode(s: &str) -> Result<Vec<u8>> {
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.decode(s)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proposal::model::Proposal;
+    use crate::proposal::snapshot::{FileEntry, Snapshot};
+    use std::collections::BTreeMap;
 
     fn have(id: &str, fp: u64) -> Have {
-        Have { id: id.into(), fingerprint: fp }
+        Have {
+            id: id.into(),
+            fingerprint: fp,
+        }
     }
 
     #[test]
@@ -248,5 +385,54 @@ mod tests {
         let local = vec![have("a", 1), have("local-only", 9)];
         let peer = vec![have("a", 1)];
         assert!(compute_wants(&local, &peer).is_empty());
+    }
+
+    fn snap_with_hash(path: &str, hash: String, size: u64) -> Snapshot {
+        let mut files = BTreeMap::new();
+        files.insert(path.to_string(), FileEntry { hash, size });
+        Snapshot::new(files)
+    }
+
+    #[test]
+    fn missing_blob_hashes_find_manifest_content_not_in_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ProposalStore::open(dir.path()).unwrap();
+        let present_hash = store.blobs.put(b"present").unwrap();
+        let missing_hash = crate::proposal::blob::BlobStore::hash(b"missing");
+
+        let base = snap_with_hash("big.bin", present_hash.clone(), 7);
+        let result = snap_with_hash("big.bin", missing_hash.clone(), 7);
+        store.save_snapshot(&base).unwrap();
+        store.save_snapshot(&result).unwrap();
+        let proposal = Proposal::ambient(
+            "c".into(),
+            base.id.clone(),
+            result.id.clone(),
+            vec!["big.bin".into()],
+        );
+        store.save_proposal(&proposal).unwrap();
+
+        assert_eq!(missing_blob_hashes(&store), vec![missing_hash]);
+    }
+
+    #[test]
+    fn blob_payloads_roundtrip_and_reject_bad_hashes() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let src = ProposalStore::open(src_dir.path()).unwrap();
+        let hash = src.blobs.put(b"large content").unwrap();
+
+        let payloads = blob_payloads_for(&src, std::slice::from_ref(&hash));
+        assert_eq!(payloads.len(), 1);
+
+        let dst_dir = tempfile::tempdir().unwrap();
+        let dst = ProposalStore::open(dst_dir.path()).unwrap();
+        assert_eq!(apply_blob_payloads(&dst, &payloads).unwrap(), 1);
+        assert_eq!(dst.blobs.get(&hash).unwrap(), b"large content");
+
+        let bad = BlobPayload {
+            hash,
+            bytes_b64: base64_encode(b"different content"),
+        };
+        assert_eq!(apply_blob_payloads(&dst, &[bad]).unwrap(), 0);
     }
 }

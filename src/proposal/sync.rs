@@ -18,17 +18,15 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Blobs at or below this size are base64-embedded in the bundle and replicate
-/// eagerly through the control doc. Larger files ship as manifest metadata only
-/// (hash + size, recorded in the snapshot) — their content is NOT synced, to
-/// keep the in-memory, fully-replicated control doc from bloating. A device that
-/// needs the content (to view or revert) must fetch it on demand; until that
-/// pull protocol exists, the diff view shows a placeholder and reject/revert
-/// fails cleanly on that device rather than corrupting the file.
+/// Blobs at or below this size are base64-embedded in the bundle. Larger files
+/// ship as manifest metadata only (hash + size, recorded in the snapshot);
+/// their content is fetched by the proposal pull protocol's blob round. Until a
+/// peer has fetched the blob, the diff view shows a placeholder and
+/// reject/revert fails cleanly on that device rather than corrupting the file.
 ///
 /// 256 KB comfortably covers source, config, and prose; it excludes images,
-/// archives, and built artifacts — exactly the things that should not live in a
-/// CRDT control doc.
+/// archives, and built artifacts — exactly the things that should move through
+/// the on-demand blob path.
 pub const MAX_EMBEDDED_BLOB_BYTES: usize = 256 * 1024;
 
 /// A self-contained, replicable proposal: the record plus everything needed to
@@ -39,8 +37,8 @@ pub struct ProposalBundle {
     pub base_snapshot: Snapshot,
     pub result_snapshot: Snapshot,
     /// hash -> base64(content) for every blob referenced by either snapshot
-    /// across the proposal's changed paths. Base64 keeps the bundle JSON-safe
-    /// for the Yjs string map; binary file contents survive the round-trip.
+    /// across the proposal's changed paths. Base64 keeps the bundle JSON-safe;
+    /// binary file contents survive the round-trip.
     pub blobs: BTreeMap<String, String>,
 }
 
@@ -144,7 +142,13 @@ mod tests {
     fn snap_with(store: &ProposalStore, path: &str, content: &[u8]) -> Snapshot {
         let hash = store.blobs.put(content).unwrap();
         let mut files = BTreeMap::new();
-        files.insert(path.to_string(), FileEntry { hash, size: content.len() as u64 });
+        files.insert(
+            path.to_string(),
+            FileEntry {
+                hash,
+                size: content.len() as u64,
+            },
+        );
         let snap = Snapshot::new(files);
         store.save_snapshot(&snap).unwrap();
         snap
@@ -208,7 +212,10 @@ mod tests {
         let base_hash = &bundle.base_snapshot.files["big.bin"].hash;
         let result_hash = &bundle.result_snapshot.files["big.bin"].hash;
         assert!(bundle.blobs.contains_key(base_hash), "small blob embedded");
-        assert!(!bundle.blobs.contains_key(result_hash), "large blob excluded");
+        assert!(
+            !bundle.blobs.contains_key(result_hash),
+            "large blob excluded"
+        );
 
         // Applied to a fresh store, the manifest entry exists but the content
         // is absent — exactly the "known change, unrenderable content" state.
@@ -227,8 +234,12 @@ mod tests {
         let src = ProposalStore::open(src_dir.path()).unwrap();
         let base = snap_with(&src, "f", b"a");
         let result = snap_with(&src, "f", b"b");
-        let mut proposal =
-            Proposal::ambient("c".into(), base.id.clone(), result.id.clone(), vec!["f".into()]);
+        let mut proposal = Proposal::ambient(
+            "c".into(),
+            base.id.clone(),
+            result.id.clone(),
+            vec!["f".into()],
+        );
         src.save_proposal(&proposal).unwrap();
 
         // Receiver store: a second device applying the synced bundles.
@@ -242,7 +253,10 @@ mod tests {
         proposal.set_status(ProposalStatus::Rejected);
         src.save_proposal(&proposal).unwrap();
         let b1 = ProposalBundle::from_store(&src, &proposal).unwrap();
-        assert!(b1.apply_to_store(&dst).unwrap(), "winning status flip is a change");
+        assert!(
+            b1.apply_to_store(&dst).unwrap(),
+            "winning status flip is a change"
+        );
     }
 
     // The conflict rule must not let a lower-ranked inbound status clobber a
@@ -254,8 +268,12 @@ mod tests {
         let src = ProposalStore::open(src_dir.path()).unwrap();
         let base = snap_with(&src, "f", b"a");
         let result = snap_with(&src, "f", b"b");
-        let pending =
-            Proposal::ambient("c".into(), base.id.clone(), result.id.clone(), vec!["f".into()]);
+        let pending = Proposal::ambient(
+            "c".into(),
+            base.id.clone(),
+            result.id.clone(),
+            vec!["f".into()],
+        );
 
         // Local store has already ACCEPTED this proposal.
         let dst_dir = tempfile::tempdir().unwrap();
@@ -263,12 +281,18 @@ mod tests {
         let mut accepted = pending.clone();
         accepted.set_status(ProposalStatus::Accepted);
         // Materialize snapshots/blobs in dst too so apply_to_store can run.
-        ProposalBundle::from_store(&src, &pending).unwrap().apply_to_store(&dst).unwrap();
+        ProposalBundle::from_store(&src, &pending)
+            .unwrap()
+            .apply_to_store(&dst)
+            .unwrap();
         dst.save_proposal(&accepted).unwrap();
 
         // Inbound is the older PENDING version. It must not win.
         let stale = ProposalBundle::from_store(&src, &pending).unwrap();
-        assert!(!stale.apply_to_store(&dst).unwrap(), "stale pending must not overwrite accepted");
+        assert!(
+            !stale.apply_to_store(&dst).unwrap(),
+            "stale pending must not overwrite accepted"
+        );
         assert_eq!(
             dst.load_proposal(&pending.id).unwrap().status,
             ProposalStatus::Accepted,
