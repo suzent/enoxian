@@ -1,114 +1,226 @@
 # enoxian
 
-**P2P agent collaboration protocol** — shared files, tasks, and file locks for AI agents and humans working inside a Circle.
+**A P2P collaboration layer for humans, AI agents, and scripts working in the
+same directory.**
 
-> *"Descend not to the API layer to unify agents. Descend to the protocol layer."*
+enoxian gives a project a shared **Circle**: files sync in real time, people and
+agents coordinate through tasks and chat, risky edits can be locked, and
+agent-made changes become reviewable proposals instead of mysterious local
+diffs.
+
+> "Descend not to the API layer to unify agents. Descend to the protocol layer."
 
 ---
 
-## What it is
+## What You Get
 
-enoxian lets any agent (AI or human) join a **Circle** — a named workspace with:
+- **Real-time file sync** over a Yjs CRDT document layer, with offline-friendly
+  merge semantics.
+- **Circle coordination**: task board, chat, presence, file locks, and live
+  event streaming.
+- **Agent execution**: mention configured local agents, run them directly with
+  `enox agent run`, and capture their file changes as proposals.
+- **Reviewable workspace changes**: accept, reject, or revert attributed
+  proposals from agents, scripts, and claimed sessions.
+- **P2P membership**: invite links, LAN discovery, relay/rendezvous WAN
+  bootstrap, admin-signed members, and MLS-backed removal state.
+- **Local-first API**: `enoxd` exposes a loopback HTTP/SSE/WebSocket API used by
+  the CLI, web UI, and automation.
 
-- **Real-time file sync** via Yjs CRDT (conflict-free, offline-capable)
-- **Task board and chat** for work coordination
-- **Advisory file locks** with deterministic arbitration
-- **Presence** tracking
-- **Proposal review** for attributed workspace changes
-- **Live event stream** over SSE
+---
 
-Two binaries:
+## Install
+
+### Linux / macOS
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/suzent/enoxian/main/scripts/install.sh | sh
+```
+
+### Windows PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/suzent/enoxian/main/scripts/install.ps1 | iex
+```
+
+### From Source
+
+```sh
+git clone https://github.com/suzent/enoxian
+cd enoxian
+cargo build
+```
+
+The source build creates:
 
 | Binary | Role |
 |--------|------|
-| `enoxd` | Long-running daemon — P2P node, HTTP/WS server, file watcher |
-| `enox` | Short-lived CLI — agent sends commands to a daemon |
+| `target/debug/enoxd` | Long-running daemon: P2P node, file watcher, HTTP/WS server |
+| `target/debug/enox` | Short-lived CLI that talks to the local daemon |
+
+Rust 1.83 or newer is required. Node.js is only needed when building the
+frontend in release mode.
 
 ---
 
 ## Quick Start
 
-```bash
-cargo build
+Create a Circle:
 
-# 1. Create a Circle
-./target/debug/enox init --name "my-project"
-
-# 2. Start the daemon
-RUST_LOG=info ./target/debug/enoxd
-
-# 3. In another terminal — talk to it
-export ENOXIAN_API=http://127.0.0.1:36521
-./target/debug/enox status
-./target/debug/enox tasks
-./target/debug/enox watch
+```sh
+enox init --name my-project
 ```
+
+Start the daemon:
+
+```sh
+enox start
+```
+
+Use the CLI:
+
+```sh
+enox status
+enox tasks
+enox who
+enox watch
+```
+
+With multiple local circles, pass `--circle` or set `ENOXIAN_CIRCLE`:
+
+```sh
+enox --circle my-project status
+```
+
+Invite another machine or agent host:
+
+```sh
+enox invite my-project
+enox enter enoxian://v1/...
+```
+
+See [docs/guide/getting-started.md](docs/guide/getting-started.md) for the
+full setup flow, including source installs, daemon logs, WAN connectivity, and
+multi-circle behavior.
 
 ---
 
-## Protocol Stack
+## Daily Workflow
+
+```sh
+# Coordinate work
+enox task-create "write sync tests" --description "cover lock arbitration"
+enox tasks
+enox claim <task-id>
+enox done <task-id>
+
+# Avoid conflicts on high-risk files
+enox bind src/main.rs
+enox release src/main.rs
+
+# Talk in the Circle
+enox say "can someone review the proposal?"
+enox chat -f
+
+# Review captured workspace changes
+enox proposal list
+enox proposal show <proposal-id>
+enox proposal accept <proposal-id>
+enox proposal reject <proposal-id>
+```
+
+Configure local AI agents:
+
+```sh
+enox agent add claude --driver acp -- npx @zed-industries/claude-code-acp
+enox agent reaction push
+enox say "@claude add tests for the invite parser"
+```
+
+Or run one directly:
+
+```sh
+enox agent run claude "summarize the proposal store API"
+```
+
+Agent configuration is device-local in `~/.enoxian/agents.toml`; it is not
+synced to the Circle. See [docs/guide/agents.md](docs/guide/agents.md) for ACP,
+argv fallback agents, mention targeting, and session memory.
+
+---
+
+## How It Works
 
 ```
 ┌─────────────────────────────────┐
-│        Application Layer        │  agents, AI models, scripts
+│        Application Layer        │  humans, agents, scripts, web UI
 ├─────────────────────────────────┤
-│      Coordination Layer         │  tasks / locks / presence (Control Doc)
+│      Coordination Layer         │  tasks, chat, locks, presence, proposals
 ├─────────────────────────────────┤
-│      Document Sync Layer        │  Yjs CRDT — real-time file sync
+│      Document Sync Layer        │  Yjs CRDT file and control documents
 ├─────────────────────────────────┤
-│      Transport Layer            │  Noise + Yamux (libp2p), relay/DCUtR
+│      Transport Layer            │  libp2p Noise + Yamux, relay/DCUtR
 ├─────────────────────────────────┤
-│      Discovery Layer            │  mDNS + Kademlia + rendezvous
+│      Discovery Layer            │  mDNS, Kademlia, rendezvous
 └─────────────────────────────────┘
 ```
 
+Every participant runs one `enoxd` daemon for a workspace. Editors and agents
+use normal filesystem IO; the daemon watches files, syncs CRDT updates to peers,
+and serves the local API. `enox` is a thin CLI client over that API.
+
+For a fuller walkthrough, start with
+[docs/concepts/overview.md](docs/concepts/overview.md).
+
 ---
 
-## Implementation Status
+## Current Status
 
-| Phase | Status | Scope |
-|-------|--------|-------|
-| 0 — P2P skeleton | ✅ | `enox init` / `enoxd` / `enox enter`, mDNS, libp2p |
-| 1 — Document sync | ✅ | Yjs Y.Text, file watcher, `/ws/yjs` WebSocket |
-| 2 — CLI contract | ✅ | `status`, `who`, `tasks`, `claim`, `done`, `bind`, `release`, `watch` |
-| 3 — Coordination | ✅ | Lock log, presence, full REST API, SSE events |
-| 4 — P2P doc gossip | ✅ | File/control updates over libp2p sync streams |
-| 5 — WAN bootstrap | ✅ | Invite connectivity hints, relay, rendezvous server |
-| 6 — Members and identity | ✅ | Admin-signed member ops, device/user identity |
-| 7 — Agent bridge | ✅ | Local agent config, mention reactions, managed sessions |
-| 8 — Proposal review | ✅ | Captured changes, review CLI/API, reverse-apply reject/revert |
+The current package version is **0.2.0**.
+
+| Area | Status |
+|------|--------|
+| P2P circles, file sync, tasks, chat, presence, locks | Complete |
+| CLI, local API, SSE/WebSocket event stream | Complete |
+| WAN invites, relay/rendezvous bootstrap | Complete |
+| Members, identity, MLS membership/removal gate | Complete |
+| Proposal capture, review, reject, revert | Complete |
+| ACP/argv agent execution, mention reactions, agent memory | Complete |
+| Cross-platform packaging and install scripts | Complete |
+| Content encryption for persisted workspace/control data | Planned |
+
+See [CHANGELOG.md](CHANGELOG.md) and
+[docs/plan/roadmap.md](docs/plan/roadmap.md) for release notes and upcoming
+work.
 
 ---
 
 ## Documentation
 
-All docs are in the [`docs/`](docs/) folder:
+| Start Here | Description |
+|------------|-------------|
+| [docs/guide/getting-started.md](docs/guide/getting-started.md) | Install, create a Circle, run the daemon, join peers |
+| [docs/guide/cli.md](docs/guide/cli.md) | Complete `enox` command reference |
+| [docs/guide/agents.md](docs/guide/agents.md) | Configure ACP/argv agents and mention reactions |
+| [docs/guide/invite.md](docs/guide/invite.md) | Invite links, TTLs, relay and rendezvous hints |
+| [docs/reference/api.md](docs/reference/api.md) | Local REST/SSE/WebSocket API |
+| [docs/concepts/security.md](docs/concepts/security.md) | Trust model, PSK, MLS membership, data-at-rest notes |
+| [docs/concepts/architecture.md](docs/concepts/architecture.md) | Components, state model, directory layout |
 
-See [docs/index.md](docs/index.md) for the full documentation index.
-
-| Doc | Description |
-|-----|-------------|
-| [docs/concepts/overview.md](docs/concepts/overview.md) | **Start here** — intuitive walkthrough with diagrams |
-| [docs/guide/getting-started.md](docs/guide/getting-started.md) | Build, initialize, first commands |
-| [docs/guide/cli.md](docs/guide/cli.md) | Full `enox` command reference |
-| [docs/guide/agents.md](docs/guide/agents.md) | How enoxian drives agents (ACP, mentions, memory) |
-| [docs/concepts/concepts.md](docs/concepts/concepts.md) | Circle, Agent, Document, Control Doc |
-| [docs/concepts/architecture.md](docs/concepts/architecture.md) | System diagram, components, data model |
-| [docs/reference/api.md](docs/reference/api.md) | Local REST/SSE/WebSocket API reference |
-| [docs/reference/daemon.md](docs/reference/daemon.md) | `enoxd` reference and configuration |
-
-For AI agents: see [AGENTS.md](AGENTS.md).
+The full index lives at [docs/index.md](docs/index.md). Agent collaboration
+rules for this repository live in [AGENTS.md](AGENTS.md).
 
 ---
 
 ## Tech Stack
 
-| Crate | Version | Role |
-|-------|---------|------|
-| `tokio` | 1 | Async runtime |
-| `libp2p` | 0.56 | P2P transport, mDNS, Kademlia |
-| `yrs` | 0.26 | Yjs CRDT (Y.Text, Y.Map, Y.Array) |
-| `axum` | 0.8 | HTTP + WebSocket server |
-| `notify` | 8 | Cross-platform file watcher |
-| `reqwest` | 0.12 | HTTP client (enox CLI) |
-| `clap` | 4 | CLI argument parsing |
+| Crate | Role |
+|-------|------|
+| `tokio` | Async runtime |
+| `libp2p` | P2P transport, discovery, relay, rendezvous |
+| `yrs` | Yjs CRDTs |
+| `axum` | HTTP, SSE, and WebSocket server |
+| `notify` | Cross-platform file watcher |
+| `reqwest` | CLI HTTP client |
+| `clap` | CLI argument parsing |
+| `openmls` | MLS membership state |
