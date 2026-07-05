@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-05
+
 ### Added
 
 - **Agent execution over the Agent Client Protocol (ACP).** Mention `@claude`
@@ -60,5 +62,6 @@ git history and `docs/plan/archived/milestones.md` for the M1–M14 feature set
 (P2P sync, presence/tasks/locks/chat, members + MLS membership, WAN bootstrap,
 and the local workspace proposal layer).
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/suzent/enoxian/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/suzent/enoxian/releases/tag/v0.1.4
