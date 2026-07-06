@@ -948,6 +948,15 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                                 }
                                 // Immediately tell the swarm this is a valid external address for us
                                 swarm.add_external_address(base_addr);
+                                
+                                // Re-trigger rendezvous registration now that we have an external address
+                                for &rdvz_peer in &*rendezvous_peers.read().unwrap() {
+                                    if swarm.is_connected(&rdvz_peer) {
+                                        let _ = swarm.behaviour_mut().rendezvous.register(
+                                            rendezvous_namespace.clone(), rdvz_peer, None,
+                                        );
+                                    }
+                                }
                             }
                         }
                         tracing::debug!("[{}] relay client: {e:?}", circle_id);
