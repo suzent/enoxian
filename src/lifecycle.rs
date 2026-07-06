@@ -500,11 +500,13 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             let quic_t = quic::tokio::Transport::new(quic::Config::new(key))
                 .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
 
-            Ok(tcp.or_transport(relay).or_transport(quic_t).map(|e, _| match e {
-                Either::Left(Either::Left(x)) => x,
-                Either::Left(Either::Right(x)) => x,
-                Either::Right(x) => x,
-            }))
+            Ok(libp2p::dns::tokio::Transport::system(
+                tcp.or_transport(relay).or_transport(quic_t).map(|e, _| match e {
+                    Either::Left(Either::Left(x)) => x,
+                    Either::Left(Either::Right(x)) => x,
+                    Either::Right(x) => x,
+                })
+            )?.map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer))))
         })?
         .with_behaviour(move |key| {
             let pid = key.public().to_peer_id();
