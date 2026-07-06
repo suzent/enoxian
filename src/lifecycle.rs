@@ -924,6 +924,32 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         }
                     }
                     SwarmEvent::Behaviour(EnochEvent::RelayClient(e)) => {
+                        use relay::client::Event as RCE;
+                        if let RCE::ReservationReqAccepted { relay_peer_id, .. } = e {
+                            info!("[{}] relay reservation accepted at {relay_peer_id}", circle_id);
+                            // Synthesize our circuit address and add it to our tracked external addresses.
+                            // This ensures that when we re-register with rendezvous, we tell other peers
+                            // "You can reach me by tunneling through this relay".
+                            let relay_addr = swarm.external_addresses().find_map(|a| {
+                                let a_str = a.to_string();
+                                if a_str.contains(&relay_peer_id.to_string()) && !a_str.contains("p2p-circuit") {
+                                    Some(a.clone())
+                                } else { None }
+                            });
+
+                            if let Some(mut base_addr) = relay_addr {
+                                base_addr.push(libp2p::multiaddr::Protocol::P2pCircuit);
+                                if let Ok(mut ext) = state_for_swarm.p2p_external_addrs.write() {
+                                    let s = base_addr.to_string();
+                                    if !ext.contains(&s) {
+                                        ext.push(s);
+                                        info!("[{}] added circuit to external addrs: {base_addr}", circle_id);
+                                    }
+                                }
+                                // Immediately tell the swarm this is a valid external address for us
+                                swarm.add_external_address(base_addr);
+                            }
+                        }
                         tracing::debug!("[{}] relay client: {e:?}", circle_id);
                     }
                     SwarmEvent::Behaviour(EnochEvent::Dcutr(e)) => {
