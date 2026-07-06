@@ -1,0 +1,4 @@
+[build.env]
+passthrough = [
+    "ENOXIAN_SKIP_FRONTEND_BUILD",
+]

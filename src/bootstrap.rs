@@ -2,12 +2,11 @@
 //!
 //! Runs a public rendezvous + circuit-relay node that circle members can use
 //! for WAN peer discovery.  The server holds no PSK and joins no circle.
-//! It speaks QUIC (no PSK) — circle members connect to it via QUIC and
-//! register under their circle UUID namespace.
+//! It speaks QUIC (no PSK) for rendezvous and TCP (no PSK) for circuit relay.
 //!
 //! # Setup (enox.suzent.com)
 //!
-//! 1. On the server: `enoxd --bootstrap --port 36521`
+//! 1. On the server: `enoxd --bootstrap --port 36521 --relay-port 36522`
 //!    Copy the printed peer ID from the log.
 //! 2. Share the multiaddr with circle members:
 //!    `/ip4/<PUBLIC_IP>/udp/36521/quic-v1/p2p/<PEER_ID>`
@@ -17,10 +16,12 @@
 use anyhow::{Context, Result};
 use axum::{extract::State, routing::get, Json, Router};
 use libp2p::{
+    core::{muxing::StreamMuxerBox, upgrade},
+    futures::future::Either,
     futures::StreamExt,
-    identify, kad, relay, rendezvous,
+    identify, kad, noise, quic, relay, rendezvous, tcp, yamux,
     swarm::SwarmEvent,
-    Multiaddr, SwarmBuilder,
+    Multiaddr, SwarmBuilder, Transport,
 };
 use tracing::info;
 
@@ -30,7 +31,7 @@ use crate::{
     network::bootstrap_behaviour::{BootstrapBehaviour, BootstrapEvent},
 };
 
-pub async fn run(port: u16) -> Result<()> {
+pub async fn run(port: u16, relay_port: u16) -> Result<()> {
     let keypair = load_or_create_keypair()?;
     let peer_id = keypair.public().to_peer_id();
     let peer_id_str = peer_id.to_string();
@@ -38,11 +39,28 @@ pub async fn run(port: u16) -> Result<()> {
     info!("Bootstrap server starting");
     info!("  PeerID : {peer_id}");
     info!("  HTTP   : http://0.0.0.0:{port}/peer-id  (for enox CLI auto-resolution)");
-    info!("  Share once you see the QUIC listen address below.");
+    info!("  Relay  : tcp/0.0.0.0:{relay_port}");
+    info!("  Share once you see the QUIC and TCP listen addresses below.");
 
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
-        .with_quic()
+        .with_other_transport(|key| {
+            let tcp = tcp::tokio::Transport::new(tcp::Config::default())
+                .upgrade(upgrade::Version::V1Lazy)
+                .authenticate(noise::Config::new(key)?)
+                .multiplex(yamux::Config::default())
+                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
+
+            let quic_t = quic::tokio::Transport::new(quic::Config::new(key))
+                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
+
+            Ok(libp2p::dns::tokio::Transport::system(
+                tcp.or_transport(quic_t).map(|e, _| match e {
+                    Either::Left(x) => x,
+                    Either::Right(x) => x,
+                })
+            )?.map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer))))
+        })?
         .with_behaviour(|key| {
             let pid = key.public().to_peer_id();
             Ok(BootstrapBehaviour {
@@ -66,8 +84,10 @@ pub async fn run(port: u16) -> Result<()> {
         })?
         .build();
 
-    let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/udp/{port}/quic-v1").parse()?;
-    swarm.listen_on(listen_addr)?;
+    let rendezvous_listen_addr: Multiaddr = format!("/ip4/0.0.0.0/udp/{port}/quic-v1").parse()?;
+    let relay_listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{relay_port}").parse()?;
+    swarm.listen_on(rendezvous_listen_addr)?;
+    swarm.listen_on(relay_listen_addr)?;
 
     // ── HTTP server: GET /peer-id — allows `enox` CLI to auto-resolve the ──────
     // full multiaddr without the operator having to copy-paste the peer ID.
@@ -87,7 +107,11 @@ pub async fn run(port: u16) -> Result<()> {
         match swarm.select_next_some().await {
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!("Bootstrap listening on {address}");
-                info!("  Rendezvous + relay address for circle members:");
+                if address.to_string().contains("/udp/") {
+                    info!("  Rendezvous address for circle members:");
+                } else {
+                    info!("  Relay address for circle members:");
+                }
                 info!("    {address}/p2p/{peer_id}");
                 info!("  Or just run: enox invite <circle> --rendezvous <hostname>");
             }

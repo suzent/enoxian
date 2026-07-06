@@ -1,36 +1,46 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # Run this on the VPS to install enoxd as a systemd bootstrap service.
 # The enoxd binary must already be present in the same directory as this script,
 # or at /tmp/enoxd (deploy-rendezvous.sh puts it there).
 #
 # Usage:
-#   bash setup-rendezvous.sh [--port PORT]
+#   bash setup-rendezvous.sh [--port PORT] [--relay-port PORT]
 #
 # Defaults:
 #   PORT=36521
+#   RELAY_PORT=PORT+1
 set -euo pipefail
 
 PORT=36521
+RELAY_PORT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --port) PORT="$2"; shift 2 ;;
+        --relay-port) RELAY_PORT="$2"; shift 2 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
+
+if [[ -z "$RELAY_PORT" ]]; then
+    RELAY_PORT=$((PORT + 1))
+fi
 
 BINARY_SRC="${BINARY_SRC:-/tmp/enoxd}"
 BINARY_DST="/usr/local/bin/enoxd"
 SERVICE_FILE="/etc/systemd/system/enoxd-bootstrap.service"
 SERVICE_USER="enoxian"
 
-echo "Setting up enoxian rendezvous server on port $PORT"
+echo "Setting up enoxian rendezvous server on port $PORT and relay port $RELAY_PORT"
 
 # Install binary
+if [[ ! -f "$BINARY_SRC" ]]; then
     echo "Error: binary not found at $BINARY_SRC"
     echo "Run deploy-rendezvous.sh from your local machine instead."
     exit 1
 fi
+
+systemctl stop enoxd-bootstrap 2>/dev/null || true
 
 echo "  Installing binary $BINARY_DST"
 cp "$BINARY_SRC" "$BINARY_DST"
@@ -57,7 +67,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$BINARY_DST --bootstrap --port $PORT
+ExecStart=$BINARY_DST --bootstrap --port $PORT --relay-port $RELAY_PORT
 Restart=always
 RestartSec=5
 User=$SERVICE_USER
@@ -70,30 +80,31 @@ WantedBy=multi-user.target
 EOF
 
 # Firewall
-echo "  Opening port $PORT (UDP + TCP)"
+echo "  Opening port $PORT (UDP + TCP) and $RELAY_PORT/tcp"
 if command -v ufw &>/dev/null; then
     ufw allow "$PORT/udp" comment "enoxian rendezvous QUIC" 2>/dev/null || true
     ufw allow "$PORT/tcp" comment "enoxian rendezvous HTTP" 2>/dev/null || true
+    ufw allow "$RELAY_PORT/tcp" comment "enoxian circuit relay" 2>/dev/null || true
 elif command -v firewall-cmd &>/dev/null; then
     firewall-cmd --permanent --add-port="$PORT/udp" 2>/dev/null || true
     firewall-cmd --permanent --add-port="$PORT/tcp" 2>/dev/null || true
+    firewall-cmd --permanent --add-port="$RELAY_PORT/tcp" 2>/dev/null || true
     firewall-cmd --reload 2>/dev/null || true
 else
-    echo "  (no ufw/firewalld found 鈥?open port $PORT/udp and $PORT/tcp manually)"
+    echo "  (no ufw/firewalld found - open $PORT/udp, $PORT/tcp, and $RELAY_PORT/tcp manually)"
 fi
 
 # Enable and start
 echo "  Enabling and starting service"
 systemctl daemon-reload
 systemctl enable enoxd-bootstrap
-systemctl stop enoxd-bootstrap 2>/dev/null || true
 systemctl reset-failed enoxd-bootstrap 2>/dev/null || true
 systemctl start enoxd-bootstrap
 
 sleep 1
 if systemctl is-active --quiet enoxd-bootstrap; then
     echo ""
-    echo "Rendezvous server running on port $PORT"
+    echo "Rendezvous server running on port $PORT; relay on TCP $RELAY_PORT"
     echo ""
     echo "  Peer ID:"
     curl -sf "http://localhost:$PORT/peer-id" | grep -o '"peer_id":"[^"]*"' | cut -d'"' -f4 \

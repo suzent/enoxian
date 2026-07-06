@@ -43,7 +43,18 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
     // relay_addr: from circle config (saved at `enox enter` time from the invite).
     // The user never has to think about this — if they joined via a relay invite,
     // they can forward that same relay to the people they invite.
-    let relay_addr = args.relay.clone().or_else(|| config.relay_addrs.first().cloned());
+    let cli_relay = match args.relay {
+        Some(ref s) => Some(rdvz::resolve_relay(s, client).await
+            .with_context(|| format!("could not resolve relay server '{s}'"))?),
+        None => None,
+    };
+    let relay_addr = if let Some(addr) = cli_relay
+        .or_else(|| config.relay_addrs.first().cloned())
+    {
+        Some(addr)
+    } else {
+        rdvz::resolve_default_relay().await
+    };
 
     // rendezvous_addr: explicit flag (auto-resolved) > saved in circle config.
     let cli_rendezvous = match args.rendezvous {

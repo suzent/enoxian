@@ -6,7 +6,7 @@
 #   -Local           Cross-compile locally using cross (Docker) or WSL2
 #
 # Usage:
-#   .\scripts\rendezvous\deploy-rendezvous.ps1 user@host [-Port N] [-BuildOnRemote] [-Local] [-Update]
+#   .\scripts\rendezvous\deploy-rendezvous.ps1 user@host [-Port N] [-RelayPort N] [-BuildOnRemote] [-Local] [-Update]
 #
 # Examples:
 #   .\scripts\rendezvous\deploy-rendezvous.ps1 root@sg.example.com
@@ -15,6 +15,7 @@
 param(
     [Parameter(Mandatory)][string]$Target,
     [int]$Port = 36521,
+    [int]$RelayPort = 0,
     [ValidateSet("x86_64","aarch64")][string]$Arch = "x86_64",
     [switch]$BuildOnRemote,
     [switch]$Local,
@@ -26,6 +27,11 @@ $ErrorActionPreference = "Stop"
 $ScriptsDir = Split-Path $PSScriptRoot -Parent
 $RepoDir = Split-Path $ScriptsDir -Parent
 $Repo    = "suzent/enoxian"
+$RemoteBinary = "/tmp/enoxd"
+
+if ($RelayPort -eq 0) {
+    $RelayPort = $Port + 1
+}
 
 # Load .env from repo root if token not already provided
 if (-not $Token) {
@@ -62,14 +68,27 @@ if ($BuildOnRemote) {
 
     $useCross = $null -ne (Get-Command cross -ErrorAction SilentlyContinue)
     $useWsl   = $null -ne (Get-Command wsl   -ErrorAction SilentlyContinue)
+    if ($useCross) {
+        docker version --format '{{ .Server.Os }}' *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  cross is installed, but Docker is not running; falling back to WSL2."
+            $useCross = $false
+        }
+    }
 
     Write-Host "▶ Building enoxd for Linux ($LinuxTarget)..."
     Push-Location $RepoDir
 
     if ($useCross) {
         Write-Host "  Using: cross (Docker)"
-        cross build --release --bin enoxd --target $LinuxTarget
-        if ($LASTEXITCODE -ne 0) { throw "cross build failed" }
+        $oldSkipFrontend = $env:ENOXIAN_SKIP_FRONTEND_BUILD
+        $env:ENOXIAN_SKIP_FRONTEND_BUILD = "1"
+        try {
+            cross build --release --bin enoxd --target $LinuxTarget
+            if ($LASTEXITCODE -ne 0) { throw "cross build failed" }
+        } finally {
+            $env:ENOXIAN_SKIP_FRONTEND_BUILD = $oldSkipFrontend
+        }
     } elseif ($useWsl) {
         Write-Host "  Using: WSL2"
         $wslRepoDir = (wsl wslpath ($RepoDir.Replace('\','/'))).Trim()
@@ -77,6 +96,7 @@ if ($BuildOnRemote) {
         @"
 #!/usr/bin/env bash
 set -eo pipefail
+export ENOXIAN_SKIP_FRONTEND_BUILD=1
 command -v musl-gcc &>/dev/null || sudo apt-get install -y -q build-essential musl-tools
 . "`$HOME/.cargo/env"
 rustup target add $LinuxTarget
@@ -96,7 +116,9 @@ cargo build --release --bin enoxd --target $LinuxTarget 2>&1
     if (-not (Test-Path $BinaryPath)) { throw "Binary not found at $BinaryPath" }
     $size = (Get-Item $BinaryPath).Length / 1MB
     Write-Host "  Built: $BinaryPath ($([math]::Round($size,1)) MB)"
-    scp $BinaryPath "${Target}:/tmp/enoxd"
+    $RemoteBinary = (ssh $Target "mktemp /tmp/enoxd.XXXXXX").Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $RemoteBinary) { throw "failed to allocate remote temp file" }
+    scp $BinaryPath "${Target}:$RemoteBinary"
     if ($LASTEXITCODE -ne 0) { throw "scp failed" }
 
 } else {
@@ -135,7 +157,7 @@ systemctl is-active enoxd-bootstrap && echo "✦ Service restarted" \
     $SetupScript = Join-Path $PSScriptRoot "setup-rendezvous.sh"
     scp $SetupScript "${Target}:/tmp/setup-rendezvous.sh"
     if ($LASTEXITCODE -ne 0) { throw "scp of setup script failed" }
-    ssh $Target "bash /tmp/setup-rendezvous.sh --port $Port"
+    ssh $Target "BINARY_SRC='$RemoteBinary' bash /tmp/setup-rendezvous.sh --port $Port --relay-port $RelayPort"
 }
 
 if ($LASTEXITCODE -ne 0) { throw "Remote setup failed" }

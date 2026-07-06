@@ -2,6 +2,11 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
+    if std::env::var_os("ENOXIAN_SKIP_FRONTEND_BUILD").is_some() {
+        println!("cargo:warning=Skipping frontend build (ENOXIAN_SKIP_FRONTEND_BUILD is set)");
+        return;
+    }
+
     // Only run npm build in release mode. Dev builds use the Vite dev server.
     let profile = std::env::var("PROFILE").unwrap_or_default();
     if profile != "release" {

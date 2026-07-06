@@ -64,16 +64,47 @@ pub async fn resolve_default() -> Option<String> {
 /// resolved multiaddr.
 pub async fn resolve_default_relay() -> Option<String> {
     let host = crate::defaults::DEFAULT_RELAY?;
-    // Optimization: if the relay host equals the rendezvous host we can skip a
-    // second HTTP round-trip and just reuse resolve_default()'s result.
-    if crate::defaults::DEFAULT_RENDEZVOUS == Some(host) {
-        return resolve_default().await;
-    }
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .ok()?;
-    resolve(host, &client).await.ok()
+    resolve_relay(host, &client).await.ok()
+}
+
+/// Resolve a bootstrap relay address into a TCP libp2p relay multiaddr.
+///
+/// Short host forms use the same HTTP `/peer-id` endpoint as rendezvous
+/// resolution, but relay traffic itself runs on TCP port `http_port + 1` by
+/// default so it does not collide with the HTTP control endpoint.
+pub async fn resolve_relay(input: &str, client: &reqwest::Client) -> Result<String> {
+    if input.starts_with('/') {
+        return Ok(input.to_string());
+    }
+
+    let (host, http_port) = split_host_port(input, 36521);
+    let relay_port = http_port.saturating_add(1);
+    let url = format!("http://{host}:{http_port}/peer-id");
+    let resp = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .with_context(|| format!("could not reach bootstrap server at {url} — is it running?"))?;
+
+    if !resp.status().is_success() {
+        bail!("bootstrap server at {url} returned {}", resp.status());
+    }
+
+    let json: serde_json::Value = resp.json().await
+        .context("bootstrap server returned invalid JSON")?;
+    let peer_id = json["peer_id"].as_str()
+        .context("bootstrap server response missing 'peer_id' field")?;
+
+    if host.parse::<std::net::Ipv4Addr>().is_ok() {
+        Ok(format!("/ip4/{host}/tcp/{relay_port}/p2p/{peer_id}"))
+    } else {
+        Ok(format!("/dns4/{host}/tcp/{relay_port}/p2p/{peer_id}"))
+    }
 }
 
 fn split_host_port(input: &str, default_port: u16) -> (String, u16) {

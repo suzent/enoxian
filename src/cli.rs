@@ -12,6 +12,11 @@ pub struct DaemonCli {
     #[arg(long, default_value = "36521")]
     pub port: u16,
 
+    /// TCP port for public circuit relay when running with --bootstrap.
+    /// Defaults to --port + 1 when omitted.
+    #[arg(long)]
+    pub relay_port: Option<u16>,
+
     /// Run as a public bootstrap server (rendezvous + relay, no circles).
     /// Generates a stable keypair at ~/.enoxian/bootstrap.key on first run.
     /// Circle members connect via QUIC — no PSK required.
@@ -384,7 +389,7 @@ pub struct InviteArgs {
     #[arg(long)]
     pub peer: Option<String>,
 
-    /// Embed a relay multiaddr for WAN connectivity (e.g. /ip4/1.2.3.4/tcp/36521/p2p/<peer_id>)
+    /// Embed a relay multiaddr for WAN connectivity (e.g. /ip4/1.2.3.4/tcp/36522/p2p/<peer_id>)
     #[arg(long)]
     pub relay: Option<String>,
 

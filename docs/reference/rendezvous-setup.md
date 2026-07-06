@@ -92,8 +92,8 @@ Output at the end:
 ### Custom port
 
 ```bash
-./scripts/rendezvous/deploy-rendezvous.sh user@your-vps --port 36521
-.\scripts\rendezvous\deploy-rendezvous.ps1 user@your-vps -Port 36521
+./scripts/rendezvous/deploy-rendezvous.sh user@your-vps --port 36521 --relay-port 36522
+.\scripts\rendezvous\deploy-rendezvous.ps1 user@your-vps -Port 36521 -RelayPort 36522
 ```
 
 ### Updating after a code change
@@ -167,7 +167,7 @@ scp target/release/enoxd user@your-vps:/usr/local/bin/enoxd
 ### 2. Run directly
 
 ```bash
-enoxd --bootstrap
+enoxd --bootstrap --port 36521 --relay-port 36522
 ```
 
 The server generates a stable Ed25519 keypair at `~/.enoxian/bootstrap.key` on first run. The peer ID is stable across restarts — **do not delete this file**.
@@ -178,9 +178,13 @@ Startup output:
 Bootstrap server starting
   PeerID : 12D3KooWrdv...
   HTTP   : http://0.0.0.0:36521/peer-id
+  Relay  : tcp/0.0.0.0:36522
 Bootstrap listening on /ip4/0.0.0.0/udp/36521/quic-v1
-  Rendezvous + relay address for circle members:
+  Rendezvous address for circle members:
     /ip4/0.0.0.0/udp/36521/quic-v1/p2p/12D3KooWrdv...
+Bootstrap listening on /ip4/0.0.0.0/tcp/36522
+  Relay address for circle members:
+    /ip4/0.0.0.0/tcp/36522/p2p/12D3KooWrdv...
 ```
 
 ### 3. Systemd service (manual)
@@ -193,7 +197,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/enoxd --bootstrap --port 36521
+ExecStart=/usr/local/bin/enoxd --bootstrap --port 36521 --relay-port 36522
 Restart=always
 RestartSec=5
 User=enoxian
@@ -211,16 +215,19 @@ sudo systemctl enable --now enoxd-bootstrap
 
 ### 4. Firewall
 
-Open port `36521` for both UDP (QUIC) and TCP (HTTP peer-id endpoint):
+Open `36521/udp` for QUIC rendezvous, `36521/tcp` for the HTTP peer-id
+endpoint, and `36522/tcp` for circuit relay:
 
 ```bash
 # ufw
 sudo ufw allow 36521/udp
 sudo ufw allow 36521/tcp
+sudo ufw allow 36522/tcp
 
 # firewalld
 sudo firewall-cmd --permanent --add-port=36521/udp
 sudo firewall-cmd --permanent --add-port=36521/tcp
+sudo firewall-cmd --permanent --add-port=36522/tcp
 sudo firewall-cmd --reload
 ```
 
@@ -247,7 +254,7 @@ journalctl -u enoxd-bootstrap -f
 1. Member A starts their daemon — it dials the rendezvous server over QUIC and registers under their circle UUID namespace (TTL = 2h, refreshed every hour).
 2. Member B joins via an invite with the rendezvous address embedded, dials the server, and discovers Member A's peer ID and addresses.
 3. Member B dials Member A directly over PSK-TCP. If direct connection succeeds, the rendezvous server is no longer in the data path.
-4. If direct connection fails (strict NAT on both sides), traffic routes through the relay built into the bootstrap server.
+4. If direct connection fails (strict NAT on both sides), traffic routes through the relay built into the bootstrap server on TCP `36522`.
 
 The bootstrap server is used for discovery and, when direct dialing fails, as a
 circuit relay fallback. When a direct path exists, ongoing sync traffic flows
