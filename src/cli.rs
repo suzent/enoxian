@@ -17,6 +17,10 @@ pub struct DaemonCli {
     #[arg(long)]
     pub relay_port: Option<u16>,
 
+    /// Public DNS hostname advertised by the bootstrap server, e.g. relay.enoxian.com.
+    #[arg(long, env = "ENOXIAN_ADVERTISE_HOST")]
+    pub advertise_host: Option<String>,
+
     /// Run as a public bootstrap server (rendezvous + relay, no circles).
     /// Generates a stable keypair at ~/.enoxian/bootstrap.key on first run.
     /// Circle members connect via QUIC — no PSK required.

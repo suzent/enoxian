@@ -31,7 +31,7 @@ use crate::{
     network::bootstrap_behaviour::{BootstrapBehaviour, BootstrapEvent},
 };
 
-pub async fn run(port: u16, relay_port: u16) -> Result<()> {
+pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Result<()> {
     let keypair = load_or_create_keypair()?;
     let peer_id = keypair.public().to_peer_id();
     let peer_id_str = peer_id.to_string();
@@ -89,6 +89,23 @@ pub async fn run(port: u16, relay_port: u16) -> Result<()> {
     swarm.listen_on(rendezvous_listen_addr)?;
     swarm.listen_on(relay_listen_addr)?;
 
+    if let Some(host) = advertise_host {
+        let host = host.trim().trim_end_matches('.');
+        anyhow::ensure!(!host.is_empty(), "--advertise-host cannot be empty");
+
+        let rendezvous_addr: Multiaddr = format!("/dns4/{host}/udp/{port}/quic-v1")
+            .parse()
+            .with_context(|| format!("invalid advertised hostname '{host}'"))?;
+        let relay_addr: Multiaddr = format!("/dns4/{host}/tcp/{relay_port}")
+            .parse()
+            .with_context(|| format!("invalid advertised hostname '{host}'"))?;
+
+        info!("  Advertise: {rendezvous_addr}/p2p/{peer_id}");
+        info!("             {relay_addr}/p2p/{peer_id}");
+        swarm.add_external_address(rendezvous_addr);
+        swarm.add_external_address(relay_addr);
+    }
+
     // ── HTTP server: GET /peer-id — allows `enox` CLI to auto-resolve the ──────
     // full multiaddr without the operator having to copy-paste the peer ID.
     // Runs on TCP:<port> alongside QUIC on UDP:<port> — no conflict.
@@ -107,6 +124,9 @@ pub async fn run(port: u16, relay_port: u16) -> Result<()> {
         match swarm.select_next_some().await {
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!("Bootstrap listening on {address}");
+                if is_public_listen_addr(&address) {
+                    swarm.add_external_address(address.clone());
+                }
                 if address.to_string().contains("/udp/") {
                     info!("  Rendezvous address for circle members:");
                 } else {
@@ -152,6 +172,30 @@ pub async fn run(port: u16, relay_port: u16) -> Result<()> {
             _ => {}
         }
     }
+}
+
+fn is_public_listen_addr(addr: &Multiaddr) -> bool {
+    use libp2p::multiaddr::Protocol;
+
+    addr.iter().any(|protocol| match protocol {
+        Protocol::Ip4(ip) => {
+            !ip.is_private()
+                && !ip.is_loopback()
+                && !ip.is_link_local()
+                && !ip.is_unspecified()
+                && !ip.is_multicast()
+                && !ip.is_broadcast()
+                && !ip.is_documentation()
+        }
+        Protocol::Ip6(ip) => {
+            !ip.is_loopback()
+                && !ip.is_unspecified()
+                && !ip.is_multicast()
+                && !ip.is_unique_local()
+                && !ip.is_unicast_link_local()
+        }
+        _ => false,
+    })
 }
 
 async fn peer_id_handler(State(peer_id): State<String>) -> Json<serde_json::Value> {

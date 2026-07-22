@@ -63,12 +63,12 @@ The deploy script downloads the latest pre-built binary from GitHub Releases and
 
 **macOS / Linux:**
 ```bash
-./scripts/rendezvous/deploy-rendezvous.sh user@your-vps
+./scripts/rendezvous/deploy-rendezvous.sh user@your-vps --advertise-host enox.yourdomain.com
 ```
 
 **Windows (PowerShell):**
 ```powershell
-.\scripts\rendezvous\deploy-rendezvous.ps1 user@your-vps
+.\scripts\rendezvous\deploy-rendezvous.ps1 user@your-vps -AdvertiseHost enox.yourdomain.com
 ```
 
 This will:
@@ -92,8 +92,8 @@ Output at the end:
 ### Custom port
 
 ```bash
-./scripts/rendezvous/deploy-rendezvous.sh user@your-vps --port 36521 --relay-port 36522
-.\scripts\rendezvous\deploy-rendezvous.ps1 user@your-vps -Port 36521 -RelayPort 36522
+./scripts/rendezvous/deploy-rendezvous.sh user@your-vps --port 36521 --relay-port 36522 --advertise-host enox.yourdomain.com
+.\scripts\rendezvous\deploy-rendezvous.ps1 user@your-vps -Port 36521 -RelayPort 36522 -AdvertiseHost enox.yourdomain.com
 ```
 
 ### Updating after a code change
@@ -107,8 +107,8 @@ git tag v0.2.0 && git push origin v0.2.0
 GitHub Actions builds the binaries automatically. Once the release is published, deploy:
 
 ```bash
-./scripts/rendezvous/deploy-rendezvous.sh user@your-vps --update
-.\scripts\rendezvous\deploy-rendezvous.ps1 user@your-vps -Update
+./scripts/rendezvous/deploy-rendezvous.sh user@your-vps --update --advertise-host enox.yourdomain.com
+.\scripts\rendezvous\deploy-rendezvous.ps1 user@your-vps -Update -AdvertiseHost enox.yourdomain.com
 ```
 
 ### Building manually (no release tag)
@@ -167,7 +167,7 @@ scp target/release/enoxd user@your-vps:/usr/local/bin/enoxd
 ### 2. Run directly
 
 ```bash
-enoxd --bootstrap --port 36521 --relay-port 36522
+enoxd --bootstrap --port 36521 --relay-port 36522 --advertise-host enox.yourdomain.com
 ```
 
 The server generates a stable Ed25519 keypair at `~/.enoxian/bootstrap.key` on first run. The peer ID is stable across restarts — **do not delete this file**.
@@ -197,7 +197,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/enoxd --bootstrap --port 36521 --relay-port 36522
+ExecStart=/usr/local/bin/enoxd --bootstrap --port 36521 --relay-port 36522 --advertise-host enox.yourdomain.com
 Restart=always
 RestartSec=5
 User=enoxian

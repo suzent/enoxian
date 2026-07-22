@@ -4,12 +4,17 @@
 use anyhow::Result;
 use libp2p::{
     core::muxing::StreamMuxerBox,
-    dcutr, futures::StreamExt,
-    identify, kad, mdns, noise, pnet, quic, relay, rendezvous, tcp, yamux,
-    swarm::{behaviour::toggle::Toggle, dial_opts::{DialOpts, PeerCondition}, SwarmEvent},
-    Multiaddr, PeerId, SwarmBuilder,
+    dcutr,
+    futures::StreamExt,
+    identify, kad, mdns, noise, pnet, quic, relay, rendezvous,
+    swarm::{
+        behaviour::toggle::Toggle,
+        dial_opts::{DialOpts, PeerCondition},
+        SwarmEvent,
+    },
+    tcp, yamux, Multiaddr, PeerId, SwarmBuilder,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -17,7 +22,11 @@ use yrs::{Array, Observable};
 
 use crate::{
     config::{self, CircleConfig, JoinPolicy},
-    control::{MemberEntry, MemberRole, MLS_KEY_PACKAGES_KEY, MLS_OWNER_CLAIMS_KEY, MLS_PENDING_KEY, MLS_WELCOMES_KEY, MLS_COMMITS_KEY, MlsCommitEntry, OwnerClaim, PendingEntry, MEMBER_LIST_KEY},
+    control::{
+        MemberEntry, MemberRole, MlsCommitEntry, OwnerClaim, PendingEntry, MEMBER_LIST_KEY,
+        MLS_COMMITS_KEY, MLS_KEY_PACKAGES_KEY, MLS_OWNER_CLAIMS_KEY, MLS_PENDING_KEY,
+        MLS_WELCOMES_KEY,
+    },
     crypto::{keypair_from_hex, psk_from_hex},
     daemon::DaemonState,
     mls::{MlsGroupManager, MlsIdentity, SharedMlsState},
@@ -54,7 +63,10 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
 
     info!(
         "  Circle '{}' ({}) — PeerID: {} — Workspace: {}",
-        config.circle_name, config.circle_id, peer_id, workspace.display()
+        config.circle_name,
+        config.circle_id,
+        peer_id,
+        workspace.display()
     );
 
     let agent_id = presence::local_agent_id(&peer_id);
@@ -107,8 +119,14 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     {
         use yrs::{Map, Transact};
         let owner_claim_msg = format!("owner:{}", config.owner);
-        let owner_sig = keypair.sign(owner_claim_msg.as_bytes()).map(hex::encode).unwrap_or_default();
-        let claim = OwnerClaim { owner: config.owner.clone(), sig: owner_sig };
+        let owner_sig = keypair
+            .sign(owner_claim_msg.as_bytes())
+            .map(hex::encode)
+            .unwrap_or_default();
+        let claim = OwnerClaim {
+            owner: config.owner.clone(),
+            sig: owner_sig,
+        };
         if let Ok(json_str) = serde_json::to_string(&claim) {
             let claims_map = state.control.get_or_insert_map(MLS_OWNER_CLAIMS_KEY);
             let mut txn = state.control.transact_mut();
@@ -119,17 +137,27 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     // Auto-register local peer in the member list so `enox member list` shows all participants.
     // Only writes if no entry exists yet — preserves explicit removals across restarts.
     {
-        use yrs::{Map, Out, Any, Transact};
+        use yrs::{Any, Map, Out, Transact};
         let map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
         let already_registered = {
             let txn = state.control.transact();
-            matches!(map.get(&txn, peer_id.to_string().as_str()), Some(Out::Any(Any::String(_))))
+            matches!(
+                map.get(&txn, peer_id.to_string().as_str()),
+                Some(Out::Any(Any::String(_)))
+            )
         };
         if !already_registered {
             let is_local_admin = cdir.join("admin.key").exists();
-            let role = if is_local_admin { MemberRole::Admin } else { MemberRole::Member };
+            let role = if is_local_admin {
+                MemberRole::Admin
+            } else {
+                MemberRole::Member
+            };
             let msg = format!("add:{}:{}", peer_id, role);
-            let signature = keypair.sign(msg.as_bytes()).map(hex::encode).unwrap_or_default();
+            let signature = keypair
+                .sign(msg.as_bytes())
+                .map(hex::encode)
+                .unwrap_or_default();
             let device_label = crate::identity::read_identity_display()
                 .map(|(label, _)| label)
                 .unwrap_or_default();
@@ -154,7 +182,9 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     let txn = state.control.transact();
                     map.iter(&txn)
                         .filter_map(|(key, val)| {
-                            if key == peer_id.to_string().as_str() { return None; }
+                            if key == peer_id.to_string().as_str() {
+                                return None;
+                            }
                             if let Out::Any(yrs::Any::String(s)) = val {
                                 if let Ok(m) = serde_json::from_str::<MemberEntry>(&s) {
                                     if m.agent_id == agent_id {
@@ -199,7 +229,10 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     agents: crate::identity::read_local_agents(),
                     owner_sig: {
                         let owner_claim_msg = format!("owner:{}", config.owner);
-                        keypair.sign(owner_claim_msg.as_bytes()).map(hex::encode).unwrap_or_default()
+                        keypair
+                            .sign(owner_claim_msg.as_bytes())
+                            .map(hex::encode)
+                            .unwrap_or_default()
                     },
                     requested_at: chrono::Utc::now(),
                 };
@@ -297,7 +330,10 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         {
             use yrs::Out;
             let txn = state.control.transact();
-            if matches!(pending_map.get(&txn, self_peer_str.as_str()), Some(Out::Any(_))) {
+            if matches!(
+                pending_map.get(&txn, self_peer_str.as_str()),
+                Some(Out::Any(_))
+            ) {
                 drop(txn);
                 let mut txn = state.control.transact_mut();
                 pending_map.remove(&mut txn, self_peer_str.as_str());
@@ -306,24 +342,30 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
 
         // Case 2: arrives later via P2P sync. Observe and evict immediately.
         let state_for_self_evict = state.clone();
-        let self_evict_sub = pending_map.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
-            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
-            if !is_p2p { return; }
-            for (key, change) in event.keys(txn) {
-                if key.as_ref() != self_peer_str.as_str() { continue; }
-                if let yrs::types::EntryChange::Inserted(_) = change {
-                    // Our own peer ID was just inserted by a remote — remove it.
-                    let s = state_for_self_evict.clone();
-                    let peer_str = self_peer_str.clone();
-                    tokio::spawn(async move {
-                        use yrs::{Map, Transact};
-                        let pm = s.control.get_or_insert_map(MLS_PENDING_KEY);
-                        let mut txn = s.control.transact_mut();
-                        pm.remove(&mut txn, peer_str.as_str());
-                    });
+        let self_evict_sub = pending_map.observe(
+            move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                if !is_p2p {
+                    return;
                 }
-            }
-        });
+                for (key, change) in event.keys(txn) {
+                    if key.as_ref() != self_peer_str.as_str() {
+                        continue;
+                    }
+                    if let yrs::types::EntryChange::Inserted(_) = change {
+                        // Our own peer ID was just inserted by a remote — remove it.
+                        let s = state_for_self_evict.clone();
+                        let peer_str = self_peer_str.clone();
+                        tokio::spawn(async move {
+                            use yrs::{Map, Transact};
+                            let pm = s.control.get_or_insert_map(MLS_PENDING_KEY);
+                            let mut txn = s.control.transact_mut();
+                            pm.remove(&mut txn, peer_str.as_str());
+                        });
+                    }
+                }
+            },
+        );
         std::mem::forget(self_evict_sub);
     }
 
@@ -337,25 +379,31 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             let member_map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
             let self_peer_str = peer_id.to_string();
             let state_for_approval = state.clone();
-            let approval_sub = member_map.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
-                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
-                if !is_p2p { return; }
-                for (key, change) in event.keys(txn) {
-                    if key.as_ref() != self_peer_str.as_str() { continue; }
-                    if let yrs::types::EntryChange::Inserted(_) = change {
-                        // Admin just wrote our member entry via P2P sync — remove our pending entry.
-                        let s = state_for_approval.clone();
-                        let peer_str = self_peer_str.clone();
-                        tokio::spawn(async move {
-                            use yrs::{Map, Transact as _};
-                            let pm = s.control.get_or_insert_map(MLS_PENDING_KEY);
-                            let mut txn = s.control.transact_mut();
-                            pm.remove(&mut txn, peer_str.as_str());
-                            tracing::info!("[member] removed pending entry after P2P approval");
-                        });
+            let approval_sub = member_map.observe(
+                move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+                    let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                    if !is_p2p {
+                        return;
                     }
-                }
-            });
+                    for (key, change) in event.keys(txn) {
+                        if key.as_ref() != self_peer_str.as_str() {
+                            continue;
+                        }
+                        if let yrs::types::EntryChange::Inserted(_) = change {
+                            // Admin just wrote our member entry via P2P sync — remove our pending entry.
+                            let s = state_for_approval.clone();
+                            let peer_str = self_peer_str.clone();
+                            tokio::spawn(async move {
+                                use yrs::{Map, Transact as _};
+                                let pm = s.control.get_or_insert_map(MLS_PENDING_KEY);
+                                let mut txn = s.control.transact_mut();
+                                pm.remove(&mut txn, peer_str.as_str());
+                                tracing::info!("[member] removed pending entry after P2P approval");
+                            });
+                        }
+                    }
+                },
+            );
             std::mem::forget(approval_sub);
         }
     }
@@ -366,20 +414,24 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
         let state_for_pending = state.clone();
         let mls_for_pending = mls.clone();
-        let pending_sub = pending_map.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
-            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
-            if !is_p2p { return; }
-            for (key, change) in event.keys(txn) {
-                if let yrs::types::EntryChange::Inserted(_) = change {
-                    let peer_id_str = key.to_string();
-                    let s = state_for_pending.clone();
-                    let m = mls_for_pending.clone();
-                    tokio::spawn(async move {
-                        auto_approve(peer_id_str, s, m).await;
-                    });
+        let pending_sub = pending_map.observe(
+            move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                if !is_p2p {
+                    return;
                 }
-            }
-        });
+                for (key, change) in event.keys(txn) {
+                    if let yrs::types::EntryChange::Inserted(_) = change {
+                        let peer_id_str = key.to_string();
+                        let s = state_for_pending.clone();
+                        let m = mls_for_pending.clone();
+                        tokio::spawn(async move {
+                            auto_approve(peer_id_str, s, m).await;
+                        });
+                    }
+                }
+            },
+        );
         std::mem::forget(pending_sub);
     }
 
@@ -394,20 +446,24 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             let our_peer_id_str = peer_id.to_string();
             let mls_w = mls.clone();
             let state_w = state.clone();
-            let welcome_sub = welcomes_map.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
-                use yrs::types::EntryChange;
-                for (key, change) in event.keys(txn) {
-                    if key.as_ref() != our_peer_id_str.as_str() { continue; }
-                    if let EntryChange::Inserted(yrs::Out::Any(yrs::Any::String(s))) = change {
-                        let welcome_hex = s.to_string();
-                        let mls = mls_w.clone();
-                        let state = state_w.clone();
-                        tokio::spawn(async move {
-                            consume_welcome(welcome_hex, mls, state).await;
-                        });
+            let welcome_sub = welcomes_map.observe(
+                move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+                    use yrs::types::EntryChange;
+                    for (key, change) in event.keys(txn) {
+                        if key.as_ref() != our_peer_id_str.as_str() {
+                            continue;
+                        }
+                        if let EntryChange::Inserted(yrs::Out::Any(yrs::Any::String(s))) = change {
+                            let welcome_hex = s.to_string();
+                            let mls = mls_w.clone();
+                            let state = state_w.clone();
+                            tokio::spawn(async move {
+                                consume_welcome(welcome_hex, mls, state).await;
+                            });
+                        }
                     }
-                }
-            });
+                },
+            );
             std::mem::forget(welcome_sub);
         }
     }
@@ -422,25 +478,28 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     // batch would otherwise spawn concurrent tasks fighting over the mutex.
     {
         use yrs::types::Change;
-        let (commit_tx, mut commit_rx) =
-            tokio::sync::mpsc::unbounded_channel::<MlsCommitEntry>();
+        let (commit_tx, mut commit_rx) = tokio::sync::mpsc::unbounded_channel::<MlsCommitEntry>();
         let commits_arr = state.control.get_or_insert_array(MLS_COMMITS_KEY);
-        let commits_sub = commits_arr.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::array::ArrayEvent| {
-            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
-            if !is_p2p { return; }
-            for change in event.delta(txn) {
-                #[allow(clippy::collapsible_match)]
-                if let Change::Added(values) = change {
-                    for val in values {
-                        if let yrs::Out::Any(yrs::Any::String(s)) = val {
-                            if let Ok(entry) = serde_json::from_str::<MlsCommitEntry>(s) {
-                                let _ = commit_tx.send(entry);
+        let commits_sub = commits_arr.observe(
+            move |txn: &yrs::TransactionMut, event: &yrs::types::array::ArrayEvent| {
+                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                if !is_p2p {
+                    return;
+                }
+                for change in event.delta(txn) {
+                    #[allow(clippy::collapsible_match)]
+                    if let Change::Added(values) = change {
+                        for val in values {
+                            if let yrs::Out::Any(yrs::Any::String(s)) = val {
+                                if let Ok(entry) = serde_json::from_str::<MlsCommitEntry>(s) {
+                                    let _ = commit_tx.send(entry);
+                                }
                             }
                         }
                     }
                 }
-            }
-        });
+            },
+        );
         std::mem::forget(commits_sub);
 
         let mls_c = mls.clone();
@@ -468,6 +527,27 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     // ── Build the P2P swarm ───────────────────────────────────────────────────
     let pnet_config = pnet::PnetConfig::new(pnet::PreSharedKey::new(psk_bytes));
     let keypair_clone = keypair.clone();
+    let relay_peer_ids =
+        crate::network::public_relay_transport::relay_peer_ids_from_addrs(
+            config.relay_addrs.iter(),
+        );
+    let relay_base_addrs = std::sync::Arc::new(std::sync::RwLock::new(
+        config
+            .relay_addrs
+            .iter()
+            .filter_map(|addr| addr.parse::<Multiaddr>().ok())
+            .filter_map(|addr| {
+                crate::network::public_relay_transport::relay_peer_id(&addr)
+                    .map(|peer_id| (peer_id, addr))
+            })
+            .collect::<HashMap<_, _>>(),
+    ));
+    let mut public_relay_peer_ids = relay_peer_ids.clone();
+    public_relay_peer_ids.extend(
+        crate::network::public_relay_transport::relay_peer_ids_from_addrs(
+            config.rendezvous_addrs.iter(),
+        ),
+    );
 
     // relay::client::new produces the relay transport (for dialing circuits) and
     // the relay client behaviour (for managing reservations).
@@ -479,13 +559,25 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             use futures::future::Either;
             use libp2p::{core::upgrade, Transport};
 
+            // Public TCP without pnet: only allowed for known relay server peer IDs.
+            // This lets us reserve circuit slots on public infrastructure that does
+            // not know the circle PSK, while keeping direct peer TCP PSK-protected.
+            let public_tcp = crate::network::public_relay_transport::PublicRelayTransport::new(
+                tcp::tokio::Transport::new(tcp::Config::default()),
+                public_relay_peer_ids.clone(),
+            )
+            .upgrade(upgrade::Version::V1Lazy)
+            .authenticate(noise::Config::new(key)?)
+            .multiplex(yamux::Config::default())
+            .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
+
             // TCP + PSK: used for LAN / direct connections within the circle.
             let tcp = tcp::tokio::Transport::new(tcp::Config::default())
-                .and_then(move |s, _| pnet_config.handshake(s))
-                .upgrade(upgrade::Version::V1Lazy)
-                .authenticate(noise::Config::new(key)?)
-                .multiplex(yamux::Config::default())
-                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
+            .and_then(move |s, _| pnet_config.handshake(s))
+            .upgrade(upgrade::Version::V1Lazy)
+            .authenticate(noise::Config::new(key)?)
+            .multiplex(yamux::Config::default())
+            .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
 
             // Relay: used for circuit connections through a relay node.
             // No PSK here — relay connections are already over an authenticated channel.
@@ -501,12 +593,17 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
 
             Ok(libp2p::dns::tokio::Transport::system(
-                tcp.or_transport(relay).or_transport(quic_t).map(|e, _| match e {
-                    Either::Left(Either::Left(x)) => x,
-                    Either::Left(Either::Right(x)) => x,
-                    Either::Right(x) => x,
-                })
-            )?.map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer))))
+                public_tcp
+                    .or_transport(tcp)
+                    .or_transport(relay)
+                    .or_transport(quic_t)
+                    .map(|e, _| match e {
+                        Either::Left(Either::Left(Either::Left(x))) => x,
+                        Either::Left(Either::Left(Either::Right(x))) => x,
+                        Either::Left(Either::Right(x)) => x,
+                        Either::Right(x) => x,
+                    }),
+            )?)
         })?
         .with_behaviour(move |key| {
             let pid = key.public().to_peer_id();
@@ -516,10 +613,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 // `Toggle::from(Some(..))`.
                 mdns: Toggle::from(None::<mdns::tokio::Behaviour>),
                 kad: {
-                    let mut kad = kad::Behaviour::new(
-                        pid,
-                        kad::store::MemoryStore::new(pid),
-                    );
+                    let mut kad = kad::Behaviour::new(pid, kad::store::MemoryStore::new(pid));
                     kad.set_mode(Some(kad::Mode::Server));
                     kad
                 },
@@ -570,7 +664,10 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 info!("[{}] dialing bootstrap peer {addr}", config.circle_id);
                 let _ = swarm.dial(addr);
             }
-            Err(e) => warn!("[{}] invalid peer addr '{}': {e}", config.circle_id, peer_str),
+            Err(e) => warn!(
+                "[{}] invalid peer addr '{}': {e}",
+                config.circle_id, peer_str
+            ),
         }
     }
 
@@ -590,14 +687,20 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 let circuit_addr = relay_addr
                     .clone()
                     .with(libp2p::multiaddr::Protocol::P2pCircuit);
-                info!("[{}] reserving relay slot at {relay_addr}", config.circle_id);
+                info!(
+                    "[{}] reserving relay slot at {relay_addr}",
+                    config.circle_id
+                );
                 if let Err(e) = swarm.listen_on(circuit_addr) {
                     warn!("[{}] relay circuit listen failed: {e}", config.circle_id);
                 } else {
                     reserved_any_relay = true;
                 }
             }
-            Err(e) => warn!("[{}] invalid relay addr '{}': {e}", config.circle_id, relay_str),
+            Err(e) => warn!(
+                "[{}] invalid relay addr '{}': {e}",
+                config.circle_id, relay_str
+            ),
         }
     }
 
@@ -641,14 +744,28 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         match rdvz_str.parse::<Multiaddr>() {
             Ok(addr) => {
                 if let Some(pid) = addr.iter().find_map(|p| {
-                    if let libp2p::multiaddr::Protocol::P2p(id) = p { Some(id) } else { None }
+                    if let libp2p::multiaddr::Protocol::P2p(id) = p {
+                        Some(id)
+                    } else {
+                        None
+                    }
                 }) {
                     rendezvous_peers.write().unwrap().insert(pid);
+                    if relay_peer_ids.contains(&pid) {
+                        info!(
+                            "[{}] rendezvous shares relay peer {pid}; using relay TCP connection",
+                            config.circle_id
+                        );
+                        continue;
+                    }
                 }
                 info!("[{}] dialing rendezvous server {addr}", config.circle_id);
                 let _ = swarm.dial(addr);
             }
-            Err(e) => warn!("[{}] invalid rendezvous addr '{}': {e}", config.circle_id, rdvz_str),
+            Err(e) => warn!(
+                "[{}] invalid rendezvous addr '{}': {e}",
+                config.circle_id, rdvz_str
+            ),
         }
     }
 
@@ -661,7 +778,11 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 Some(addr_str) => match addr_str.parse::<Multiaddr>() {
                     Ok(addr) => {
                         let peer_id = addr.iter().find_map(|p| {
-                            if let libp2p::multiaddr::Protocol::P2p(id) = p { Some(id) } else { None }
+                            if let libp2p::multiaddr::Protocol::P2p(id) = p {
+                                Some(id)
+                            } else {
+                                None
+                            }
                         });
                         if let Some(pid) = peer_id {
                             info!("[{cid}] resolved default rendezvous: {addr_str}");
@@ -684,7 +805,10 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     tokio::spawn(async move {
         let mut incoming = match stream_control.accept(sync::PROTOCOL) {
             Ok(s) => s,
-            Err(e) => { warn!("[stream] accept failed: {e}"); return; }
+            Err(e) => {
+                warn!("[stream] accept failed: {e}");
+                return;
+            }
         };
         loop {
             tokio::select! {
@@ -707,7 +831,10 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     tokio::spawn(async move {
         let mut incoming = match proposal_accept_ctrl.accept(proposal_sync::PROTOCOL) {
             Ok(s) => s,
-            Err(e) => { warn!("[proposal-sync] accept failed: {e}"); return; }
+            Err(e) => {
+                warn!("[proposal-sync] accept failed: {e}");
+                return;
+            }
         };
         loop {
             tokio::select! {
@@ -765,6 +892,14 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 // Background-resolved relay address arrived — reserve circuit slot (WAN fallback).
                 item = relay_rx.recv(), if relay_open => match item {
                     Some(relay_addr) => {
+                        if let Some(peer_id) =
+                            crate::network::public_relay_transport::relay_peer_id(&relay_addr)
+                        {
+                            relay_base_addrs
+                                .write()
+                                .unwrap()
+                                .insert(peer_id, relay_addr.clone());
+                        }
                         let circuit_addr = relay_addr
                             .clone()
                             .with(libp2p::multiaddr::Protocol::P2pCircuit);
@@ -930,12 +1065,11 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             // Synthesize our circuit address and add it to our tracked external addresses.
                             // This ensures that when we re-register with rendezvous, we tell other peers
                             // "You can reach me by tunneling through this relay".
-                            let relay_addr = swarm.external_addresses().find_map(|a| {
-                                let a_str = a.to_string();
-                                if a_str.contains(&relay_peer_id.to_string()) && !a_str.contains("p2p-circuit") {
-                                    Some(a.clone())
-                                } else { None }
-                            });
+                            let relay_addr = relay_base_addrs
+                                .read()
+                                .unwrap()
+                                .get(&relay_peer_id)
+                                .cloned();
 
                             if let Some(mut base_addr) = relay_addr {
                                 base_addr.push(libp2p::multiaddr::Protocol::P2pCircuit);
@@ -948,7 +1082,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                                 }
                                 // Immediately tell the swarm this is a valid external address for us
                                 swarm.add_external_address(base_addr);
-                                
+
                                 // Re-trigger rendezvous registration now that we have an external address
                                 for &rdvz_peer in &*rendezvous_peers.read().unwrap() {
                                     if swarm.is_connected(&rdvz_peer) {
@@ -998,7 +1132,11 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
 /// control doc changes often (presence heartbeats), but those are excluded from
 /// the snapshot, so a periodic full save is cheap and simple. See
 /// `crate::store::control`.
-fn spawn_control_persist(state: AppState, circle_dir: std::path::PathBuf, token: CancellationToken) {
+fn spawn_control_persist(
+    state: AppState,
+    circle_dir: std::path::PathBuf,
+    token: CancellationToken,
+) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         interval.tick().await; // skip the immediate first tick
@@ -1022,7 +1160,7 @@ fn spawn_control_persist(state: AppState, circle_dir: std::path::PathBuf, token:
 }
 
 async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::SharedMlsState) {
-    use yrs::{Map, Out, Any, Transact};
+    use yrs::{Any, Map, Out, Transact};
 
     let kp_hex = {
         let kp_map = state.control.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
@@ -1143,17 +1281,15 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
         }
     }
 
-    let _ = state.events.send(crate::control::CircleEvent::MemberAdded { peer_id: peer_id_str });
+    let _ = state.events.send(crate::control::CircleEvent::MemberAdded {
+        peer_id: peer_id_str,
+    });
 }
 
 // ── PSK rotation helpers ──────────────────────────────────────────────────────
 
 /// Called by the joiner when mls_welcomes[our_peer_id] arrives via P2P sync.
-async fn consume_welcome(
-    welcome_hex: String,
-    mls: SharedMlsState,
-    state: AppState,
-) {
+async fn consume_welcome(welcome_hex: String, mls: SharedMlsState, state: AppState) {
     let welcome_bytes = match hex::decode(&welcome_hex) {
         Ok(b) => b,
         Err(_) => return,
@@ -1166,14 +1302,19 @@ async fn consume_welcome(
     // the sync gate and for future content-layer encryption.
     let mut mls_locked = mls.lock().await;
     // Skip if we already joined (race: observer fires twice).
-    if mls_locked.group.is_some() { return; }
+    if mls_locked.group.is_some() {
+        return;
+    }
     let identity_ptr = &mls_locked.identity as *const MlsIdentity;
     let identity = unsafe { &*identity_ptr };
     // ratchet_tree_bytes is None because use_ratchet_tree_extension is enabled —
     // the ratchet tree is embedded inside the Welcome bytes.
     let group = match MlsGroupManager::join_from_welcome(identity, &welcome_bytes, None) {
         Ok(g) => g,
-        Err(e) => { warn!("[mls] join_from_welcome failed: {e}"); return; }
+        Err(e) => {
+            warn!("[mls] join_from_welcome failed: {e}");
+            return;
+        }
     };
     let _ = group.save(identity, &state.circle_dir);
     mls_locked.group = Some(group);
@@ -1184,13 +1325,11 @@ async fn consume_welcome(
 /// Skips commits already applied (epoch < current), skips our own commits,
 /// and does nothing if the group becomes inactive (we were removed — we'll
 /// be locked out naturally when others rotate to the new PSK).
-async fn apply_commit_entry(
-    entry: MlsCommitEntry,
-    mls: SharedMlsState,
-    state: AppState,
-) {
+async fn apply_commit_entry(entry: MlsCommitEntry, mls: SharedMlsState, state: AppState) {
     // Don't apply commits we ourselves produced.
-    if entry.sender_peer_id == state.peer_id { return; }
+    if entry.sender_peer_id == state.peer_id {
+        return;
+    }
 
     let commit_bytes = match hex::decode(&entry.data_hex) {
         Ok(b) => b,
@@ -1213,14 +1352,22 @@ async fn apply_commit_entry(
     let current_epoch = group.epoch();
     // Commit at epoch N advances us from epoch N → N+1.
     // Skip if we're already past this epoch.
-    if entry.epoch < current_epoch { return; }
+    if entry.epoch < current_epoch {
+        return;
+    }
 
     match group.apply_commit(identity, &commit_bytes) {
         Ok(()) => {
             let _ = group.save(identity, &state.circle_dir);
-            info!("[mls] applied Commit epoch {} → {} (membership tracked)", entry.epoch, group.epoch());
+            info!(
+                "[mls] applied Commit epoch {} → {} (membership tracked)",
+                entry.epoch,
+                group.epoch()
+            );
         }
-        Err(e) => { warn!("[mls] apply_commit (epoch {}): {e}", entry.epoch); }
+        Err(e) => {
+            warn!("[mls] apply_commit (epoch {}): {e}", entry.epoch);
+        }
     }
 }
 
@@ -1235,7 +1382,10 @@ async fn apply_commit_entry(
 pub async fn rotate_psk_and_restart(circle_id: &str, new_psk: [u8; 32], daemon: DaemonState) {
     let mut cfg = match config::load(circle_id) {
         Ok(c) => c,
-        Err(e) => { warn!("[mls] rotate_psk: config load failed: {e}"); return; }
+        Err(e) => {
+            warn!("[mls] rotate_psk: config load failed: {e}");
+            return;
+        }
     };
     cfg.psk_hex = hex::encode(new_psk);
     if let Err(e) = config::save(&cfg) {
@@ -1304,7 +1454,10 @@ pub fn readvertise_local_agents(daemon: &DaemonState) {
                     let _ = state.events.send(crate::control::CircleEvent::MemberAdded {
                         peer_id: self_key.clone(),
                     });
-                    info!("[member] re-advertised agents/label for self in {}", state.circle_id);
+                    info!(
+                        "[member] re-advertised agents/label for self in {}",
+                        state.circle_id
+                    );
                 }
             }
         }
@@ -1333,7 +1486,9 @@ fn stable_listen_port(circle_id: &str) -> u16 {
 fn is_routable_listen_addr(addr: &Multiaddr) -> bool {
     use libp2p::multiaddr::Protocol;
 
-    if addr.to_string().contains("p2p-circuit") { return false; }
+    if addr.to_string().contains("p2p-circuit") {
+        return false;
+    }
 
     for proto in addr.iter() {
         match proto {

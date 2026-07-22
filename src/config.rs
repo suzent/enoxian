@@ -55,6 +55,9 @@ pub struct CircleConfig {
 }
 
 pub fn enoxian_dir() -> Result<PathBuf> {
+    if let Ok(path) = std::env::var("ENOXIAN_HOME") {
+        return Ok(PathBuf::from(path));
+    }
     let base = dirs::home_dir().context("cannot resolve home directory")?;
     let current = base.join(".enoxian");
     let legacy = base.join(".enochian");

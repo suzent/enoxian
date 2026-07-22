@@ -13,7 +13,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = DaemonCli::parse();
     if cli.bootstrap {
         let relay_port = cli.relay_port.unwrap_or(cli.port.saturating_add(1));
-        enoxian::bootstrap::run(cli.port, relay_port).await
+        enoxian::bootstrap::run(cli.port, relay_port, cli.advertise_host.as_deref()).await
     } else {
         enoxian::commands::serve::run(ServeArgs {
             port: cli.port,

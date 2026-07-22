@@ -7,7 +7,7 @@
 #   --local           Cross-compile locally using cross (Docker)
 #
 # Usage:
-#   ./scripts/rendezvous/deploy-rendezvous.sh user@host [--port PORT] [--relay-port PORT] [--build-on-remote] [--local] [--update]
+#   ./scripts/rendezvous/deploy-rendezvous.sh user@host [--port PORT] [--relay-port PORT] [--advertise-host HOST] [--build-on-remote] [--local] [--update]
 #
 # Examples:
 #   ./scripts/rendezvous/deploy-rendezvous.sh root@sg.example.com
@@ -16,13 +16,14 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || "$1" == --* ]]; then
-    echo "Usage: $0 user@host [--port PORT] [--relay-port PORT] [--build-on-remote] [--local] [--arch x86_64|aarch64] [--update]"
+    echo "Usage: $0 user@host [--port PORT] [--relay-port PORT] [--advertise-host HOST] [--build-on-remote] [--local] [--arch x86_64|aarch64] [--update]"
     exit 1
 fi
 
 SSH_TARGET="$1"; shift
 PORT=36521
 RELAY_PORT=""
+ADVERTISE_HOST=""
 ARCH="x86_64"
 UPDATE_ONLY=false
 BUILD_ON_REMOTE=false
@@ -34,6 +35,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --port)            PORT="$2"; shift 2 ;;
         --relay-port)      RELAY_PORT="$2"; shift 2 ;;
+        --advertise-host)  ADVERTISE_HOST="$2"; shift 2 ;;
         --arch)            ARCH="$2"; shift 2 ;;
         --build-on-remote) BUILD_ON_REMOTE=true; shift ;;
         --local)           LOCAL=true; shift ;;
@@ -45,6 +47,11 @@ done
 
 if [[ -z "$RELAY_PORT" ]]; then
     RELAY_PORT=$((PORT + 1))
+fi
+
+if [[ -n "$ADVERTISE_HOST" && ! "$ADVERTISE_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
+    echo "Invalid --advertise-host: $ADVERTISE_HOST"
+    exit 1
 fi
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -118,7 +125,7 @@ else
 fi
 
 # ── Install on the VPS ────────────────────────────────────────────────────────
-if $UPDATE_ONLY; then
+if $UPDATE_ONLY && [[ -z "$ADVERTISE_HOST" ]]; then
     echo "▶ Updating binary and restarting service..."
     ssh "$SSH_TARGET" "
         set -e
@@ -132,5 +139,9 @@ if $UPDATE_ONLY; then
 else
     echo "▶ Running setup on $SSH_TARGET..."
     scp "$REPO_DIR/scripts/rendezvous/setup-rendezvous.sh" "$SSH_TARGET:/tmp/setup-rendezvous.sh"
-    ssh "$SSH_TARGET" "bash /tmp/setup-rendezvous.sh --port $PORT --relay-port $RELAY_PORT"
+    ADVERTISE_ARG=""
+    if [[ -n "$ADVERTISE_HOST" ]]; then
+        ADVERTISE_ARG=" --advertise-host $ADVERTISE_HOST"
+    fi
+    ssh "$SSH_TARGET" "bash /tmp/setup-rendezvous.sh --port $PORT --relay-port $RELAY_PORT$ADVERTISE_ARG"
 fi

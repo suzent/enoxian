@@ -6,7 +6,7 @@
 #   -Local           Cross-compile locally using cross (Docker) or WSL2
 #
 # Usage:
-#   .\scripts\rendezvous\deploy-rendezvous.ps1 user@host [-Port N] [-RelayPort N] [-BuildOnRemote] [-Local] [-Update]
+#   .\scripts\rendezvous\deploy-rendezvous.ps1 user@host [-Port N] [-RelayPort N] [-AdvertiseHost HOST] [-BuildOnRemote] [-Local] [-Update]
 #
 # Examples:
 #   .\scripts\rendezvous\deploy-rendezvous.ps1 root@sg.example.com
@@ -16,6 +16,7 @@ param(
     [Parameter(Mandatory)][string]$Target,
     [int]$Port = 36521,
     [int]$RelayPort = 0,
+    [ValidatePattern('^[A-Za-z0-9.-]*$')][string]$AdvertiseHost = "",
     [ValidateSet("x86_64","aarch64")][string]$Arch = "x86_64",
     [switch]$BuildOnRemote,
     [switch]$Local,
@@ -141,7 +142,7 @@ cargo build --release --bin enoxd --target $LinuxTarget 2>&1
 }
 
 # ── Install on the VPS ────────────────────────────────────────────────────────
-if ($Update) {
+if ($Update -and -not $AdvertiseHost) {
     Write-Host "▶ Updating binary and restarting service..."
     ssh $Target @'
 set -e
@@ -157,7 +158,8 @@ systemctl is-active enoxd-bootstrap && echo "✦ Service restarted" \
     $SetupScript = Join-Path $PSScriptRoot "setup-rendezvous.sh"
     scp $SetupScript "${Target}:/tmp/setup-rendezvous.sh"
     if ($LASTEXITCODE -ne 0) { throw "scp of setup script failed" }
-    ssh $Target "BINARY_SRC='$RemoteBinary' bash /tmp/setup-rendezvous.sh --port $Port --relay-port $RelayPort"
+    $AdvertiseArg = if ($AdvertiseHost) { " --advertise-host '$AdvertiseHost'" } else { "" }
+    ssh $Target "BINARY_SRC='$RemoteBinary' bash /tmp/setup-rendezvous.sh --port $Port --relay-port $RelayPort$AdvertiseArg"
 }
 
 if ($LASTEXITCODE -ne 0) { throw "Remote setup failed" }
