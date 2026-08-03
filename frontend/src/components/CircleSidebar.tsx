@@ -242,8 +242,9 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
   const handleEnter = async (e: React.FormEvent) => {
     e.preventDefault(); setError('')
     try {
-      await enterCircle(enterTarget.trim(), enterOwner || undefined)
+      const res = await enterCircle(enterTarget.trim(), enterOwner || undefined)
       await reloadCircles()
+      if (res.circle_id) setActiveCircleId(res.circle_id)
       setModal(null); onRitual?.('enter', enterOwner || 'invite')
       setEnterTarget(''); setEnterOwner('')
     } catch (err: any) { setError(err.message) }

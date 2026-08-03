@@ -78,6 +78,8 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
   const [confirmModal, setConfirmModal] = useState<{ title: string; subject: string; body?: string; onConfirm: () => void } | null>(null)
   const [renameModal, setRenameModal] = useState<{ path: string; value: string } | null>(null)
   const selectedFileRef = useRef<string | null>(selectedFile)
+  const activeCircleIdRef = useRef<string | null>(activeCircleId)
+  activeCircleIdRef.current = activeCircleId
 
   useEffect(() => {
     selectedFileRef.current = selectedFile
@@ -85,8 +87,10 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
 
   const refreshFiles = useCallback(() => {
     if (!activeCircleId) return Promise.resolve()
-    return getFiles(activeCircleId)
+    const requestedCircleId = activeCircleId
+    return getFiles(requestedCircleId)
       .then(data => {
+        if (activeCircleIdRef.current !== requestedCircleId) return
         setFiles(data)
         const selected = selectedFileRef.current
         if (selected && !data.includes(selected)) {
@@ -185,6 +189,7 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
     const id = setInterval(refresh, 15_000)
     const es = eventStream(activeCircleId)
     es.addEventListener('message', e => {
+      if (cancelled) return
       try {
         const data = JSON.parse(e.data)
         if (data.type === 'file_deleted' && typeof data.path === 'string') {
@@ -222,7 +227,13 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
   }, [activeCircleId])
 
   const refreshProposalsNow = useCallback(() => {
-    if (activeCircleId) getProposals(activeCircleId).then(setProposals).catch(() => {})
+    if (!activeCircleId) return
+    const requestedCircleId = activeCircleId
+    getProposals(requestedCircleId)
+      .then(data => {
+        if (activeCircleIdRef.current === requestedCircleId) setProposals(data)
+      })
+      .catch(() => {})
   }, [activeCircleId])
 
   const submitTask = () => {

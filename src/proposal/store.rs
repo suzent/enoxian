@@ -60,12 +60,14 @@ impl ProposalStore {
     }
 
     pub fn save_proposal(&self, proposal: &Proposal) -> Result<()> {
+        super::validate_storage_id("proposal", &proposal.id)?;
         let path = self.proposals_dir().join(format!("{}.json", proposal.id));
         std::fs::write(&path, serde_json::to_vec_pretty(proposal)?)
             .with_context(|| format!("writing proposal {}", path.display()))
     }
 
     pub fn load_proposal(&self, id: &str) -> Result<Proposal> {
+        super::validate_storage_id("proposal", id)?;
         let path = self.proposals_dir().join(format!("{id}.json"));
         let bytes = std::fs::read(&path)
             .with_context(|| format!("reading proposal {}", path.display()))?;

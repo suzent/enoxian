@@ -30,7 +30,7 @@ import { buildAngelScene, type AngelScene } from './AngelScene'
 export default function LandingPage({ onEntered }: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
   const angelRef = useRef<AngelScene | null>(null)
-  const { reloadCircles } = useApp()
+  const { reloadCircles, setActiveCircleId } = useApp()
 
   // UI state
   const [uiState, setUIState] = useState<UIState>('setup')
@@ -56,6 +56,7 @@ export default function LandingPage({ onEntered }: Props) {
 
   // Mnemonic backup
   const [mnemonic, setMnemonic] = useState('')
+  const [pendingCircleId, setPendingCircleId] = useState<string | null>(null)
 
   // Error / loading / eruption
   const [error, setError] = useState('')
@@ -98,10 +99,11 @@ export default function LandingPage({ onEntered }: Props) {
     }
   }
 
-  async function triggerEruptionAndComplete() {
+  async function triggerEruptionAndComplete(circleId?: string | null) {
     setIsErupting(true)
     angelRef.current?.triggerEruption(async () => {
       await reloadCircles()
+      if (circleId) setActiveCircleId(circleId)
       onEntered()
     })
   }
@@ -134,12 +136,13 @@ export default function LandingPage({ onEntered }: Props) {
         const result = await createUserIdentity(userName.trim())
         setMnemonic(result.mnemonic)
         // Proceed to init circle after showing backup screen
-        await initCircle(circleName.trim() || 'DEFAULT', userName.trim() || undefined, joinPolicy)
+        const created = await initCircle(circleName.trim() || 'DEFAULT', userName.trim() || undefined, joinPolicy)
+        setPendingCircleId(created.circle_id ?? null)
         setUIState('mnemonic-backup')
         return
       }
-      await initCircle(circleName.trim() || 'DEFAULT', userName.trim() || undefined, joinPolicy)
-      triggerEruptionAndComplete()
+      const created = await initCircle(circleName.trim() || 'DEFAULT', userName.trim() || undefined, joinPolicy)
+      triggerEruptionAndComplete(created.circle_id)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -152,8 +155,8 @@ export default function LandingPage({ onEntered }: Props) {
     setLoading(true)
     try {
       await saveIdentityIfNeeded()
-      await enterCircle(inviteUri.trim(), userName.trim() || undefined)
-      triggerEruptionAndComplete()
+      const entered = await enterCircle(inviteUri.trim(), userName.trim() || undefined)
+      triggerEruptionAndComplete(entered.circle_id)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -177,8 +180,8 @@ export default function LandingPage({ onEntered }: Props) {
   }, [linkHandle, linkMnemonic])
 
   const handleMnemonicConfirmed = useCallback(() => {
-    triggerEruptionAndComplete()
-  }, [])
+    triggerEruptionAndComplete(pendingCircleId)
+  }, [pendingCircleId])
 
   // ── Shared input style ────────────────────────────────────────────────────
 

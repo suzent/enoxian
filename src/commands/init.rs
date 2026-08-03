@@ -22,14 +22,44 @@ pub async fn run(args: InitArgs) -> Result<()> {
     }
 
     // ── Resolve workspace directory ───────────────────────────────────────────
+    let circle_id = Uuid::new_v4().to_string();
     let workspace_dir = match args.dir {
-        Some(d) => d,
-        None => default_workspace_dir(&args.name)?,
+        Some(d) => {
+            let d = config::normalize_workspace_dir(&d)?;
+            if let Some(conflict) = config::workspace_conflict(&d, &circle_id, &existing)? {
+                bail!(
+                    "workspace {} is already owned by circle '{}' ({})",
+                    d.display(),
+                    conflict.circle_name,
+                    conflict.circle_id
+                );
+            }
+            d
+        }
+        None => {
+            let default = config::normalize_workspace_dir(&default_workspace_dir(&args.name)?)?;
+            if config::workspace_conflict(&default, &circle_id, &existing)?.is_some() {
+                config::normalize_workspace_dir(&config::disambiguated_workspace_dir(
+                    &args.name,
+                    &circle_id,
+                )?)?
+            } else {
+                default
+            }
+        }
     };
     tokio::fs::create_dir_all(&workspace_dir).await?;
+    let workspace_dir = config::normalize_workspace_dir(&workspace_dir)?;
+    if let Some(conflict) = config::workspace_conflict(&workspace_dir, &circle_id, &existing)? {
+        bail!(
+            "workspace {} resolves to a directory already owned by circle '{}' ({})",
+            workspace_dir.display(),
+            conflict.circle_name,
+            conflict.circle_id
+        );
+    }
 
     // ── Generate credentials ──────────────────────────────────────────────────
-    let circle_id = Uuid::new_v4().to_string();
     let psk = generate_psk();
     // Use the stable device identity to derive a per-circle keypair so this
     // device always presents the same peer ID in this circle across restarts.

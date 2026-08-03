@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import type { Proposal, ProposalDetail, ProposalFileDiff } from '../types'
 import { getProposalDetail, acceptProposal, rejectProposal, revertProposal } from '../api'
 import { lineDiff, collapseContext } from '../lib/lineDiff'
@@ -30,6 +30,17 @@ export default function ProposalsTab({ circleId, proposals, onChanged }: Props) 
   const [detail, setDetail] = useState<ProposalDetail | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const circleIdRef = useRef(circleId)
+  const detailRequestRef = useRef(0)
+  circleIdRef.current = circleId
+
+  useEffect(() => {
+    detailRequestRef.current += 1
+    setExpanded(null)
+    setDetail(null)
+    setActionError(null)
+    setBusy(false)
+  }, [circleId])
 
   const toggle = useCallback((proposalId: string) => {
     setActionError(null)
@@ -40,23 +51,36 @@ export default function ProposalsTab({ circleId, proposals, onChanged }: Props) 
     }
     setExpanded(proposalId)
     setDetail(null)
-    getProposalDetail(circleId, proposalId)
-      .then(setDetail)
-      .catch(e => setActionError(e.message))
+    const requestedCircleId = circleId
+    const requestId = ++detailRequestRef.current
+    getProposalDetail(requestedCircleId, proposalId)
+      .then(data => {
+        if (circleIdRef.current === requestedCircleId && detailRequestRef.current === requestId) {
+          setDetail(data)
+        }
+      })
+      .catch(e => {
+        if (circleIdRef.current === requestedCircleId && detailRequestRef.current === requestId) {
+          setActionError(e.message)
+        }
+      })
   }, [circleId, expanded])
 
   const act = async (fn: typeof acceptProposal, proposalId: string) => {
+    const requestedCircleId = circleId
     setActionError(null)
     setBusy(true)
     try {
-      await fn(circleId, proposalId)
-      setExpanded(null)
-      setDetail(null)
-      onChanged()
+      await fn(requestedCircleId, proposalId)
+      if (circleIdRef.current === requestedCircleId) {
+        setExpanded(null)
+        setDetail(null)
+        onChanged()
+      }
     } catch (e: any) {
-      setActionError(e.message)
+      if (circleIdRef.current === requestedCircleId) setActionError(e.message)
     } finally {
-      setBusy(false)
+      if (circleIdRef.current === requestedCircleId) setBusy(false)
     }
   }
 

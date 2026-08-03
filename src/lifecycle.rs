@@ -59,6 +59,19 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     } else {
         std::path::PathBuf::from(&config.workspace_dir)
     };
+    let workspace = crate::config::normalize_workspace_dir(&workspace)?;
+    for active in daemon.list() {
+        if active.circle_id != config.circle_id
+            && crate::config::workspace_paths_equal(&active.workspace, &workspace)?
+        {
+            anyhow::bail!(
+                "workspace {} is already active in circle '{}' ({})",
+                workspace.display(),
+                active.circle_name,
+                active.circle_id
+            );
+        }
+    }
     tokio::fs::create_dir_all(&workspace).await?;
 
     info!(

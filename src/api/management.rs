@@ -96,7 +96,14 @@ pub async fn enter_circle(
     let http_client = reqwest::Client::new();
     match enter::run(args, &http_client).await {
         Ok(_) => {
-            if let Some(id) = circle_id_hint {
+            let resolved_circle_id = circle_id_hint.as_deref().and_then(|hint| {
+                config::load(hint).ok().map(|cfg| cfg.circle_id).or_else(|| {
+                    config::load_all().ok()?.into_iter()
+                        .find(|cfg| cfg.circle_id.starts_with(hint) || cfg.circle_name == hint)
+                        .map(|cfg| cfg.circle_id)
+                })
+            });
+            if let Some(id) = resolved_circle_id.as_deref() {
                 if let Ok(cfg) = config::load(&id) {
                     if !daemon.is_active(&id) {
                         match tokio::spawn(crate::lifecycle::spawn_circle(cfg, daemon)).await {
@@ -107,7 +114,7 @@ pub async fn enter_circle(
                     }
                 }
             }
-            Json(json!({ "status": "ok" })).into_response()
+            Json(json!({ "status": "ok", "circle_id": resolved_circle_id })).into_response()
         }
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
     }

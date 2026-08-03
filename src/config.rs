@@ -128,6 +128,70 @@ pub fn disambiguated_workspace_dir(circle_name: &str, circle_id: &str) -> Result
     Ok(workspace_root()?.join(format!("{circle_name}-{short_id}")))
 }
 
+/// Return a stable absolute representation for workspace ownership checks.
+/// Existing paths are canonicalized (resolving symlinks); paths that do not
+/// exist yet are normalized lexically from the current directory.
+pub fn normalize_workspace_dir(path: &std::path::Path) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    if absolute.exists() {
+        return std::fs::canonicalize(&absolute)
+            .with_context(|| format!("failed to resolve workspace {}", absolute.display()));
+    }
+
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    anyhow::bail!("workspace path escapes its filesystem root: {}", path.display());
+                }
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    Ok(normalized)
+}
+
+fn workspace_key(path: &std::path::Path) -> Result<String> {
+    let normalized = normalize_workspace_dir(path)?;
+    let key = normalized.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    let key = key.to_lowercase();
+    Ok(key)
+}
+
+pub fn workspace_paths_equal(a: &std::path::Path, b: &std::path::Path) -> Result<bool> {
+    Ok(workspace_key(a)? == workspace_key(b)?)
+}
+
+/// Find another configured Circle that already owns this workspace path.
+pub fn workspace_conflict<'a>(
+    workspace: &std::path::Path,
+    circle_id: &str,
+    existing: &'a [CircleConfig],
+) -> Result<Option<&'a CircleConfig>> {
+    let wanted = workspace_key(workspace)?;
+    for config in existing {
+        if config.circle_id == circle_id {
+            continue;
+        }
+        let configured = if config.workspace_dir.is_empty() {
+            default_workspace_dir(&config.circle_name)?
+        } else {
+            PathBuf::from(&config.workspace_dir)
+        };
+        if workspace_key(&configured)? == wanted {
+            return Ok(Some(config));
+        }
+    }
+    Ok(None)
+}
+
 /// Resolve the workspace dir for a circle being joined, handling name conflicts.
 /// - Same UUID already exists → returns None (caller should skip)
 /// - Same name, different UUID → uses disambiguated path and returns a warning string
@@ -144,6 +208,15 @@ pub fn resolve_workspace_dir(
     }
 
     if let Some(dir) = override_dir {
+        let dir = normalize_workspace_dir(&dir)?;
+        if let Some(conflict) = workspace_conflict(&dir, circle_id, existing)? {
+            anyhow::bail!(
+                "workspace {} is already owned by circle '{}' ({})",
+                dir.display(),
+                conflict.circle_name,
+                conflict.circle_id
+            );
+        }
         return Ok(Some((dir, None)));
     }
 
@@ -154,8 +227,18 @@ pub fn resolve_workspace_dir(
         .iter()
         .any(|c| c.circle_name == circle_name && c.circle_id != circle_id);
 
-    if name_clash {
-        let dir = disambiguated_workspace_dir(circle_name, circle_id)?;
+    let path_clash = workspace_conflict(&default, circle_id, existing)?.is_some();
+
+    if name_clash || path_clash {
+        let dir = normalize_workspace_dir(&disambiguated_workspace_dir(circle_name, circle_id)?)?;
+        if let Some(conflict) = workspace_conflict(&dir, circle_id, existing)? {
+            anyhow::bail!(
+                "workspace {} is already owned by circle '{}' ({})",
+                dir.display(),
+                conflict.circle_name,
+                conflict.circle_id
+            );
+        }
         let warn = format!(
             "⚠ A circle named '{}' already exists locally.\n  Workspace → {}",
             circle_name,
@@ -163,7 +246,7 @@ pub fn resolve_workspace_dir(
         );
         Ok(Some((dir, Some(warn))))
     } else {
-        Ok(Some((default, None)))
+        Ok(Some((normalize_workspace_dir(&default)?, None)))
     }
 }
 
@@ -229,4 +312,63 @@ pub fn load_all() -> Result<Vec<CircleConfig>> {
     }
     configs.sort_by(|a, b| a.circle_name.cmp(&b.circle_name));
     Ok(configs)
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    fn circle(id: &str, name: &str, workspace: &std::path::Path) -> CircleConfig {
+        CircleConfig {
+            circle_id: id.into(),
+            circle_name: name.into(),
+            psk_hex: String::new(),
+            keypair_proto_hex: String::new(),
+            workspace_dir: workspace.to_string_lossy().into_owned(),
+            admin_pubkey_hex: String::new(),
+            disabled: false,
+            peers: vec![],
+            relay_addrs: vec![],
+            rendezvous_addrs: vec![],
+            join_policy: JoinPolicy::Auto,
+            owner: String::new(),
+        }
+    }
+
+    #[test]
+    fn detects_workspace_owned_by_another_circle() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("shared");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let existing = vec![circle("circle-a", "A", &workspace)];
+
+        let conflict = workspace_conflict(&workspace, "circle-b", &existing)
+            .unwrap()
+            .expect("same workspace must conflict");
+        assert_eq!(conflict.circle_id, "circle-a");
+        assert!(workspace_conflict(&workspace, "circle-a", &existing)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn relative_aliases_normalize_to_the_same_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let alias = workspace.join("child").join("..");
+        assert!(workspace_paths_equal(&workspace, &alias).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn workspace_comparison_is_case_insensitive_on_windows() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("CaseSensitiveLookingName");
+        assert!(workspace_paths_equal(
+            &workspace,
+            &PathBuf::from(workspace.to_string_lossy().to_lowercase())
+        )
+        .unwrap());
+    }
 }

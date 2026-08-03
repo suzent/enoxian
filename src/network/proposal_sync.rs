@@ -269,6 +269,10 @@ async fn run_inner(
 
     let mut applied = 0usize;
     for bundle in &incoming {
+        if let Err(e) = crate::proposal::validate_bundle_for_circle(bundle, &state.circle_id) {
+            warn!("[proposal-sync] rejected {}: {e}", bundle.proposal.id);
+            continue;
+        }
         match bundle.apply_to_store(&store) {
             Ok(true) => {
                 applied += 1;

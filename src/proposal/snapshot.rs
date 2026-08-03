@@ -34,6 +34,7 @@ impl Snapshot {
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
+        super::validate_storage_id("snapshot", &self.id)?;
         std::fs::create_dir_all(dir)?;
         let path = dir.join(format!("{}.json", self.id));
         std::fs::write(&path, serde_json::to_vec_pretty(self)?)
@@ -41,6 +42,7 @@ impl Snapshot {
     }
 
     pub fn load(dir: &Path, id: &str) -> Result<Self> {
+        super::validate_storage_id("snapshot", id)?;
         let path = dir.join(format!("{id}.json"));
         let bytes = std::fs::read(&path)
             .with_context(|| format!("reading snapshot {}", path.display()))?;

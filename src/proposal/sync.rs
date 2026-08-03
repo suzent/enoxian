@@ -89,6 +89,7 @@ impl ProposalBundle {
     /// changed (new proposal, or a winning inbound status), i.e. the caller
     /// should fire an event / refresh UI.
     pub fn apply_to_store(&self, store: &ProposalStore) -> Result<bool> {
+        super::validate_bundle_for_circle(self, &self.proposal.circle_id)?;
         for (hash, b64) in &self.blobs {
             if let Ok(bytes) = base64_decode(b64) {
                 // Verify the content hashes to the advertised key before storing,

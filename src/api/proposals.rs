@@ -37,7 +37,14 @@ pub async fn list_proposals(
     Path(circle_id): Path<String>,
 ) -> impl IntoResponse {
     match open_store(&daemon, &circle_id) {
-        Ok((_, store)) => Json(json!(store.list_proposals())).into_response(),
+        Ok((_, store)) => {
+            let proposals: Vec<_> = store
+                .list_proposals()
+                .into_iter()
+                .filter(|proposal| crate::proposal::validate_for_circle(proposal, &circle_id).is_ok())
+                .collect();
+            Json(json!(proposals)).into_response()
+        }
         Err(e) => e.into_response(),
     }
 }
@@ -87,6 +94,13 @@ pub async fn get_proposal(
                 .into_response();
         }
     };
+    if let Err(error) = crate::proposal::validate_for_circle(&proposal, &circle_id) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response();
+    }
     let (base, result) = match (
         store.load_snapshot(&proposal.base_snapshot),
         store.load_snapshot(&proposal.result_snapshot),
@@ -157,6 +171,13 @@ async fn set_status(
                 .into_response();
         }
     };
+    if let Err(error) = crate::proposal::validate_for_circle(&proposal, &circle_id) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response();
+    }
     // Valid transitions (Copilot/Cursor-style review semantics):
     //   pending  -> accepted   keep the changes
     //   pending  -> rejected   restore files to their pre-change state

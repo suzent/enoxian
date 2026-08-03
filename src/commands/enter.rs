@@ -157,6 +157,15 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
     tokio::fs::create_dir_all(&workspace_dir)
         .await
         .with_context(|| format!("failed to create workspace {}", workspace_dir.display()))?;
+    let workspace_dir = config::normalize_workspace_dir(&workspace_dir)?;
+    if let Some(conflict) = config::workspace_conflict(&workspace_dir, &circle_id, &existing)? {
+        anyhow::bail!(
+            "workspace {} resolves to a directory already owned by circle '{}' ({})",
+            workspace_dir.display(),
+            conflict.circle_name,
+            conflict.circle_id
+        );
+    }
 
     let circle_config = CircleConfig {
         circle_id: circle_id.clone(),

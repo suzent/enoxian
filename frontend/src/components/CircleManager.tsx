@@ -43,8 +43,9 @@ export default function CircleManager({ onRitual }: Props) {
     e.preventDefault()
     setErrorMsg('')
     try {
-      await enterCircle(enterTarget.trim(), enterOwner || undefined)
+      const res = await enterCircle(enterTarget.trim(), enterOwner || undefined)
       await reloadCircles()
+      if (res.circle_id) setActiveCircleId(res.circle_id)
       setModal(null)
       onRitual?.('enter', enterOwner || 'invite')
       setEnterTarget('')
