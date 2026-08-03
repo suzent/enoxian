@@ -8,7 +8,11 @@ import { shortenAgentId, peerLabel } from '../lib/displayName'
 interface Props {
   onFileSelect: (path: string | null) => void
   selectedFile: string | null
+  activeTab: RightPanelTab
+  onActiveTabChange: (tab: RightPanelTab) => void
 }
+
+export type RightPanelTab = 'members' | 'tasks' | 'files' | 'changes'
 
 const TAB_ICONS = {
   members: (
@@ -52,7 +56,7 @@ function age(isoStr: string) {
 }
 
 
-export default function RightPanel({ onFileSelect, selectedFile }: Props) {
+export default function RightPanel({ onFileSelect, selectedFile, activeTab, onActiveTabChange }: Props) {
   const { activeCircleId, circles, reloadCircles, status } = useApp()
   const [presence, setPresence] = useState<Presence[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
@@ -71,7 +75,6 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
   const [inviteConnectivity, setInviteConnectivity] = useState<{peer_addr: string|null, relay_addr: string|null, rendezvous_addr: string|null} | null>(null)
   const [inviteCopied, setInviteCopied] = useState(false)
   const [memberActionError, setMemberActionError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'members' | 'tasks' | 'files' | 'changes'>('members')
   const [confirmModal, setConfirmModal] = useState<{ title: string; subject: string; body?: string; onConfirm: () => void } | null>(null)
   const [renameModal, setRenameModal] = useState<{ path: string; value: string } | null>(null)
   const selectedFileRef = useRef<string | null>(selectedFile)
@@ -401,7 +404,7 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
     <aside className="app-right-panel sys-window flex min-h-0 flex-col z-10 overflow-hidden">
 
       {/* ── Tab bar ─────────────────────────────────────────────────────── */}
-      <div className="flex shrink-0 border-b-2 border-obsidian">
+      <div className="right-panel-tabs flex shrink-0 border-b-2 border-obsidian" role="tablist" aria-label="Circle details">
         {(['members', 'tasks', 'files', 'changes'] as const).map((tab, i) => {
           const pendingProposals = proposals.filter(p => p.status === 'pending').length
           const count = tab === 'members' ? pending.length : tab === 'changes' ? pendingProposals : 0
@@ -409,15 +412,17 @@ export default function RightPanel({ onFileSelect, selectedFile }: Props) {
           return (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`relative flex-1 py-3.5 font-bold font-mono min-w-0 flex flex-col items-center justify-center gap-1 ${
+              onClick={() => onActiveTabChange(tab)}
+              className={`right-panel-tab relative flex-1 py-3 font-bold font-mono min-w-0 flex flex-col items-center justify-center gap-1 ${
                 i < 3 ? 'border-r-2 border-obsidian' : ''
               } ${isActive ? 'bg-obsidian text-alabaster' : 'hover:bg-obsidian/8 text-obsidian/60 hover:text-obsidian'}`}
-              style={{ transition: 'none' }}
               title={`${tab.toUpperCase()}${count > 0 ? ` — ${count} pending` : ''}`}
               aria-label={`${tab}${count > 0 ? ` (${count} pending)` : ''}`}
+              role="tab"
+              aria-selected={isActive}
             >
               <span className="flex items-center" aria-hidden="true">{TAB_ICONS[tab]}</span>
+              <span className="right-panel-tab__label" aria-hidden="true">{tab}</span>
               {count > 0 && (
                 <span
                   className={`absolute top-1.5 right-1.5 text-[8px] font-bold leading-none px-1 py-0.5 border ${

@@ -6,11 +6,12 @@ import DeviceSettings from './DeviceSettings'
 
 interface Props {
   mobileDrawer?: 'circles' | 'info' | null
+  infoOpen?: boolean
   onToggleCircles?: () => void
   onToggleInfo?: () => void
 }
 
-export default function Header({ mobileDrawer, onToggleCircles, onToggleInfo }: Props) {
+export default function Header({ mobileDrawer, infoOpen, onToggleCircles, onToggleInfo }: Props) {
   const { status, circles, activeCircleId } = useApp()
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -55,7 +56,7 @@ export default function Header({ mobileDrawer, onToggleCircles, onToggleInfo }: 
         {onToggleInfo && (
           <button
             onClick={onToggleInfo}
-            className={`mobile-header-btn mobile-header-btn--info${mobileDrawer === 'info' ? ' active' : ''}`}
+            className={`mobile-header-btn mobile-header-btn--info${infoOpen ? ' active' : ''}`}
             aria-label="Open circle info"
           >
             <PanelRight size={18} strokeWidth={2.5} />

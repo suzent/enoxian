@@ -113,6 +113,20 @@ select {
   min-height: 0;
 }
 
+.right-panel-tab {
+  transition: background-color 140ms ease, color 140ms ease, opacity 140ms ease;
+}
+
+.right-panel-tab__label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 /* kept for reference — no longer in grid */
 .app-circle-panel {
   grid-area: circle;
@@ -1336,7 +1350,7 @@ select option {
   display: none;
 }
 
-/* ── Medium layout: circles stay visible, right panel becomes a drawer ────── */
+/* ── Medium layout: the optional right panel is docked, not overlaid ─────── */
 @media (max-width: 1279px) and (min-width: 961px) {
   .app-shell {
     grid-template-areas:
@@ -1344,21 +1358,25 @@ select option {
       "circles chat";
     grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
   }
-  
+
   .app-right-panel:not(.mobile-drawer *) {
-    position: fixed;
-    top: calc(var(--shell-padding) + var(--header-outer) + var(--shell-gap));
-    right: 18px;
-    bottom: 18px;
-    width: min(340px, calc(100vw - 36px));
-    z-index: 120;
-    transform: translateX(calc(100% + 24px));
-    transition: transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
-    border-top-width: 1px;
+    display: none;
   }
 
-  .app-shell.drawer-info > .app-right-panel:not(.mobile-drawer *) {
-    transform: translateX(0);
+  .app-shell.right-panel-open {
+    grid-template-areas:
+      "header header header"
+      "circles chat right";
+    /* 200 + 420 + 260 plus shell padding/gaps fits just above the mobile
+       breakpoint. Never sacrifice the conversation to keep both rails open. */
+    grid-template-columns: minmax(200px, 240px) minmax(420px, 1fr) minmax(260px, 300px);
+  }
+
+  .app-shell.right-panel-open > .app-right-panel:not(.mobile-drawer *) {
+    display: flex;
+    position: static;
+    width: auto;
+    transform: none;
   }
 
   .mobile-header-btn--info {
@@ -1383,9 +1401,29 @@ select option {
 
   /* Hide desktop-only elements (but not the ones inside mobile drawers) */
   .app-circles-sidebar:not(.mobile-drawer *),
-  .desktop-chat,
-  .app-right-panel:not(.mobile-drawer *) {
+  .desktop-chat {
     display: none !important;
+  }
+
+  /* Keep one RightPanel mounted at every breakpoint. Besides preserving its
+     UI state, this avoids a second polling loop and EventSource connection. */
+  .app-right-panel:not(.mobile-drawer *) {
+    display: flex !important;
+    grid-area: main;
+    width: 85%;
+    max-width: 320px;
+    justify-self: end;
+    align-self: stretch;
+    z-index: 50;
+    transform: translateX(calc(100% + 2px));
+    transition: transform 220ms cubic-bezier(0.4, 0, 0.2, 1);
+    border-top-width: 1px;
+    border-right: 0;
+    border-bottom: 0;
+  }
+
+  .app-shell.drawer-info > .app-right-panel:not(.mobile-drawer *) {
+    transform: translateX(0);
   }
 
   /* In mobile the header and chat panel are edge-to-edge — thin the touching borders */
@@ -1607,6 +1645,14 @@ select option {
 .mention-row__mark.off {
   color: var(--fg-slate);
   opacity: 0.7;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-right-panel,
+  .mobile-drawer,
+  .right-panel-tab {
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* ── Mention input (contentEditable) + chips ────────────────────────────── */

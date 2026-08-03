@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { AppProvider } from './context/AppContext'
 import ChatPanel from './components/ChatPanel'
 import EditorPanel from './components/EditorPanel'
-import RightPanel from './components/RightPanel'
+import RightPanel, { type RightPanelTab } from './components/RightPanel'
 import CircleSidebar from './components/CircleSidebar'
 import Header from './components/Header'
 import LandingPage from './components/LandingPage'
@@ -12,6 +12,31 @@ import './styles/globals.css'
 
 type MobileDrawer = 'circles' | 'info' | null
 
+const LAYOUT_PREFERENCES_KEY = 'enoxian.layout.v1'
+
+interface LayoutPreferences {
+  rightPanelOpen: boolean
+  rightPanelTab: RightPanelTab
+}
+
+const DEFAULT_LAYOUT_PREFERENCES: LayoutPreferences = {
+  rightPanelOpen: false,
+  rightPanelTab: 'members',
+}
+
+function loadLayoutPreferences(): LayoutPreferences {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAYOUT_PREFERENCES_KEY) ?? '{}')
+    const tabs: RightPanelTab[] = ['members', 'tasks', 'files', 'changes']
+    return {
+      rightPanelOpen: saved.rightPanelOpen === true,
+      rightPanelTab: tabs.includes(saved.rightPanelTab) ? saved.rightPanelTab : 'members',
+    }
+  } catch {
+    return DEFAULT_LAYOUT_PREFERENCES
+  }
+}
+
 function Layout() {
   const { activeCircleId, circles, circlesLoaded } = useApp()
 
@@ -19,6 +44,7 @@ function Layout() {
   const [ritual, setRitual] = useState<{ mode: RitualMode; label?: string } | null>(null)
   const [showLanding, setShowLanding] = useState(false)
   const [revealing, setRevealing] = useState(false)
+  const [layoutPreferences, setLayoutPreferences] = useState(loadLayoutPreferences)
   const [mobileDrawer, setMobileDrawer] = useState<MobileDrawer>(null)
 
   const handleEntered = useCallback(() => {
@@ -46,12 +72,37 @@ function Layout() {
     if (selectedFile) setMobileDrawer(null)
   }, [selectedFile])
 
+  useEffect(() => {
+    try { localStorage.setItem(LAYOUT_PREFERENCES_KEY, JSON.stringify(layoutPreferences)) } catch {}
+  }, [layoutPreferences])
+
+  useEffect(() => {
+    if (!mobileDrawer) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileDrawer(null)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [mobileDrawer])
+
   const onFileSelect = useCallback((path: string | null) => {
     setSelectedFile(path)
   }, [])
 
   const toggle = (drawer: MobileDrawer) =>
     setMobileDrawer(d => d === drawer ? null : drawer)
+
+  const toggleInfo = () => {
+    if (window.matchMedia('(max-width: 960px)').matches) {
+      toggle('info')
+      return
+    }
+    setMobileDrawer(null)
+    setLayoutPreferences(current => ({
+      ...current,
+      rightPanelOpen: !current.rightPanelOpen,
+    }))
+  }
 
   return (
     <>
@@ -64,11 +115,12 @@ function Layout() {
       )}
 
       {circles.length > 0 && (
-        <div className={`app-shell relative z-10 grid drawer-${mobileDrawer ?? 'none'}${isVoid ? ' app-shell--void' : ''}`}>
+        <div className={`app-shell relative z-10 grid drawer-${mobileDrawer ?? 'none'}${layoutPreferences.rightPanelOpen ? ' right-panel-open' : ''}${isVoid ? ' app-shell--void' : ''}`}>
           <Header
             mobileDrawer={mobileDrawer}
+            infoOpen={layoutPreferences.rightPanelOpen || mobileDrawer === 'info'}
             onToggleCircles={() => toggle('circles')}
-            onToggleInfo={() => toggle('info')}
+            onToggleInfo={toggleInfo}
           />
 
           <CircleSidebar
@@ -82,7 +134,14 @@ function Layout() {
               : <ChatPanel variant="main" hideActiveCircleGlyph={!!ritual} />}
           </div>
 
-          <RightPanel onFileSelect={onFileSelect} selectedFile={selectedFile} />
+          <RightPanel
+            onFileSelect={onFileSelect}
+            selectedFile={selectedFile}
+            activeTab={layoutPreferences.rightPanelTab}
+            onActiveTabChange={rightPanelTab => {
+              setLayoutPreferences(current => ({ ...current, rightPanelTab }))
+            }}
+          />
 
           <div className="mobile-main-area">
             <div className="mobile-main">
@@ -95,9 +154,6 @@ function Layout() {
                 onRitual={(mode, label) => { setRitual({ mode, label }); setMobileDrawer(null) }}
                 ritualCircleName={ritual?.label}
               />
-            </div>
-            <div className={`mobile-drawer mobile-drawer--right${mobileDrawer === 'info' ? ' open' : ''}`}>
-              <RightPanel onFileSelect={onFileSelect} selectedFile={selectedFile} />
             </div>
           </div>
         </div>
