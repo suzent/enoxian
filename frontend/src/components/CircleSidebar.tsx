@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import * as THREE from 'three'
+import { Settings } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import { initCircle, enterCircle, getIdentity } from '../api'
 import { applyCircleRotation, makeCircleGeometry } from '../lib/circleShape'
@@ -11,6 +12,7 @@ import {
   prepareCircleScene,
 } from '../lib/circleRender'
 import { triggerDockBurst } from '../lib/particleEffect'
+import DeviceSettings from './DeviceSettings'
 import type { RitualMode } from './RitualTransition'
 
 interface Props {
@@ -30,9 +32,10 @@ interface SceneEntry {
 }
 
 export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
-  const { circles, activeCircleId, setActiveCircleId, reloadCircles } = useApp()
+  const { circles, activeCircleId, setActiveCircleId, reloadCircles, status } = useApp()
 
   const [modal, setModal] = useState<Modal>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [initName, setInitName] = useState('')
   const [initOwner, setInitOwner] = useState('')
   const [initJoinPolicy, setInitJoinPolicy] = useState<'auto' | 'manual'>('auto')
@@ -311,7 +314,23 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
             </button>
           ))}
         </div>
+
+        <button
+          className="circle-sidebar-settings"
+          onClick={() => setSettingsOpen(true)}
+          title="Device settings — agent mention reactions"
+          aria-label="Open device settings"
+        >
+          <Settings size={16} strokeWidth={2.25} aria-hidden="true" />
+          <span className="circle-sidebar-settings__identity">
+            <strong>{status?.agent_id ?? 'DEVICE SETTINGS'}</strong>
+            <small>{status ? 'LOCAL DEVICE · SETTINGS' : 'LOCAL DEVICE'}</small>
+          </span>
+          <span className="circle-sidebar-settings__arrow" aria-hidden="true">→</span>
+        </button>
       </aside>
+
+      {settingsOpen && <DeviceSettings onClose={() => setSettingsOpen(false)} />}
 
       {modal && (
         <div className="ritual-modal-backdrop">

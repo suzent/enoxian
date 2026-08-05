@@ -1,8 +1,6 @@
-import { useState } from 'react'
 import { useApp } from '../context/AppContext'
 import { BRAND_LOGO_SRC } from '../lib/brand'
-import { Menu, PanelRight, Settings } from 'lucide-react'
-import DeviceSettings from './DeviceSettings'
+import { Menu, PanelRight } from 'lucide-react'
 
 interface Props {
   mobileDrawer?: 'circles' | 'info' | null
@@ -14,7 +12,6 @@ interface Props {
 export default function Header({ mobileDrawer, infoOpen, onToggleCircles, onToggleInfo }: Props) {
   const { status, circles, activeCircleId } = useApp()
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
-  const [settingsOpen, setSettingsOpen] = useState(false)
 
   return (
     <header className="app-header sys-window z-[100] flex items-center justify-between gap-4 px-5 min-h-[48px] font-mono text-[11px] uppercase font-bold">
@@ -38,18 +35,7 @@ export default function Header({ mobileDrawer, infoOpen, onToggleCircles, onTogg
       <div className="header-actions flex items-center gap-3 shrink-0 min-w-0">
         <div className="header-status flex items-center gap-3 text-slate font-normal min-w-0">
           {status && (
-            <>
-              <button
-                className="sys-badge header-agent-id header-settings-btn flex items-center gap-1.5"
-                onClick={() => setSettingsOpen(true)}
-                title="Device settings — agent mention reactions"
-                aria-label="Open device settings"
-              >
-                <Settings size={12} strokeWidth={2.5} aria-hidden="true" />
-                {status.agent_id}
-              </button>
-              <span className="sys-badge header-docs-count">docs {status.docs}</span>
-            </>
+            <span className="sys-badge header-docs-count">docs {status.docs}</span>
           )}
         </div>
         {/* Mobile-only info toggle */}
@@ -63,7 +49,6 @@ export default function Header({ mobileDrawer, infoOpen, onToggleCircles, onTogg
           </button>
         )}
       </div>
-      {settingsOpen && <DeviceSettings onClose={() => setSettingsOpen(false)} />}
     </header>
   )
 }

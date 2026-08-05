@@ -45,6 +45,10 @@ function formatTime(ts: number) {
   return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
+function looksLikeCommand(text: string) {
+  return /\n/.test(text) || /^(?:\$|>|cd\s|set-location\b|npm\s|pnpm\s|yarn\s|cargo\s|git\s|python\s|uv\s|enox\s)/i.test(text.trim())
+}
+
 interface SenderLabel {
   user: string    // "you" or owner name
   device: string | null  // shown when owner has multiple devices
@@ -62,33 +66,36 @@ interface BubbleProps {
 function Bubble({ msg, isMine, isThisDevice, label, showSender }: BubbleProps) {
   if (msg.agent_id === 'system') {
     return (
-      <div className="self-center px-3 py-1 text-alabaster bg-obsidian font-mono text-[10px] bg-scanline">
-        {msg.text}
+      <div className="chat-system-event" role="status">
+        <span>SYS</span>
+        <span>{msg.text}</span>
       </div>
     )
   }
 
+  const isAgent = !!label.agent
+  const isCommand = looksLikeCommand(msg.text)
+
   return (
-    <div className={`flex flex-col gap-0.5 max-w-[78%] ${isThisDevice ? 'self-end items-end' : 'self-start items-start'}`}>
+    <article
+      className={`chat-message${isMine ? ' chat-message--mine' : ''}${isThisDevice ? ' chat-message--current' : ''}${isAgent ? ' chat-message--agent' : ''}${showSender ? '' : ' chat-message--continued'}`}
+    >
       {showSender && (
-        <div className={`flex items-baseline gap-1 px-0.5 ${isThisDevice ? 'flex-row-reverse' : ''}`}>
-          <span className="text-[9px] font-bold font-mono text-slate">{label.user}</span>
-          {label.device && <span className="text-[9px] font-mono text-slate/50">· {label.device}</span>}
-          {label.agent && <span className="text-[9px] font-mono text-slate/50">· {label.agent}</span>}
-        </div>
+        <header className="chat-message__sender">
+          <span className="chat-message__owner">{label.user}</span>
+          {label.device && <span className="chat-message__device">· {label.device}</span>}
+          {label.agent && <span className="chat-message__agent">AGENT / {label.agent}</span>}
+        </header>
       )}
       <div
-        className={`px-3 py-2 font-mono text-[11px] leading-relaxed ${
-          isMine
-            ? 'bg-obsidian text-alabaster'
-            : 'bg-alabaster border border-obsidian text-obsidian'
-        }`}
-        style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+        className={`chat-message__bubble${isCommand ? ' chat-message__bubble--command' : ''}`}
       >
         {renderWithMentions(msg.text, msg.mentions)}
       </div>
-      <span className="text-[9px] text-slate/50 font-mono px-0.5">{formatTime(msg.ts)}</span>
-    </div>
+      <time className="chat-message__time" dateTime={new Date(msg.ts * 1000).toISOString()}>
+        {formatTime(msg.ts)}
+      </time>
+    </article>
   )
 }
 
@@ -268,6 +275,9 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   }
 
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
+  const hasConversation = messages.length > 0
+  const onlineCount = presence.filter(p => p.status === 'online').length
+  const glyphSize = hasConversation ? 64 : 88
 
   return (
     <main className={`app-chat-panel flex min-h-0 flex-col z-10 overflow-hidden ${variant === 'main' ? 'chat-main sys-window' : 'border-r-2 border-obsidian bg-alabaster/85'}`}>
@@ -279,26 +289,37 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
 
       {variant === 'main' && activeCircle && (
         <div
-          className={`active-circle-dock${activeCircle.disabled ? ' active-circle-dock--void' : ''}${hideActiveCircleGlyph ? ' active-circle-dock--ritual' : ''}`}
+          className={`active-circle-dock${hasConversation ? ' active-circle-dock--compact' : ' active-circle-dock--empty'}${activeCircle.disabled ? ' active-circle-dock--void' : ''}${hideActiveCircleGlyph ? ' active-circle-dock--ritual' : ''}`}
         >
-          <div className="ripple-container">
+          <div className="active-circle-dock__meta">
+            <span>{activeCircle.circle_name}</span>
+            <strong>{activeCircle.disabled ? 'VOID CIRCLE' : 'ACTIVE CIRCLE'}</strong>
+          </div>
+          <div className="ripple-container" style={{ width: glyphSize, height: glyphSize }}>
             <div className="dock-ripple" id="dock-ripple-el" />
-            <div data-circle-dock style={{ width: '120px', height: '120px' }}>
+            <div data-circle-dock style={{ width: glyphSize, height: glyphSize }}>
               <CircleGlyph
                 name={activeCircle.circle_name}
-                size={120}
+                size={glyphSize}
                 className="active-circle-dock__glyph"
                 title={activeCircle.circle_name}
                 voided={activeCircle.disabled}
               />
             </div>
           </div>
+          <div className="active-circle-dock__meta active-circle-dock__meta--stats">
+            <span>{onlineCount} ONLINE</span>
+            <strong>{members.length} MEMBERS</strong>
+          </div>
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 flex flex-col gap-2 font-mono text-[11px] min-w-0">
+      <div className="chat-message-list">
         {messages.length === 0 && (
-          <div className="text-slate self-start">No chat yet.</div>
+          <div className="chat-empty-state">
+            <span>THE CIRCLE IS QUIET</span>
+            <strong>Send the first signal.</strong>
+          </div>
         )}
         {messages.map((msg, i) => {
           const label = getSenderLabel(msg.agent_id)
@@ -320,7 +341,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
         <div ref={bottomRef} />
       </div>
 
-      <div className="border-t-2 border-obsidian p-3 flex flex-wrap gap-2 relative" style={{ backgroundColor: 'var(--bg-alabaster)' }}>
+      <div className="chat-composer">
         {mentionOpen && (
           <MentionPopup
             members={members}
@@ -335,11 +356,10 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
           ref={inputRef}
           onChange={onInputChange}
           onKeyDown={onInputKeyDown}
-          placeholder="Inject command...  (@ to mention)"
-          className="min-w-[160px] flex-1 border border-obsidian font-mono text-[11px] px-2 py-2
-                     text-obsidian focus:outline-none focus:bg-obsidian/5"
+          placeholder="Message the circle...  (@ to mention)"
+          className="chat-composer__input"
         />
-        <button onClick={send} className="enox-btn">{variant === 'main' ? 'SEND' : 'EXEC'}</button>
+        <button onClick={send} className="enox-btn chat-composer__send">{variant === 'main' ? 'SEND' : 'EXEC'}</button>
       </div>
     </main>
   )
