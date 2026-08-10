@@ -118,8 +118,8 @@ pub async fn enter_circle(
                     })
             });
             if let Some(id) = resolved_circle_id.as_deref() {
-                if let Ok(cfg) = config::load(&id) {
-                    if !daemon.is_active(&id) {
+                if let Ok(cfg) = config::load(id) {
+                    if !daemon.is_active(id) {
                         match tokio::spawn(crate::lifecycle::spawn_circle(cfg, daemon)).await {
                             Ok(Err(e)) => tracing::warn!("[api] enter_circle spawn failed: {e}"),
                             Err(e) => tracing::warn!("[api] enter_circle spawn panicked: {e}"),
