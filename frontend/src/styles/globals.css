@@ -141,25 +141,22 @@ select {
 
 .app-shell--void .sys-window {
   border: 2px solid var(--fg-obsidian);
-  background: #fff;
+  background:
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.025) 0 1px, transparent 1px 10px),
+    #fff;
   outline: 1px dashed rgba(0, 0, 0, 0.35);
   outline-offset: -2px;
 }
 
-/* Section headers become lighter */
 .app-shell--void .section-header {
-  opacity: 0.55;
+  opacity: 1;
+  color: var(--fg-slate);
+  background-image: repeating-linear-gradient(135deg, rgba(0,0,0,0.14) 0 1px, transparent 1px 5px);
 }
 
-/* Scanline interference on the header to signal dormant state */
 .app-shell--void .app-header {
-  background-image: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(0,0,0,0.03) 2px,
-    rgba(0,0,0,0.03) 4px
-  );
+  background-image: repeating-linear-gradient(135deg, rgba(0,0,0,0.09) 0 1px, transparent 1px 6px);
+  box-shadow: inset 5px 0 0 var(--fg-obsidian);
 }
 
 .sys-control {
@@ -221,6 +218,37 @@ select {
 .app-header > div:first-child,
 .header-status {
   gap: 12px !important;
+}
+
+.header-circle-identity {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-circle-state {
+  flex: 0 0 auto;
+  min-width: 36px;
+  padding: 2px 5px;
+  border: 1px solid var(--fg-obsidian);
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-align: center;
+}
+
+.header-circle-state--live {
+  background: var(--fg-obsidian);
+  color: var(--bg-alabaster);
+}
+
+.header-circle-state--void {
+  background:
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.12) 0 1px, transparent 1px 4px),
+    #fff;
+  color: var(--fg-obsidian);
 }
 
 .circle-controls {
@@ -579,8 +607,39 @@ select {
 
 .active-circle-dock--void {
   background:
-    repeating-linear-gradient(135deg, rgba(0,0,0,0.08) 0 1px, transparent 1px 6px),
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.13) 0 1px, transparent 1px 6px),
     #fff;
+  border-bottom-color: var(--fg-obsidian);
+  box-shadow: inset 5px 0 0 var(--fg-obsidian);
+}
+
+.chat-void-notice {
+  flex: 0 0 auto;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--fg-obsidian);
+  background:
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.1) 0 1px, transparent 1px 6px),
+    #fff !important;
+  color: var(--fg-obsidian);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.055em;
+}
+
+.chat-void-notice span {
+  padding: 2px 5px;
+  background: var(--fg-obsidian);
+  color: #fff;
+  font-weight: 800;
+}
+
+.chat-void-notice strong {
+  font-size: inherit;
 }
 
 .circle-list {
@@ -638,6 +697,27 @@ select {
 .circle-row:not(.circle-row-active):hover {
   background: rgba(0,0,0,0.045);
   transform: translateX(2px);
+}
+
+.circle-row--void:not(.circle-row-active) {
+  background:
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.055) 0 1px, transparent 1px 6px),
+    rgba(255,255,255,0.5);
+  color: var(--fg-slate);
+}
+
+.circle-row--void .circle-row__ordinal {
+  border-style: dashed;
+  background: transparent;
+  color: var(--fg-slate);
+}
+
+.circle-row--void.circle-row-active .circle-row__ordinal {
+  border-color: var(--fg-obsidian);
+  background:
+    repeating-linear-gradient(135deg, rgba(255,255,255,0.34) 0 1px, transparent 1px 4px),
+    var(--fg-obsidian);
+  color: #fff;
 }
 
 .circle-row:focus-visible {
@@ -716,6 +796,14 @@ select {
   transition: top 180ms cubic-bezier(0.22,1,0.36,1), height 180ms cubic-bezier(0.22,1,0.36,1);
 }
 
+.circle-list-highlight--void {
+  border-style: dashed;
+  box-shadow: inset 5px 0 0 #000, 2px 2px 0 rgba(0,0,0,0.07);
+  background:
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.12) 0 1px, transparent 1px 6px),
+    #fff;
+}
+
 .circle-row-active {
   background: transparent;
   z-index: 1;
@@ -749,14 +837,14 @@ select {
 .circle-actions {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1.35fr) minmax(84px, 0.65fr);
   border-top: 2px solid #000;
   background: var(--bg-alabaster);
 }
 
 .circle-actions button {
   position: relative;
-  min-height: 32px;
+  min-height: 48px;
   border: 0 !important;
   background: var(--bg-alabaster);
   color: #000;
@@ -768,44 +856,108 @@ select {
   text-transform: uppercase;
 }
 
-.circle-actions__state,
-.circle-actions__action {
-  display: inline-block;
+.circle-actions__toggle {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  text-align: left;
+  transition: background-color 140ms ease, color 140ms ease;
 }
 
-.circle-actions__action {
-  display: none;
+.circle-actions__indicator {
+  width: 8px;
+  height: 8px;
+  border: 1px solid currentColor;
+  background: currentColor;
+  box-shadow: 0 0 0 2px transparent;
 }
 
-.circle-actions button:hover .circle-actions__state,
-.circle-actions button:focus-visible .circle-actions__state {
-  display: none;
+.circle-actions__copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.circle-actions button:hover .circle-actions__action,
-.circle-actions button:focus-visible .circle-actions__action {
-  display: inline-block;
+.circle-actions__copy small {
+  color: inherit;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  opacity: 0.58;
+}
+
+.circle-actions__copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.1em;
+}
+
+.circle-actions__next {
+  padding-left: 7px;
+  border-left: 1px solid currentColor;
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  opacity: 0.66;
+  white-space: nowrap;
 }
 
 .circle-actions button + button {
   border-left: 2px solid #000 !important;
 }
 
-.circle-actions__primary {
+.circle-actions__toggle--enabled {
   background: #000 !important;
   color: #fff !important;
 }
 
-.circle-actions__secondary:hover,
-.circle-actions__danger:hover {
+.circle-actions__toggle--enabled .circle-actions__indicator {
+  background: #fff;
+}
+
+.circle-actions__toggle--enabled:hover,
+.circle-actions__toggle--enabled:focus-visible {
   background:
-    linear-gradient(rgba(0,0,0,0.08) 1px, transparent 1px),
+    radial-gradient(rgba(255,255,255,0.2) 0.65px, transparent 0.75px) 0 0 / 4px 4px,
+    #000 !important;
+}
+
+.circle-actions__toggle--disabled {
+  background:
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.08) 0 1px, transparent 1px 6px),
     #fff !important;
-  background-size: 100% 3px !important;
+  color: var(--fg-slate) !important;
+}
+
+.circle-actions__toggle--disabled .circle-actions__indicator {
+  background: #fff;
+}
+
+.circle-actions__toggle--disabled:hover,
+.circle-actions__toggle--disabled:focus-visible {
+  background:
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.17) 0 1px, transparent 1px 5px),
+    #fff !important;
+  color: var(--fg-obsidian) !important;
 }
 
 .circle-actions__danger {
   color: #555 !important;
+}
+
+.circle-actions__danger:hover,
+.circle-actions__danger:focus-visible {
+  background:
+    linear-gradient(rgba(0,0,0,0.08) 1px, transparent 1px),
+    #fff !important;
+  background-size: 100% 3px !important;
+  color: #000 !important;
 }
 
 .ritual-modal-backdrop {
@@ -2080,6 +2232,39 @@ select option {
   content: attr(data-placeholder);
   color: var(--fg-slate);
   pointer-events: none;
+}
+
+.mention-input.chat-composer__input--disabled {
+  border-color: rgba(0,0,0,0.32);
+  background:
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.07) 0 1px, transparent 1px 6px),
+    #f4f3ef !important;
+  color: var(--fg-slate);
+  cursor: not-allowed;
+  opacity: 0.78;
+}
+
+.chat-composer__send:disabled {
+  background:
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.1) 0 1px, transparent 1px 5px),
+    #fff !important;
+  color: var(--fg-slate) !important;
+  cursor: not-allowed;
+  opacity: 0.72;
+  transform: none !important;
+}
+
+.app-shell--void .chat-message-list,
+.app-shell--void .app-right-panel > div:not(.section-header) {
+  background:
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.018) 0 1px, transparent 1px 12px),
+    #fff !important;
+}
+
+.app-shell--void .chat-composer {
+  background:
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.065) 0 1px, transparent 1px 7px),
+    var(--bg-alabaster) !important;
 }
 
 /* Atomic mention chip — in the input and in message bubbles. */

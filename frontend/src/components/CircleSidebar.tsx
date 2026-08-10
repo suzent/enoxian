@@ -15,6 +15,7 @@ type Modal = 'init' | 'enter' | null
 
 export default function CircleSidebar({ onRitual }: Props) {
   const { circles, activeCircleId, setActiveCircleId, reloadCircles, status } = useApp()
+  const activeCircle = circles.find(circle => circle.circle_id === activeCircleId)
 
   const [modal, setModal] = useState<Modal>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -140,7 +141,11 @@ export default function CircleSidebar({ onRitual }: Props) {
 
         <div ref={listRef} className="circle-list">
           {/* Sliding active highlight — moves between rows via CSS transition */}
-          <div ref={highlightRef} className="circle-list-highlight" style={{ opacity: 0 }} />
+          <div
+            ref={highlightRef}
+            className={`circle-list-highlight${activeCircle?.disabled ? ' circle-list-highlight--void' : ''}`}
+            style={{ opacity: 0 }}
+          />
 
           {circles.length === 0 && (
             <div className="text-[10px] text-slate p-2">NO CIRCLES</div>
@@ -161,10 +166,10 @@ export default function CircleSidebar({ onRitual }: Props) {
                 <div className="circle-row__copy">
                   <span className="circle-row__name">{circle.circle_name}</span>
                   <span className={`circle-row__state${isActive ? ' active' : ''}${circle.disabled ? ' void' : ''}`}>
-                    {circle.disabled ? 'VOID' : isActive ? 'ACTIVE' : 'CIRCLE'}
+                    {circle.disabled ? 'DISABLED' : isActive ? 'ACTIVE' : 'ENABLED'}
                   </span>
                 </div>
-                <span className="circle-row__marker" aria-hidden="true">→</span>
+                <span className="circle-row__marker" aria-hidden="true">{circle.disabled ? '×' : '→'}</span>
               </button>
             )
           })}

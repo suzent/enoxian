@@ -645,13 +645,18 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
         <div className="circle-actions">
           <button
             onClick={handleToggleCircleEnabled}
-            className={activeCircle.disabled ? 'circle-actions__primary' : 'circle-actions__secondary'}
+            className={`circle-actions__toggle circle-actions__toggle--${activeCircle.disabled ? 'disabled' : 'enabled'}`}
             title={activeCircle.disabled ? 'Enable this circle' : 'Disable this circle'}
-            data-state={activeCircle.disabled ? 'DISABLED' : 'ENABLED'}
-            data-action={activeCircle.disabled ? 'ENABLE' : 'DISABLE'}
+            aria-pressed={!activeCircle.disabled}
           >
-            <span className="circle-actions__state">{activeCircle.disabled ? 'DISABLED' : 'ENABLED'}</span>
-            <span className="circle-actions__action">{activeCircle.disabled ? 'ENABLE' : 'DISABLE'}</span>
+            <span className="circle-actions__indicator" aria-hidden="true" />
+            <span className="circle-actions__copy">
+              <small>CIRCLE STATE</small>
+              <strong>{activeCircle.disabled ? 'DISABLED' : 'ENABLED'}</strong>
+            </span>
+            <span className="circle-actions__next">
+              {activeCircle.disabled ? 'ENABLE' : 'DISABLE'} <span aria-hidden="true">→</span>
+            </span>
           </button>
           <button
             onClick={handleLeaveCircle}

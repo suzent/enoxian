@@ -28,7 +28,12 @@ export default function Header({ mobileDrawer, infoOpen, onToggleCircles, onTogg
           </button>
         )}
         {activeCircle && (
-          <span className="font-bold tracking-widest truncate">{activeCircle.circle_name}</span>
+          <div className="header-circle-identity">
+            <span className="font-bold tracking-widest truncate">{activeCircle.circle_name}</span>
+            <span className={`header-circle-state header-circle-state--${activeCircle.disabled ? 'void' : 'live'}`}>
+              {activeCircle.disabled ? 'VOID' : 'LIVE'}
+            </span>
+          </div>
         )}
       </div>
 

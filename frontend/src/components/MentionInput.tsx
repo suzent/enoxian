@@ -25,6 +25,7 @@ export interface MentionInputHandle {
 interface Props {
   placeholder?: string
   className?: string
+  disabled?: boolean
   onChange: (text: string, fragment: string | null) => void
   onKeyDown: (e: React.KeyboardEvent) => void
 }
@@ -81,7 +82,7 @@ function activeFragment(): string | null {
 }
 
 const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput(
-  { placeholder, className, onChange, onKeyDown },
+  { placeholder, className, disabled = false, onChange, onKeyDown },
   ref,
 ) {
   const elRef = useRef<HTMLDivElement>(null)
@@ -138,6 +139,10 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
 
   // Backspace immediately before a chip should delete the whole chip.
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (disabled) {
+      e.preventDefault()
+      return
+    }
     if (e.key === 'Backspace') {
       const sel = window.getSelection()
       if (sel && sel.isCollapsed && sel.rangeCount > 0) {
@@ -167,6 +172,7 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
   // Paste as plain text only (no rich HTML sneaking in).
   const handlePaste = (e: React.ClipboardEvent) => {
     e.preventDefault()
+    if (disabled) return
     const text = e.clipboardData.getData('text/plain')
     document.execCommand('insertText', false, text)
     emit()
@@ -177,9 +183,11 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
   return (
     <div
       ref={elRef}
-      contentEditable
+      contentEditable={!disabled}
       role="textbox"
       aria-multiline="false"
+      aria-disabled={disabled}
+      tabIndex={disabled ? -1 : 0}
       data-placeholder={placeholder}
       className={`mention-input ${className ?? ''}`}
       onInput={emit}

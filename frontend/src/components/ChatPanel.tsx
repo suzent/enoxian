@@ -101,6 +101,7 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender }: BubbleProps) {
 
 export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircleGlyph = false }: Props) {
   const { activeCircleId, circles, status } = useApp()
+  const activeCircle = circles.find(c => c.circle_id === activeCircleId)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [members, setMembers] = useState<Member[]>([])
   const [presence, setPresence] = useState<Presence[]>([])
@@ -205,7 +206,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
 
   const send = () => {
     const text = input.trim()
-    if (!text || !activeCircleId || !status) return
+    if (!text || !activeCircleId || !status || activeCircle?.disabled) return
     inputRef.current?.clear()
     setInput('')
     setFragment(null)
@@ -274,7 +275,6 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     }
   }
 
-  const activeCircle = circles.find(c => c.circle_id === activeCircleId)
   const hasConversation = messages.length > 0
   const onlineCount = presence.filter(p => p.status === 'online').length
   const glyphSize = hasConversation ? 64 : 88
@@ -311,6 +311,13 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
             <span>{onlineCount} ONLINE</span>
             <strong>{members.length} MEMBERS</strong>
           </div>
+        </div>
+      )}
+
+      {variant === 'main' && activeCircle?.disabled && (
+        <div className="chat-void-notice" role="status">
+          <span>VOID MODE</span>
+          <strong>THIS CIRCLE IS DISABLED · ENABLE IT TO RESUME</strong>
         </div>
       )}
 
@@ -356,10 +363,13 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
           ref={inputRef}
           onChange={onInputChange}
           onKeyDown={onInputKeyDown}
-          placeholder="Message the circle...  (@ to mention)"
-          className="chat-composer__input"
+          placeholder={activeCircle?.disabled ? 'Circle disabled — enable to resume' : 'Message the circle...  (@ to mention)'}
+          className={`chat-composer__input${activeCircle?.disabled ? ' chat-composer__input--disabled' : ''}`}
+          disabled={activeCircle?.disabled}
         />
-        <button onClick={send} className="enox-btn chat-composer__send">{variant === 'main' ? 'SEND' : 'EXEC'}</button>
+        <button onClick={send} disabled={activeCircle?.disabled} className="enox-btn chat-composer__send">
+          {activeCircle?.disabled ? 'VOID' : variant === 'main' ? 'SEND' : 'EXEC'}
+        </button>
       </div>
     </main>
   )
