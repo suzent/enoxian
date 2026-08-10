@@ -1,16 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import * as THREE from 'three'
 import { Settings } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import { initCircle, enterCircle, getIdentity } from '../api'
-import { applyCircleRotation, makeCircleGeometry } from '../lib/circleShape'
-import { createDitheredComposer, type DitheredComposer } from '../lib/ditherShader'
-import {
-  CIRCLE_EXPOSURE,
-  createCircleCamera,
-  createCircleRenderer,
-  prepareCircleScene,
-} from '../lib/circleRender'
 import { triggerDockBurst } from '../lib/particleEffect'
 import DeviceSettings from './DeviceSettings'
 import type { RitualMode } from './RitualTransition'
@@ -22,16 +13,7 @@ interface Props {
 
 type Modal = 'init' | 'enter' | null
 
-interface SceneEntry {
-  name: string
-  scene: THREE.Scene
-  camera: THREE.PerspectiveCamera
-  mesh: THREE.Group
-  dc: DitheredComposer
-  renderer: THREE.WebGLRenderer
-}
-
-export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
+export default function CircleSidebar({ onRitual }: Props) {
   const { circles, activeCircleId, setActiveCircleId, reloadCircles, status } = useApp()
 
   const [modal, setModal] = useState<Modal>(null)
@@ -55,60 +37,13 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
     return () => { cancelled = true }
   }, [])
 
-  const scenesRef = useRef<Map<string, SceneEntry>>(new Map())
-  const iconMountMapRef = useRef<Map<string, HTMLDivElement>>(new Map())
   const rowRefMap = useRef<Map<string, HTMLButtonElement>>(new Map())
   const highlightRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
-  const rafRef = useRef(0)
   const animatingRef = useRef(false)
-  const prevActiveIdRef = useRef<string | null>(null)
 
-  // rAF loop — animates icons
-  useEffect(() => {
-    function loop() {
-      rafRef.current = requestAnimationFrame(loop)
-      const now = performance.now()
-      scenesRef.current.forEach(({ name, mesh, dc }) => {
-        applyCircleRotation(mesh, name, now)
-        dc.composer.render()
-      })
-    }
-    loop()
-    return () => {
-      cancelAnimationFrame(rafRef.current)
-      scenesRef.current.forEach(({ dc, renderer }) => {
-        dc.composer.dispose()
-        renderer.forceContextLoss()
-        renderer.dispose()
-        renderer.domElement.remove()
-      })
-      scenesRef.current.clear()
-    }
-  }, [])
-
-  // Sync icon scenes when circle list changes
-  useEffect(() => {
-    const scenes = scenesRef.current
-    const ids = new Set(circles.map(c => c.circle_id))
-    scenes.forEach((entry, id) => {
-      if (!ids.has(id)) {
-        entry.dc.composer.dispose()
-        entry.renderer.forceContextLoss()
-        entry.renderer.dispose()
-        entry.renderer.domElement.remove()
-        scenes.delete(id)
-      }
-    })
-    circles.forEach(circle => {
-      if (scenes.has(circle.circle_id)) return
-      const mount = iconMountMapRef.current.get(circle.circle_id)
-      if (!mount) return
-      createIconScene(circle.circle_id, circle.circle_name, mount, scenes)
-    })
-  }, [circles])
-
-  // Slide the highlight bar + animate icon mounts on active change
+  // Slide the highlight bar on active change. The glyph confirmation animation
+  // is CSS-driven so the selected glyph always remains visible in its row.
   useEffect(() => {
     const hl = highlightRef.current
     const list = listRef.current
@@ -120,64 +55,7 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
     hl.style.opacity = '1'
     hl.style.top = `${rowRect.top - listRect.top + list.scrollTop}px`
     hl.style.height = `${rowRect.height}px`
-
-    // Pop-out: newly active icon slides right and fades out
-    if (activeCircleId) {
-      const mount = iconMountMapRef.current.get(activeCircleId)
-      if (mount) {
-        mount.classList.remove('icon-pop-in')
-        mount.classList.add('icon-pop-out')
-        mount.addEventListener('animationend', () => mount.classList.remove('icon-pop-out'), { once: true })
-      }
-    }
-    // Pop-in: previously active icon slides back in
-    const prev = prevActiveIdRef.current
-    if (prev && prev !== activeCircleId) {
-      const mount = iconMountMapRef.current.get(prev)
-      if (mount) {
-        mount.classList.remove('icon-pop-out')
-        mount.classList.add('icon-pop-in')
-        mount.addEventListener('animationend', () => mount.classList.remove('icon-pop-in'), { once: true })
-      }
-    }
-    prevActiveIdRef.current = activeCircleId
   }, [activeCircleId, circles])
-
-  function createIconScene(
-    id: string,
-    name: string,
-    mount: HTMLDivElement,
-    scenes: Map<string, SceneEntry>,
-  ) {
-    // Render at 88px (dock resolution) so dither density matches dock glyph,
-    // CSS-scaled to 36px display size.
-    const renderSize = 88
-    const displaySize = 36
-    const renderer = createCircleRenderer(renderSize, renderSize)
-    renderer.domElement.style.cssText =
-      `display:block;width:${displaySize}px;height:${displaySize}px;image-rendering:pixelated;mix-blend-mode:multiply;background:transparent;`
-    mount.appendChild(renderer.domElement)
-
-    const scene = new THREE.Scene()
-    prepareCircleScene(scene)
-    const camera = createCircleCamera()
-    const group = makeCircleGeometry(name)
-    applyCircleRotation(group, name)
-    scene.add(group)
-
-    const dc = createDitheredComposer(renderer, scene, camera, renderSize, renderSize)
-    dc.setExposure(CIRCLE_EXPOSURE)
-    scenes.set(id, { name, scene, camera, mesh: group, dc, renderer })
-  }
-
-  const registerIconMount = useCallback((id: string, el: HTMLDivElement | null) => {
-    if (!el) { iconMountMapRef.current.delete(id); return }
-    iconMountMapRef.current.set(id, el)
-    if (scenesRef.current.has(id)) return
-    const circle = circles.find(c => c.circle_id === id)
-    if (!circle) return
-    createIconScene(id, circle.circle_name, el, scenesRef.current)
-  }, [circles])
 
   const activeCircleIdRef = useRef(activeCircleId)
   useEffect(() => { activeCircleIdRef.current = activeCircleId }, [activeCircleId])
@@ -187,47 +65,46 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
     animatingRef.current = true
 
     const dockEl = document.querySelector('[data-circle-dock]') as HTMLElement | null
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
-    // Pop dock out, switch, pop in
+    if (!dockEl || reduceMotion) {
+      setActiveCircleId(targetId)
+      activeCircleIdRef.current = targetId
+      if (!reduceMotion) triggerDockBurst()
+      animatingRef.current = false
+      return
+    }
+
+    // Keep the central glyph transition brief; sidebar selection updates after
+    // the 100ms exit instead of being locked for the previous half-second.
     const doSwitch = () => {
       setActiveCircleId(targetId)
       activeCircleIdRef.current = targetId
-
-      // Fire burst at the dock
       triggerDockBurst()
 
-      // Pop new glyph in after a brief pause for React to swap the glyph
       setTimeout(() => {
-        if (dockEl) {
-          dockEl.style.transition = 'none'
-          dockEl.style.transform = 'scale(0.8)'
-          dockEl.style.opacity = '0'
-          requestAnimationFrame(() => {
-            dockEl.style.transition =
-              'transform 300ms cubic-bezier(0.34,1.56,0.64,1), opacity 200ms ease-out'
-            dockEl.style.transform = 'scale(1)'
-            dockEl.style.opacity = '1'
-            setTimeout(() => {
-              dockEl.style.transition = ''
-              dockEl.style.transform = ''
-              dockEl.style.opacity = ''
-              animatingRef.current = false
-            }, 320)
-          })
-        } else {
-          animatingRef.current = false
-        }
-      }, 60)
+        dockEl.style.transition = 'none'
+        dockEl.style.transform = 'scale(0.86)'
+        dockEl.style.opacity = '0'
+        requestAnimationFrame(() => {
+          dockEl.style.transition =
+            'transform 220ms cubic-bezier(0.22,1,0.36,1), opacity 150ms ease-out'
+          dockEl.style.transform = 'scale(1)'
+          dockEl.style.opacity = '1'
+          setTimeout(() => {
+            dockEl.style.transition = ''
+            dockEl.style.transform = ''
+            dockEl.style.opacity = ''
+            animatingRef.current = false
+          }, 230)
+        })
+      }, 30)
     }
 
-    if (dockEl) {
-      dockEl.style.transition = 'transform 140ms ease-in, opacity 120ms ease-in'
-      dockEl.style.transform = 'scale(0.7)'
-      dockEl.style.opacity = '0'
-      setTimeout(doSwitch, 150)
-    } else {
-      doSwitch()
-    }
+    dockEl.style.transition = 'transform 100ms ease-in, opacity 90ms ease-in'
+    dockEl.style.transform = 'scale(0.82)'
+    dockEl.style.opacity = '0'
+    setTimeout(doSwitch, 100)
   }, [setActiveCircleId])
 
   // Modal handlers
@@ -258,43 +135,36 @@ export default function CircleSidebar({ onRitual, ritualCircleName }: Props) {
       <aside className="app-circles-sidebar sys-window flex flex-col z-10 overflow-hidden font-mono">
         <div className="section-header">
           <span>CIRCLES</span>
+          <span className="circle-list-count">{String(circles.length).padStart(2, '0')}</span>
         </div>
 
-        <div ref={listRef} className="flex-1 overflow-y-auto flex flex-col gap-1 p-2 min-h-0 relative">
+        <div ref={listRef} className="circle-list">
           {/* Sliding active highlight — moves between rows via CSS transition */}
           <div ref={highlightRef} className="circle-list-highlight" style={{ opacity: 0 }} />
 
           {circles.length === 0 && (
             <div className="text-[10px] text-slate p-2">NO CIRCLES</div>
           )}
-          {circles.map(circle => {
+          {circles.map((circle, index) => {
             const isActive = circle.circle_id === activeCircleId
-            const hideForRitual = circle.circle_name === ritualCircleName
             return (
               <button
                 key={circle.circle_id}
                 ref={el => { if (el) rowRefMap.current.set(circle.circle_id, el); else rowRefMap.current.delete(circle.circle_id) }}
                 onClick={() => switchCircle(circle.circle_id)}
-                className={`circle-row flex items-center gap-2 p-2 border border-obsidian text-left w-full ${
-                  isActive ? 'circle-row-active text-obsidian' : 'text-obsidian hover:bg-obsidian/5'
-                }`}
-              style={{ transition: 'none', backgroundColor: 'var(--bg-alabaster)' }}
+                className={`circle-row${isActive ? ' circle-row-active' : ''}${circle.disabled ? ' circle-row--void' : ''}`}
+                aria-current={isActive ? 'true' : undefined}
               >
-                <div
-                  ref={el => registerIconMount(circle.circle_id, el)}
-                  className={isActive ? 'circle-icon-mount circle-icon-mount--active' : 'circle-icon-mount'}
-                  style={{
-                    width: 36, height: 36, flexShrink: 0,
-                    visibility: hideForRitual ? 'hidden' : 'visible',
-                    overflow: 'hidden',
-                  }}
-                />
-                <div className="flex flex-col min-w-0">
-                  <span className="font-bold truncate tracking-wide">
-                    {circle.circle_name}
+                <span className="circle-row__ordinal" aria-hidden="true">
+                  {String(index + 1).padStart(2, '0')}
+                </span>
+                <div className="circle-row__copy">
+                  <span className="circle-row__name">{circle.circle_name}</span>
+                  <span className={`circle-row__state${isActive ? ' active' : ''}${circle.disabled ? ' void' : ''}`}>
+                    {circle.disabled ? 'VOID' : isActive ? 'ACTIVE' : 'CIRCLE'}
                   </span>
-                  <span className={`circle-row__state${circle.disabled ? '' : ' inactive'}`}>VOID</span>
                 </div>
+                <span className="circle-row__marker" aria-hidden="true">→</span>
               </button>
             )
           })}
