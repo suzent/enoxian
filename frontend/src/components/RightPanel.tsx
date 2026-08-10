@@ -628,34 +628,48 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
           <div className="section-header">
             <span>FILES</span>
             <button
-              onClick={() => { setCreatingFile(v => !v); setFileActionError(null) }}
+              onClick={() => {
+                if (creatingFile) setNewFilePath('')
+                setCreatingFile(v => !v)
+                setFileActionError(null)
+              }}
               title={creatingFile ? 'Cancel' : 'New file'}
               aria-expanded={creatingFile}
               aria-label={creatingFile ? 'Cancel new file' : 'Create file'}
             >{creatingFile ? '×' : '+'}</button>
           </div>
-          {creatingFile && (
-            <form className="panel-action-form" onSubmit={e => { e.preventDefault(); submitFile() }}>
-              <div className="panel-action-form__heading">
-                <strong>NEW FILE</strong>
-                <span>Folders are created from the path</span>
-              </div>
-              <label className="panel-action-form__field">
-                <span>PATH</span>
-                <input autoFocus value={newFilePath} onChange={e => setNewFilePath(e.target.value)}
-                  placeholder="docs/notes.md" className="panel-action-form__input" spellCheck={false} />
-              </label>
-              <div className="panel-action-form__actions">
-                <button type="submit" disabled={!newFilePath.trim()} className="panel-action-form__button panel-action-form__button--primary">CREATE FILE</button>
-                <button type="button" onClick={() => { setCreatingFile(false); setFileActionError(null) }} className="panel-action-form__button">CANCEL</button>
-              </div>
-            </form>
-          )}
-          {fileActionError && <div className="panel-feedback panel-feedback--error" role="alert"><strong>ERROR</strong><span>{fileActionError}</span></div>}
           <div className="file-list flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px]">
-            {files.length === 0 && <PanelEmpty title="NO FILES YET" detail="Create the first shared file." />}
-            {files.length > 0 && (
+            {files.length === 0 && !creatingFile && <PanelEmpty title="NO FILES YET" detail="Use + to create the first shared file." />}
+            {(files.length > 0 || creatingFile) && (
               <div className="border border-obsidian/30">
+                {creatingFile && (
+                  <>
+                    <form className="file-row file-row--creating" onSubmit={e => { e.preventDefault(); submitFile() }}>
+                      <FileIcon name={newFilePath || 'untitled'} isDir={false} isOpen={false} />
+                      <input
+                        autoFocus
+                        value={newFilePath}
+                        onChange={e => { setNewFilePath(e.target.value); setFileActionError(null) }}
+                        onKeyDown={e => {
+                          if (e.key === 'Escape') {
+                            e.preventDefault()
+                            setNewFilePath('')
+                            setCreatingFile(false)
+                            setFileActionError(null)
+                          }
+                        }}
+                        placeholder="filename or path"
+                        className="file-create-input"
+                        aria-label="New file path"
+                        aria-invalid={!!fileActionError}
+                        aria-describedby={fileActionError ? 'file-create-error' : undefined}
+                        spellCheck={false}
+                      />
+                      <span className="file-create-commit" title="Press Enter to create" aria-hidden="true">↵</span>
+                    </form>
+                    {fileActionError && <div id="file-create-error" className="file-create-error" role="alert">{fileActionError}</div>}
+                  </>
+                )}
                 <FileTree nodes={fileTree} onSelect={onFileSelect} onRename={handleRenameFile}
                   onDelete={handleDeleteFile} openMenu={fileMenuOpen} onOpenMenu={setFileMenuOpen}
                   selected={selectedFile} depth={0} />
