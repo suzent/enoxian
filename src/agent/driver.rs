@@ -119,7 +119,10 @@ impl ClientHooks for PolicyHooks {
             if let Ok(mut buf) = self.reply.lock() {
                 buf.boundary();
             }
-            tracing::debug!("[agent] session update: {:?}", crate::agent::acp::update_kind(update));
+            tracing::debug!(
+                "[agent] session update: {:?}",
+                crate::agent::acp::update_kind(update)
+            );
         }
     }
 }
@@ -154,7 +157,11 @@ pub async fn launch(req: LaunchRequest<'_>) -> Result<LaunchOutcome> {
     session.actor_id = Some(req.agent_name.to_string());
     tracing::info!(
         "[agent] launching `{}` ({:?}) session={} resume={:?} task_len={}",
-        req.agent_name, req.cmd.driver, session.session_id, req.resume, req.task.len()
+        req.agent_name,
+        req.cmd.driver,
+        session.session_id,
+        req.resume,
+        req.task.len()
     );
 
     let run_dir = working_dir(req.workspace, req.cmd.working_dir.as_deref());
@@ -185,9 +192,7 @@ struct AcpRun {
 
 async fn run_argv(cmd: &AgentCommand, task: &str, run_dir: &Path) -> Result<String> {
     let rendered = cmd.render(task);
-    let (program, args) = rendered
-        .split_first()
-        .context("empty agent command")?;
+    let (program, args) = rendered.split_first().context("empty agent command")?;
     let status = super::spawn::command(program, args)
         .current_dir(run_dir)
         .status()
@@ -263,7 +268,10 @@ mod tests {
         buf.boundary(); // e.g. a tool call happened
         buf.push_chunk("Done — I created ");
         buf.push_chunk("test.txt.");
-        assert_eq!(buf.into_reply().as_deref(), Some("Done — I created test.txt."));
+        assert_eq!(
+            buf.into_reply().as_deref(),
+            Some("Done — I created test.txt.")
+        );
     }
 
     #[test]

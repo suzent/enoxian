@@ -67,6 +67,7 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
   const [newTaskTitle, setNewTaskTitle] = useState('')
   const [newTaskDesc, setNewTaskDesc] = useState('')
   const [creating, setCreating] = useState(false)
+  const [taskActionError, setTaskActionError] = useState<string | null>(null)
   const [creatingFile, setCreatingFile] = useState(false)
   const [newFilePath, setNewFilePath] = useState('')
   const [fileMenuOpen, setFileMenuOpen] = useState<string | null>(null)
@@ -239,9 +240,10 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
   const submitTask = () => {
     const title = newTaskTitle.trim()
     if (!title || !activeCircleId || !status) return
+    setTaskActionError(null)
     createTask(activeCircleId, title, newTaskDesc.trim(), status.agent_id)
       .then(() => { setNewTaskTitle(''); setNewTaskDesc(''); setCreating(false); refreshTasks() })
-      .catch(() => {})
+      .catch((err: any) => setTaskActionError(err.message || 'Unable to create task'))
   }
 
   // Determine if the current user is admin
@@ -374,10 +376,11 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
     }
     try {
       const res = await inviteCircle(activeCircleId)
+      setMemberActionError(null)
       setInviteUri(res.invite_uri)
       setInviteConnectivity(res.connectivity ?? null)
     } catch (err: any) {
-      alert(`Error generating invite: ${err.message}`)
+      setMemberActionError(err.message || 'Unable to create invite')
     }
   }
 
@@ -455,19 +458,22 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
           {/* Invite row */}
           <div className="section-header">
             <span>MEMBERS</span>
-            <button onClick={handleInvite}>{inviteUri ? 'x' : '+'}</button>
+            <button onClick={handleInvite} aria-expanded={!!inviteUri} aria-label={inviteUri ? 'Close invite details' : 'Create invite'}>{inviteUri ? '×' : '+'}</button>
           </div>
 
           {inviteUri && (
-            <div className="px-4 py-3 border-b border-dashed border-obsidian/30 text-[11px] font-mono">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-slate text-[9px] font-bold shrink-0">URI</span>
-                <span className="flex-1 min-w-0 border border-obsidian/30 px-2 py-1 text-[10px] text-obsidian/70 select-none truncate" title={inviteUri}>
+            <div className="panel-action-form">
+              <div className="panel-action-form__heading">
+                <strong>INVITE LINK</strong>
+                <span>Share with a trusted collaborator</span>
+              </div>
+              <div className="panel-action-form__inline">
+                <span className="panel-action-form__value" title={inviteUri}>
                   {inviteUri.slice(0, 20)}···{inviteUri.slice(-6)}
                 </span>
                 <button
                   onClick={() => { navigator.clipboard.writeText(inviteUri); setInviteCopied(true); setTimeout(() => setInviteCopied(false), 2000) }}
-                  className={`shrink-0 text-[9px] px-2 py-1 border font-bold ${inviteCopied ? 'bg-obsidian text-alabaster border-obsidian' : 'border-obsidian hover:bg-obsidian hover:text-alabaster'}`}
+                  className={`panel-action-form__button panel-action-form__button--primary${inviteCopied ? ' is-complete' : ''}`}
                 >{inviteCopied ? 'COPIED ✓' : 'COPY'}</button>
               </div>
               {inviteConnectivity && (() => {
@@ -477,20 +483,20 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
                 if (inviteConnectivity.relay_addr) tags.push('RELAY')
                 if (inviteConnectivity.rendezvous_addr) tags.push('RDVZ')
                 return (
-                  <div className="flex items-center gap-2 text-[9px]">
-                    <span className={`font-bold ${wan ? 'text-obsidian' : 'text-slate'}`}>{wan ? '✦ WAN' : '⚠ LAN-ONLY'}</span>
-                    {tags.map(t => <span key={t} className="border border-obsidian/40 px-1 text-slate">{t}</span>)}
+                  <div className="panel-action-form__meta">
+                    <span className={wan ? '' : 'is-muted'}>{wan ? '● REACHABLE' : '○ LAN ONLY'}</span>
+                    {tags.map(t => <span key={t} className="panel-action-form__tag">{t}</span>)}
                   </div>
                 )
               })()}
             </div>
           )}
+          {memberActionError && <div className="panel-feedback panel-feedback--error" role="alert"><strong>ERROR</strong><span>{memberActionError}</span></div>}
 
           {/* Pending approvals */}
           {pending.length > 0 && (
             <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px]">
               <div className="group-label approval-label">AWAITING APPROVAL</div>
-              {memberActionError && <div className="file-error">{memberActionError}</div>}
               {pending.map(p => (
                 <div key={p.peer_id} className="flex flex-col gap-1 pb-2 border-b border-dashed border-obsidian/20 last:border-0">
                   <div className="flex justify-between items-start gap-1">
@@ -568,21 +574,33 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
         <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
           <div className="section-header">
             <span>TASK QUEUE</span>
-            <button onClick={() => setCreating(v => !v)}>{creating ? 'x' : '+'}</button>
+            <button onClick={() => setCreating(v => !v)} aria-expanded={creating} aria-label={creating ? 'Cancel new task' : 'Create task'}>{creating ? '×' : '+'}</button>
           </div>
           {creating && (
-            <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px]">
-              <input autoFocus value={newTaskTitle} onChange={e => setNewTaskTitle(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && submitTask()} placeholder="Task title..."
-                className="bg-transparent border border-obsidian px-2 py-1 text-[11px] font-mono focus:outline-none focus:bg-obsidian/5 w-full" />
-              <input value={newTaskDesc} onChange={e => setNewTaskDesc(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && submitTask()} placeholder="Description (optional)..."
-                className="bg-transparent border border-dashed border-obsidian/50 px-2 py-1 text-[11px] font-mono focus:outline-none w-full" />
-              <button onClick={submitTask} className="enox-btn self-start">CREATE</button>
-            </div>
+            <form className="panel-action-form" onSubmit={e => { e.preventDefault(); submitTask() }}>
+              <div className="panel-action-form__heading">
+                <strong>NEW TASK</strong>
+                <span>Add work to this circle</span>
+              </div>
+              <label className="panel-action-form__field">
+                <span>TITLE</span>
+                <input autoFocus value={newTaskTitle} onChange={e => setNewTaskTitle(e.target.value)}
+                  placeholder="Describe the outcome" className="panel-action-form__input" />
+              </label>
+              <label className="panel-action-form__field">
+                <span>DESCRIPTION <small>OPTIONAL</small></span>
+                <input value={newTaskDesc} onChange={e => setNewTaskDesc(e.target.value)}
+                  placeholder="Add useful context" className="panel-action-form__input" />
+              </label>
+              <div className="panel-action-form__actions">
+                <button type="submit" disabled={!newTaskTitle.trim()} className="panel-action-form__button panel-action-form__button--primary">CREATE TASK</button>
+                <button type="button" onClick={() => setCreating(false)} className="panel-action-form__button">CANCEL</button>
+              </div>
+            </form>
           )}
+          {taskActionError && <div className="panel-feedback panel-feedback--error" role="alert"><strong>ERROR</strong><span>{taskActionError}</span></div>}
           <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2 font-mono text-[11px]">
-            {tasks.length === 0 && <div className="text-slate">NO ACTIVE TASKS</div>}
+            {tasks.length === 0 && <PanelEmpty title="NO ACTIVE TASKS" detail="Create a task to coordinate work." />}
             {tasks.map(t => {
               const isMe = t.claimed_by === status?.agent_id
               return (
@@ -609,18 +627,33 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
         <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
           <div className="section-header">
             <span>FILES</span>
-            <button onClick={() => setCreatingFile(v => !v)} title={creatingFile ? 'Cancel' : 'New file'}>{creatingFile ? '×' : '+'}</button>
+            <button
+              onClick={() => { setCreatingFile(v => !v); setFileActionError(null) }}
+              title={creatingFile ? 'Cancel' : 'New file'}
+              aria-expanded={creatingFile}
+              aria-label={creatingFile ? 'Cancel new file' : 'Create file'}
+            >{creatingFile ? '×' : '+'}</button>
           </div>
           {creatingFile && (
-            <div className="file-action-box">
-              <input autoFocus value={newFilePath} onChange={e => setNewFilePath(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && submitFile()} placeholder="docs/notes.md" className="file-input" />
-              <button onClick={submitFile} className="file-mini-btn">CREATE</button>
-            </div>
+            <form className="panel-action-form" onSubmit={e => { e.preventDefault(); submitFile() }}>
+              <div className="panel-action-form__heading">
+                <strong>NEW FILE</strong>
+                <span>Folders are created from the path</span>
+              </div>
+              <label className="panel-action-form__field">
+                <span>PATH</span>
+                <input autoFocus value={newFilePath} onChange={e => setNewFilePath(e.target.value)}
+                  placeholder="docs/notes.md" className="panel-action-form__input" spellCheck={false} />
+              </label>
+              <div className="panel-action-form__actions">
+                <button type="submit" disabled={!newFilePath.trim()} className="panel-action-form__button panel-action-form__button--primary">CREATE FILE</button>
+                <button type="button" onClick={() => { setCreatingFile(false); setFileActionError(null) }} className="panel-action-form__button">CANCEL</button>
+              </div>
+            </form>
           )}
-          {fileActionError && <div className="file-error">{fileActionError}</div>}
+          {fileActionError && <div className="panel-feedback panel-feedback--error" role="alert"><strong>ERROR</strong><span>{fileActionError}</span></div>}
           <div className="file-list flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px]">
-            {files.length === 0 && <div className="text-slate px-1">NO ARTIFACTS INDEXED</div>}
+            {files.length === 0 && <PanelEmpty title="NO FILES YET" detail="Create the first shared file." />}
             {files.length > 0 && (
               <div className="border border-obsidian/30">
                 <FileTree nodes={fileTree} onSelect={onFileSelect} onRename={handleRenameFile}
@@ -718,6 +751,16 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
       </div>
     )}
     </>
+  )
+}
+
+function PanelEmpty({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="panel-empty">
+      <span aria-hidden="true">—</span>
+      <strong>{title}</strong>
+      <small>{detail}</small>
+    </div>
   )
 }
 

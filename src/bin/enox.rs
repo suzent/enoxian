@@ -77,9 +77,14 @@ async fn main() -> anyhow::Result<()> {
                     enoxian::commands::agent::run(cli.circle.as_deref(), agent, task).await
                 }
                 AgentAction::List => enoxian::commands::agent::list(),
-                AgentAction::Add { name, driver, working_dir, command } => {
-                    enoxian::commands::agent::add(name, driver, working_dir, command)
-                }
+                AgentAction::Plugins => enoxian::commands::agent::plugins(),
+                AgentAction::Install { plugin } => enoxian::commands::agent::install(plugin).await,
+                AgentAction::Add {
+                    name,
+                    driver,
+                    working_dir,
+                    command,
+                } => enoxian::commands::agent::add(name, driver, working_dir, command),
                 AgentAction::Remove { name } => enoxian::commands::agent::remove(name),
                 AgentAction::Reaction { mode } => enoxian::commands::agent::reaction(mode),
             }
@@ -172,13 +177,22 @@ async fn main() -> anyhow::Result<()> {
                             enoxian::commands::proposals::show(&client, &base, id, cli.json).await
                         }
                         ProposalAction::Accept { id } => {
-                            enoxian::commands::proposals::decide(&client, &base, id, "accept", cli.json).await
+                            enoxian::commands::proposals::decide(
+                                &client, &base, id, "accept", cli.json,
+                            )
+                            .await
                         }
                         ProposalAction::Reject { id } => {
-                            enoxian::commands::proposals::decide(&client, &base, id, "reject", cli.json).await
+                            enoxian::commands::proposals::decide(
+                                &client, &base, id, "reject", cli.json,
+                            )
+                            .await
                         }
                         ProposalAction::Revert { id } => {
-                            enoxian::commands::proposals::decide(&client, &base, id, "revert", cli.json).await
+                            enoxian::commands::proposals::decide(
+                                &client, &base, id, "revert", cli.json,
+                            )
+                            .await
                         }
                     }
                 }

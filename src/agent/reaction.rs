@@ -60,12 +60,6 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     if message.ts < cutoff {
                         continue;
                     }
-                    // Never act on the same mention twice, across restarts.
-                    if !handled.mark_new(&message.id, &agent_id) {
-                        tracing::debug!("[agent] mention {}::{agent_id} already handled — skipping", message.id);
-                        continue;
-                    }
-
                     // `agent_id` is the stored mention body — possibly scoped as
                     // owner/device/agent. Only agent-level targets launch; user-
                     // and device-level mentions are notify-only.
@@ -99,6 +93,13 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                         continue;
                     };
 
+                    // Only durable-dedup mentions that passed targeting, policy,
+                    // and allowlist checks and are actually about to launch.
+                    if !handled.mark_new(&message.id, &agent_id) {
+                        tracing::debug!("[agent] mention {}::{agent_id} already handled — skipping", message.id);
+                        continue;
+                    }
+
                     // The task is the message text with the leading @mention
                     // (in its full, possibly-scoped form) stripped, so the agent
                     // gets a clean instruction. Capture before shadowing.
@@ -119,6 +120,14 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     tokio::spawn(async move {
                         if let Err(e) = react(&state, &agent_id, &cmd, &task, &sender, initiator).await {
                             tracing::warn!("[agent] run of `{agent_id}` failed: {e:#}");
+                            let reason = concise_error(&e);
+                            let text = format!("@{agent_id} failed to start · {reason}");
+                            let _ = crate::api::chat::post_message(
+                                &state,
+                                "system".to_string(),
+                                text,
+                                false,
+                            );
                         }
                     });
                 }
@@ -131,6 +140,17 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn concise_error(error: &anyhow::Error) -> String {
+    let full = format!("{error:#}").replace(['\r', '\n'], " ");
+    let mut chars = full.chars();
+    let short: String = chars.by_ref().take(240).collect();
+    if chars.next().is_some() {
+        format!("{short}…")
+    } else {
+        short
+    }
 }
 
 async fn react(
@@ -176,18 +196,25 @@ async fn react(
 
     tracing::info!(
         "[agent] `{agent_id}` finished: session={} {}",
-        outcome.session_id, outcome.detail
+        outcome.session_id,
+        outcome.detail
     );
 
     // Post the agent's streamed reply back into the chat room so the mention
     // reads like a conversation. File changes still surface separately as a
     // proposal (via the ambient engine + pull protocol); this is the
     // conversational half.
-    if let Some(reply) = outcome.reply.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(reply) = outcome
+        .reply
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         // Post under the agent's name WITHOUT firing mention triggers: an
         // agent's reply must never wake another agent, or two agents ping-pong
         // forever. (fire_mentions = false)
-        let _ = crate::api::chat::post_message(state, agent_id.to_string(), reply.to_string(), false);
+        let _ =
+            crate::api::chat::post_message(state, agent_id.to_string(), reply.to_string(), false);
     } else {
         tracing::debug!("[agent] `{agent_id}` produced no text reply to post");
     }
@@ -228,7 +255,10 @@ mod tests {
 
     #[test]
     fn strips_leading_mention() {
-        assert_eq!(strip_mention("@claude fix the docs", "claude"), "fix the docs");
+        assert_eq!(
+            strip_mention("@claude fix the docs", "claude"),
+            "fix the docs"
+        );
         assert_eq!(strip_mention("  @claude  do it ", "claude"), "do it");
     }
 
@@ -238,5 +268,13 @@ mod tests {
             strip_mention("please ping @claude later", "claude"),
             "please ping @claude later"
         );
+    }
+
+    #[test]
+    fn failure_message_is_single_line_and_bounded() {
+        let error = anyhow::anyhow!("first line\n{}", "x".repeat(300));
+        let text = concise_error(&error);
+        assert!(!text.contains('\n'));
+        assert!(text.chars().count() <= 241);
     }
 }

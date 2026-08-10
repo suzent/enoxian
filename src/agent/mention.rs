@@ -74,9 +74,11 @@ impl Mention {
     /// User- and device-level mentions return `None` (notify-only).
     pub fn agent_target(&self) -> Option<(&str, Option<(&str, &str)>)> {
         match self {
-            Mention::Agent { owner, device, agent } => {
-                Some((agent, Some((owner, device))))
-            }
+            Mention::Agent {
+                owner,
+                device,
+                agent,
+            } => Some((agent, Some((owner, device)))),
             Mention::BareAgent { agent } => Some((agent, None)),
             Mention::User { .. } | Mention::Device { .. } => None,
         }
@@ -89,7 +91,9 @@ impl Mention {
 pub fn extract(text: &str) -> Vec<String> {
     let mut mentions = Vec::new();
     for word in text.split_whitespace() {
-        let Some(rest) = word.strip_prefix('@') else { continue };
+        let Some(rest) = word.strip_prefix('@') else {
+            continue;
+        };
         let body: String = rest
             .chars()
             .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '/')
@@ -118,7 +122,10 @@ mod tests {
 
     #[test]
     fn trailing_punctuation_ends_mention() {
-        assert_eq!(extract("@alice/laptop/claude, go"), vec!["alice/laptop/claude"]);
+        assert_eq!(
+            extract("@alice/laptop/claude, go"),
+            vec!["alice/laptop/claude"]
+        );
         assert_eq!(extract("hi @bob!"), vec!["bob"]);
     }
 
@@ -130,10 +137,18 @@ mod tests {
 
     #[test]
     fn parse_levels() {
-        assert_eq!(Mention::parse("claude"), Some(Mention::BareAgent { agent: "claude".into() }));
+        assert_eq!(
+            Mention::parse("claude"),
+            Some(Mention::BareAgent {
+                agent: "claude".into()
+            })
+        );
         assert_eq!(
             Mention::parse("alice/laptop"),
-            Some(Mention::Device { owner: "alice".into(), device: "laptop".into() })
+            Some(Mention::Device {
+                owner: "alice".into(),
+                device: "laptop".into()
+            })
         );
         assert_eq!(
             Mention::parse("alice/laptop/claude"),
@@ -149,7 +164,9 @@ mod tests {
     #[test]
     fn agent_target_only_for_agents() {
         assert_eq!(
-            Mention::parse("alice/laptop/claude").unwrap().agent_target(),
+            Mention::parse("alice/laptop/claude")
+                .unwrap()
+                .agent_target(),
             Some(("claude", Some(("alice", "laptop"))))
         );
         assert_eq!(
@@ -157,8 +174,11 @@ mod tests {
             Some(("claude", None))
         );
         // User / device mentions do not launch.
-        assert_eq!(Mention::parse("alice").unwrap().agent_target().is_some(), true,
-            "bare single token is treated as an agent (legacy)");
+        assert_eq!(
+            Mention::parse("alice").unwrap().agent_target().is_some(),
+            true,
+            "bare single token is treated as an agent (legacy)"
+        );
         assert_eq!(Mention::parse("alice/laptop").unwrap().agent_target(), None);
     }
 }

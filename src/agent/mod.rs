@@ -19,6 +19,7 @@ pub mod driver;
 pub mod handled;
 pub mod memory;
 pub mod mention;
+pub mod plugin;
 pub mod probe;
 pub mod reaction;
 pub mod spawn;

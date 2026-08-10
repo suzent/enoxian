@@ -95,6 +95,21 @@ export interface AgentSummary {
   working_dir: string | null
   // Whether command[0] resolves on this machine's PATH right now.
   installed: boolean
+  status: 'ready' | 'missing' | 'runtime_download'
+}
+
+export interface AgentPlugin {
+  id: string
+  agent: string
+  version: string
+  driver: 'acp' | 'argv'
+  package: string
+  about: string
+  source: string
+  state: 'missing' | 'installing' | 'broken' | 'ready'
+  configured: boolean
+  legacy_configured: boolean
+  executable: string
 }
 
 export interface AgentConfigView {

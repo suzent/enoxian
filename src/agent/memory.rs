@@ -26,7 +26,13 @@ fn dir(circle_dir: &Path) -> PathBuf {
 fn path(circle_dir: &Path, agent: &str) -> PathBuf {
     let safe: String = agent
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     dir(circle_dir).join(format!("{safe}.session"))
 }
@@ -35,7 +41,11 @@ fn path(circle_dir: &Path, agent: &str) -> PathBuf {
 pub fn load(circle_dir: &Path, agent: &str) -> Option<String> {
     let id = std::fs::read_to_string(path(circle_dir, agent)).ok()?;
     let id = id.trim().to_string();
-    if id.is_empty() { None } else { Some(id) }
+    if id.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
 }
 
 /// Persist the ACP session id so the next mention can resume it.
@@ -71,7 +81,10 @@ mod tests {
 
         // A scoped/odd agent name is sanitized to a safe filename.
         save(&tmp, "alice/laptop/claude", "sess-xyz").unwrap();
-        assert_eq!(load(&tmp, "alice/laptop/claude").as_deref(), Some("sess-xyz"));
+        assert_eq!(
+            load(&tmp, "alice/laptop/claude").as_deref(),
+            Some("sess-xyz")
+        );
 
         clear(&tmp, "claude").unwrap();
         assert_eq!(load(&tmp, "claude"), None);

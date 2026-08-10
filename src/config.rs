@@ -129,19 +129,16 @@ pub fn disambiguated_workspace_dir(circle_name: &str, circle_id: &str) -> Result
 }
 
 /// Return a stable absolute representation for workspace ownership checks.
-/// Existing paths are canonicalized (resolving symlinks); paths that do not
-/// exist yet are normalized lexically from the current directory.
+/// Lexical aliases are collapsed before checking existence. This matters on
+/// macOS, where a temp path may be exposed as `/var/...` but canonicalize to
+/// `/private/var/...`: `workspace/missing/..` does not itself exist, while its
+/// collapsed target does and must receive the same canonical representation.
 pub fn normalize_workspace_dir(path: &std::path::Path) -> Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir()?.join(path)
     };
-    if absolute.exists() {
-        return std::fs::canonicalize(&absolute)
-            .with_context(|| format!("failed to resolve workspace {}", absolute.display()));
-    }
-
     let mut normalized = PathBuf::new();
     for component in absolute.components() {
         match component {
@@ -154,7 +151,12 @@ pub fn normalize_workspace_dir(path: &std::path::Path) -> Result<PathBuf> {
             other => normalized.push(other.as_os_str()),
         }
     }
-    Ok(normalized)
+    if normalized.exists() {
+        std::fs::canonicalize(&normalized)
+            .with_context(|| format!("failed to resolve workspace {}", normalized.display()))
+    } else {
+        Ok(normalized)
+    }
 }
 
 fn workspace_key(path: &std::path::Path) -> Result<String> {

@@ -58,7 +58,11 @@ pub fn load_or_create() -> Result<String> {
 pub fn load() -> Option<String> {
     let path = token_path().ok()?;
     let t = std::fs::read_to_string(path).ok()?.trim().to_string();
-    if t.is_empty() { None } else { Some(t) }
+    if t.is_empty() {
+        None
+    } else {
+        Some(t)
+    }
 }
 
 fn generate() -> String {

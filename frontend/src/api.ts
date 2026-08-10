@@ -1,4 +1,4 @@
-import type { Circle, Status, Presence, ChatMessage, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent } from './types'
+import type { Circle, Status, Presence, ChatMessage, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin } from './types'
 
 const api = (circleId: string) => `/circles/${circleId}/api`
 
@@ -54,6 +54,10 @@ export const getAgentConfig = () => get<AgentConfigView>('/api/agent-config')
 // Probe well-known agents for local install status (read-only; runs nothing).
 export const discoverAgents = () =>
   get<{ agents: DiscoveredAgent[] }>('/api/agent-config/discover')
+export const getAgentPlugins = () =>
+  get<{ plugins: AgentPlugin[] }>('/api/agent-plugins')
+export const installAgentPlugin = (pluginId: string) =>
+  post<{ ok: boolean; plugin: string; command: string[] }>(`/api/agent-plugins/${encodeURIComponent(pluginId)}/install`, {})
 export const setAgentReaction = (reaction: 'push' | 'pull') =>
   post('/api/agent-config/reaction', { reaction })
 export const addAgent = (name: string, driver: string, command: string[], working_dir?: string) =>

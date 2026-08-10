@@ -47,7 +47,11 @@ pub fn command(program: &str, args: &[String]) -> Command {
 /// Code session." Clearing these guard vars lets the ACP agent run regardless
 /// of where the daemon was started.
 fn scrub_env(c: &mut Command) {
-    for var in ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"] {
+    for var in [
+        "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_SSE_PORT",
+    ] {
         c.env_remove(var);
     }
 }
@@ -68,9 +72,7 @@ fn needs_cmd_wrapper(program: &str) -> bool {
     // Extensionless: let cmd resolve it (covers npx/npm/pnpm/yarn wrappers).
     // A program given as an absolute path to a real binary would normally carry
     // .exe; extensionless absolute paths are unusual and safe to route via cmd.
-    std::path::Path::new(program)
-        .extension()
-        .is_none()
+    std::path::Path::new(program).extension().is_none()
 }
 
 /// Kill a process and all its descendants by PID. `npx`/`node` launchers spawn

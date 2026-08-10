@@ -542,10 +542,21 @@ Agent commands manage this device's local `~/.enoxian/agents.toml`. See
 enox agent list
 ```
 
+### `agent plugins` / `agent install`
+
+List managed adapter plugins and install one at its pinned version. Installation
+is explicit; handling an `@mention` never downloads packages.
+
+```bash
+enox agent plugins
+enox agent install codex-acp
+enox agent install claude-code-acp
+```
+
 ### `agent add`
 
 ```bash
-enox agent add claude --driver acp -- npx @zed-industries/claude-code-acp
+enox agent add my-acp --driver acp -- /path/to/my-acp-adapter
 enox agent add helper --driver argv -- pwsh -Command ./scripts/helper.ps1
 ```
 

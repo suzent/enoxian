@@ -1,10 +1,18 @@
-use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Json};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::json;
 use yrs::{Any, Array, Map, MapRef, Out, Transact};
 
-use crate::control::{CircleEvent, MemberEntry, MemberRole, MlsCommitEntry, PendingEntry, MEMBER_LIST_KEY, MLS_COMMITS_KEY, MLS_KEY_PACKAGES_KEY, MLS_PENDING_KEY, MLS_REMOVED_KEY, MLS_WELCOMES_KEY};
+use crate::control::{
+    CircleEvent, MemberEntry, MemberRole, MlsCommitEntry, PendingEntry, MEMBER_LIST_KEY,
+    MLS_COMMITS_KEY, MLS_KEY_PACKAGES_KEY, MLS_PENDING_KEY, MLS_REMOVED_KEY, MLS_WELCOMES_KEY,
+};
 use crate::daemon::DaemonState;
 
 pub async fn list_members(
@@ -13,7 +21,13 @@ pub async fn list_members(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
     };
     let map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
     let txn = state.control.transact();
@@ -48,7 +62,13 @@ pub async fn add_member(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
     };
 
     let role = match req.role.as_deref().unwrap_or("member") {
@@ -64,10 +84,20 @@ pub async fn add_member(
     let msg = format!("add:{}:{}:owner:{}", req.peer_id, role, owner);
     let sig = match resolve_admin_sig(&circle_id, msg.as_bytes(), &req.admin_signature) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::FORBIDDEN, Json(json!({"error": format!("admin signature required: {e}")}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error": format!("admin signature required: {e}")})),
+            )
+                .into_response()
+        }
     };
     if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &sig) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error": format!("invalid admin signature: {e}")}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": format!("invalid admin signature: {e}")})),
+        )
+            .into_response();
     }
 
     // Note: owner names are per-person, not per-device. The same person can have
@@ -84,7 +114,11 @@ pub async fn add_member(
         signature: sig,
     };
     let Ok(json_str) = serde_json::to_string(&entry) else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "serialize failed"}))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "serialize failed"})),
+        )
+            .into_response();
     };
 
     {
@@ -93,7 +127,9 @@ pub async fn add_member(
         map.insert(&mut txn, req.peer_id.as_str(), json_str.as_str());
     }
 
-    let _ = state.events.send(CircleEvent::MemberAdded { peer_id: req.peer_id.clone() });
+    let _ = state.events.send(CircleEvent::MemberAdded {
+        peer_id: req.peer_id.clone(),
+    });
     Json(json!({"status": "added", "peer_id": req.peer_id})).into_response()
 }
 
@@ -110,16 +146,32 @@ pub async fn remove_member(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
     };
 
     let msg = format!("remove:{}", req.peer_id);
     let sig = match resolve_admin_sig(&circle_id, msg.as_bytes(), &req.admin_signature) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::FORBIDDEN, Json(json!({"error": format!("admin signature required: {e}")}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error": format!("admin signature required: {e}")})),
+            )
+                .into_response()
+        }
     };
     if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &sig) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error": format!("invalid admin signature: {e}")}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": format!("invalid admin signature: {e}")})),
+        )
+            .into_response();
     }
 
     // Issue MLS Remove commit so all remaining members advance their epoch,
@@ -143,12 +195,22 @@ pub async fn remove_member(
                 match group.leaf_index_for_peer(&req.peer_id) {
                     None => None, // peer never joined MLS; evict from CRDT only
                     Some(leaf_idx) => {
-                        let commit_bytes = match group.remove_member(identity, leaf_idx) {
-                            Ok(b) => b,
-                            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("MLS remove_member failed: {e}")}))).into_response(),
-                        };
+                        let commit_bytes =
+                            match group.remove_member(identity, leaf_idx) {
+                                Ok(b) => b,
+                                Err(e) => return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(
+                                        json!({"error": format!("MLS remove_member failed: {e}")}),
+                                    ),
+                                )
+                                    .into_response(),
+                            };
                         let epoch = group.epoch();
-                        Some(MlsRemoveOut { commit_bytes, epoch })
+                        Some(MlsRemoveOut {
+                            commit_bytes,
+                            epoch,
+                        })
                     }
                 }
             }
@@ -188,7 +250,9 @@ pub async fn remove_member(
         let txn = state.control.transact();
         member_map.get(&txn, req.peer_id.as_str()).and_then(|v| {
             if let Out::Any(Any::String(s)) = v {
-                serde_json::from_str::<MemberEntry>(&s).ok().map(|e| e.agent_id)
+                serde_json::from_str::<MemberEntry>(&s)
+                    .ok()
+                    .map(|e| e.agent_id)
             } else {
                 None
             }
@@ -220,7 +284,9 @@ pub async fn remove_member(
         crate::presence::write_offline(&state, agent_id);
     }
 
-    let _ = state.events.send(CircleEvent::MemberRemoved { peer_id: req.peer_id.clone() });
+    let _ = state.events.send(CircleEvent::MemberRemoved {
+        peer_id: req.peer_id.clone(),
+    });
 
     // No transport-PSK rotation: the mls_removed tombstone written above is the
     // eviction boundary (sync.rs rejects tombstoned peers before any data). The
@@ -243,40 +309,63 @@ pub async fn promote_member(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
     };
 
     let existing_owner = {
         let map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
         let txn = state.control.transact();
-        map.get(&txn, req.peer_id.as_str()).and_then(|v| {
-            if let Out::Any(Any::String(s)) = v {
-                serde_json::from_str::<MemberEntry>(&s).ok().map(|e| e.owner)
-            } else {
-                None
-            }
-        }).unwrap_or_default()
+        map.get(&txn, req.peer_id.as_str())
+            .and_then(|v| {
+                if let Out::Any(Any::String(s)) = v {
+                    serde_json::from_str::<MemberEntry>(&s)
+                        .ok()
+                        .map(|e| e.owner)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
     };
     let msg = format!("add:{}:admin:owner:{}", req.peer_id, existing_owner);
     let sig = match resolve_admin_sig(&circle_id, msg.as_bytes(), &req.admin_signature) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::FORBIDDEN, Json(json!({"error": format!("admin signature required: {e}")}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error": format!("admin signature required: {e}")})),
+            )
+                .into_response()
+        }
     };
     if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &sig) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error": format!("invalid admin signature: {e}")}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": format!("invalid admin signature: {e}")})),
+        )
+            .into_response();
     }
 
     let map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
     let (prev_owner, prev_agent_id, prev_device_label, prev_agents) = {
         let txn = state.control.transact();
-        map.get(&txn, req.peer_id.as_str()).and_then(|v| {
-            if let Out::Any(Any::String(s)) = v {
-                serde_json::from_str::<MemberEntry>(&s).ok()
-                    .map(|e| (e.owner, e.agent_id, e.device_label, e.agents))
-            } else {
-                None
-            }
-        }).unwrap_or_default()
+        map.get(&txn, req.peer_id.as_str())
+            .and_then(|v| {
+                if let Out::Any(Any::String(s)) = v {
+                    serde_json::from_str::<MemberEntry>(&s)
+                        .ok()
+                        .map(|e| (e.owner, e.agent_id, e.device_label, e.agents))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
     };
     let entry = MemberEntry {
         peer_id: req.peer_id.clone(),
@@ -289,7 +378,11 @@ pub async fn promote_member(
         signature: sig,
     };
     let Ok(json_str) = serde_json::to_string(&entry) else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "serialize failed"}))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "serialize failed"})),
+        )
+            .into_response();
     };
 
     {
@@ -306,7 +399,13 @@ pub async fn list_pending(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
     };
     let map: MapRef = state.control.get_or_insert_map(MLS_PENDING_KEY);
     let txn = state.control.transact();
@@ -339,7 +438,13 @@ pub async fn approve_member(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
     };
 
     let role_str = req.role.as_deref().unwrap_or("member");
@@ -351,10 +456,20 @@ pub async fn approve_member(
     let msg = format!("add:{}:{}:owner:{}", req.peer_id, role, req.owner);
     let sig = match resolve_admin_sig(&circle_id, msg.as_bytes(), &req.admin_signature) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::FORBIDDEN, Json(json!({"error": format!("admin signature required: {e}")}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error": format!("admin signature required: {e}")})),
+            )
+                .into_response()
+        }
     };
     if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &sig) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error": format!("invalid admin signature: {e}")}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": format!("invalid admin signature: {e}")})),
+        )
+            .into_response();
     }
 
     // Load key package
@@ -363,12 +478,24 @@ pub async fn approve_member(
         let txn = state.control.transact();
         match kp_map.get(&txn, req.peer_id.as_str()) {
             Some(Out::Any(Any::String(s))) => s.to_string(),
-            _ => return (StatusCode::BAD_REQUEST, Json(json!({"error": "key package not found"}))).into_response(),
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "key package not found"})),
+                )
+                    .into_response()
+            }
         }
     };
     let kp_bytes = match hex::decode(&kp_hex) {
         Ok(b) => b,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("invalid key package hex: {e}")}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("invalid key package hex: {e}")})),
+            )
+                .into_response()
+        }
     };
 
     // Add MLS member
@@ -377,12 +504,24 @@ pub async fn approve_member(
         let identity_ptr = &mls_locked.identity as *const _;
         let group = match mls_locked.group.as_mut() {
             Some(g) => g,
-            None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "MLS group not initialized"}))).into_response(),
+            None => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "MLS group not initialized"})),
+                )
+                    .into_response()
+            }
         };
         let identity = unsafe { &*identity_ptr };
         match group.add_member(identity, &kp_bytes) {
             Ok(t) => t,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("MLS add_member failed: {e}")}))).into_response(),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": format!("MLS add_member failed: {e}")})),
+                )
+                    .into_response()
+            }
         }
     };
 
@@ -418,14 +557,18 @@ pub async fn approve_member(
     let (agent_id, device_label, agents) = {
         let pending_map: MapRef = state.control.get_or_insert_map(MLS_PENDING_KEY);
         let txn = state.control.transact();
-        pending_map.get(&txn, req.peer_id.as_str()).and_then(|v| {
-            if let Out::Any(Any::String(s)) = v {
-                serde_json::from_str::<PendingEntry>(&s).ok()
-                    .map(|e| (e.agent_id, e.device_label, e.agents))
-            } else {
-                None
-            }
-        }).unwrap_or_default()
+        pending_map
+            .get(&txn, req.peer_id.as_str())
+            .and_then(|v| {
+                if let Out::Any(Any::String(s)) = v {
+                    serde_json::from_str::<PendingEntry>(&s)
+                        .ok()
+                        .map(|e| (e.agent_id, e.device_label, e.agents))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
     };
 
     let entry = MemberEntry {
@@ -439,7 +582,11 @@ pub async fn approve_member(
         signature: sig,
     };
     let Ok(json_str) = serde_json::to_string(&entry) else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "serialize failed"}))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "serialize failed"})),
+        )
+            .into_response();
     };
 
     {
@@ -458,7 +605,9 @@ pub async fn approve_member(
         }
     }
 
-    let _ = state.events.send(CircleEvent::MemberAdded { peer_id: req.peer_id.clone() });
+    let _ = state.events.send(CircleEvent::MemberAdded {
+        peer_id: req.peer_id.clone(),
+    });
     Json(json!({"status": "approved", "peer_id": req.peer_id})).into_response()
 }
 
@@ -475,16 +624,32 @@ pub async fn reject_member(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
     };
 
     let msg = format!("reject:{}", req.peer_id);
     let sig = match resolve_admin_sig(&circle_id, msg.as_bytes(), &req.admin_signature) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::FORBIDDEN, Json(json!({"error": format!("admin signature required: {e}")}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error": format!("admin signature required: {e}")})),
+            )
+                .into_response()
+        }
     };
     if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &sig) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error": format!("invalid admin signature: {e}")}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": format!("invalid admin signature: {e}")})),
+        )
+            .into_response();
     }
 
     {
@@ -519,7 +684,9 @@ fn local_admin_sign(circle_id: &str, msg: &[u8]) -> anyhow::Result<String> {
     let hex_str = std::fs::read_to_string(&key_path)
         .map_err(|_| anyhow::anyhow!("not admin: admin.key not found for this circle"))?;
     let kp = keypair_from_hex(hex_str.trim())?;
-    let sig = kp.sign(msg).map_err(|e| anyhow::anyhow!("signing failed: {e}"))?;
+    let sig = kp
+        .sign(msg)
+        .map_err(|e| anyhow::anyhow!("signing failed: {e}"))?;
     Ok(hex::encode(sig))
 }
 

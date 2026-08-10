@@ -10,15 +10,18 @@ use crate::proposal::merge::{reverse_apply, RestoreOutcome};
 use crate::proposal::model::{Proposal, ProposalStatus};
 use crate::proposal::store::ProposalStore;
 use axum::{
-    Json,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
+    Json,
 };
 use serde::Serialize;
 use serde_json::json;
 
-fn open_store(daemon: &DaemonState, circle_id: &str) -> Result<(crate::state::AppState, ProposalStore), (StatusCode, Json<serde_json::Value>)> {
+fn open_store(
+    daemon: &DaemonState,
+    circle_id: &str,
+) -> Result<(crate::state::AppState, ProposalStore), (StatusCode, Json<serde_json::Value>)> {
     let state = daemon.get(circle_id).ok_or((
         StatusCode::NOT_FOUND,
         Json(json!({"error": "circle not found"})),
@@ -41,7 +44,9 @@ pub async fn list_proposals(
             let proposals: Vec<_> = store
                 .list_proposals()
                 .into_iter()
-                .filter(|proposal| crate::proposal::validate_for_circle(proposal, &circle_id).is_ok())
+                .filter(|proposal| {
+                    crate::proposal::validate_for_circle(proposal, &circle_id).is_ok()
+                })
                 .collect();
             Json(json!(proposals)).into_response()
         }
@@ -132,8 +137,12 @@ pub async fn get_proposal(
         // A manifest entry whose blob is missing = content not synced here.
         let not_synced = (base_entry.is_some() && before_bytes.is_none())
             || (result_entry.is_some() && after_bytes.is_none());
-        let before = before_bytes.as_ref().and_then(|b| String::from_utf8(b.clone()).ok());
-        let after = after_bytes.as_ref().and_then(|b| String::from_utf8(b.clone()).ok());
+        let before = before_bytes
+            .as_ref()
+            .and_then(|b| String::from_utf8(b.clone()).ok());
+        let after = after_bytes
+            .as_ref()
+            .and_then(|b| String::from_utf8(b.clone()).ok());
         let binary = (before_bytes.is_some() && before.is_none())
             || (after_bytes.is_some() && after.is_none());
         // Document-aware diff for modified files with both sides present.
@@ -145,7 +154,15 @@ pub async fn get_proposal(
         } else {
             None
         };
-        files.push(FileDiff { path: path.clone(), change, before, after, binary, not_synced, diff });
+        files.push(FileDiff {
+            path: path.clone(),
+            change,
+            before,
+            after,
+            binary,
+            not_synced,
+            diff,
+        });
     }
 
     Json(json!(ProposalDetail { proposal, files })).into_response()
@@ -201,7 +218,10 @@ async fn set_status(
     // not git reset. Later edits to the same files are preserved via a
     // line-level three-way merge; genuine overlaps abort with 409 before
     // anything is written.
-    if matches!(new_status, ProposalStatus::Rejected | ProposalStatus::Reverted) {
+    if matches!(
+        new_status,
+        ProposalStatus::Rejected | ProposalStatus::Reverted
+    ) {
         let (base, result) = match (
             store.load_snapshot(&proposal.base_snapshot),
             store.load_snapshot(&proposal.result_snapshot),
@@ -223,7 +243,10 @@ async fn set_status(
         // Reverse-apply with such a `None` would misread it as a delete and
         // could destroy the file, so collect these and abort instead.
         let mut missing: Vec<String> = Vec::new();
-        let resolve = |entry: Option<&crate::proposal::snapshot::FileEntry>, path: &str, missing: &mut Vec<String>| -> Option<Vec<u8>> {
+        let resolve = |entry: Option<&crate::proposal::snapshot::FileEntry>,
+                       path: &str,
+                       missing: &mut Vec<String>|
+         -> Option<Vec<u8>> {
             match entry {
                 None => None, // legitimately absent at this snapshot
                 Some(e) => match store.blobs.get(&e.hash) {
@@ -243,7 +266,11 @@ async fn set_status(
             let base_bytes = resolve(base.files.get(path), path, &mut missing);
             let result_bytes = resolve(result.files.get(path), path, &mut missing);
             let current = std::fs::read(state.workspace.join(path)).ok();
-            match reverse_apply(base_bytes.as_deref(), result_bytes.as_deref(), current.as_deref()) {
+            match reverse_apply(
+                base_bytes.as_deref(),
+                result_bytes.as_deref(),
+                current.as_deref(),
+            ) {
                 RestoreOutcome::Conflict => conflicts.push(path.clone()),
                 outcome => writes.push((path.clone(), outcome)),
             }

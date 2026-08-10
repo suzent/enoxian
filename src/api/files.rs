@@ -1,10 +1,10 @@
 use crate::control::CircleEvent;
 use crate::daemon::DaemonState;
 use axum::{
-    Json,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
+    Json,
 };
 use serde::Deserialize;
 use serde_json::json;

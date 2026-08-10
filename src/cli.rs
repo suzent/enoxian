@@ -172,6 +172,13 @@ pub enum AgentAction {
     },
     /// List this device's configured agents and reaction policy.
     List,
+    /// List managed adapter plugins and their install/health state.
+    Plugins,
+    /// Install or repair a pinned managed adapter and configure its @handle.
+    Install {
+        /// Plugin id, e.g. `codex-acp` or `claude-code-acp`.
+        plugin: String,
+    },
     /// Add or replace an agent in agents.toml.
     ///
     /// Example:
@@ -190,9 +197,7 @@ pub enum AgentAction {
         command: Vec<String>,
     },
     /// Remove an agent from agents.toml.
-    Remove {
-        name: String,
-    },
+    Remove { name: String },
     /// Set how this device reacts to @mentions: "push" (auto-run) or "pull"
     /// (do nothing). push lets a circle member's mention run a local process.
     Reaction {
@@ -236,17 +241,11 @@ pub enum ProposalAction {
         id: String,
     },
     /// Accept a pending proposal (keep the changes)
-    Accept {
-        id: String,
-    },
+    Accept { id: String },
     /// Reject a pending proposal (restore files to their pre-change state)
-    Reject {
-        id: String,
-    },
+    Reject { id: String },
     /// Revert a previously accepted proposal
-    Revert {
-        id: String,
-    },
+    Revert { id: String },
 }
 
 #[derive(clap::Args)]
@@ -260,13 +259,9 @@ pub enum IdentityAction {
     /// Show this device's identity
     Show,
     /// Set the device label (shown in presence)
-    SetLabel {
-        label: String,
-    },
+    SetLabel { label: String },
     /// Set a user handle (shown in presence, links all your devices visually)
-    SetUser {
-        handle: String,
-    },
+    SetUser { handle: String },
     /// Create a new user identity and link this device to it.
     /// Prints a 24-word mnemonic — back it up to link other devices.
     CreateUser {

@@ -49,6 +49,17 @@ behind this split.
 This file is **device-local and never synced**. It answers two questions for
 *this* device: how it reacts to mentions, and which agents it may run.
 
+The recommended setup is a managed adapter plugin. Installation is an explicit,
+one-time networked action; mentions only execute the pinned local binary:
+
+```bash
+enox agent plugins
+enox agent install codex-acp
+enox agent install claude-code-acp
+```
+
+The installer writes the resolved executable into the same device-local config:
+
 ```toml
 # How this device reacts to an @mention of one of its agents:
 #   "pull" (default) — do nothing automatically; an agent is expected to read
@@ -56,13 +67,9 @@ This file is **device-local and never synced**. It answers two questions for
 #   "push"           — auto-launch the mentioned agent.
 reaction = "push"
 
-[agents.claude]
-driver = "acp"
-command = ["npx", "@zed-industries/claude-code-acp"]
-
 [agents.codex]
 driver = "acp"
-command = ["npx", "@agentclientprotocol/codex-acp"]
+command = ["<enoxian-home>/adapters/codex-acp/1.1.14/node_modules/.bin/codex-acp"]
 ```
 
 - The **table key** (`claude`, `codex`) is the name you mention: `@claude …`.
@@ -76,7 +83,8 @@ daemon reloads this file **per mention**, so edits take effect without a restart
 You can edit this file three ways:
 
 - **By hand** — it is plain TOML.
-- **CLI** — `enox agent list`, `enox agent add`, `enox agent remove`,
+- **CLI** — `enox agent plugins`, `enox agent install`, `enox agent list`,
+  `enox agent add`, `enox agent remove`,
   `enox agent reaction push|pull` (see below).
 - **Frontend** — the device badge → **Device Settings** panel lets you add and
   remove agents and toggle the reaction (switching to `push` asks for
@@ -93,9 +101,14 @@ See [examples/agents.toml](examples/agents.toml) for a fuller annotated example.
 # Show the reaction policy and configured agents.
 enox agent list
 
+# List built-in and local plugin manifests, then install a pinned adapter.
+enox agent plugins
+enox agent install codex-acp
+enox agent install claude-code-acp
+
 # Add (or replace) an agent. Everything after `--` is the launch command.
-enox agent add claude --driver acp -- npx @zed-industries/claude-code-acp
-enox agent add codex  --driver acp -- npx @agentclientprotocol/codex-acp
+# This remains available for custom, already-installed executables.
+enox agent add my-acp --driver acp -- /path/to/my-acp-adapter
 
 # A non-ACP tool via the argv driver.
 enox agent add mytool --driver argv -- mytool --prompt "{{task}}"
@@ -143,13 +156,19 @@ What the acp driver gives you that argv does not: a real completion signal
 (stop reason), a **text reply** posted to chat, and **conversation memory** via
 session resume.
 
-Verified working adapters:
+Built-in managed adapter plugins:
 
-- **Claude Code** — `["npx", "@zed-industries/claude-code-acp"]` (needs Claude
-  Code auth on the machine)
-- **Codex** — `["npx", "@agentclientprotocol/codex-acp"]` (needs OpenAI/ChatGPT
+- **Claude Code** — `claude-code-acp` (needs Claude Code auth on the machine)
+- **Codex** — `codex-acp` (needs OpenAI/ChatGPT
   auth: `codex login`, or `CODEX_API_KEY`/`OPENAI_API_KEY` in the daemon's
   environment)
+
+Plugin manifests are TOML files in `~/.enoxian/plugins/`. A manifest declares
+an id, exact package version, executable name, agent name, and driver. Packages
+are installed under `~/.enoxian/adapters/<id>/<version>/`. Version ranges are
+rejected, and plugin installation never happens while processing an `@mention`.
+Legacy `npx`/`npm` agent commands are shown as **runtime download** in Device
+Settings so they can be migrated with one click.
 
 ### `argv` — universal fallback
 

@@ -187,15 +187,20 @@ fn is_public_listen_addr(addr: &Multiaddr) -> bool {
                 && !ip.is_broadcast()
                 && !ip.is_documentation()
         }
-        Protocol::Ip6(ip) => {
-            !ip.is_loopback()
-                && !ip.is_unspecified()
-                && !ip.is_multicast()
-                && !ip.is_unique_local()
-                && !ip.is_unicast_link_local()
-        }
+        Protocol::Ip6(ip) => is_public_ipv6(ip),
         _ => false,
     })
+}
+
+fn is_public_ipv6(ip: std::net::Ipv6Addr) -> bool {
+    let first = ip.segments()[0];
+    let is_unique_local = first & 0xfe00 == 0xfc00; // fc00::/7
+    let is_unicast_link_local = first & 0xffc0 == 0xfe80; // fe80::/10
+    !ip.is_loopback()
+        && !ip.is_unspecified()
+        && !ip.is_multicast()
+        && !is_unique_local
+        && !is_unicast_link_local
 }
 
 async fn peer_id_handler(State(peer_id): State<String>) -> Json<serde_json::Value> {
@@ -217,5 +222,33 @@ fn load_or_create_keypair() -> Result<libp2p::identity::Keypair> {
             .context("failed to write bootstrap.key")?;
         info!("Generated new bootstrap keypair → {}", path.display());
         Ok(keypair)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addr(value: &str) -> Multiaddr {
+        value.parse().unwrap()
+    }
+
+    #[test]
+    fn public_ipv6_is_advertised() {
+        assert!(is_public_listen_addr(&addr("/ip6/2606:4700:4700::1111/tcp/36521")));
+    }
+
+    #[test]
+    fn private_ipv6_ranges_are_not_advertised() {
+        for value in [
+            "/ip6/::1/tcp/36521",
+            "/ip6/::/tcp/36521",
+            "/ip6/fc00::1/tcp/36521",
+            "/ip6/fd12:3456::1/tcp/36521",
+            "/ip6/fe80::1/tcp/36521",
+            "/ip6/ff02::1/tcp/36521",
+        ] {
+            assert!(!is_public_listen_addr(&addr(value)), "{value}");
+        }
     }
 }

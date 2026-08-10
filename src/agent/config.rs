@@ -112,7 +112,10 @@ impl AgentConfig {
             Ok(text) => match Self::from_toml(&text) {
                 Ok(cfg) => cfg,
                 Err(e) => {
-                    tracing::warn!("[agent] {} is invalid ({e}); reacting to nothing", path.display());
+                    tracing::warn!(
+                        "[agent] {} is invalid ({e}); reacting to nothing",
+                        path.display()
+                    );
                     Self::default()
                 }
             },
@@ -126,8 +129,12 @@ impl AgentConfig {
     pub fn load_for_edit() -> anyhow::Result<Self> {
         let path = Self::path()?;
         match std::fs::read_to_string(&path) {
-            Ok(text) => Self::from_toml(&text)
-                .map_err(|e| anyhow::anyhow!("{} is not valid TOML ({e}); fix it by hand first", path.display())),
+            Ok(text) => Self::from_toml(&text).map_err(|e| {
+                anyhow::anyhow!(
+                    "{} is not valid TOML ({e}); fix it by hand first",
+                    path.display()
+                )
+            }),
             // Missing file is fine — start from an empty config.
             Err(_) => Ok(Self::default()),
         }
@@ -182,7 +189,10 @@ mod tests {
 
         let claude = cfg.resolve("claude").unwrap();
         assert_eq!(claude.driver, Driver::Acp);
-        assert_eq!(claude.command, vec!["npx", "@zed-industries/claude-code-acp"]);
+        assert_eq!(
+            claude.command,
+            vec!["npx", "@zed-industries/claude-code-acp"]
+        );
 
         let codex = cfg.resolve("codex").unwrap();
         assert_eq!(codex.driver, Driver::Argv, "driver defaults to argv");
@@ -194,11 +204,14 @@ mod tests {
     fn edit_roundtrips_through_toml() {
         let mut cfg = AgentConfig::default();
         cfg.reaction = Reaction::Push;
-        cfg.set_agent("claude", AgentCommand {
-            command: vec!["npx".into(), "@zed-industries/claude-code-acp".into()],
-            driver: Driver::Acp,
-            working_dir: None,
-        });
+        cfg.set_agent(
+            "claude",
+            AgentCommand {
+                command: vec!["npx".into(), "@zed-industries/claude-code-acp".into()],
+                driver: Driver::Acp,
+                working_dir: None,
+            },
+        );
         // Serialize and reparse — values survive a save/load cycle.
         let text = toml::to_string_pretty(&cfg).unwrap();
         let back = AgentConfig::from_toml(&text).unwrap();

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { Fragment, useState, useEffect, useRef, useCallback } from 'react'
 import type { ChatMessage, Member, Presence } from '../types'
 import { getChat, postChat, chatStream, getMembers, getWho } from '../api'
 import { useApp } from '../context/AppContext'
@@ -45,14 +45,48 @@ function formatTime(ts: number) {
   return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-function looksLikeCommand(text: string) {
-  return /\n/.test(text) || /^(?:\$|>|cd\s|set-location\b|npm\s|pnpm\s|yarn\s|cargo\s|git\s|python\s|uv\s|enox\s)/i.test(text.trim())
+function formatFullTimestamp(ts: number) {
+  return new Date(ts * 1000).toLocaleString([], {
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function calendarDay(ts: number) {
+  const date = new Date(ts * 1000)
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`
+}
+
+function formatDateLabel(ts: number) {
+  const date = new Date(ts * 1000)
+  const today = new Date()
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+
+  if (calendarDay(ts) === calendarDay(today.getTime() / 1000)) return 'Today'
+  if (calendarDay(ts) === calendarDay(yesterday.getTime() / 1000)) return 'Yesterday'
+
+  return date.toLocaleDateString([], {
+    weekday: 'long',
+    month: 'short',
+    day: 'numeric',
+    ...(date.getFullYear() !== today.getFullYear() ? { year: 'numeric' as const } : {}),
+  })
 }
 
 interface SenderLabel {
   user: string    // "you" or owner name
   device: string | null  // shown when owner has multiple devices
   agent: string | null   // shown when a registered agent (not device primary) is speaking
+}
+
+function senderInitial(label: SenderLabel) {
+  const source = label.agent || label.device || label.user
+  return source.match(/[\p{L}\p{N}]/u)?.[0]?.toUpperCase() || '·'
 }
 
 interface BubbleProps {
@@ -74,27 +108,33 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender }: BubbleProps) {
   }
 
   const isAgent = !!label.agent
-  const isCommand = looksLikeCommand(msg.text)
+  const timestamp = formatTime(msg.ts)
+  const fullTimestamp = formatFullTimestamp(msg.ts)
 
   return (
     <article
       className={`chat-message${isMine ? ' chat-message--mine' : ''}${isThisDevice ? ' chat-message--current' : ''}${isAgent ? ' chat-message--agent' : ''}${showSender ? '' : ' chat-message--continued'}`}
     >
-      {showSender && (
-        <header className="chat-message__sender">
-          <span className="chat-message__owner">{label.user}</span>
-          {label.device && <span className="chat-message__device">· {label.device}</span>}
-          {label.agent && <span className="chat-message__agent">AGENT / {label.agent}</span>}
-        </header>
-      )}
-      <div
-        className={`chat-message__bubble${isCommand ? ' chat-message__bubble--command' : ''}`}
-      >
-        {renderWithMentions(msg.text, msg.mentions)}
+      <div className="chat-message__gutter" aria-hidden="true">
+        {showSender
+          ? <span className="chat-message__avatar">{senderInitial(label)}</span>
+          : <time className="chat-message__gutter-time" dateTime={new Date(msg.ts * 1000).toISOString()} title={fullTimestamp}>{timestamp}</time>}
       </div>
-      <time className="chat-message__time" dateTime={new Date(msg.ts * 1000).toISOString()}>
-        {formatTime(msg.ts)}
-      </time>
+      <div className="chat-message__body">
+        {showSender && (
+          <header className="chat-message__sender">
+            <span className="chat-message__owner">{label.user}</span>
+            {label.device && <span className="chat-message__device">· {label.device}</span>}
+            {label.agent && <span className="chat-message__agent">AGENT / {label.agent}</span>}
+            <time className="chat-message__time" dateTime={new Date(msg.ts * 1000).toISOString()} title={fullTimestamp} aria-label={fullTimestamp}>
+              {timestamp}
+            </time>
+          </header>
+        )}
+        <div className="chat-message__text">
+          {renderWithMentions(msg.text, msg.mentions)}
+        </div>
+      </div>
     </article>
   )
 }
@@ -333,16 +373,23 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
           const isThisDevice = msg.agent_id === status?.agent_id
           const isMine = label.user === 'you'
           const prev = messages[i - 1]
-          const showSender = !prev || prev.agent_id !== msg.agent_id
+          const startsNewDay = !prev || calendarDay(prev.ts) !== calendarDay(msg.ts)
+          const showSender = !prev || prev.agent_id !== msg.agent_id || msg.ts - prev.ts > 300
           return (
-            <Bubble
-              key={msg.id}
-              msg={msg}
-              isMine={isMine}
-              isThisDevice={isThisDevice}
-              label={label}
-              showSender={showSender}
-            />
+            <Fragment key={msg.id}>
+              {startsNewDay && (
+                <div className="chat-date-separator" role="separator" aria-label={formatDateLabel(msg.ts)}>
+                  <span>{formatDateLabel(msg.ts)}</span>
+                </div>
+              )}
+              <Bubble
+                msg={msg}
+                isMine={isMine}
+                isThisDevice={isThisDevice}
+                label={label}
+                showSender={showSender || startsNewDay}
+              />
+            </Fragment>
           )
         })}
         <div ref={bottomRef} />
