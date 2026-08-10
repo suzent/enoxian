@@ -60,8 +60,16 @@ pub fn build_prompt(
     // composition itself is pure (`compose`) so it can be unit-tested without an
     // AppState.
     let brief = (!resumed).then(|| standing_brief(state, agent_id));
-    let recent = (!resumed).then(|| recent_chat(state)).filter(|s| !s.is_empty());
-    compose(&state.circle_name, sender, task, brief.as_deref(), recent.as_deref())
+    let recent = (!resumed)
+        .then(|| recent_chat(state))
+        .filter(|s| !s.is_empty());
+    compose(
+        &state.circle_name,
+        sender,
+        task,
+        brief.as_deref(),
+        recent.as_deref(),
+    )
 }
 
 /// Pure prompt composition. `brief`/`recent` are `Some` only for a fresh session

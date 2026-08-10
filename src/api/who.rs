@@ -1,8 +1,13 @@
-use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Json};
-use serde_json::json;
-use yrs::{Any, Map, MapRef, Out, Transact};
 use crate::control::{Presence, PRESENCE_KEY};
 use crate::daemon::DaemonState;
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use serde_json::json;
+use yrs::{Any, Map, MapRef, Out, Transact};
 
 pub async fn get_who(
     State(daemon): State<DaemonState>,
@@ -10,7 +15,13 @@ pub async fn get_who(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
     };
     let doc = &state.control;
     let presence_map: MapRef = doc.get_or_insert_map(PRESENCE_KEY);

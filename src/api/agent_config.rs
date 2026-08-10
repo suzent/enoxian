@@ -11,11 +11,17 @@
 //! just applies what it is asked. See docs/plan/agent-workspaces.md →
 //! Two-Layer Split.
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::agent::config::{AgentCommand, AgentConfig, Driver, Reaction};
+use crate::agent::plugin;
 use crate::agent::probe;
 use crate::daemon::DaemonState;
 
@@ -30,6 +36,9 @@ struct AgentSummary {
     /// Whether `command[0]` currently resolves on this machine's PATH. A
     /// configured-but-missing agent would fail at launch; the UI badges it.
     installed: bool,
+    /// `ready`, `missing`, or `runtime_download`. The latter is deliberately
+    /// not considered installed: a mention must not invoke a package manager.
+    status: String,
 }
 
 #[derive(Serialize)]
@@ -55,11 +64,8 @@ pub async fn get_agent_config() -> impl IntoResponse {
         .map(|(name, cmd)| AgentSummary {
             name: name.clone(),
             driver: format!("{:?}", cmd.driver).to_lowercase(),
-            installed: cmd
-                .command
-                .first()
-                .map(|p| probe::is_installed(p))
-                .unwrap_or(false),
+            installed: plugin::command_status(&cmd.command) == "ready",
+            status: plugin::command_status(&cmd.command).to_string(),
             command: cmd.command.clone(),
             working_dir: cmd.working_dir.clone(),
         })
@@ -73,6 +79,49 @@ pub async fn get_agent_config() -> impl IntoResponse {
         configured,
         agents,
     })
+}
+
+// ── Managed adapter plugins ───────────────────────────────────────────────
+
+/// List built-in and third-party plugin manifests together with their actual
+/// versioned install/configuration state.
+pub async fn list_plugins() -> impl IntoResponse {
+    Json(json!({ "plugins": plugin::views() }))
+}
+
+/// Explicitly install/repair one pinned plugin, then configure its agent handle
+/// to use the managed executable. This is the networked control-plane step;
+/// mention execution itself remains offline.
+pub async fn install_plugin(
+    State(daemon): State<DaemonState>,
+    Path(plugin_id): Path<String>,
+) -> axum::response::Response {
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        plugin::install(&plugin_id),
+    )
+    .await;
+    match result {
+        Ok(Ok(command)) => {
+            crate::lifecycle::readvertise_local_agents(&daemon);
+            Json(json!({
+                "ok": true,
+                "plugin": plugin_id,
+                "command": command.command,
+            }))
+            .into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("plugin install failed: {e:#}") })),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(json!({ "error": "plugin install timed out after 5 minutes" })),
+        )
+            .into_response(),
+    }
 }
 
 // ── Discovery ──────────────────────────────────────────────────────────────
@@ -126,7 +175,10 @@ pub async fn set_reaction(Json(req): Json<SetReactionRequest>) -> impl IntoRespo
         "pull" => Reaction::Pull,
         other => return bad_request(format!("invalid reaction '{other}'")),
     };
-    edit(|cfg| { cfg.reaction = reaction; Ok(()) })
+    edit(|cfg| {
+        cfg.reaction = reaction;
+        Ok(())
+    })
 }
 
 #[derive(Deserialize)]
@@ -157,11 +209,14 @@ pub async fn add_agent(
     }
     let name = req.name.clone();
     let resp = edit(move |cfg| {
-        cfg.set_agent(&name, AgentCommand {
-            command: req.command.clone(),
-            driver,
-            working_dir: req.working_dir.clone(),
-        });
+        cfg.set_agent(
+            &name,
+            AgentCommand {
+                command: req.command.clone(),
+                driver,
+                working_dir: req.working_dir.clone(),
+            },
+        );
         Ok(())
     });
     readvertise_if_ok(&resp, &daemon);
@@ -213,7 +268,11 @@ where
     }
     match cfg.save() {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 

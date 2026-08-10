@@ -92,8 +92,8 @@ fn resolves_as_file(base: PathBuf) -> bool {
         // Only extensionless names get PATHEXT expansion; an explicit ".exe"
         // was already tried above.
         if base.extension().is_none() {
-            let exts = std::env::var("PATHEXT")
-                .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+            let exts =
+                std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
             for ext in exts.split(';').filter(|e| !e.is_empty()) {
                 // PATHEXT entries include the leading dot.
                 let mut with_ext = base.clone().into_os_string();
@@ -184,11 +184,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("enox-probe-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("faux-agent");
-        std::fs::File::create(&file).unwrap().write_all(b"#!/bin/sh\n").unwrap();
+        std::fs::File::create(&file)
+            .unwrap()
+            .write_all(b"#!/bin/sh\n")
+            .unwrap();
 
         // A non-executable regular file is present but must NOT count as installed.
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(!resolves_as_file(file.clone()), "non-+x file counted as installed");
+        assert!(
+            !resolves_as_file(file.clone()),
+            "non-+x file counted as installed"
+        );
 
         // Flip the execute bit and it should now resolve.
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();

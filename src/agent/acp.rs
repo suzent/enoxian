@@ -24,6 +24,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::mpsc;
@@ -77,7 +78,11 @@ pub fn agent_message_text(update: &Value) -> Option<String> {
                 .iter()
                 .filter_map(|b| b.get("text").and_then(Value::as_str))
                 .collect();
-            if joined.is_empty() { None } else { Some(joined) }
+            if joined.is_empty() {
+                None
+            } else {
+                Some(joined)
+            }
         }
         obj => obj.get("text").and_then(Value::as_str).map(str::to_string),
     }
@@ -119,16 +124,24 @@ impl<H: ClientHooks> AcpSession<H> {
     /// restore the conversation. If loading fails (e.g. the agent no longer
     /// knows that session after a restart), we fall back to `session/new` — so
     /// resume is best-effort continuity, never a hard dependency.
-    pub async fn start(command: &[String], workspace: &Path, hooks: H, resume: Option<&str>) -> Result<Self> {
+    pub async fn start(
+        command: &[String],
+        workspace: &Path,
+        hooks: H,
+        resume: Option<&str>,
+    ) -> Result<Self> {
         let (program, args) = command
             .split_first()
             .ok_or_else(|| anyhow!("empty agent command"))?;
 
-        let mut child = super::spawn::command(program, args)
+        let mut command = super::spawn::command(program, args);
+        command
             .current_dir(workspace)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command
             .spawn()
             .with_context(|| format!("failed to spawn ACP agent `{program}`"))?;
 
@@ -187,17 +200,15 @@ impl<H: ClientHooks> AcpSession<H> {
 
         // Try to resume a prior conversation; fall back to a fresh session.
         match resume {
-            Some(prior) if session.load_session_cap => {
-                match session.load_session(prior).await {
-                    Ok(()) => {
-                        tracing::info!("[acp] resumed session {prior}");
-                    }
-                    Err(e) => {
-                        tracing::warn!("[acp] resume of {prior} failed ({e}); starting fresh");
-                        session.new_session().await?;
-                    }
+            Some(prior) if session.load_session_cap => match session.load_session(prior).await {
+                Ok(()) => {
+                    tracing::info!("[acp] resumed session {prior}");
                 }
-            }
+                Err(e) => {
+                    tracing::warn!("[acp] resume of {prior} failed ({e}); starting fresh");
+                    session.new_session().await?;
+                }
+            },
             Some(prior) => {
                 tracing::info!("[acp] agent lacks loadSession; ignoring prior session {prior}");
                 session.new_session().await?;
@@ -225,7 +236,11 @@ impl<H: ClientHooks> AcpSession<H> {
             .and_then(|c| c.get("loadSession"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        tracing::info!("[acp] initialized (loadSession={}): {}", self.load_session_cap, compact(&result));
+        tracing::info!(
+            "[acp] initialized (loadSession={}): {}",
+            self.load_session_cap,
+            compact(&result)
+        );
         Ok(())
     }
 
@@ -323,14 +338,20 @@ impl<H: ClientHooks> AcpSession<H> {
         }))
         .await?;
 
-        loop {
+        let limit = if method == "session/prompt" {
+            Duration::from_secs(30 * 60)
+        } else {
+            Duration::from_secs(45)
+        };
+        let response = tokio::time::timeout(limit, async {
+          loop {
             tokio::select! {
                 // A message from the agent that is our response or an out-of-band one.
                 resp = self.resp_rx.recv() => {
                     let resp = resp.ok_or_else(|| anyhow!("agent closed the connection during `{method}`"))?;
                     if resp.get("id").and_then(Value::as_u64) == Some(id) {
                         if let Some(err) = resp.get("error") {
-                            bail!("agent error on `{method}`: {}", compact(err));
+                            return Err(anyhow!("agent error on `{method}`: {}", compact(err)));
                         }
                         return Ok(resp.get("result").cloned().unwrap_or(Value::Null));
                     }
@@ -344,18 +365,25 @@ impl<H: ClientHooks> AcpSession<H> {
                     }
                 }
             }
-        }
+          }
+        }).await;
+        response
+            .map_err(|_| anyhow!("ACP `{method}` timed out after {} seconds", limit.as_secs()))?
     }
 
     /// Handle a request or notification the agent sent us.
     async fn handle_agent_request(&mut self, msg: Value) -> Result<()> {
-        let method = msg.get("method").and_then(Value::as_str).unwrap_or_default();
+        let method = msg
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let id = msg.get("id").cloned();
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
         match method {
             "session/update" => {
-                self.hooks.on_update(&params.get("update").cloned().unwrap_or(Value::Null));
+                self.hooks
+                    .on_update(&params.get("update").cloned().unwrap_or(Value::Null));
                 // Notification — no reply.
             }
             "fs/read_text_file" => {
@@ -373,11 +401,17 @@ impl<H: ClientHooks> AcpSession<H> {
                 let tool = params.get("toolCall").cloned().unwrap_or(Value::Null);
                 let decision = self.hooks.on_permission(&tool);
                 let outcome = match decision {
-                    PermissionDecision::Allow => pick_option(&params, &["allow_once", "allow_always", "allow"]),
-                    PermissionDecision::Deny => pick_option(&params, &["reject_once", "reject_always", "reject"]),
+                    PermissionDecision::Allow => {
+                        pick_option(&params, &["allow_once", "allow_always", "allow"])
+                    }
+                    PermissionDecision::Deny => {
+                        pick_option(&params, &["reject_once", "reject_always", "reject"])
+                    }
                 };
                 let result_value = match outcome {
-                    Some(option_id) => json!({ "outcome": { "outcome": "selected", "optionId": option_id } }),
+                    Some(option_id) => {
+                        json!({ "outcome": { "outcome": "selected", "optionId": option_id } })
+                    }
                     None => json!({ "outcome": { "outcome": "cancelled" } }),
                 };
                 tracing::debug!("[acp] request_permission reply: {}", compact(&result_value));
@@ -388,11 +422,7 @@ impl<H: ClientHooks> AcpSession<H> {
                 // expects a response; ignore pure notifications.
                 if id.is_some() {
                     tracing::debug!("[acp] unhandled agent method `{other}` — replying not-found");
-                    self.reply(
-                        id,
-                        Err(anyhow!("method not found")),
-                    )
-                    .await?;
+                    self.reply(id, Err(anyhow!("method not found"))).await?;
                 }
             }
         }
@@ -478,6 +508,14 @@ impl<H: ClientHooks> AcpSession<H> {
         self.stdin.write_all(line.as_bytes()).await?;
         self.stdin.flush().await?;
         Ok(())
+    }
+}
+
+impl<H: ClientHooks> Drop for AcpSession<H> {
+    fn drop(&mut self) {
+        if let Some(pid) = self.child.id() {
+            super::spawn::kill_tree(pid);
+        }
     }
 }
 

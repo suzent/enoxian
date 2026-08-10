@@ -1,3 +1,5 @@
+use crate::control::{CircleEvent, Task, TaskStatus, TASKS_KEY};
+use crate::daemon::DaemonState;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -7,8 +9,6 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use yrs::{Any, Map, MapRef, Out, Transact};
-use crate::control::{CircleEvent, Task, TaskStatus, TASKS_KEY};
-use crate::daemon::DaemonState;
 
 #[derive(Deserialize)]
 pub struct TasksQuery {
@@ -22,7 +22,13 @@ pub async fn get_tasks(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
     };
     let doc = &state.control;
     let tasks_map: MapRef = doc.get_or_insert_map(TASKS_KEY);
@@ -59,7 +65,13 @@ pub async fn create_task(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
     };
     let task = Task {
         task_id: uuid::Uuid::new_v4().to_string(),
@@ -74,7 +86,13 @@ pub async fn create_task(
 
     let json_str = match serde_json::to_string(&task) {
         Ok(s) => s,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "serialize failed"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "serialize failed"})),
+            )
+                .into_response()
+        }
     };
     let task_id = task.task_id.clone();
 
@@ -82,10 +100,19 @@ pub async fn create_task(
         let doc = &state.control;
         let tasks_map: MapRef = doc.get_or_insert_map(TASKS_KEY);
         let mut txn = doc.transact_mut();
-        tasks_map.insert(&mut txn, task.task_id.as_str(), Any::String(json_str.as_str().into()));
+        tasks_map.insert(
+            &mut txn,
+            task.task_id.as_str(),
+            Any::String(json_str.as_str().into()),
+        );
     }
 
-    let _ = state.events.send(CircleEvent::TaskCreated { task_id: task_id.clone() });
-    (StatusCode::CREATED, Json(json!({ "task_id": task_id, "status": "created" }))).into_response()
+    let _ = state.events.send(CircleEvent::TaskCreated {
+        task_id: task_id.clone(),
+    });
+    (
+        StatusCode::CREATED,
+        Json(json!({ "task_id": task_id, "status": "created" })),
+    )
+        .into_response()
 }
-

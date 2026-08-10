@@ -129,10 +129,10 @@ enox proposal accept <proposal-id>
 enox proposal reject <proposal-id>
 ```
 
-Configure local AI agents:
+Configure a local AI agent with a pinned managed adapter:
 
 ```sh
-enox agent add claude --driver acp -- npx @zed-industries/claude-code-acp
+enox agent install claude-code-acp
 enox agent reaction push
 enox say "@claude add tests for the invite parser"
 ```

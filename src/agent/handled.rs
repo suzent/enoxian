@@ -34,7 +34,10 @@ impl HandledMentions {
         let seen = std::fs::read_to_string(&file)
             .map(|text| text.lines().map(str::to_string).collect())
             .unwrap_or_default();
-        Self { file, seen: Mutex::new(seen) }
+        Self {
+            file,
+            seen: Mutex::new(seen),
+        }
     }
 
     fn key(message_id: &str, mention: &str) -> String {
@@ -55,7 +58,11 @@ impl HandledMentions {
         if let Some(parent) = self.file.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        match std::fs::OpenOptions::new().create(true).append(true).open(&self.file) {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.file)
+        {
             Ok(mut f) => {
                 let _ = writeln!(f, "{key}");
             }

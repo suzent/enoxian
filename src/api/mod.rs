@@ -17,9 +17,9 @@ pub mod who;
 use crate::daemon::DaemonState;
 use crate::sync_yjs::ws_handler::ws_yjs_handler;
 use axum::{
-    Json, Router,
     extract::State,
     routing::{get, post},
+    Json, Router,
 };
 use serde_json::json;
 
@@ -124,13 +124,33 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
         )
         // Identity (global, no circle required)
         .route("/api/agent-config", get(agent_config::get_agent_config))
-        .route("/api/agent-config/discover", get(agent_config::discover_agents))
-        .route("/api/agent-config/reaction", post(agent_config::set_reaction))
+        .route(
+            "/api/agent-config/discover",
+            get(agent_config::discover_agents),
+        )
+        .route("/api/agent-plugins", get(agent_config::list_plugins))
+        .route(
+            "/api/agent-plugins/{plugin_id}/install",
+            post(agent_config::install_plugin),
+        )
+        .route(
+            "/api/agent-config/reaction",
+            post(agent_config::set_reaction),
+        )
         .route("/api/agent-config/agents", post(agent_config::add_agent))
-        .route("/api/agent-config/agents/remove", post(agent_config::remove_agent))
-        .route("/api/identity", get(identity::get_identity).post(identity::set_identity))
+        .route(
+            "/api/agent-config/agents/remove",
+            post(agent_config::remove_agent),
+        )
+        .route(
+            "/api/identity",
+            get(identity::get_identity).post(identity::set_identity),
+        )
         .route("/api/identity/link", post(identity::link_device))
-        .route("/api/identity/create-user", post(identity::create_user_identity))
+        .route(
+            "/api/identity/create-user",
+            post(identity::create_user_identity),
+        )
         // M7 management
         .route("/api/init", post(management::init_circle))
         .route("/api/enter", post(management::enter_circle))
@@ -157,10 +177,7 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
     // scripts read authenticated responses from this control plane.
     let cors = tower_http::cors::CorsLayer::new()
         .allow_origin(tower_http::cors::AllowOrigin::predicate(|origin, _req| {
-            origin
-                .to_str()
-                .map(is_local_origin)
-                .unwrap_or(false)
+            origin.to_str().map(is_local_origin).unwrap_or(false)
         }))
         .allow_methods(tower_http::cors::Any)
         .allow_headers(tower_http::cors::Any);

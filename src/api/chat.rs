@@ -1,15 +1,18 @@
+use crate::control::{ChatMessage, CircleEvent, CHAT_KEY};
+use crate::daemon::DaemonState;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{sse::{Event, KeepAlive, Sse}, IntoResponse},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
     Json,
 };
 use serde::Deserialize;
 use serde_json::json;
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
-use yrs::{Array, ArrayRef, Any, Out, Transact};
-use crate::control::{ChatMessage, CircleEvent, CHAT_KEY};
-use crate::daemon::DaemonState;
+use yrs::{Any, Array, ArrayRef, Out, Transact};
 
 #[derive(Deserialize)]
 pub struct ChatQuery {
@@ -23,7 +26,13 @@ pub async fn get_chat(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
     };
     let arr: ArrayRef = state.control.get_or_insert_array(CHAT_KEY);
     let txn = state.control.transact();
@@ -54,14 +63,24 @@ pub async fn post_chat(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
     };
 
     let sender = req.agent_id.unwrap_or_else(|| "unknown".to_string());
     // A user/UI post fires mention triggers.
     match post_message(&state, sender, req.text, true) {
         Ok(id) => (StatusCode::CREATED, Json(json!({ "id": id }))).into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "serialize failed"}))).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "serialize failed"})),
+        )
+            .into_response(),
     }
 }
 
@@ -97,7 +116,9 @@ pub fn post_message(
         arr.push_back(&mut txn, Any::String(json_str.as_str().into()));
     }
 
-    let _ = state.events.send(CircleEvent::MessagePosted { message: msg.clone() });
+    let _ = state.events.send(CircleEvent::MessagePosted {
+        message: msg.clone(),
+    });
     if fire_mentions {
         for mentioned in &mentions {
             let _ = state.events.send(CircleEvent::AgentMentioned {
@@ -116,7 +137,13 @@ pub async fn chat_stream(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
     };
     let rx = state.events.subscribe();
     let stream = BroadcastStream::new(rx).filter_map(|result| {
@@ -138,6 +165,7 @@ pub async fn chat_stream(
             .map(|data| Ok::<_, std::convert::Infallible>(Event::default().data(data)))
         })
     });
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
-

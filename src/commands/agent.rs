@@ -22,14 +22,64 @@ pub fn list() -> Result<()> {
     }
     println!("\nagents:");
     for (name, cmd) in &cfg.agents {
-        let wd = cmd.working_dir.as_deref().map(|d| format!("  (in {d})")).unwrap_or_default();
-        println!("  @{name}  [{:?}]  {}{wd}", cmd.driver, cmd.command.join(" "));
+        let wd = cmd
+            .working_dir
+            .as_deref()
+            .map(|d| format!("  (in {d})"))
+            .unwrap_or_default();
+        println!(
+            "  @{name}  [{:?}]  {}{wd}",
+            cmd.driver,
+            cmd.command.join(" ")
+        );
     }
     Ok(())
 }
 
+/// `enox agent plugins` — show deterministic managed adapter availability.
+pub fn plugins() -> Result<()> {
+    println!(
+        "managed adapter root: {}",
+        crate::agent::plugin::adapters_dir()?.display()
+    );
+    for plugin in crate::agent::plugin::views() {
+        println!(
+            "  {}  @{}  v{}  [{:?}]{}{}",
+            plugin.id,
+            plugin.agent,
+            plugin.version,
+            plugin.state,
+            if plugin.configured {
+                "  configured"
+            } else {
+                ""
+            },
+            if plugin.legacy_configured {
+                "  legacy-config"
+            } else {
+                ""
+            },
+        );
+    }
+    Ok(())
+}
+
+/// `enox agent install <plugin>` — the explicit networked install phase.
+pub async fn install(plugin: String) -> Result<()> {
+    println!("→ installing managed adapter '{plugin}'");
+    let command = crate::agent::plugin::install(&plugin).await?;
+    println!("✓ installed and configured: {}", command.command.join(" "));
+    println!("  mention the configured agent in chat; no package download occurs at runtime.");
+    Ok(())
+}
+
 /// `enox agent add <name> --driver <d> -- <command...>`.
-pub fn add(name: String, driver: String, working_dir: Option<String>, command: Vec<String>) -> Result<()> {
+pub fn add(
+    name: String,
+    driver: String,
+    working_dir: Option<String>,
+    command: Vec<String>,
+) -> Result<()> {
     let driver = match driver.as_str() {
         "acp" => Driver::Acp,
         "argv" => Driver::Argv,
@@ -37,10 +87,22 @@ pub fn add(name: String, driver: String, working_dir: Option<String>, command: V
     };
     let mut cfg = AgentConfig::load_for_edit()?;
     let existed = cfg.resolve(&name).is_some();
-    cfg.set_agent(&name, AgentCommand { command, driver, working_dir });
+    cfg.set_agent(
+        &name,
+        AgentCommand {
+            command,
+            driver,
+            working_dir,
+        },
+    );
     cfg.save()?;
-    println!("{} agent '@{name}'", if existed { "updated" } else { "added" });
-    println!("mention @{name} in chat (needs reaction = push) or run `enox agent run {name} \"...\"`");
+    println!(
+        "{} agent '@{name}'",
+        if existed { "updated" } else { "added" }
+    );
+    println!(
+        "mention @{name} in chat (needs reaction = push) or run `enox agent run {name} \"...\"`"
+    );
     Ok(())
 }
 
@@ -93,7 +155,11 @@ pub async fn run(circle: Option<&str>, agent: String, task: String) -> Result<()
     let circle_dir = crate::config::circle_dir(&circle_id)?;
     let resume = crate::agent::memory::load(&circle_dir, &agent);
 
-    println!("→ running agent '{agent}' ({:?}) in {}", cmd.driver, workspace.display());
+    println!(
+        "→ running agent '{agent}' ({:?}) in {}",
+        cmd.driver,
+        workspace.display()
+    );
     if resume.is_some() {
         println!("  resuming previous session");
     }
@@ -118,7 +184,10 @@ pub async fn run(circle: Option<&str>, agent: String, task: String) -> Result<()
     if let Some(reply) = &outcome.reply {
         println!("\n{reply}\n");
     }
-    println!("  session {} — any file changes will surface as a proposal.", outcome.session_id);
+    println!(
+        "  session {} — any file changes will surface as a proposal.",
+        outcome.session_id
+    );
     println!("  run `enox proposal list` to review.");
     Ok(())
 }
