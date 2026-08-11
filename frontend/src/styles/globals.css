@@ -105,6 +105,62 @@ select {
   font-size: 10px;
 }
 
+.circle-removed-notice__confirm {
+  display: flex;
+  max-width: 520px;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--fg-slate);
+}
+
+.circle-removed-notice__confirm > div {
+  display: flex;
+  gap: 8px;
+}
+
+.circle-removed-notice__remove,
+.circle-removed-notice__cancel {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border: 1px solid var(--fg-obsidian);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.circle-removed-notice__remove {
+  margin-top: 8px;
+  background: var(--fg-obsidian);
+  color: white;
+}
+
+.circle-removed-notice__confirm .circle-removed-notice__remove {
+  margin-top: 0;
+}
+
+.circle-removed-notice__cancel {
+  background: transparent;
+  color: var(--fg-obsidian);
+}
+
+.circle-removed-notice__remove:disabled,
+.circle-removed-notice__cancel:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.circle-removed-notice .circle-removed-notice__error {
+  color: #9f1d20;
+  font-weight: 700;
+}
+
 /* White bridge between the landing animation and the app.
    The angel scene ends on full white; this overlay mounts white in the same
    frame the landing unmounts, then fades out to reveal the app underneath. */

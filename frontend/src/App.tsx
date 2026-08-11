@@ -8,6 +8,8 @@ import Header from './components/Header'
 import LandingPage from './components/LandingPage'
 import RitualTransition, { type RitualMode } from './components/RitualTransition'
 import { useApp } from './context/AppContext'
+import { leaveCircle } from './api'
+import { Trash2 } from 'lucide-react'
 import './styles/globals.css'
 
 type MobileDrawer = 'circles' | 'info' | null
@@ -38,7 +40,7 @@ function loadLayoutPreferences(): LayoutPreferences {
 }
 
 function Layout() {
-  const { activeCircleId, circles, circlesLoaded, status } = useApp()
+  const { activeCircleId, circles, circlesLoaded, status, reloadCircles } = useApp()
 
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [ritual, setRitual] = useState<{ mode: RitualMode; label?: string } | null>(null)
@@ -46,6 +48,9 @@ function Layout() {
   const [revealing, setRevealing] = useState(false)
   const [layoutPreferences, setLayoutPreferences] = useState(loadLayoutPreferences)
   const [mobileDrawer, setMobileDrawer] = useState<MobileDrawer>(null)
+  const [confirmRemovedLeave, setConfirmRemovedLeave] = useState(false)
+  const [removedLeaveBusy, setRemovedLeaveBusy] = useState(false)
+  const [removedLeaveError, setRemovedLeaveError] = useState<string | null>(null)
 
   const handleEntered = useCallback(() => {
     setShowLanding(false)
@@ -66,6 +71,9 @@ function Layout() {
 
   useEffect(() => {
     setSelectedFile(null)
+    setConfirmRemovedLeave(false)
+    setRemovedLeaveBusy(false)
+    setRemovedLeaveError(null)
   }, [activeCircleId])
 
   useEffect(() => {
@@ -104,6 +112,24 @@ function Layout() {
     }))
   }
 
+  const handleRemovedLeave = async () => {
+    if (!activeCircleId || removedLeaveBusy) return
+    if (!confirmRemovedLeave) {
+      setConfirmRemovedLeave(true)
+      setRemovedLeaveError(null)
+      return
+    }
+    setRemovedLeaveBusy(true)
+    setRemovedLeaveError(null)
+    try {
+      await leaveCircle(activeCircleId)
+      await reloadCircles()
+    } catch (error) {
+      setRemovedLeaveError(error instanceof Error ? error.message : 'Unable to remove Circle')
+      setRemovedLeaveBusy(false)
+    }
+  }
+
   return (
     <>
       <RitualTransition ritual={ritual} onComplete={() => setRitual(null)} />
@@ -128,6 +154,40 @@ function Layout() {
               <strong>ACCESS REVOKED</strong>
               <span>This device was removed from {activeCircle?.circle_name ?? 'this Circle'}.</span>
               <small>Circle sync and member actions are disabled. Existing local files remain on this device.</small>
+              {confirmRemovedLeave ? (
+                <div className="circle-removed-notice__confirm">
+                  <small>This removes the Circle configuration from this device. Workspace files are untouched.</small>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmRemovedLeave(false)}
+                      disabled={removedLeaveBusy}
+                      className="circle-removed-notice__cancel"
+                    >
+                      CANCEL
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRemovedLeave}
+                      disabled={removedLeaveBusy}
+                      className="circle-removed-notice__remove"
+                    >
+                      <Trash2 size={14} aria-hidden="true" />
+                      {removedLeaveBusy ? 'REMOVING...' : 'REMOVE'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleRemovedLeave}
+                  className="circle-removed-notice__remove"
+                >
+                  <Trash2 size={14} aria-hidden="true" />
+                  REMOVE FROM THIS DEVICE
+                </button>
+              )}
+              {removedLeaveError && <small className="circle-removed-notice__error">{removedLeaveError}</small>}
             </div>
           )}
 

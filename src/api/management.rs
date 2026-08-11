@@ -364,7 +364,15 @@ pub async fn leave_circle(
 
     if let Ok(dir) = config::circle_dir(&circle_id) {
         if dir.exists() {
-            let _ = std::fs::remove_dir_all(&dir);
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("failed to remove local Circle configuration: {e}")
+                    })),
+                )
+                    .into_response();
+            }
         }
     }
 
