@@ -21,8 +21,10 @@
 //! Mechanism (option 4a): serialize the durable key-sets to JSON and restore by
 //! writing them back into the live doc through normal transactions. This sidesteps
 //! CRDT-state-encoding subtleties and gives a natural point to window chat. The
-//! keys are last-writer-ish maps and an append array, so re-inserting on restore
-//! is semantically fine.
+//! Map entries are restored by key. Chat uses an append array, so snapshots are
+//! deduplicated by stable message ID before restore and save; without that,
+//! independently restored peers create distinct Yjs items for the same message
+//! and multiply duplicates whenever their control docs merge.
 //!
 //! Restore runs at startup **before** the swarm connects. Restored chat carries
 //! its original (old) timestamps, so the agent reaction loop's `ts` cutoff skips
@@ -39,6 +41,9 @@ use yrs::{Any, Array, Map, Out, Transact};
 
 /// Chat older than this many days is dropped at save time.
 const CHAT_RETENTION_DAYS: i64 = 30;
+/// A busy or automated circle can produce far more messages than a time-only
+/// window can safely restore during daemon startup.
+const CHAT_RETENTION_MESSAGES: usize = 10_000;
 
 fn path(circle_dir: &Path) -> PathBuf {
     circle_dir.join("control.json")
@@ -65,6 +70,11 @@ struct TsOnly {
     ts: i64,
 }
 
+#[derive(Deserialize)]
+struct IdOnly {
+    id: String,
+}
+
 /// Read the durable subset from the live control doc, windowing chat, and write
 /// it to `<circle_dir>/control.json`. Called on a debounced timer and at clean
 /// shutdown.
@@ -79,7 +89,7 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
     let snap = {
         let txn = control.transact();
 
-        let chat: Vec<String> = chat_arr
+        let mut chat: Vec<String> = chat_arr
             .iter(&txn)
             .filter_map(|v| match v {
                 Out::Any(Any::String(s)) => Some(s.to_string()),
@@ -92,6 +102,8 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
                     .unwrap_or(true) // keep unparseable rather than lose data
             })
             .collect();
+        deduplicate_messages(&mut chat);
+        retain_latest_messages(&mut chat);
 
         let tasks = map_strings(&tasks_map, &txn);
         let members = map_strings(&members_map, &txn);
@@ -109,15 +121,25 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Restore the persisted subset into the live control doc. Idempotent-ish:
-/// existing keys are overwritten with the persisted value, chat is only appended
-/// if the array is currently empty (avoids duplicating on top of a P2P-synced
-/// history). Call once at startup, before the swarm connects.
+/// Restore the persisted subset into the live control doc. Existing keys are
+/// overwritten with the persisted value. Chat is deduplicated by message ID and
+/// only appended if the array is currently empty. Call once at startup, before
+/// the swarm connects.
 pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
     let Ok(text) = std::fs::read_to_string(path(circle_dir)) else {
         return Ok(()); // nothing persisted yet
     };
-    let snap: ControlSnapshot = serde_json::from_str(&text)?;
+    let mut snap: ControlSnapshot = serde_json::from_str(&text)?;
+    let persisted_chat_count = snap.chat.len();
+    deduplicate_messages(&mut snap.chat);
+    retain_latest_messages(&mut snap.chat);
+    if persisted_chat_count > snap.chat.len() {
+        tracing::warn!(
+            "[control] loading the latest {} of {} persisted chat messages",
+            snap.chat.len(),
+            persisted_chat_count
+        );
+    }
 
     // Resolve all refs before opening the transaction (get_or_insert_* may write
     // to create the type, which deadlocks under a held transaction).
@@ -148,6 +170,22 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
         snap.chat.len(), snap.tasks.len(), snap.members.len()
     );
     Ok(())
+}
+
+fn retain_latest_messages(chat: &mut Vec<String>) {
+    if chat.len() > CHAT_RETENTION_MESSAGES {
+        chat.drain(..chat.len() - CHAT_RETENTION_MESSAGES);
+    }
+}
+
+fn deduplicate_messages(chat: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    chat.retain(|raw| {
+        let key = serde_json::from_str::<IdOnly>(raw)
+            .map(|message| format!("id:{}", message.id))
+            .unwrap_or_else(|_| format!("raw:{raw}"));
+        seen.insert(key)
+    });
 }
 
 /// Collect a control-doc map's `key → String` entries.
@@ -264,5 +302,37 @@ mod tests {
         save(&tmp, &src).unwrap();
         assert!(super::path(&tmp).exists());
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn message_retention_keeps_the_latest_entries() {
+        let mut chat = (0..CHAT_RETENTION_MESSAGES + 3)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>();
+
+        retain_latest_messages(&mut chat);
+
+        assert_eq!(chat.len(), CHAT_RETENTION_MESSAGES);
+        assert_eq!(chat.first().map(String::as_str), Some("3"));
+        let expected_last = (CHAT_RETENTION_MESSAGES + 2).to_string();
+        assert_eq!(
+            chat.last().map(String::as_str),
+            Some(expected_last.as_str())
+        );
+    }
+
+    #[test]
+    fn message_deduplication_uses_stable_message_ids() {
+        let mut chat = vec![
+            r#"{"id":"one","text":"first"}"#.to_string(),
+            r#"{"id":"two","text":"second"}"#.to_string(),
+            r#"{"id":"one","text":"duplicate CRDT item"}"#.to_string(),
+        ];
+
+        deduplicate_messages(&mut chat);
+
+        assert_eq!(chat.len(), 2);
+        assert!(chat[0].contains("first"));
+        assert!(chat[1].contains("second"));
     }
 }

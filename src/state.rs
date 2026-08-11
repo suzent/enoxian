@@ -128,14 +128,18 @@ impl AppState {
         // Local posts already fire events in post_chat(); this covers remote peers.
         let chat_arr = control.get_or_insert_array(CHAT_KEY);
         let events_for_chat = events_tx.clone();
+        let seen_chat_ids = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let chat_sub = chat_arr.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::array::ArrayEvent| {
             let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
-            if !is_p2p { return; }
+            let mut seen = seen_chat_ids.lock().unwrap();
             for change in event.delta(txn) {
                 if let yrs::types::Change::Added(values) = change {
                     for val in values {
                         if let yrs::Out::Any(yrs::Any::String(s)) = val {
                             if let Ok(msg) = serde_json::from_str::<ChatMessage>(s) {
+                                if !seen.insert(msg.id.clone()) || !is_p2p {
+                                    continue;
+                                }
                                 let _ = events_for_chat.send(CircleEvent::MessagePosted { message: msg.clone() });
                                 for mention in &msg.mentions {
                                     let _ = events_for_chat.send(CircleEvent::AgentMentioned {

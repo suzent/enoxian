@@ -164,6 +164,7 @@ fn member_labels(state: &AppState) -> Vec<String> {
 fn recent_chat(state: &AppState) -> String {
     let arr: ArrayRef = state.control.get_or_insert_array(CHAT_KEY);
     let txn = state.control.transact();
+    let mut seen = std::collections::HashSet::new();
     let all: Vec<ChatMessage> = arr
         .iter(&txn)
         .filter_map(|item| {
@@ -173,6 +174,7 @@ fn recent_chat(state: &AppState) -> String {
                 None
             }
         })
+        .filter(|message| seen.insert(message.id.clone()))
         .collect();
     let start = all.len().saturating_sub(RECENT_CHAT_LINES);
     all[start..]

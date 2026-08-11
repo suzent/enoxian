@@ -36,6 +36,7 @@ pub async fn get_chat(
     };
     let arr: ArrayRef = state.control.get_or_insert_array(CHAT_KEY);
     let txn = state.control.transact();
+    let mut seen = std::collections::HashSet::new();
     let messages: Vec<ChatMessage> = arr
         .iter(&txn)
         .filter_map(|item| {
@@ -45,6 +46,7 @@ pub async fn get_chat(
                 None
             }
         })
+        .filter(|message| seen.insert(message.id.clone()))
         .filter(|m| q.since.map(|s| m.ts > s).unwrap_or(true))
         .collect();
     Json(messages).into_response()
