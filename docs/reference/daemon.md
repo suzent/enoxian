@@ -158,6 +158,22 @@ ssh -L 36521:127.0.0.1:36521 user@host   # then use http://127.0.0.1:36521 local
 `--bind-lan` is acceptable only on a network you fully trust; the token is still
 required, but widening the bind widens the attack surface.
 
+## Force-relay diagnostics
+
+Each Circle has a device-local `force_relay` setting. In the frontend, open
+**Settings → Connectivity** and enable **Force relay**. The daemon keeps running
+while only that Circle's P2P swarm is rebuilt. Force-relay mode:
+
+- disables direct TCP and QUIC listeners
+- skips saved direct-peer addresses
+- disables DCUtR direct upgrades
+- ignores non-circuit addresses returned by rendezvous
+- rejects incoming direct circle-peer connections
+
+The setting is persisted in the Circle's `config.toml`. Disable the toggle to
+return to automatic routing. A successful relayed member connection appears as
+`RELAY` in the member list and contains `/p2p-circuit` in its address.
+
 ## Bootstrap mode
 
 `enoxd --bootstrap` runs a public rendezvous + circuit relay server. It does not

@@ -193,7 +193,7 @@ export default function CircleSidebar({ onRitual }: Props) {
         <button
           className="circle-sidebar-settings"
           onClick={() => setSettingsOpen(true)}
-          title="Device settings — agent mention reactions"
+          title="Device and Circle settings"
           aria-label="Open device settings"
         >
           <Settings size={16} strokeWidth={2.25} aria-hidden="true" />

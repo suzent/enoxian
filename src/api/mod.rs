@@ -1,6 +1,7 @@
 pub mod agent_config;
 pub mod auth;
 pub mod chat;
+pub mod connectivity;
 pub mod events;
 pub mod files;
 pub mod identity;
@@ -41,6 +42,10 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
         .route("/circles", get(list_circles))
         .route("/circles/{circle_id}/ws/yjs", get(ws_yjs_handler))
         .route("/circles/{circle_id}/api/status", get(status::get_status))
+        .route(
+            "/circles/{circle_id}/api/connectivity",
+            get(connectivity::get_connectivity).post(connectivity::set_connectivity),
+        )
         .route("/circles/{circle_id}/api/who", get(who::get_who))
         .route(
             "/circles/{circle_id}/api/tasks",

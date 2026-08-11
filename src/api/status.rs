@@ -40,8 +40,8 @@ pub async fn get_status(
         .unwrap_or_default();
 
     // relay_addrs and rendezvous_addrs come from the persisted circle config.
-    let (relay_addrs, rendezvous_addrs) = config::load(&state.circle_id)
-        .map(|c| (c.relay_addrs, c.rendezvous_addrs))
+    let (relay_addrs, rendezvous_addrs, force_relay) = config::load(&state.circle_id)
+        .map(|c| (c.relay_addrs, c.rendezvous_addrs, c.force_relay))
         .unwrap_or_default();
 
     // Recent connection failures (most recent first) — makes silent handshake
@@ -76,6 +76,7 @@ pub async fn get_status(
             "listen_addrs":     listen_addrs,
             "relay_addrs":      relay_addrs,
             "rendezvous_addrs": rendezvous_addrs,
+            "force_relay":      force_relay,
             "recent_conn_errors": conn_errors,
         },
     }))

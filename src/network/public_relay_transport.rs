@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     pin::Pin,
+    sync::{Arc, RwLock},
     task::{Context, Poll},
 };
 
@@ -17,11 +18,11 @@ use libp2p::{
 /// the circle PSK, without opening a general-purpose no-PSK TCP path.
 pub struct PublicRelayTransport<T> {
     inner: T,
-    relay_peer_ids: HashSet<PeerId>,
+    relay_peer_ids: Arc<RwLock<HashSet<PeerId>>>,
 }
 
 impl<T> PublicRelayTransport<T> {
-    pub fn new(inner: T, relay_peer_ids: HashSet<PeerId>) -> Self {
+    pub fn new(inner: T, relay_peer_ids: Arc<RwLock<HashSet<PeerId>>>) -> Self {
         Self {
             inner,
             relay_peer_ids,
@@ -55,7 +56,8 @@ where
         addr: Multiaddr,
         opts: DialOpts,
     ) -> Result<Self::Dial, TransportError<Self::Error>> {
-        if !is_allowed_public_relay_addr(&addr, &self.relay_peer_ids) {
+        let relay_peer_ids = self.relay_peer_ids.read().unwrap();
+        if !is_allowed_public_relay_addr(&addr, &relay_peer_ids) {
             return Err(TransportError::MultiaddrNotSupported(addr));
         }
         self.inner.dial(addr, opts)

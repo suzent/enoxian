@@ -23,7 +23,8 @@ use libp2p::{
     swarm::SwarmEvent,
     Multiaddr, SwarmBuilder, Transport,
 };
-use tracing::info;
+use std::{num::NonZeroU32, time::Duration};
+use tracing::{info, warn};
 
 use crate::{
     config::enoxian_dir,
@@ -69,7 +70,7 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
                         .with_max_ttl(2 * 3600)
                         .with_min_ttl(60),
                 ),
-                relay: relay::Behaviour::new(pid, relay::Config::default()),
+                relay: relay::Behaviour::new(pid, relay_server_config()),
                 identify: identify::Behaviour::new(identify::Config::new(
                     "/enoxian-bootstrap/1.0.0".to_string(),
                     key.public(),
@@ -157,7 +158,35 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
                 }
             }
             SwarmEvent::Behaviour(BootstrapEvent::Relay(e)) => {
-                tracing::debug!("[relay] {e:?}");
+                use relay::Event;
+                match &e {
+                    Event::ReservationReqAccepted { src_peer_id, renewed } => {
+                        info!("[relay] reservation accepted: peer={src_peer_id} renewed={renewed}");
+                    }
+                    Event::ReservationReqDenied { src_peer_id, status } => {
+                        warn!("[relay] reservation denied: peer={src_peer_id} status={status:?}");
+                    }
+                    Event::ReservationClosed { src_peer_id } => {
+                        info!("[relay] reservation closed: peer={src_peer_id}");
+                    }
+                    Event::ReservationTimedOut { src_peer_id } => {
+                        info!("[relay] reservation timed out: peer={src_peer_id}");
+                    }
+                    Event::CircuitReqAccepted { src_peer_id, dst_peer_id } => {
+                        info!("[relay] circuit accepted: src={src_peer_id} dst={dst_peer_id}");
+                    }
+                    Event::CircuitReqDenied { src_peer_id, dst_peer_id, status } => {
+                        warn!("[relay] circuit denied: src={src_peer_id} dst={dst_peer_id} status={status:?}");
+                    }
+                    Event::CircuitClosed { src_peer_id, dst_peer_id, error } => {
+                        if let Some(error) = error {
+                            warn!("[relay] circuit closed: src={src_peer_id} dst={dst_peer_id} error={error}");
+                        } else {
+                            info!("[relay] circuit closed: src={src_peer_id} dst={dst_peer_id}");
+                        }
+                    }
+                    _ => tracing::debug!("[relay] {e:?}"),
+                }
             }
             SwarmEvent::Behaviour(BootstrapEvent::Identify(identify::Event::Received {
                 peer_id: remote, info, ..
@@ -172,6 +201,31 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
             _ => {}
         }
     }
+}
+
+fn relay_server_config() -> relay::Config {
+    let mut config = relay::Config::default();
+
+    // Enoxian keeps sync and presence streams alive; libp2p's generic defaults
+    // (16 circuits, 2 minutes, 128 KiB) cause reconnect churn under normal use.
+    config.max_reservations = 512;
+    config.max_reservations_per_peer = 8;
+    config.max_circuits = 128;
+    config.max_circuits_per_peer = 16;
+    config.max_circuit_duration = Duration::from_secs(30 * 60);
+    config.max_circuit_bytes = 64 * 1024 * 1024;
+
+    // Keep abuse protection, but permit short reconnect bursts after a network
+    // transition. The stock bucket only refills one request every two minutes.
+    config.circuit_src_rate_limiters.clear();
+    config = config.circuit_src_per_peer(
+        NonZeroU32::new(64).expect("64 is non-zero"),
+        Duration::from_secs(1),
+    );
+    config.circuit_src_per_ip(
+        NonZeroU32::new(128).expect("128 is non-zero"),
+        Duration::from_secs(1),
+    )
 }
 
 fn is_public_listen_addr(addr: &Multiaddr) -> bool {

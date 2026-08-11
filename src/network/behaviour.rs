@@ -19,7 +19,8 @@ pub struct EnochBehaviour {
     pub rendezvous: rendezvous::client::Behaviour,
     pub relay_client: relay::client::Behaviour,
     pub relay: relay::Behaviour,
-    pub dcutr: dcutr::Behaviour,
+    /// Direct connection upgrade through relay. Disabled in force-relay mode.
+    pub dcutr: Toggle<dcutr::Behaviour>,
     pub stream: stream::Behaviour,
 }
 

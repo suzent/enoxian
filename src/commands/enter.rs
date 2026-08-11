@@ -175,6 +175,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         workspace_dir: workspace_dir.to_string_lossy().into_owned(),
         admin_pubkey_hex,
         disabled: false,
+        force_relay: false,
         peers: bootstrap_peers,
         relay_addrs: relay_from_invite.clone().into_iter().collect(),
         rendezvous_addrs,
@@ -225,6 +226,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         };
         public_relay_peer_ids.insert(peer_id);
     }
+    let public_relay_peer_ids = std::sync::Arc::new(std::sync::RwLock::new(public_relay_peer_ids));
 
     let psk_bytes = psk_from_hex(&psk_hex)?;
     let pnet_config = pnet::PnetConfig::new(pnet::PreSharedKey::new(psk_bytes));
@@ -301,7 +303,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
                 rendezvous: libp2p::rendezvous::client::Behaviour::new(keypair_clone),
                 relay_client,
                 relay: relay::Behaviour::new(pid, relay::Config::default()),
-                dcutr: dcutr::Behaviour::new(pid),
+                dcutr: Toggle::from(Some(dcutr::Behaviour::new(pid))),
                 stream: stream_proto::Behaviour::new(),
             })
         })?

@@ -36,6 +36,9 @@ pub struct CircleConfig {
     /// If true, enoxd skips this circle at startup and does not start its swarm.
     #[serde(default)]
     pub disabled: bool,
+    /// Diagnostic mode: only connect to circle peers through circuit relay.
+    #[serde(default)]
+    pub force_relay: bool,
     /// Known peer multiaddrs (e.g. from invite). Dialed on startup as bootstrap
     /// peers in addition to mDNS discovery.
     #[serde(default)]
@@ -329,12 +332,25 @@ mod workspace_tests {
             workspace_dir: workspace.to_string_lossy().into_owned(),
             admin_pubkey_hex: String::new(),
             disabled: false,
+            force_relay: false,
             peers: vec![],
             relay_addrs: vec![],
             rendezvous_addrs: vec![],
             join_policy: JoinPolicy::Auto,
             owner: String::new(),
         }
+    }
+
+    #[test]
+    fn old_config_defaults_force_relay_to_false() {
+        let raw = r#"
+circle_id = "old-circle"
+circle_name = "Old"
+psk_hex = ""
+keypair_proto_hex = ""
+"#;
+        let config: CircleConfig = toml::from_str(raw).unwrap();
+        assert!(!config.force_relay);
     }
 
     #[test]

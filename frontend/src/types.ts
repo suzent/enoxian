@@ -13,6 +13,13 @@ export interface Status {
   removed: boolean
 }
 
+export interface ConnectivitySettings {
+  force_relay: boolean
+  active: boolean
+  relay_configured: boolean
+  rendezvous_configured: boolean
+}
+
 export interface Member {
   peer_id: string
   owner: string

@@ -1,4 +1,4 @@
-import type { Circle, Status, Presence, ChatMessage, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin } from './types'
+import type { Circle, Status, Presence, ChatMessage, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin, ConnectivitySettings } from './types'
 
 const api = (circleId: string) => `/circles/${circleId}/api`
 
@@ -65,6 +65,12 @@ export const addAgent = (name: string, driver: string, command: string[], workin
 export const removeAgent = (name: string) =>
   post('/api/agent-config/agents/remove', { name })
 export const getStatus = (id: string) => get<Status>(`${api(id)}/status`)
+export const getConnectivitySettings = (id: string) =>
+  get<ConnectivitySettings>(`${api(id)}/connectivity`)
+export const setForceRelay = (id: string, forceRelay: boolean) =>
+  post<{ force_relay: boolean; active: boolean; restarted: boolean }>(
+    `${api(id)}/connectivity`, { force_relay: forceRelay },
+  )
 export const getWho = (id: string) => get<Presence[]>(`${api(id)}/who`)
 export const getChat = (id: string, since?: number) =>
   get<ChatMessage[]>(`${api(id)}/chat${since ? `?since=${since}` : ''}`)

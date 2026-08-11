@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { AgentConfigView, AgentPlugin } from '../types'
-import { getAgentConfig, getAgentPlugins, installAgentPlugin, setAgentReaction, addAgent, removeAgent } from '../api'
+import { Bot, RadioTower } from 'lucide-react'
+import type { AgentConfigView, AgentPlugin, ConnectivitySettings } from '../types'
+import { getAgentConfig, getAgentPlugins, installAgentPlugin, setAgentReaction, addAgent, removeAgent, getConnectivitySettings, setForceRelay } from '../api'
+import { useApp } from '../context/AppContext'
 
 interface Props {
   onClose: () => void
@@ -14,8 +16,11 @@ interface Props {
  * ordinary launcher config. See docs/plan/agent-workspaces.md → Two-Layer Split.
  */
 export default function DeviceSettings({ onClose }: Props) {
+  const { activeCircleId, circles } = useApp()
+  const [activeTab, setActiveTab] = useState<'agents' | 'connectivity'>('agents')
   const [cfg, setCfg] = useState<AgentConfigView | null>(null)
   const [plugins, setPlugins] = useState<AgentPlugin[] | null>(null)
+  const [connectivity, setConnectivity] = useState<ConnectivitySettings | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -31,6 +36,15 @@ export default function DeviceSettings({ onClose }: Props) {
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
+
+  useEffect(() => {
+    if (activeTab !== 'connectivity' || !activeCircleId) return
+    setConnectivity(null)
+    setError(null)
+    getConnectivitySettings(activeCircleId)
+      .then(setConnectivity)
+      .catch(e => setError(e.message))
+  }, [activeTab, activeCircleId])
 
   const isPush = cfg?.reaction === 'push'
 
@@ -61,6 +75,21 @@ export default function DeviceSettings({ onClose }: Props) {
     run(() => setAgentReaction(isPush ? 'pull' : 'push'))
   }
 
+  const toggleForceRelay = async () => {
+    if (!activeCircleId || !connectivity || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      const next = await setForceRelay(activeCircleId, !connectivity.force_relay)
+      setConnectivity({ ...connectivity, ...next })
+    } catch (e: any) {
+      setError(e.message)
+      getConnectivitySettings(activeCircleId).then(setConnectivity).catch(() => {})
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const submitAdd = () => {
     const parts = command.trim().split(/\s+/).filter(Boolean)
     if (!name.trim() || parts.length === 0) return
@@ -71,17 +100,41 @@ export default function DeviceSettings({ onClose }: Props) {
 
   const managedNames = new Set((plugins || []).map(plugin => plugin.agent))
   const customAgents = cfg?.agents.filter(agent => !managedNames.has(agent.name)) || []
+  const activeCircle = circles.find(circle => circle.circle_id === activeCircleId)
 
   return (
     <div className="ritual-modal-backdrop" onClick={onClose}>
-      <div className="ritual-panel sys-window" onClick={e => e.stopPropagation()} style={{ maxWidth: 440 }}>
+      <div className="ritual-panel sys-window device-settings-panel" onClick={e => e.stopPropagation()}>
         <button onClick={onClose} className="ritual-panel__close" aria-label="Close">×</button>
         <div className="ritual-panel__header">DEVICE SETTINGS</div>
-        <div className="ritual-panel__body flex flex-col gap-4">
+        <div className="settings-layout">
+          <div className="settings-tabs" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'agents'}
+              className={activeTab === 'agents' ? 'is-active' : ''}
+              onClick={() => setActiveTab('agents')}
+            >
+              <Bot size={14} aria-hidden="true" />
+              AGENTS
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'connectivity'}
+              className={activeTab === 'connectivity' ? 'is-active' : ''}
+              onClick={() => setActiveTab('connectivity')}
+            >
+              <RadioTower size={14} aria-hidden="true" />
+              CONNECTIVITY
+            </button>
+          </div>
+          <div className="ritual-panel__body settings-panel-body flex flex-col gap-4">
           {error && <div className="file-error">{error}</div>}
-          {!cfg && !error && <div className="text-slate font-mono text-[11px]">Loading…</div>}
+          {activeTab === 'agents' && !cfg && !error && <div className="text-slate font-mono text-[11px]">Loading…</div>}
 
-          {cfg && (
+          {activeTab === 'agents' && cfg && (
             <>
               <section className="flex items-center justify-between gap-4 border-b border-obsidian pb-3">
                 <div className="min-w-0">
@@ -222,6 +275,52 @@ export default function DeviceSettings({ onClose }: Props) {
               </details>
             </>
           )}
+
+          {activeTab === 'connectivity' && !connectivity && !error && (
+            <div className="text-slate font-mono text-[11px]">Loading…</div>
+          )}
+
+          {activeTab === 'connectivity' && connectivity && (
+            <div className="settings-connectivity">
+              <div className="settings-connectivity__circle">
+                <span>CURRENT CIRCLE</span>
+                <strong>{activeCircle?.circle_name ?? activeCircleId ?? 'NONE'}</strong>
+              </div>
+
+              <div className="settings-connectivity__availability" aria-label="Connectivity services">
+                <span className={connectivity.relay_configured ? 'is-ready' : ''}>
+                  <i aria-hidden="true" /> RELAY
+                </span>
+                <span className={connectivity.rendezvous_configured ? 'is-ready' : ''}>
+                  <i aria-hidden="true" /> RENDEZVOUS
+                </span>
+              </div>
+
+              <section className="settings-connectivity__mode">
+                <div>
+                  <div className="settings-connectivity__title">
+                    FORCE RELAY
+                    <span>DIAGNOSTIC</span>
+                  </div>
+                  <div className="settings-connectivity__status">
+                    {busy ? 'RESTARTING CIRCLE…' : connectivity.force_relay ? 'RELAY ONLY' : 'AUTOMATIC ROUTING'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={connectivity.force_relay}
+                  aria-label="Force relay"
+                  disabled={busy || !activeCircleId}
+                  className={`settings-switch${connectivity.force_relay ? ' is-on' : ''}`}
+                  onClick={toggleForceRelay}
+                >
+                  <span aria-hidden="true" />
+                </button>
+              </section>
+            </div>
+          )}
+          </div>
         </div>
       </div>
     </div>

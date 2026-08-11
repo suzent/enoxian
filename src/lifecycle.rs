@@ -50,6 +50,7 @@ fn spawn_circle_boxed(
 }
 
 pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<()> {
+    let force_relay = config.force_relay;
     let keypair = keypair_from_hex(&config.keypair_proto_hex)?;
     let peer_id = keypair.public().to_peer_id();
     let psk_bytes = psk_from_hex(&config.psk_hex)?;
@@ -561,6 +562,10 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             config.rendezvous_addrs.iter(),
         ),
     );
+    let public_relay_peer_ids = std::sync::Arc::new(std::sync::RwLock::new(
+        public_relay_peer_ids,
+    ));
+    let public_relay_peer_ids_for_transport = public_relay_peer_ids.clone();
 
     // relay::client::new produces the relay transport (for dialing circuits) and
     // the relay client behaviour (for managing reservations).
@@ -577,7 +582,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             // not know the circle PSK, while keeping direct peer TCP PSK-protected.
             let public_tcp = crate::network::public_relay_transport::PublicRelayTransport::new(
                 tcp::tokio::Transport::new(tcp::Config::default()),
-                public_relay_peer_ids.clone(),
+                public_relay_peer_ids_for_transport.clone(),
             )
             .upgrade(upgrade::Version::V1Lazy)
             .authenticate(noise::Config::new(key)?)
@@ -638,7 +643,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 rendezvous: libp2p::rendezvous::client::Behaviour::new(keypair_clone),
                 relay_client: relay_client_behaviour,
                 relay: relay::Behaviour::new(pid, relay::Config::default()),
-                dcutr: dcutr::Behaviour::new(pid),
+                dcutr: Toggle::from((!force_relay).then(|| dcutr::Behaviour::new(pid))),
                 stream: stream_proto::Behaviour::new(),
             })
         })?
@@ -657,21 +662,28 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     // QUIC stays ephemeral: a fixed UDP port buys nothing here (hole-punching
     // discovers addresses dynamically), and the combined relay+quic transport
     // rejects a fixed-port QUIC listen, so binding one would just fail anyway.
-    let listen_port = stable_listen_port(&config.circle_id);
-    let tcp_addr = format!("/ip4/0.0.0.0/tcp/{listen_port}").parse::<Multiaddr>()?;
-    if let Err(e) = swarm.listen_on(tcp_addr) {
-        warn!(
-            "[{}] stable TCP listen port {listen_port} unavailable ({e}); falling back to ephemeral",
+    if force_relay {
+        info!(
+            "[{}] force-relay mode: direct TCP/QUIC listeners and DCUtR are disabled",
             config.circle_id
         );
-        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse::<Multiaddr>()?)?;
+    } else {
+        let listen_port = stable_listen_port(&config.circle_id);
+        let tcp_addr = format!("/ip4/0.0.0.0/tcp/{listen_port}").parse::<Multiaddr>()?;
+        if let Err(e) = swarm.listen_on(tcp_addr) {
+            warn!(
+                "[{}] stable TCP listen port {listen_port} unavailable ({e}); falling back to ephemeral",
+                config.circle_id
+            );
+            swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse::<Multiaddr>()?)?;
+        }
+        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse::<Multiaddr>()?)?;
     }
-    swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse::<Multiaddr>()?)?;
 
     // ── Dial bootstrap peers from config ──────────────────────────────────────
     // Peer addresses saved at `enox enter` time (from invite). This ensures
     // connectivity even when mDNS is unavailable (different subnets, firewalls).
-    for peer_str in &config.peers {
+    for peer_str in config.peers.iter().filter(|_| !force_relay) {
         match peer_str.parse::<Multiaddr>() {
             Ok(addr) => {
                 info!("[{}] dialing bootstrap peer {addr}", config.circle_id);
@@ -908,6 +920,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         if let Some(peer_id) =
                             crate::network::public_relay_transport::relay_peer_id(&relay_addr)
                         {
+                            public_relay_peer_ids.write().unwrap().insert(peer_id);
                             relay_base_addrs
                                 .write()
                                 .unwrap()
@@ -959,11 +972,33 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         }
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
-                        info!("[{}] P2P connected: {peer_id} via {}", circle_id, endpoint.get_remote_address());
+                        let remote_addr = endpoint.get_remote_address();
+                        // For inbound relay circuits libp2p reports the remote address as
+                        // only `/p2p/<source>`; the circuit marker lives on the local side.
+                        let is_relayed = endpoint.is_relayed();
+                        let is_infrastructure = rendezvous_peers.read().unwrap().contains(&peer_id)
+                            || relay_base_addrs.read().unwrap().contains_key(&peer_id);
+                        if force_relay
+                            && !is_infrastructure
+                            && !is_relayed
+                        {
+                            info!(
+                                "[{}] force-relay mode: rejecting direct peer connection from {peer_id} via {remote_addr}",
+                                circle_id
+                            );
+                            swarm.close_connection(connection_id);
+                            continue;
+                        }
+                        let route_addr = match &endpoint {
+                            libp2p::core::ConnectedPoint::Listener { local_addr, .. }
+                                if is_relayed => local_addr,
+                            _ => remote_addr,
+                        };
+                        info!("[{}] P2P connected: {peer_id} via {route_addr}", circle_id);
                         state_for_swarm.record_peer_connection(
                             peer_id.to_string(),
                             connection_id,
-                            endpoint.get_remote_address(),
+                            route_addr,
                         );
                         // If this is a rendezvous server, register + discover immediately.
                         if rendezvous_peers.read().unwrap().contains(&peer_id) {
@@ -1064,6 +1099,15 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                                     let pid = reg.record.peer_id();
                                     if pid == *swarm.local_peer_id() { continue; }
                                     for addr in reg.record.addresses() {
+                                        if force_relay
+                                            && !crate::network::public_relay_transport::is_relayed_addr(addr)
+                                        {
+                                            tracing::debug!(
+                                                "[{}] force-relay mode: ignoring direct rendezvous address {addr}",
+                                                circle_id
+                                            );
+                                            continue;
+                                        }
                                         swarm.behaviour_mut().kad.add_address(&pid, addr.clone());
                                         let _ = swarm.dial(
                                             DialOpts::peer_id(pid)
