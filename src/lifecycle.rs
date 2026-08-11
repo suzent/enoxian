@@ -958,8 +958,13 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             addrs.retain(|a| a != &address.to_string());
                         }
                     }
-                    SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                    SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
                         info!("[{}] P2P connected: {peer_id} via {}", circle_id, endpoint.get_remote_address());
+                        state_for_swarm.record_peer_connection(
+                            peer_id.to_string(),
+                            connection_id,
+                            endpoint.get_remote_address(),
+                        );
                         // If this is a rendezvous server, register + discover immediately.
                         if rendezvous_peers.read().unwrap().contains(&peer_id) {
                             if let Err(e) = swarm.behaviour_mut().rendezvous.register(
@@ -994,8 +999,12 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             }
                         }
                     }
-                    SwarmEvent::ConnectionClosed { peer_id, cause, num_established, .. } => {
+                    SwarmEvent::ConnectionClosed { peer_id, connection_id, cause, num_established, .. } => {
                         info!("[{}] P2P disconnected: {peer_id}: {cause:?}", circle_id);
+                        state_for_swarm.remove_peer_connection(
+                            peer_id.to_string().as_str(),
+                            connection_id,
+                        );
                         // When the last connection to this peer closes, immediately mark
                         // them offline in the shared presence CRDT so all peers see it
                         // right away — no need to wait for the heartbeat to time out.

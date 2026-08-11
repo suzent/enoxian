@@ -55,6 +55,13 @@ function age(isoStr: string) {
   return `${Math.floor(secs / 3600)}h ago`
 }
 
+const CONNECTION_BADGE: Record<NonNullable<Presence['connections']>[number]['kind'], string> = {
+  lan: 'border-emerald-700 text-emerald-700',
+  tailscale: 'border-sky-700 text-sky-700',
+  public: 'border-amber-700 text-amber-700',
+  relay: 'border-obsidian bg-obsidian text-alabaster',
+}
+
 
 export default function RightPanel({ onFileSelect, selectedFile, activeTab, onActiveTabChange }: Props) {
   const { activeCircleId, circles, reloadCircles, status } = useApp()
@@ -540,6 +547,7 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
                     const p = device.presence
                     const stale = p ? Date.now() - new Date(p.last_seen).getTime() > 90_000 : false
                     const statusKey = p ? (stale && p.status === 'online' ? 'stale' : p.status) : 'offline'
+                    const isOnline = statusKey !== 'offline'
                     return (
                       <div key={device.peer_id} className="ml-2 flex flex-col gap-0.5 pb-1 border-b border-dashed border-obsidian/15 last:border-0">
                         <div className="flex items-center justify-between gap-2">
@@ -559,6 +567,25 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
                           </div>
                         )}
                         {p && <div className="ml-3 text-[9px] text-slate">{age(p.last_seen)}</div>}
+                        {isOnline && (
+                          <div className="ml-3 flex flex-wrap gap-1" aria-label="Active connection routes">
+                            {device.isSelf ? (
+                              <span className="border border-slate/50 px-1 text-[8px] font-bold text-slate" title="This device">LOCAL</span>
+                            ) : p?.connections.length ? (
+                              p.connections.map(connection => (
+                                <span
+                                  key={connection.kind}
+                                  className={`border px-1 text-[8px] font-bold ${CONNECTION_BADGE[connection.kind]}`}
+                                  title={connection.address}
+                                >
+                                  {connection.kind.toUpperCase()}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="border border-slate/40 px-1 text-[8px] font-bold text-slate/70" title="No direct connection is currently observed by this device">UNKNOWN</span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )
                   })}

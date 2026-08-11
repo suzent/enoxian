@@ -36,6 +36,12 @@ export interface Presence {
   last_seen: string
   current_file: string | null
   peer_id: string
+  connections: PeerConnection[]
+}
+
+export interface PeerConnection {
+  kind: 'lan' | 'tailscale' | 'public' | 'relay'
+  address: string
 }
 
 export interface ChatMessage {

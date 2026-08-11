@@ -1,12 +1,41 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicBool;
 use dashmap::DashMap;
+use libp2p::{multiaddr::Protocol, swarm::ConnectionId, Multiaddr};
+use serde::Serialize;
 use tokio::sync::broadcast;
 use yrs::{Doc, Observable};
 use crate::control::{CHAT_KEY, ChatMessage, CircleEvent, TASKS_KEY, Task, TaskStatus};
 
 pub const EVENT_CAPACITY: usize = 256;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionKind {
+    Lan,
+    Tailscale,
+    Public,
+    Relay,
+}
+
+impl ConnectionKind {
+    fn rank(self) -> u8 {
+        match self {
+            Self::Lan => 0,
+            Self::Tailscale => 1,
+            Self::Public => 2,
+            Self::Relay => 3,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PeerConnection {
+    pub kind: ConnectionKind,
+    pub address: String,
+}
 
 /// Shared state — Clone is cheap (all fields are Arc).
 #[derive(Clone)]
@@ -29,6 +58,9 @@ pub struct AppState {
     /// On a VPS with a public IP these include the real address immediately at startup,
     /// before any peer connects to confirm via Identify. Used as fallback for `enox invite`.
     pub p2p_listen_addrs: Arc<RwLock<Vec<String>>>,
+    /// Connections observed by this daemon. This stays local because each peer
+    /// can see a different route to the same member.
+    peer_connections: Arc<RwLock<HashMap<String, HashMap<ConnectionId, PeerConnection>>>>,
     /// File docs. Key = relative path with forward slashes.
     pub docs: Arc<DashMap<String, Arc<Doc>>>,
     /// __control__ coordination document
@@ -181,6 +213,7 @@ impl AppState {
             peer_id,
             p2p_external_addrs: Arc::new(RwLock::new(Vec::new())),
             p2p_listen_addrs: Arc::new(RwLock::new(Vec::new())),
+            peer_connections: Arc::new(RwLock::new(HashMap::new())),
             docs: Arc::new(DashMap::new()),
             control,
             doc_updates: Arc::new(DashMap::new()),
@@ -251,6 +284,53 @@ impl AppState {
         }
     }
 
+    pub fn record_peer_connection(
+        &self,
+        peer_id: String,
+        connection_id: ConnectionId,
+        address: &Multiaddr,
+    ) {
+        let connection = PeerConnection {
+            kind: classify_connection_address(address),
+            address: address.to_string(),
+        };
+        self.peer_connections
+            .write()
+            .unwrap()
+            .entry(peer_id)
+            .or_default()
+            .insert(connection_id, connection);
+    }
+
+    pub fn remove_peer_connection(&self, peer_id: &str, connection_id: ConnectionId) {
+        let mut peers = self.peer_connections.write().unwrap();
+        if let Some(connections) = peers.get_mut(peer_id) {
+            connections.remove(&connection_id);
+            if connections.is_empty() {
+                peers.remove(peer_id);
+            }
+        }
+    }
+
+    /// Return one representative active address for each route type.
+    pub fn peer_connections(&self, peer_id: &str) -> Vec<PeerConnection> {
+        let mut connections = self
+            .peer_connections
+            .read()
+            .unwrap()
+            .get(peer_id)
+            .map(|entries| entries.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        connections.sort_by(|a, b| {
+            a.kind
+                .rank()
+                .cmp(&b.kind.rank())
+                .then_with(|| a.address.cmp(&b.address))
+        });
+        connections.dedup_by_key(|connection| connection.kind);
+        connections
+    }
+
     pub fn remove_doc(&self, rel_path: &str) {
         self.docs.remove(rel_path);
         self.doc_updates.remove(rel_path);
@@ -264,5 +344,72 @@ impl AppState {
             .entry(rel_path.to_string())
             .or_insert_with(|| broadcast::channel::<Vec<u8>>(64).0)
             .clone()
+    }
+}
+
+fn classify_connection_address(address: &Multiaddr) -> ConnectionKind {
+    if address
+        .iter()
+        .any(|protocol| matches!(protocol, Protocol::P2pCircuit))
+    {
+        return ConnectionKind::Relay;
+    }
+
+    for protocol in address.iter() {
+        match protocol {
+            Protocol::Ip4(ip) => {
+                let octets = ip.octets();
+                if octets[0] == 100 && (64..=127).contains(&octets[1]) {
+                    return ConnectionKind::Tailscale;
+                }
+                if ip.is_private() || ip.is_loopback() || ip.is_link_local() {
+                    return ConnectionKind::Lan;
+                }
+                return ConnectionKind::Public;
+            }
+            Protocol::Ip6(ip) => {
+                let segments = ip.segments();
+                if segments[0] == 0xfd7a
+                    && segments[1] == 0x115c
+                    && segments[2] == 0xa1e0
+                {
+                    return ConnectionKind::Tailscale;
+                }
+                if ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local() {
+                    return ConnectionKind::Lan;
+                }
+                return ConnectionKind::Public;
+            }
+            _ => {}
+        }
+    }
+
+    // A direct DNS address is externally routable unless the circuit marker
+    // above identifies it as a relayed connection.
+    ConnectionKind::Public
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_connection_address, ConnectionKind};
+
+    fn kind(address: &str) -> ConnectionKind {
+        classify_connection_address(&address.parse().unwrap())
+    }
+
+    #[test]
+    fn classifies_peer_connection_routes() {
+        assert_eq!(kind("/ip4/192.168.1.20/tcp/50902"), ConnectionKind::Lan);
+        assert_eq!(kind("/ip4/100.96.12.3/tcp/50902"), ConnectionKind::Tailscale);
+        assert_eq!(
+            kind("/ip6/fd7a:115c:a1e0::1234/tcp/50902"),
+            ConnectionKind::Tailscale,
+        );
+        assert_eq!(kind("/ip4/203.0.113.8/tcp/50902"), ConnectionKind::Public);
+        assert_eq!(kind("/dns4/member.example.com/tcp/50902"), ConnectionKind::Public);
+        assert_eq!(
+            kind("/dns4/relay.example.com/tcp/36521/p2p/12D3KooWJ5dNQYxvLwRQFqz3YxVwvhQdJXLwRj2xByLsMvjJxSxa/p2p-circuit"),
+            ConnectionKind::Relay,
+        );
     }
 }
