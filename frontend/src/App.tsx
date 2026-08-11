@@ -38,7 +38,7 @@ function loadLayoutPreferences(): LayoutPreferences {
 }
 
 function Layout() {
-  const { activeCircleId, circles, circlesLoaded } = useApp()
+  const { activeCircleId, circles, circlesLoaded, status } = useApp()
 
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [ritual, setRitual] = useState<{ mode: RitualMode; label?: string } | null>(null)
@@ -122,6 +122,14 @@ function Layout() {
             onToggleCircles={() => toggle('circles')}
             onToggleInfo={toggleInfo}
           />
+
+          {status?.removed && (
+            <div className="circle-removed-notice" role="alert">
+              <strong>ACCESS REVOKED</strong>
+              <span>This device was removed from {activeCircle?.circle_name ?? 'this Circle'}.</span>
+              <small>Circle sync and member actions are disabled. Existing local files remain on this device.</small>
+            </div>
+          )}
 
           <CircleSidebar
             onRitual={(mode, label) => setRitual({ mode, label })}

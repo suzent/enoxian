@@ -65,6 +65,7 @@ pub async fn get_status(
         "circle_name":  state.circle_name,
         "workspace":    state.workspace.to_string_lossy(),
         "agent_id":     state.agent_id,
+        "removed":      state.is_self_removed(),
         "device_label": device_label,
         "user_handle":  user_handle,
         "docs":         state.docs.len(),

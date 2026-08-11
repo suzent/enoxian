@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import type { Circle, Status } from '../types'
-import { getCircles, getStatus } from '../api'
+import { eventStream, getCircles, getStatus } from '../api'
 
 const ACTIVE_CIRCLE_KEY = 'enoxian.activeCircleId'
 
@@ -72,10 +72,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return
     }
     let cancelled = false
-    getStatus(activeCircleId)
-      .then(data => { if (!cancelled) setStatus(data) })
-      .catch(() => { if (!cancelled) setStatus(null) })
-    return () => { cancelled = true }
+    const refreshStatus = () => {
+      getStatus(activeCircleId)
+        .then(data => { if (!cancelled) setStatus(data) })
+        .catch(() => { if (!cancelled) setStatus(null) })
+    }
+    refreshStatus()
+    const events = eventStream(activeCircleId)
+    events.addEventListener('message', event => {
+      try {
+        const data = JSON.parse(event.data)
+        if (data.type === 'member_removed') refreshStatus()
+      } catch {}
+    })
+    return () => {
+      cancelled = true
+      events.close()
+    }
   }, [activeCircleId])
 
   return (

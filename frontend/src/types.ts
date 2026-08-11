@@ -10,6 +10,7 @@ export interface Status {
   agent_id: string
   workspace: string
   docs: number
+  removed: boolean
 }
 
 export interface Member {

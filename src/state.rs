@@ -6,8 +6,10 @@ use dashmap::DashMap;
 use libp2p::{multiaddr::Protocol, swarm::ConnectionId, Multiaddr};
 use serde::Serialize;
 use tokio::sync::broadcast;
-use yrs::{Doc, Observable};
-use crate::control::{CHAT_KEY, ChatMessage, CircleEvent, TASKS_KEY, Task, TaskStatus};
+use yrs::{Any, Doc, Map, Observable, Out, Transact};
+use crate::control::{
+    CHAT_KEY, ChatMessage, CircleEvent, MLS_REMOVED_KEY, TASKS_KEY, Task, TaskStatus,
+};
 
 pub const EVENT_CAPACITY: usize = 256;
 
@@ -286,6 +288,19 @@ impl AppState {
         while errs.len() > 10 {
             errs.pop_front();
         }
+    }
+
+    pub fn is_peer_removed(&self, peer_id: &str) -> bool {
+        let removed = self.control.get_or_insert_map(MLS_REMOVED_KEY);
+        let txn = self.control.transact();
+        matches!(
+            removed.get(&txn, peer_id),
+            Some(Out::Any(Any::String(_)))
+        )
+    }
+
+    pub fn is_self_removed(&self) -> bool {
+        self.is_peer_removed(&self.peer_id)
     }
 
     pub fn record_peer_connection(

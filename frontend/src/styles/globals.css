@@ -72,6 +72,39 @@ select {
   grid-area: header;
 }
 
+.circle-removed-notice {
+  grid-column: 2 / -1;
+  grid-row: 2;
+  z-index: 80;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px;
+  border: 1px solid var(--fg-obsidian);
+  background: rgba(247, 247, 244, 0.97);
+  color: var(--fg-obsidian);
+  font-family: var(--font-mono);
+  text-align: center;
+}
+
+.circle-removed-notice strong {
+  font-size: 18px;
+}
+
+.circle-removed-notice span {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.circle-removed-notice small {
+  max-width: 520px;
+  color: var(--fg-slate);
+  font-size: 10px;
+}
+
 /* White bridge between the landing animation and the app.
    The angel scene ends on full white; this overlay mounts white in the same
    frame the landing unmounts, then fades out to reveal the app underneath. */
@@ -2112,6 +2145,12 @@ select option {
     padding: 0;
     position: relative;
     overflow: hidden;
+  }
+
+  .circle-removed-notice {
+    grid-column: 1;
+    grid-row: 2;
+    border-width: 1px 0 0;
   }
 
   /* Hide desktop-only elements (but not the ones inside mobile drawers) */

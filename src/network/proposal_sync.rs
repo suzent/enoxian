@@ -25,10 +25,10 @@ use libp2p::{PeerId, Stream, StreamProtocol};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::broadcast;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{debug, warn};
 
-use crate::control::MLS_REMOVED_KEY;
 use crate::proposal::store::ProposalStore;
 use crate::proposal::sync::ProposalBundle;
 use crate::state::AppState;
@@ -186,9 +186,47 @@ async fn read_msg<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Msg> {
 // ── Entry points (mirror sync::run_sync) ─────────────────────────────────────
 
 pub async fn run(peer_id: PeerId, stream: Stream, state: AppState, is_initiator: bool) {
-    if let Err(e) = run_inner(peer_id, stream, &state, is_initiator).await {
+    let mut events = state.events.subscribe();
+    let sync_peer = peer_id;
+    let result = tokio::select! {
+        result = run_inner(sync_peer, stream, &state, is_initiator) => result,
+        _ = wait_for_revocation(&state, &peer_id, &mut events) => {
+            Err(anyhow::anyhow!("peer removed during proposal sync"))
+        }
+    };
+    if let Err(e) = result {
         debug!("[proposal-sync] {peer_id}: {e}");
     }
+}
+
+async fn wait_for_revocation(
+    state: &AppState,
+    peer_id: &PeerId,
+    events: &mut broadcast::Receiver<crate::control::CircleEvent>,
+) {
+    let peer_id = peer_id.to_string();
+    loop {
+        if state.is_self_removed() || state.is_peer_removed(&peer_id) {
+            return;
+        }
+        match events.recv().await {
+            Ok(crate::control::CircleEvent::MemberRemoved { peer_id: removed })
+                if removed == peer_id || removed == state.peer_id =>
+            {
+                return;
+            }
+            Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+            Err(broadcast::error::RecvError::Closed) => return,
+        }
+    }
+}
+
+fn ensure_peer_authorized(state: &AppState, peer_id: &PeerId) -> Result<()> {
+    anyhow::ensure!(
+        !state.is_self_removed() && !state.is_peer_removed(&peer_id.to_string()),
+        "peer removed from circle"
+    );
+    Ok(())
 }
 
 async fn run_inner(
@@ -197,19 +235,9 @@ async fn run_inner(
     state: &AppState,
     is_initiator: bool,
 ) -> Result<()> {
-    // Same membership gate as CRDT sync: an evicted peer must not pull history.
-    {
-        use yrs::{Map, Transact};
-        let removed = state.control.get_or_insert_map(MLS_REMOVED_KEY);
-        let txn = state.control.transact();
-        if matches!(
-            removed.get(&txn, peer_id.to_string().as_str()),
-            Some(yrs::Out::Any(yrs::Any::String(_)))
-        ) {
-            warn!("[proposal-sync] rejected {peer_id}: removed from circle");
-            return Err(anyhow::anyhow!("peer removed from circle"));
-        }
-    }
+    // Rechecked between every exchange phase so an in-flight sync cannot keep
+    // transferring proposal manifests or blobs after membership is revoked.
+    ensure_peer_authorized(state, &peer_id)?;
 
     let store = ProposalStore::open(&state.workspace)?;
     let compat = stream.compat();
@@ -219,6 +247,7 @@ async fn run_inner(
     // deadlock-free (same ordering discipline as the CRDT sync handshake).
     let my_haves = local_haves(&store);
     let peer_haves = if is_initiator {
+        ensure_peer_authorized(state, &peer_id)?;
         write_msg(&mut tx, &Msg::Have(my_haves)).await?;
         match read_msg(&mut rx).await? {
             Msg::Have(h) => h,
@@ -229,13 +258,16 @@ async fn run_inner(
             Msg::Have(h) => h,
             _ => return Err(anyhow::anyhow!("expected HAVE")),
         };
+        ensure_peer_authorized(state, &peer_id)?;
         write_msg(&mut tx, &Msg::Have(local_haves(&store))).await?;
         h
     };
+    ensure_peer_authorized(state, &peer_id)?;
 
     // Decide what each side wants and exchange WANT, same ordering.
     let want = compute_wants(&local_haves(&store), &peer_haves);
     let peer_want = if is_initiator {
+        ensure_peer_authorized(state, &peer_id)?;
         write_msg(&mut tx, &Msg::Want(want.clone())).await?;
         match read_msg(&mut rx).await? {
             Msg::Want(w) => w,
@@ -246,13 +278,16 @@ async fn run_inner(
             Msg::Want(w) => w,
             _ => return Err(anyhow::anyhow!("expected WANT")),
         };
+        ensure_peer_authorized(state, &peer_id)?;
         write_msg(&mut tx, &Msg::Want(want.clone())).await?;
         w
     };
+    ensure_peer_authorized(state, &peer_id)?;
 
     // Send the bundles the peer asked for; receive the ones we asked for.
     let outgoing = bundles_for(&store, &peer_want);
     let incoming = if is_initiator {
+        ensure_peer_authorized(state, &peer_id)?;
         write_msg(&mut tx, &Msg::Bundles(outgoing)).await?;
         match read_msg(&mut rx).await? {
             Msg::Bundles(b) => b,
@@ -263,9 +298,11 @@ async fn run_inner(
             Msg::Bundles(b) => b,
             _ => return Err(anyhow::anyhow!("expected BUNDLES")),
         };
+        ensure_peer_authorized(state, &peer_id)?;
         write_msg(&mut tx, &Msg::Bundles(outgoing)).await?;
         b
     };
+    ensure_peer_authorized(state, &peer_id)?;
 
     let mut applied = 0usize;
     for bundle in &incoming {
@@ -297,6 +334,7 @@ async fn run_inner(
     // and revertible on peers that did not originate the change.
     let want_blobs = missing_blob_hashes(&store);
     let peer_want_blobs = if is_initiator {
+        ensure_peer_authorized(state, &peer_id)?;
         write_msg(&mut tx, &Msg::WantBlobs(want_blobs.clone())).await?;
         match read_msg(&mut rx).await? {
             Msg::WantBlobs(w) => w,
@@ -307,12 +345,15 @@ async fn run_inner(
             Msg::WantBlobs(w) => w,
             _ => return Err(anyhow::anyhow!("expected WANT_BLOBS")),
         };
+        ensure_peer_authorized(state, &peer_id)?;
         write_msg(&mut tx, &Msg::WantBlobs(want_blobs.clone())).await?;
         w
     };
+    ensure_peer_authorized(state, &peer_id)?;
 
     let outgoing_blobs = blob_payloads_for(&store, &peer_want_blobs);
     let incoming_blobs = if is_initiator {
+        ensure_peer_authorized(state, &peer_id)?;
         write_msg(&mut tx, &Msg::Blobs(outgoing_blobs)).await?;
         match read_msg(&mut rx).await? {
             Msg::Blobs(b) => b,
@@ -323,10 +364,12 @@ async fn run_inner(
             Msg::Blobs(b) => b,
             _ => return Err(anyhow::anyhow!("expected BLOBS")),
         };
+        ensure_peer_authorized(state, &peer_id)?;
         write_msg(&mut tx, &Msg::Blobs(outgoing_blobs)).await?;
         b
     };
 
+    ensure_peer_authorized(state, &peer_id)?;
     let applied_blobs = apply_blob_payloads(&store, &incoming_blobs)?;
     if applied > 0 || !peer_want.is_empty() {
         debug!(

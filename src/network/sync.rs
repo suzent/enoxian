@@ -27,6 +27,7 @@ use crate::state::AppState;
 pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/sync/1.0.0");
 const AWARENESS_PATH_PREFIX: &str = "\0awareness/";
 const DELETE_PATH_PREFIX: &str = "\0delete/";
+const REVOKED_PATH: &str = "\0revoked";
 const SESSION_PATH: &str = "\0session";
 const SESSION_HELLO_MAGIC: &[u8] = b"enoxian-sync-session-v2\0";
 
@@ -34,12 +35,15 @@ const SESSION_HELLO_MAGIC: &[u8] = b"enoxian-sync-session-v2\0";
 struct PeerSession {
     circle_id: Option<String>,
     session_id: u64,
+    you_are_removed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SessionHello {
     circle_id: String,
     session_id: u64,
+    #[serde(default)]
+    you_are_removed: bool,
 }
 
 // ── Wire helpers ──────────────────────────────────────────────────────────────
@@ -115,10 +119,11 @@ fn encode_sync(msg: Message) -> Vec<u8> {
     enc.to_vec()
 }
 
-fn encode_session_hello(state: &AppState) -> Result<Vec<u8>> {
+fn encode_session_hello(state: &AppState, you_are_removed: bool) -> Result<Vec<u8>> {
     let hello = SessionHello {
         circle_id: state.circle_id.clone(),
         session_id: state.session_id,
+        you_are_removed,
     };
     let mut bytes = Vec::with_capacity(SESSION_HELLO_MAGIC.len() + 96);
     bytes.extend_from_slice(SESSION_HELLO_MAGIC);
@@ -133,6 +138,7 @@ fn decode_session_hello(data: &[u8]) -> Result<PeerSession> {
         return Ok(PeerSession {
             circle_id: Some(hello.circle_id),
             session_id: hello.session_id,
+            you_are_removed: hello.you_are_removed,
         });
     }
 
@@ -141,14 +147,19 @@ fn decode_session_hello(data: &[u8]) -> Result<PeerSession> {
         return Ok(PeerSession {
             circle_id: None,
             session_id: u64::from_be_bytes(data.try_into().unwrap()),
+            you_are_removed: false,
         });
     }
 
     Err(anyhow::anyhow!("invalid sync session frame"))
 }
 
-async fn write_session_hello<W: AsyncWriteExt + Unpin>(w: &mut W, state: &AppState) -> Result<()> {
-    let hello = encode_session_hello(state)?;
+async fn write_session_hello<W: AsyncWriteExt + Unpin>(
+    w: &mut W,
+    state: &AppState,
+    you_are_removed: bool,
+) -> Result<()> {
+    let hello = encode_session_hello(state, you_are_removed)?;
     write_frame(w, SESSION_PATH, &hello).await
 }
 
@@ -171,11 +182,16 @@ enum IncomingEvent {
     Awareness { path: String, data: Vec<u8> },
     /// Peer deleted a file doc.
     Delete { path: String },
+    /// The remote peer has revoked this device's Circle membership.
+    Revoked,
     /// Stream closed
     Closed,
 }
 
 fn parse_frame(path: String, data: &[u8]) -> IncomingEvent {
+    if path == REVOKED_PATH {
+        return IncomingEvent::Revoked;
+    }
     if let Some(doc_path) = path.strip_prefix(DELETE_PATH_PREFIX) {
         return IncomingEvent::Delete {
             path: doc_path.to_string(),
@@ -319,13 +335,25 @@ async fn write_conflict_copy(state: &AppState, rel_path: &str, content: &str) {
 
 // ── Main entry point ──────────────────────────────────────────────────────────
 
-fn is_peer_removed(state: &AppState, peer_id: &PeerId) -> bool {
-    let removed_map = state.control.get_or_insert_map(MLS_REMOVED_KEY);
-    let txn = state.control.transact();
-    matches!(
-        removed_map.get(&txn, peer_id.to_string().as_str()),
-        Some(Out::Any(Any::String(_)))
-    )
+fn sync_revoked(state: &AppState, peer_id: &PeerId) -> bool {
+    state.is_self_removed() || state.is_peer_removed(&peer_id.to_string())
+}
+
+fn mark_self_removed(state: &AppState) {
+    use crate::control::{CircleEvent, MEMBER_LIST_KEY};
+
+    let removed = state.control.get_or_insert_map(MLS_REMOVED_KEY);
+    let members = state.control.get_or_insert_map(MEMBER_LIST_KEY);
+    let removed_at = chrono::Utc::now().to_rfc3339();
+    {
+        let mut txn = state.control.transact_mut();
+        removed.insert(&mut txn, state.peer_id.as_str(), removed_at.as_str());
+        members.remove(&mut txn, state.peer_id.as_str());
+    }
+    crate::presence::write_offline(state, &state.agent_id);
+    let _ = state.events.send(CircleEvent::MemberRemoved {
+        peer_id: state.peer_id.clone(),
+    });
 }
 
 pub async fn run_sync(peer_id: PeerId, stream: Stream, state: AppState, is_initiator: bool) {
@@ -359,13 +387,9 @@ async fn sync_inner(
     // The transport PSK stays stable, so this persisted tombstone is the
     // authorization boundary. It is checked again during continuous exchange
     // so removal also closes streams that were already established.
-    if is_peer_removed(state, &peer_id) {
-        warn!("[sync] rejected {peer_id}: explicitly removed from this circle");
-        return Err(anyhow::anyhow!("peer rejected: removed from circle"));
-    }
-
     let compat = stream.compat();
     let (mut rx, mut tx) = tokio::io::split(compat);
+    let remote_is_removed = state.is_peer_removed(&peer_id.to_string());
 
     let my_paths = all_doc_paths(state);
     let mut all_awareness_rx = state.all_awareness_updates.subscribe();
@@ -382,11 +406,21 @@ async fn sync_inner(
     let peer_session: PeerSession;
 
     if is_initiator {
-        write_session_hello(&mut tx, state).await?;
+        write_session_hello(&mut tx, state, remote_is_removed).await?;
         peer_session = read_session_hello(&mut rx).await?;
     } else {
         peer_session = read_session_hello(&mut rx).await?;
-        write_session_hello(&mut tx, state).await?;
+        write_session_hello(&mut tx, state, remote_is_removed).await?;
+    }
+
+    if peer_session.you_are_removed {
+        mark_self_removed(state);
+        warn!("[sync] this device was removed from circle {}", state.circle_id);
+        return Err(anyhow::anyhow!("this device was removed from circle"));
+    }
+    if remote_is_removed || state.is_self_removed() {
+        warn!("[sync] rejected {peer_id}: explicitly removed from this circle");
+        return Err(anyhow::anyhow!("peer rejected: removed from circle"));
     }
 
     if let Some(remote_circle_id) = &peer_session.circle_id {
@@ -565,8 +599,12 @@ async fn sync_inner(
 
     tracing::info!("[sync] handshake complete with {peer_id}");
 
-    if is_peer_removed(state, &peer_id) {
+    if state.is_peer_removed(&peer_id.to_string()) {
+        let _ = write_frame(&mut tx, REVOKED_PATH, &[]).await;
         return Err(anyhow::anyhow!("peer removed during sync handshake"));
+    }
+    if state.is_self_removed() {
+        return Err(anyhow::anyhow!("this device was removed during sync handshake"));
     }
 
     // Subscribe to awareness before the handshake, then flush anything that
@@ -584,7 +622,10 @@ async fn sync_inner(
     // reader. Both sides do this, so convergence is guaranteed regardless of the
     // initial asymmetry.
     for path in all_doc_paths(state) {
-        if is_peer_removed(state, &peer_id) {
+        if sync_revoked(state, &peer_id) {
+            if state.is_peer_removed(&peer_id.to_string()) {
+                let _ = write_frame(&mut tx, REVOKED_PATH, &[]).await;
+            }
             return Err(anyhow::anyhow!("peer removed during sync catch-up"));
         }
         let msg = full_state_update(state, &path);
@@ -633,7 +674,7 @@ async fn sync_inner(
     let remote_peer_id = peer_id.to_string();
 
     loop {
-        if is_peer_removed(state, &peer_id) {
+        if sync_revoked(state, &peer_id) {
             warn!("[sync] closing stream to removed peer {peer_id}");
             break;
         }
@@ -643,7 +684,10 @@ async fn sync_inner(
                     event,
                     Ok(crate::control::CircleEvent::MemberRemoved { peer_id: ref removed })
                         if removed == &remote_peer_id
-                ) || is_peer_removed(state, &peer_id) {
+                ) || sync_revoked(state, &peer_id) {
+                    if state.is_peer_removed(&peer_id.to_string()) {
+                        let _ = write_frame(&mut tx, REVOKED_PATH, &[]).await;
+                    }
                     warn!("[sync] closing stream to removed peer {peer_id}");
                     break;
                 }
@@ -651,7 +695,7 @@ async fn sync_inner(
 
             // ── Incoming from peer ──────────────────────────────────────────
             Some(event) = evt_rx.recv() => {
-                if is_peer_removed(state, &peer_id) {
+                if sync_revoked(state, &peer_id) {
                     warn!("[sync] discarded frame from removed peer {peer_id}");
                     break;
                 }
@@ -673,13 +717,21 @@ async fn sync_inner(
                     IncomingEvent::Delete { path } => {
                         apply_delete(state, &path).await;
                     }
+                    IncomingEvent::Revoked => {
+                        mark_self_removed(state);
+                        warn!("[sync] membership revoked by {peer_id}");
+                        break;
+                    }
                     IncomingEvent::Closed => break,
                 }
             }
 
             // ── Outgoing local updates ──────────────────────────────────────
             result = all_rx.recv() => {
-                if is_peer_removed(state, &peer_id) {
+                if sync_revoked(state, &peer_id) {
+                    if state.is_peer_removed(&peer_id.to_string()) {
+                        let _ = write_frame(&mut tx, REVOKED_PATH, &[]).await;
+                    }
                     warn!("[sync] stopped forwarding updates to removed peer {peer_id}");
                     break;
                 }
@@ -704,7 +756,7 @@ async fn sync_inner(
 
             // ── Outgoing local awareness updates ───────────────────────────
             result = all_awareness_rx.recv() => {
-                if is_peer_removed(state, &peer_id) {
+                if sync_revoked(state, &peer_id) {
                     break;
                 }
                 match result {
@@ -722,7 +774,7 @@ async fn sync_inner(
 
             // ── Outgoing local file deletions ─────────────────────────────
             result = all_deletes_rx.recv() => {
-                if is_peer_removed(state, &peer_id) {
+                if sync_revoked(state, &peer_id) {
                     break;
                 }
                 match result {
@@ -754,6 +806,7 @@ mod tests {
             PeerSession {
                 circle_id: None,
                 session_id,
+                you_are_removed: false,
             }
         );
     }
@@ -763,6 +816,7 @@ mod tests {
         let hello = SessionHello {
             circle_id: "circle-123".to_string(),
             session_id: 99,
+            you_are_removed: true,
         };
         let mut bytes = SESSION_HELLO_MAGIC.to_vec();
         bytes.extend_from_slice(&serde_json::to_vec(&hello).unwrap());
@@ -772,7 +826,16 @@ mod tests {
             PeerSession {
                 circle_id: Some("circle-123".to_string()),
                 session_id: 99,
+                you_are_removed: true,
             }
         );
+    }
+
+    #[test]
+    fn parses_revocation_frame() {
+        assert!(matches!(
+            parse_frame(REVOKED_PATH.to_string(), &[]),
+            IncomingEvent::Revoked
+        ));
     }
 }
