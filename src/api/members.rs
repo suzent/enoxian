@@ -184,7 +184,7 @@ pub async fn remove_member(
         epoch: u64,
     }
     let mls_out: Option<MlsRemoveOut> = {
-        let mut mls_locked = state.mls.blocking_lock();
+        let mut mls_locked = state.mls.lock().await;
         // Safety: identity lives inside the MutexGuard; both are only accessed
         // within this block, so the raw-pointer cast is safe.
         let identity_ptr = &mls_locked.identity as *const _;
@@ -238,7 +238,7 @@ pub async fn remove_member(
         }
 
         // Persist the updated MLS group to disk.
-        let mls_locked = state.mls.blocking_lock();
+        let mls_locked = state.mls.lock().await;
         if let Some(group) = &mls_locked.group {
             let _ = group.save(&mls_locked.identity, &state.circle_dir);
         }
@@ -500,7 +500,7 @@ pub async fn approve_member(
 
     // Add MLS member
     let (commit_bytes, welcome_bytes, ratchet_tree_bytes) = {
-        let mut mls_locked = state.mls.blocking_lock();
+        let mut mls_locked = state.mls.lock().await;
         let identity_ptr = &mls_locked.identity as *const _;
         let group = match mls_locked.group.as_mut() {
             Some(g) => g,
@@ -538,7 +538,7 @@ pub async fn approve_member(
     {
         let commits_arr = state.control.get_or_insert_array(MLS_COMMITS_KEY);
         let epoch = {
-            let mls_locked = state.mls.blocking_lock();
+            let mls_locked = state.mls.lock().await;
             mls_locked.group.as_ref().map(|g| g.epoch()).unwrap_or(0)
         };
         let entry = MlsCommitEntry {
@@ -599,7 +599,7 @@ pub async fn approve_member(
 
     // Save MLS group
     {
-        let mls_locked = state.mls.blocking_lock();
+        let mls_locked = state.mls.lock().await;
         if let Some(group) = &mls_locked.group {
             let _ = group.save(&mls_locked.identity, &state.circle_dir);
         }
