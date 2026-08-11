@@ -34,7 +34,7 @@
 //! encryption is M17; until then this is a known at-rest exposure, documented in
 //! `docs/concepts/security.md`.
 
-use crate::control::{CHAT_KEY, MEMBER_LIST_KEY, TASKS_KEY};
+use crate::control::{CHAT_KEY, MEMBER_LIST_KEY, MLS_REMOVED_KEY, TASKS_KEY};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use yrs::{Any, Array, Map, Out, Transact};
@@ -61,6 +61,10 @@ struct ControlSnapshot {
     /// peer_id → member entry JSON string.
     #[serde(default)]
     members: std::collections::BTreeMap<String, String>,
+    /// peer_id -> removal timestamp. This authorization boundary must survive
+    /// restarts while the transport PSK remains stable.
+    #[serde(default)]
+    removed: std::collections::BTreeMap<String, String>,
 }
 
 /// A `ChatMessage` is stored as a JSON string in the array; we only need its
@@ -86,6 +90,7 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
     let chat_arr = control.get_or_insert_array(CHAT_KEY);
     let tasks_map = control.get_or_insert_map(TASKS_KEY);
     let members_map = control.get_or_insert_map(MEMBER_LIST_KEY);
+    let removed_map = control.get_or_insert_map(MLS_REMOVED_KEY);
     let snap = {
         let txn = control.transact();
 
@@ -107,8 +112,14 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
 
         let tasks = map_strings(&tasks_map, &txn);
         let members = map_strings(&members_map, &txn);
+        let removed = map_strings(&removed_map, &txn);
 
-        ControlSnapshot { chat, tasks, members }
+        ControlSnapshot {
+            chat,
+            tasks,
+            members,
+            removed,
+        }
     };
 
     let json = serde_json::to_string(&snap)?;
@@ -145,6 +156,7 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
     // to create the type, which deadlocks under a held transaction).
     let tasks = control.get_or_insert_map(TASKS_KEY);
     let members = control.get_or_insert_map(MEMBER_LIST_KEY);
+    let removed = control.get_or_insert_map(MLS_REMOVED_KEY);
     let chat = control.get_or_insert_array(CHAT_KEY);
 
     // One write transaction for everything, avoiding any read/write interleave.
@@ -156,6 +168,9 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
         for (k, v) in &snap.members {
             members.insert(&mut txn, k.as_str(), v.as_str());
         }
+        for (k, v) in &snap.removed {
+            removed.insert(&mut txn, k.as_str(), v.as_str());
+        }
         // Chat: only seed if the live array is empty. If a peer already re-synced
         // the history, don't append a second copy on top of it.
         if chat.len(&txn) == 0 && !snap.chat.is_empty() {
@@ -166,8 +181,11 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
     }
 
     tracing::info!(
-        "[control] restored {} chat, {} tasks, {} members from disk",
-        snap.chat.len(), snap.tasks.len(), snap.members.len()
+        "[control] restored {} chat, {} tasks, {} members, {} removals from disk",
+        snap.chat.len(),
+        snap.tasks.len(),
+        snap.members.len(),
+        snap.removed.len()
     );
     Ok(())
 }
@@ -216,17 +234,20 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         let now = chrono::Utc::now().timestamp();
 
-        // Source doc with fresh + stale chat, a task, a member.
+        // Source doc with fresh + stale chat, a task, a member, and an
+        // authorization tombstone.
         let src = Doc::new();
         {
             let chat = src.get_or_insert_array(CHAT_KEY);
             let tasks = src.get_or_insert_map(TASKS_KEY);
             let members = src.get_or_insert_map(MEMBER_LIST_KEY);
+            let removed = src.get_or_insert_map(MLS_REMOVED_KEY);
             let mut txn = src.transact_mut();
             chat.push_back(&mut txn, Any::String(msg("fresh", now).as_str().into()));
             chat.push_back(&mut txn, Any::String(msg("stale", now - 40 * 86_400).as_str().into()));
             tasks.insert(&mut txn, "t1", r#"{"task_id":"t1"}"#);
             members.insert(&mut txn, "p1", r#"{"peer_id":"p1"}"#);
+            removed.insert(&mut txn, "removed-peer", "2026-08-11T00:00:00Z");
         }
         save(&tmp, &src).unwrap();
 
@@ -238,6 +259,7 @@ mod tests {
         let chat = dst.get_or_insert_array(CHAT_KEY);
         let tasks = dst.get_or_insert_map(TASKS_KEY);
         let members = dst.get_or_insert_map(MEMBER_LIST_KEY);
+        let removed = dst.get_or_insert_map(MLS_REMOVED_KEY);
         let txn = dst.transact();
         // Only the fresh message survived the 30-day window.
         assert_eq!(chat.len(&txn), 1);
@@ -248,6 +270,7 @@ mod tests {
         }
         assert_eq!(tasks.len(&txn), 1);
         assert_eq!(members.len(&txn), 1);
+        assert_eq!(removed.len(&txn), 1);
 
         std::fs::remove_dir_all(&tmp).ok();
     }

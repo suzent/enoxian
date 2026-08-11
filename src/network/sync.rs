@@ -319,6 +319,15 @@ async fn write_conflict_copy(state: &AppState, rel_path: &str, content: &str) {
 
 // ── Main entry point ──────────────────────────────────────────────────────────
 
+fn is_peer_removed(state: &AppState, peer_id: &PeerId) -> bool {
+    let removed_map = state.control.get_or_insert_map(MLS_REMOVED_KEY);
+    let txn = state.control.transact();
+    matches!(
+        removed_map.get(&txn, peer_id.to_string().as_str()),
+        Some(Out::Any(Any::String(_)))
+    )
+}
+
 pub async fn run_sync(peer_id: PeerId, stream: Stream, state: AppState, is_initiator: bool) {
     if let Err(e) = sync_inner(peer_id, stream, &state, is_initiator).await {
         debug!("[sync] {peer_id}: {e}");
@@ -347,32 +356,12 @@ async fn sync_inner(
     //   explicitly evicted via remove_member appear here.  Everyone else — fresh
     //   joiners, pending peers, members — is correctly allowed through.
     //
-    // Why PSK rotation is still the primary barrier:
-    //
-    //   After remove_member, the admin rotates the PSK.  The evicted peer holds
-    //   the old PSK and fails the pnet XSalsa20 handshake on reconnect — they
-    //   never reach this function.  The tombstone gate closes the narrow window
-    //   between "entry removed from CRDT" and "PSK rotation completes".
-    //
-    // Persistence note:
-    //
-    //   The control doc is not persisted to disk; the tombstone is only live in
-    //   the current daemon session.  This is safe because:
-    //   - After admin restart the daemon loads the NEW PSK from config.toml.
-    //   - The evicted peer still has the OLD PSK → pnet handshake fails → they
-    //     cannot reach sync_inner even before the tombstone is re-synced.
-    {
-        let peer_str = peer_id.to_string();
-        let removed_map = state.control.get_or_insert_map(MLS_REMOVED_KEY);
-        let txn = state.control.transact();
-        let is_removed = matches!(
-            removed_map.get(&txn, peer_str.as_str()),
-            Some(Out::Any(Any::String(_)))
-        );
-        if is_removed {
-            warn!("[sync] rejected {peer_id}: explicitly removed from this circle");
-            return Err(anyhow::anyhow!("peer rejected: removed from circle"));
-        }
+    // The transport PSK stays stable, so this persisted tombstone is the
+    // authorization boundary. It is checked again during continuous exchange
+    // so removal also closes streams that were already established.
+    if is_peer_removed(state, &peer_id) {
+        warn!("[sync] rejected {peer_id}: explicitly removed from this circle");
+        return Err(anyhow::anyhow!("peer rejected: removed from circle"));
     }
 
     let compat = stream.compat();
@@ -576,6 +565,10 @@ async fn sync_inner(
 
     tracing::info!("[sync] handshake complete with {peer_id}");
 
+    if is_peer_removed(state, &peer_id) {
+        return Err(anyhow::anyhow!("peer removed during sync handshake"));
+    }
+
     // Subscribe to awareness before the handshake, then flush anything that
     // happened while CRDT/session/conflict setup was running. Otherwise cursor
     // frames produced during the handshake are lost because awareness is
@@ -591,6 +584,9 @@ async fn sync_inner(
     // reader. Both sides do this, so convergence is guaranteed regardless of the
     // initial asymmetry.
     for path in all_doc_paths(state) {
+        if is_peer_removed(state, &peer_id) {
+            return Err(anyhow::anyhow!("peer removed during sync catch-up"));
+        }
         let msg = full_state_update(state, &path);
         write_frame(&mut tx, &path, &msg).await?;
     }
@@ -633,11 +629,32 @@ async fn sync_inner(
 
     let mut all_rx = state.all_updates.subscribe();
     let mut all_deletes_rx = state.all_deletes.subscribe();
+    let mut circle_events_rx = state.events.subscribe();
+    let remote_peer_id = peer_id.to_string();
 
     loop {
+        if is_peer_removed(state, &peer_id) {
+            warn!("[sync] closing stream to removed peer {peer_id}");
+            break;
+        }
         tokio::select! {
+            event = circle_events_rx.recv() => {
+                if matches!(
+                    event,
+                    Ok(crate::control::CircleEvent::MemberRemoved { peer_id: ref removed })
+                        if removed == &remote_peer_id
+                ) || is_peer_removed(state, &peer_id) {
+                    warn!("[sync] closing stream to removed peer {peer_id}");
+                    break;
+                }
+            }
+
             // ── Incoming from peer ──────────────────────────────────────────
             Some(event) = evt_rx.recv() => {
+                if is_peer_removed(state, &peer_id) {
+                    warn!("[sync] discarded frame from removed peer {peer_id}");
+                    break;
+                }
                 match event {
                     IncomingEvent::Apply { path, raw_update } => {
                         apply_update(state, &path, &raw_update, peer_id);
@@ -662,6 +679,10 @@ async fn sync_inner(
 
             // ── Outgoing local updates ──────────────────────────────────────
             result = all_rx.recv() => {
+                if is_peer_removed(state, &peer_id) {
+                    warn!("[sync] stopped forwarding updates to removed peer {peer_id}");
+                    break;
+                }
                 match result {
                     Ok((path, raw)) => {
                         let msg = encode_sync(Message::Sync(SyncMessage::Update(raw)));
@@ -683,6 +704,9 @@ async fn sync_inner(
 
             // ── Outgoing local awareness updates ───────────────────────────
             result = all_awareness_rx.recv() => {
+                if is_peer_removed(state, &peer_id) {
+                    break;
+                }
                 match result {
                     Ok((path, data)) => {
                         write_awareness_frame(&mut tx, &path, &data).await?;
@@ -698,6 +722,9 @@ async fn sync_inner(
 
             // ── Outgoing local file deletions ─────────────────────────────
             result = all_deletes_rx.recv() => {
+                if is_peer_removed(state, &peer_id) {
+                    break;
+                }
                 match result {
                     Ok(path) => {
                         let path = format!("{DELETE_PATH_PREFIX}{path}");
