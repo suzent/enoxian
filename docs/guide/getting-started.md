@@ -26,7 +26,7 @@ installation.
 brew install suzent/tap/enoxian
 ```
 
-Pin a version with `ENOXIAN_VERSION=v0.2.0` (or `$env:ENOXIAN_VERSION`), or set
+Pin a version with `ENOXIAN_VERSION=v0.2.1` (or `$env:ENOXIAN_VERSION`), or set
 `ENOXIAN_BIN_DIR` to change the install directory. To build from source instead,
 see below.
 

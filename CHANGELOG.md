@@ -37,6 +37,8 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-08-16
+
 ### Added
 
 - Proposal sync now fetches missing content-addressed blobs after proposal
@@ -47,6 +49,21 @@ appended automatically. Keep the section for a version accurate before tagging.
 - Release automation now gates tags on version/CHANGELOG consistency, Rust and
   frontend checks, builds all platform artifacts before publishing, and can
   update an optional Homebrew tap.
+- One-click installers now select a user-writable location, support pinned
+  versions and custom destinations, test binaries before replacement, roll
+  back failed upgrades, and give actionable PATH and daemon guidance.
+
+### Changed
+
+- Release workflows now use immutable Action commits, least-privilege job
+  permissions, and Node.js 22; dependency updates are monitored by Dependabot.
+
+### Security
+
+- Updated Rust networking/runtime transitive dependencies and the frontend
+  build toolchain to versions containing upstream security fixes.
+- Added a private vulnerability reporting policy and contributor guidance for
+  keeping credentials and local Circle state out of commits.
 
 ## [0.2.0] — 2026-07-05
 
@@ -104,6 +121,7 @@ git history and `docs/plan/archived/milestones.md` for the M1–M14 feature set
 (P2P sync, presence/tasks/locks/chat, members + MLS membership, WAN bootstrap,
 and the local workspace proposal layer).
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/suzent/enoxian/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/suzent/enoxian/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/suzent/enoxian/releases/tag/v0.1.4
