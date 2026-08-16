@@ -1,0 +1,30 @@
+[advisories]
+# RUSTSEC-2026-0118 requires Hickory DNSSEC features; they are not enabled.
+# RUSTSEC-2026-0119 is constrained by libp2p 0.56.0, the latest stable release.
+# Re-check and remove both when libp2p 0.57 reaches crates.io.
+#
+# The libcrux AES/ChaCha crates are optional lockfile entries with no path in
+# `cargo tree --target all`. The SHA3/secrets entries come from HPKE's
+# experimental suite support; enoxian selects only X25519/AES128-GCM/SHA256.
+# Remove these exceptions when stable OpenMLS adopts hpke-rs 0.7.
+ignore = [
+  "RUSTSEC-2026-0118",
+  "RUSTSEC-2026-0119",
+  "RUSTSEC-2026-0124",
+  "RUSTSEC-2026-0207",
+  "RUSTSEC-2026-0208",
+  "RUSTSEC-2026-0209",
+  "RUSTSEC-2026-0211",
+  "RUSTSEC-2026-0212",
+]
+informational_warnings = ["unmaintained"]
+
+[output]
+deny = []
+format = "terminal"
+quiet = false
+show_tree = true
+
+[yanked]
+enabled = true
+update_index = true

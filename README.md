@@ -37,14 +37,25 @@ diffs.
 curl -fsSL https://github.com/suzent/enoxian/releases/latest/download/install.sh | sh
 ```
 
+The installer chooses the matching Linux/macOS archive and installs to a
+writable user location without requiring `sudo`. To pin a version or location:
+
+```sh
+curl -fsSL https://github.com/suzent/enoxian/releases/latest/download/install.sh | \
+  sh -s -- --version v0.2.1 --bin-dir "$HOME/.local/bin"
+```
+
 ### Windows PowerShell
 
 ```powershell
 irm https://github.com/suzent/enoxian/releases/latest/download/install.ps1 | iex
 ```
 
-Release installers verify the downloaded binary against the published
-`SHA256SUMS` before replacing anything. See
+PowerShell installs to `%LOCALAPPDATA%\enoxian\bin` and adds it to the user
+`PATH`. To pin a version, set `$env:ENOXIAN_VERSION = 'v0.2.1'` first.
+
+Release installers verify checksums and the downloaded binaries before making
+an atomic, rollback-protected replacement. See
 [docs/guide/releasing.md](docs/guide/releasing.md) for the release process.
 
 ### From Source
@@ -180,7 +191,7 @@ For a fuller walkthrough, start with
 
 ## Current Status
 
-The current package version is **0.2.0**.
+The current package version is **0.2.1**.
 
 | Area | Status |
 |------|--------|

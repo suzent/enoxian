@@ -13,10 +13,12 @@ them independently:
 - `Rust tests (macos-latest)`.
 - `Rust tests (windows-latest)`.
 - `Frontend production build`.
+- `Dependency security audit`.
+- `Installer syntax`.
 
-Require all five checks on `main`, require pull requests, and block force
+Require all seven checks on `main`, require pull requests, and block force
 pushes. A tag push does not inherit branch CI, so the Release workflow repeats
-the essential release gate before packaging.
+the essential release gate and dependency audit before packaging.
 
 ## Release workflow
 
