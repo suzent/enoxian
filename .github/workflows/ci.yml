@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "feat/**", "fix/**", "chore/**", "codex/**"]
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -23,6 +23,9 @@ jobs:
   dependency-audit:
     name: Dependency security audit
     runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
