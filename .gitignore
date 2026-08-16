@@ -4,6 +4,9 @@
 # Secrets
 .env
 
+# Private research materials
+/docs/paper/
+
 # Frontend
 /frontend/node_modules
 /frontend/dist
