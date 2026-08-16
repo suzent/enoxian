@@ -46,8 +46,8 @@ uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 hex = "0.4"
 base64 = "0.22"
-sha2 = "0.10"
-hkdf = "0.12"
+sha2 = "0.11"
+hkdf = "0.13"
 bip39 = "2"
 
 # M14 — line-level three-way merge for proposal revert/reject
