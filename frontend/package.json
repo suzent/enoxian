@@ -22,7 +22,7 @@
     "lib0": "^0.2.99",
     "lucide-react": "^1.17.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "react-dom": "^19.2.8",
     "three": "^0.169.0",
     "y-codemirror.next": "^0.3.5",
     "y-protocols": "^1.0.6",
@@ -30,7 +30,7 @@
   },
   "devDependencies": {
     "@types/react": "^18.3.11",
-    "@types/react-dom": "^18.3.1",
+    "@types/react-dom": "^19.2.4",
     "@types/three": "^0.169.0",
     "@vitejs/plugin-react": "^6.0.1",
     "autoprefixer": "^10.4.20",
