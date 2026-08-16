@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 pub async fn run(client: &reqwest::Client, daemon_base: &str, json: bool) -> Result<()> {
-    let url = format!("{}/circles", daemon_base);
+    let url = format!("{daemon_base}/circles");
     match client.get(&url).send().await {
         Ok(resp) => {
             let circles: serde_json::Value = resp.json().await?;
@@ -25,11 +25,16 @@ pub async fn run(client: &reqwest::Client, daemon_base: &str, json: bool) -> Res
             // Daemon not running — fall back to local config
             let configs = crate::config::load_all()?;
             if json {
-                let v: Vec<_> = configs.iter().map(|c| serde_json::json!({
-                    "circle_id": c.circle_id,
-                    "circle_name": c.circle_name,
-                    "disabled": c.disabled,
-                })).collect();
+                let v: Vec<_> = configs
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "circle_id": c.circle_id,
+                            "circle_name": c.circle_name,
+                            "disabled": c.disabled,
+                        })
+                    })
+                    .collect();
                 println!("{}", serde_json::to_string_pretty(&v)?);
             } else if configs.is_empty() {
                 println!("No circles found — run `enox init` to create one.");

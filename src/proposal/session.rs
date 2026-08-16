@@ -139,7 +139,10 @@ mod tests {
 
     #[test]
     fn mode_confidence_mapping() {
-        assert_eq!(SessionMode::Ambient.default_confidence(), Confidence::Unknown);
+        assert_eq!(
+            SessionMode::Ambient.default_confidence(),
+            Confidence::Unknown
+        );
         assert_eq!(
             SessionMode::ManagedProcess.default_confidence(),
             Confidence::VerifiedProcess

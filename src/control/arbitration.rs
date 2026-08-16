@@ -1,13 +1,10 @@
-use std::collections::HashMap;
-use yrs::{Array, ArrayRef, ReadTxn, Any, Out};
 use crate::control::{LockAction, LockEntry};
+use std::collections::HashMap;
+use yrs::{Any, Array, ArrayRef, Out, ReadTxn};
 
 /// Replay the lock_log and return the current holder per path.
 /// Deterministic: first unmatched acquire = holder.
-pub fn compute_lock_state<T: ReadTxn>(
-    lock_log: &ArrayRef,
-    txn: &T,
-) -> HashMap<String, String> {
+pub fn compute_lock_state<T: ReadTxn>(lock_log: &ArrayRef, txn: &T) -> HashMap<String, String> {
     let mut holders: HashMap<String, String> = HashMap::new();
 
     for item in lock_log.iter(txn) {

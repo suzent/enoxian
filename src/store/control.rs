@@ -244,7 +244,10 @@ mod tests {
             let removed = src.get_or_insert_map(MLS_REMOVED_KEY);
             let mut txn = src.transact_mut();
             chat.push_back(&mut txn, Any::String(msg("fresh", now).as_str().into()));
-            chat.push_back(&mut txn, Any::String(msg("stale", now - 40 * 86_400).as_str().into()));
+            chat.push_back(
+                &mut txn,
+                Any::String(msg("stale", now - 40 * 86_400).as_str().into()),
+            );
             tasks.insert(&mut txn, "t1", r#"{"task_id":"t1"}"#);
             members.insert(&mut txn, "p1", r#"{"peer_id":"p1"}"#);
             removed.insert(&mut txn, "removed-peer", "2026-08-11T00:00:00Z");

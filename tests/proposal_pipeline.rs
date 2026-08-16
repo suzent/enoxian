@@ -45,7 +45,13 @@ fn snapshot_workspace(workspace: &Path, blobs: &BlobStore) -> Snapshot {
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
-            files.insert(rel, FileEntry { hash, size: data.len() as u64 });
+            files.insert(
+                rel,
+                FileEntry {
+                    hash,
+                    size: data.len() as u64,
+                },
+            );
         }
     }
     Snapshot::new(files)
@@ -106,8 +112,14 @@ fn ambient_pipeline_end_to_end() {
 
     // 5. Policy: unattributed work stays pending even with default settings.
     let policy = AcceptancePolicy::default();
-    assert_eq!(policy.decide(TriggerOrigin::Unattributed), AcceptAction::PendingReview);
-    assert_eq!(policy.decide(TriggerOrigin::LocalUser), AcceptAction::AutoAccept);
+    assert_eq!(
+        policy.decide(TriggerOrigin::Unattributed),
+        AcceptAction::PendingReview
+    );
+    assert_eq!(
+        policy.decide(TriggerOrigin::LocalUser),
+        AcceptAction::AutoAccept
+    );
 
     // 6. Merge: canonical state unchanged since S0 -> clean.
     assert_eq!(three_way(&s0, &s0, &s1), MergeOutcome::Clean);
@@ -125,7 +137,9 @@ fn ambient_pipeline_end_to_end() {
     let main = Snapshot::new(concurrent);
     assert_eq!(
         three_way(&s0, &main, &s1),
-        MergeOutcome::Conflicted { paths: vec!["edited.txt".into()] }
+        MergeOutcome::Conflicted {
+            paths: vec!["edited.txt".into()]
+        }
     );
 
     // 8. Revert: restore the edited file from its S0 blob. This is the undo

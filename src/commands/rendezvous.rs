@@ -29,9 +29,12 @@ pub async fn resolve(input: &str, client: &reqwest::Client) -> Result<String> {
         bail!("bootstrap server at {url} returned {}", resp.status());
     }
 
-    let json: serde_json::Value = resp.json().await
+    let json: serde_json::Value = resp
+        .json()
+        .await
         .context("bootstrap server returned invalid JSON")?;
-    let peer_id = json["peer_id"].as_str()
+    let peer_id = json["peer_id"]
+        .as_str()
         .context("bootstrap server response missing 'peer_id' field")?;
 
     // Use /dns4/ for hostnames so the address stays valid if the IP changes.
@@ -95,9 +98,12 @@ pub async fn resolve_relay(input: &str, client: &reqwest::Client) -> Result<Stri
         bail!("bootstrap server at {url} returned {}", resp.status());
     }
 
-    let json: serde_json::Value = resp.json().await
+    let json: serde_json::Value = resp
+        .json()
+        .await
         .context("bootstrap server returned invalid JSON")?;
-    let peer_id = json["peer_id"].as_str()
+    let peer_id = json["peer_id"]
+        .as_str()
         .context("bootstrap server response missing 'peer_id' field")?;
 
     if host.parse::<std::net::Ipv4Addr>().is_ok() {

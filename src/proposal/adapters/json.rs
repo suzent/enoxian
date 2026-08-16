@@ -64,9 +64,19 @@ fn walk(path: &str, b: &Value, a: &Value, out: &mut Vec<DiffEntry>) {
     }
 }
 
-fn push(out: &mut Vec<DiffEntry>, path: &str, change: ObjChange, before: Option<&Value>, after: Option<&Value>) {
+fn push(
+    out: &mut Vec<DiffEntry>,
+    path: &str,
+    change: ObjChange,
+    before: Option<&Value>,
+    after: Option<&Value>,
+) {
     out.push(DiffEntry::ObjectPath {
-        path: if path.is_empty() { "$".to_string() } else { path.to_string() },
+        path: if path.is_empty() {
+            "$".to_string()
+        } else {
+            path.to_string()
+        },
         change,
         before: before.map(compact),
         after: after.map(compact),
@@ -74,7 +84,11 @@ fn push(out: &mut Vec<DiffEntry>, path: &str, change: ObjChange, before: Option<
 }
 
 fn join(path: &str, key: &str) -> String {
-    if path.is_empty() { key.to_string() } else { format!("{path}.{key}") }
+    if path.is_empty() {
+        key.to_string()
+    } else {
+        format!("{path}.{key}")
+    }
 }
 
 fn compact(v: &Value) -> String {
@@ -86,10 +100,13 @@ mod tests {
     use super::*;
 
     fn paths(c: &FileChange) -> Vec<(String, ObjChange)> {
-        c.entries.iter().filter_map(|e| match e {
-            DiffEntry::ObjectPath { path, change, .. } => Some((path.clone(), *change)),
-            _ => None,
-        }).collect()
+        c.entries
+            .iter()
+            .filter_map(|e| match e {
+                DiffEntry::ObjectPath { path, change, .. } => Some((path.clone(), *change)),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -97,32 +114,40 @@ mod tests {
         let c = diff(
             r#"{"keep":1,"drop":2,"change":3}"#,
             r#"{"keep":1,"change":4,"add":5}"#,
-        ).unwrap();
+        )
+        .unwrap();
         let mut p = paths(&c);
         p.sort();
-        assert_eq!(p, vec![
-            ("add".into(), ObjChange::Added),
-            ("change".into(), ObjChange::Changed),
-            ("drop".into(), ObjChange::Removed),
-        ]);
+        assert_eq!(
+            p,
+            vec![
+                ("add".into(), ObjChange::Added),
+                ("change".into(), ObjChange::Changed),
+                ("drop".into(), ObjChange::Removed),
+            ]
+        );
     }
 
     #[test]
     fn nested_and_array_paths() {
-        let c = diff(
-            r#"{"a":{"b":[1,2,3]}}"#,
-            r#"{"a":{"b":[1,9,3,4]}}"#,
-        ).unwrap();
+        let c = diff(r#"{"a":{"b":[1,2,3]}}"#, r#"{"a":{"b":[1,9,3,4]}}"#).unwrap();
         let p = paths(&c);
-        assert!(p.iter().any(|(path, ch)| path == "a.b[1]" && *ch == ObjChange::Changed));
-        assert!(p.iter().any(|(path, ch)| path == "a.b[3]" && *ch == ObjChange::Added));
+        assert!(p
+            .iter()
+            .any(|(path, ch)| path == "a.b[1]" && *ch == ObjChange::Changed));
+        assert!(p
+            .iter()
+            .any(|(path, ch)| path == "a.b[3]" && *ch == ObjChange::Added));
     }
 
     #[test]
     fn reordered_keys_is_formatting_only() {
         let c = diff(r#"{"a":1,"b":2}"#, r#"{"b":2,"a":1}"#).unwrap();
         assert!(c.entries.is_empty());
-        assert!(c.formatting_only, "same object, different key order → noise");
+        assert!(
+            c.formatting_only,
+            "same object, different key order → noise"
+        );
     }
 
     #[test]

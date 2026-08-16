@@ -119,8 +119,9 @@ fn install_windows(src: &PathBuf) -> Result<()> {
 }
 
 fn run_stable() -> Result<()> {
-    println!("Stable binary downloads are not yet available (coming in M12).");
-    println!("To update from source: enox update --dev [--src <path>]");
+    println!("Stable installs are updated by rerunning the release installer.");
+    println!("Download: https://github.com/suzent/enoxian/releases/latest");
+    println!("Development source: enox update --dev [--src <path>]");
     Ok(())
 }
 
@@ -144,10 +145,7 @@ fn resolve_src(arg: Option<PathBuf>) -> Result<PathBuf> {
         if p.join("Cargo.toml").exists() {
             return Ok(p);
         }
-        bail!(
-            "saved source path '{}' no longer exists — run with --src <path>",
-            saved
-        );
+        bail!("saved source path '{saved}' no longer exists — run with --src <path>");
     }
 
     if let Ok(saved) = std::env::var("ENOXIAN_SRC") {
@@ -155,10 +153,7 @@ fn resolve_src(arg: Option<PathBuf>) -> Result<PathBuf> {
         if p.join("Cargo.toml").exists() {
             return Ok(p);
         }
-        bail!(
-            "ENOXIAN_SRC '{}' does not look like an enoxian source directory",
-            saved
-        );
+        bail!("ENOXIAN_SRC '{saved}' does not look like an enoxian source directory");
     }
 
     bail!("no source path configured — run once with: enox update --dev --src <path/to/enoxian>")

@@ -39,8 +39,16 @@ pub async fn run(client: &reqwest::Client, base: &str, json: bool) -> Result<()>
             None => String::new(),
         };
 
-        let file_part = if file.is_empty() { String::new() } else { format!("  {file}") };
-        let age_part = if age_label.is_empty() { String::new() } else { format!("  {age_label}") };
+        let file_part = if file.is_empty() {
+            String::new()
+        } else {
+            format!("  {file}")
+        };
+        let age_part = if age_label.is_empty() {
+            String::new()
+        } else {
+            format!("  {age_label}")
+        };
 
         println!("  {id}  [{status}]{age_part}{file_part}");
     }

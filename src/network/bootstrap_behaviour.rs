@@ -23,21 +23,31 @@ pub enum BootstrapEvent {
 }
 
 impl From<rendezvous::server::Event> for BootstrapEvent {
-    fn from(e: rendezvous::server::Event) -> Self { Self::Rendezvous(e) }
+    fn from(e: rendezvous::server::Event) -> Self {
+        Self::Rendezvous(e)
+    }
 }
 
 impl From<relay::Event> for BootstrapEvent {
-    fn from(e: relay::Event) -> Self { Self::Relay(e) }
+    fn from(e: relay::Event) -> Self {
+        Self::Relay(e)
+    }
 }
 
 impl From<identify::Event> for BootstrapEvent {
-    fn from(e: identify::Event) -> Self { Self::Identify(e) }
+    fn from(e: identify::Event) -> Self {
+        Self::Identify(e)
+    }
 }
 
 impl From<ping::Event> for BootstrapEvent {
-    fn from(e: ping::Event) -> Self { Self::Ping(e) }
+    fn from(e: ping::Event) -> Self {
+        Self::Ping(e)
+    }
 }
 
 impl From<kad::Event> for BootstrapEvent {
-    fn from(e: kad::Event) -> Self { Self::Kad(e) }
+    fn from(e: kad::Event) -> Self {
+        Self::Kad(e)
+    }
 }

@@ -1,6 +1,6 @@
+use crate::control::ChatMessage;
 use anyhow::Result;
 use std::collections::HashSet;
-use crate::control::ChatMessage;
 
 pub async fn run(
     client: &reqwest::Client,
@@ -42,7 +42,9 @@ pub async fn run(
             if let Some(data) = line.strip_prefix("data: ") {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
                     if val["type"].as_str() == Some("message_posted") {
-                        if let Ok(msg) = serde_json::from_value::<ChatMessage>(val["message"].clone()) {
+                        if let Ok(msg) =
+                            serde_json::from_value::<ChatMessage>(val["message"].clone())
+                        {
                             if !seen.contains(&msg.id) {
                                 print_message(&msg);
                             }

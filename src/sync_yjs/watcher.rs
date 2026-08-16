@@ -1,13 +1,13 @@
-use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use crate::control::CircleEvent;
+use crate::state::AppState;
 use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use yrs::{GetString, Text, Transact};
-use crate::control::CircleEvent;
-use crate::state::AppState;
 
 /// Pre-load all existing files in the workspace into the CRDT.
 /// Must run before the watcher starts so that any file present before daemon
@@ -41,15 +41,22 @@ pub async fn preload_workspace(state: &AppState, workspace: &PathBuf) {
                 // so merging with peers after restart is idempotent (no content duplication).
                 let restored = crate::store::crdt::restore(&state.workspace, &rel, &doc).await;
                 let text = doc.get_or_insert_text(rel.as_str());
-                let current = { let txn = doc.transact(); text.get_string(&txn) };
+                let current = {
+                    let txn = doc.transact();
+                    text.get_string(&txn)
+                };
                 let mut changed = false;
                 if current != contents {
                     // File was edited while daemon was offline — apply the diff.
                     // This creates new ops, but only happens for genuine offline edits.
                     let mut txn = doc.transact_mut();
                     let len = text.len(&txn);
-                    if len > 0 { text.remove_range(&mut txn, 0, len); }
-                    if !contents.is_empty() { text.insert(&mut txn, 0, &contents); }
+                    if len > 0 {
+                        text.remove_range(&mut txn, 0, len);
+                    }
+                    if !contents.is_empty() {
+                        text.insert(&mut txn, 0, &contents);
+                    }
                     changed = true;
                 }
                 if changed || !restored {
@@ -65,7 +72,11 @@ pub async fn preload_workspace(state: &AppState, workspace: &PathBuf) {
 }
 
 /// Spawn the file-system watcher task.
-pub async fn spawn_watcher(state: AppState, workspace: PathBuf, token: CancellationToken) -> anyhow::Result<()> {
+pub async fn spawn_watcher(
+    state: AppState,
+    workspace: PathBuf,
+    token: CancellationToken,
+) -> anyhow::Result<()> {
     preload_workspace(&state, &workspace).await;
 
     let (tokio_tx, mut tokio_rx) = mpsc::channel::<notify::Result<Event>>(128);
@@ -104,19 +115,35 @@ pub async fn spawn_watcher(state: AppState, workspace: PathBuf, token: Cancellat
 
 pub(crate) fn is_ignored(rel: &str) -> bool {
     let name = rel.split('/').next_back().unwrap_or(rel);
-    if rel.split('/').any(|part| part.starts_with('.')) { return true; }
+    if rel.split('/').any(|part| part.starts_with('.')) {
+        return true;
+    }
     // Hidden files
-    if name.starts_with('.') { return true; }
+    if name.starts_with('.') {
+        return true;
+    }
     // Editor temp/swap files
-    if name.ends_with('~') { return true; }
-    if name.ends_with(".swp") || name.ends_with(".swx") || name.ends_with(".swo") { return true; }
-    if name.ends_with(".tmp") { return true; }
+    if name.ends_with('~') {
+        return true;
+    }
+    if name.ends_with(".swp") || name.ends_with(".swx") || name.ends_with(".swo") {
+        return true;
+    }
+    if name.ends_with(".tmp") {
+        return true;
+    }
     // Sublime Text safe-write: test.txt.sb-<hex>-<random>
-    if name.contains(".sb-") { return true; }
+    if name.contains(".sb-") {
+        return true;
+    }
     // Conflict copies written by the sync engine: file.txt.conflict.agent-id
-    if name.contains(".conflict.") { return true; }
+    if name.contains(".conflict.") {
+        return true;
+    }
     // Vim temp files (numeric names like 4913)
-    if name.chars().all(|c| c.is_ascii_digit()) { return true; }
+    if name.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
     false
 }
 
@@ -152,7 +179,9 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
             Err(_) => continue,
         };
 
-        if is_ignored(&rel) { continue; }
+        if is_ignored(&rel) {
+            continue;
+        }
 
         if matches!(event.kind, EventKind::Remove(_)) {
             state.remove_doc(&rel);

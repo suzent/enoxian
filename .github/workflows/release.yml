@@ -2,20 +2,107 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.1.0)"
+        description: "Existing release tag (for example v0.3.0)"
         required: true
+        type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.88.0"
+  NODE_VERSION: "20"
+
 jobs:
+  verify:
+    name: Verify release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - id: version
+        name: Validate tag, version, changelog, and main ancestry
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
+            echo "invalid release tag: $TAG" >&2
+            exit 1
+          }
+
+          version="${TAG#v}"
+          cargo_version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)"
+          test "$version" = "$cargo_version" || {
+            echo "tag $TAG does not match Cargo.toml version $cargo_version" >&2
+            exit 1
+          }
+
+          git fetch origin main --tags
+          tag_commit="$(git rev-list -n 1 "$TAG")"
+          checked_out_commit="$(git rev-parse HEAD)"
+          test "$tag_commit" = "$checked_out_commit" || {
+            echo "checked-out commit $checked_out_commit is not tag $TAG ($tag_commit)" >&2
+            exit 1
+          }
+          git merge-base --is-ancestor "$tag_commit" origin/main || {
+            echo "tag $TAG is not reachable from origin/main" >&2
+            exit 1
+          }
+
+          grep -Fq "## [$version]" CHANGELOG.md || {
+            echo "CHANGELOG.md has no section for $version" >&2
+            exit 1
+          }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Rust release gate
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend release gate
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
   build:
     name: Build ${{ matrix.target }}
+    needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -24,190 +111,243 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             asset: enoxian-linux-x86_64.tar.gz
+            smoke: true
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
             asset: enoxian-linux-aarch64.tar.gz
+            smoke: false
           - os: macos-latest
             target: aarch64-apple-darwin
             asset: enoxian-macos-aarch64.tar.gz
+            smoke: false
           - os: macos-latest
             target: x86_64-apple-darwin
             asset: enoxian-macos-x86_64.tar.gz
+            smoke: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset: enoxian-windows-x86_64.zip
+            smoke: true
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
 
-      - name: Install musl-tools (linux x86_64)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get install -y musl-tools
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
-      - name: Install Zig + cargo-zigbuild (linux aarch64)
+      - name: Install locked frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install Zig and cargo-zigbuild
         if: matrix.target == 'aarch64-unknown-linux-musl'
         run: |
           pip install ziglang
-          cargo install cargo-zigbuild
+          cargo install cargo-zigbuild --locked
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ matrix.target }}-cargo-
+          key: ${{ matrix.target }}
 
-      - name: Build (aarch64 linux via zigbuild)
+      - name: Build Linux ARM64
         if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: cargo zigbuild --release --bins --target ${{ matrix.target }}
+        run: cargo zigbuild --release --locked --bins --target ${{ matrix.target }}
 
-      - name: Build (native)
+      - name: Build
         if: matrix.target != 'aarch64-unknown-linux-musl'
-        run: cargo build --release --bins --target ${{ matrix.target }}
+        run: cargo build --release --locked --bins --target ${{ matrix.target }}
 
-      - name: Package (unix)
-        if: runner.os != 'Windows'
+      - name: Smoke test native Unix binaries
+        if: runner.os != 'Windows' && matrix.smoke
+        shell: bash
         run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/enox dist/
-          cp target/${{ matrix.target }}/release/enoxd dist/
-          tar -C dist -czf ${{ matrix.asset }} enox enoxd
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release"
+          "$bin/enox" --version | grep -F "${{ needs.verify.outputs.version }}"
+          "$bin/enoxd" --version | grep -F "${{ needs.verify.outputs.version }}"
 
-      - name: Package (windows)
+      - name: Smoke test Windows binaries
+        if: runner.os == 'Windows' && matrix.smoke
+        shell: pwsh
+        run: |
+          $bin = "target/${{ matrix.target }}/release"
+          (& "$bin/enox.exe" --version) | Select-String -SimpleMatch "${{ needs.verify.outputs.version }}"
+          (& "$bin/enoxd.exe" --version) | Select-String -SimpleMatch "${{ needs.verify.outputs.version }}"
+
+      - name: Package Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/enox" dist/
+          cp "target/${{ matrix.target }}/release/enoxd" dist/
+          tar -C dist -czf "${{ matrix.asset }}" enox enoxd
+
+      - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/enox.exe" dist/
           Copy-Item "target/${{ matrix.target }}/release/enoxd.exe" dist/
-          Compress-Archive -Path dist/enox.exe, dist/enoxd.exe -DestinationPath ${{ matrix.asset }}
+          Compress-Archive -Path dist/enox.exe,dist/enoxd.exe -DestinationPath "${{ matrix.asset }}"
 
-      - name: Upload asset to release
-        uses: softprops/action-gh-release@v2
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ matrix.asset }}
-          # Notes are set once by the `notes` job below (CHANGELOG + auto list),
-          # not regenerated per asset upload.
-          generate_release_notes: false
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
 
-  # ── Release notes = CHANGELOG section + auto-generated commit list ────────────
-  # The curated section for this version from CHANGELOG.md becomes the top of the
-  # release body; GitHub's auto-generated commit/PR notes are appended below.
-  notes:
-    name: Compose release notes
-    needs: build
+  publish:
+    name: Publish complete release
+    needs: [verify, build]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
 
-      - name: Build and set release body
-        env:
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
-          GH_TOKEN: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Verify assets and generate checksums
+        shell: bash
         run: |
           set -euo pipefail
-          version="${TAG#v}"
+          expected=(
+            enoxian-linux-x86_64.tar.gz
+            enoxian-linux-aarch64.tar.gz
+            enoxian-macos-aarch64.tar.gz
+            enoxian-macos-x86_64.tar.gz
+            enoxian-windows-x86_64.zip
+          )
+          for asset in "${expected[@]}"; do
+            test -s "dist/$asset" || { echo "missing asset: $asset" >&2; exit 1; }
+          done
+          (cd dist && sha256sum "${expected[@]}" > SHA256SUMS)
+          cp scripts/install.sh scripts/install.ps1 dist/
 
-          # Extract this version's section from CHANGELOG.md: lines from the
-          # `## [x.y.z]` header up to (not including) the next `## `. Literal
-          # index match (not regex) so the dots in the version aren't wildcards.
-          section="$(awk -v hdr="## [${version}]" '
+      - name: Compose curated release notes
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          awk -v hdr="## [$VERSION]" '
             index($0, hdr) == 1 { grab=1; next }
             grab && /^## / { exit }
             grab { print }
-          ' CHANGELOG.md)"
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md || {
+            echo "CHANGELOG section for $VERSION is empty" >&2
+            exit 1
+          }
 
-          # Auto-generated notes (commit/PR list since the previous tag).
-          auto="$(gh api "repos/${{ github.repository }}/releases/generate-notes" \
-                    -f tag_name="$TAG" --jq '.body' 2>/dev/null || true)"
-
-          {
-            if [ -n "${section// /}" ]; then
-              printf '%s\n\n' "$section"
-            fi
-            printf '%s\n' "$auto"
-          } > /tmp/body.md
-
-          # Set the release body (the release already exists — build jobs made it).
-          gh release edit "$TAG" --repo "${{ github.repository }}" --notes-file /tmp/body.md
-
-  # ── Update the Homebrew formula ──────────────────────────────────────────────
-  # Runs after every build job. Downloads the just-published macOS/Linux tarballs,
-  # computes their SHA256s, rewrites Formula/enoxian.rb (version + per-asset
-  # sha256), and commits to main. The formula's SHAs cannot be known until the
-  # artifacts exist, so this is a post-build step rather than part of `bump`.
-  formula:
-    name: Update Homebrew formula
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Compute SHAs and rewrite formula
+      - name: Create draft, upload all assets, then publish
+        shell: bash
         env:
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
-          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
         run: |
           set -euo pipefail
-          version="${TAG#v}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
+            test "$draft" = "true" || {
+              echo "release $TAG already exists and is published; refusing to overwrite it" >&2
+              exit 1
+            }
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+              --title "$TAG" --notes-file release-notes.md
+          fi
+          gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
 
-          # asset name -> slug used in the formula url line.
-          declare -A assets=(
-            [enoxian-macos-aarch64.tar.gz]=macos-aarch64
-            [enoxian-macos-x86_64.tar.gz]=macos-x86_64
-            [enoxian-linux-aarch64.tar.gz]=linux-aarch64
-            [enoxian-linux-x86_64.tar.gz]=linux-x86_64
-          )
+  homebrew:
+    name: Update Homebrew tap
+    needs: [verify, publish]
+    if: ${{ vars.ENOXIAN_HOMEBREW_TAP != '' }}
+    runs-on: macos-latest
+    env:
+      GH_TOKEN: ${{ secrets.ENOXIAN_HOMEBREW_TOKEN }}
+    steps:
+      - name: Checkout source formula
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+          path: source
 
-          # Update the version line.
-          sed -i -E "s/^  version \"[^\"]*\"/  version \"${version}\"/" Formula/enoxian.rb
+      - name: Checkout tap
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.ENOXIAN_HOMEBREW_TAP }}
+          token: ${{ secrets.ENOXIAN_HOMEBREW_TOKEN }}
+          path: tap
 
-          mkdir -p /tmp/assets
-          for asset in "${!assets[@]}"; do
-            slug="${assets[$asset]}"
-            echo "fetching $asset"
-            # Use `gh release download` (authenticated, via the API) rather than
-            # the public browser_download_url, which can 404 for anonymous curl
-            # right after publish. Retry a few times for propagation safety.
-            for attempt in 1 2 3 4 5; do
-              if gh release download "$TAG" --repo "${{ github.repository }}" \
-                   --pattern "$asset" --dir /tmp/assets --clobber; then
-                break
-              fi
-              echo "attempt $attempt failed; retrying in 10s"; sleep 10
-            done
-            sha="$(sha256sum "/tmp/assets/${asset}" | cut -d' ' -f1)"
-            awk -v needle="enoxian-${slug}.tar.gz" -v sha="$sha" '
-              index(prev, needle) > 0 && $0 ~ /sha256/ {
+      - name: Update and validate formula
+        shell: bash
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p tap/Formula assets
+          cp source/Formula/enoxian.rb tap/Formula/enoxian.rb
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'enoxian-*.tar.gz' --dir assets
+
+          sed -i '' -E "s/^  version \"[^\"]*\"/  version \"$VERSION\"/" tap/Formula/enoxian.rb
+
+          for asset in assets/*.tar.gz; do
+            name="$(basename "$asset")"
+            sha="$(shasum -a 256 "$asset" | awk '{print $1}')"
+            awk -v needle="$name" -v sha="$sha" '
+              index(previous, needle) > 0 && /sha256/ {
                 sub(/"[0-9a-f]{64}"/, "\"" sha "\"")
               }
-              { print; prev=$0 }
-            ' Formula/enoxian.rb > Formula/enoxian.rb.tmp && mv Formula/enoxian.rb.tmp Formula/enoxian.rb
+              { print; previous=$0 }
+            ' tap/Formula/enoxian.rb > tap/Formula/enoxian.rb.tmp
+            mv tap/Formula/enoxian.rb.tmp tap/Formula/enoxian.rb
           done
 
-      - name: Commit formula
+          cd tap
+          brew audit --strict Formula/enoxian.rb
+          brew install --formula ./Formula/enoxian.rb
+          brew test enoxian
+
+      - name: Commit tap update
+        working-directory: tap
+        shell: bash
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
         run: |
           set -euo pipefail
-          if git diff --quiet Formula/enoxian.rb; then
-            echo "formula unchanged"; exit 0
-          fi
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/enoxian.rb
-          git commit -m "chore(release): update Homebrew formula for ${{ github.event.inputs.tag || github.ref_name }}"
-          git push origin main
+          git diff --cached --quiet && exit 0
+          git commit -m "enoxian $TAG"
+          git push

@@ -174,9 +174,8 @@ mod tests {
             Some(("claude", None))
         );
         // User / device mentions do not launch.
-        assert_eq!(
+        assert!(
             Mention::parse("alice").unwrap().agent_target().is_some(),
-            true,
             "bare single token is treated as an agent (legacy)"
         );
         assert_eq!(Mention::parse("alice/laptop").unwrap().agent_target(), None);

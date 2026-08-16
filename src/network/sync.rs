@@ -229,9 +229,9 @@ fn device_label_for_peer(state: &AppState, peer_id: &PeerId) -> Option<String> {
     let map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
     let txn = state.control.transact();
     match map.get(&txn, &peer_str) {
-        Some(Out::Any(Any::String(s))) => {
-            serde_json::from_str::<MemberEntry>(&s).ok().map(|e| e.device_label)
-        }
+        Some(Out::Any(Any::String(s))) => serde_json::from_str::<MemberEntry>(&s)
+            .ok()
+            .map(|e| e.device_label),
         _ => None,
     }
 }
@@ -415,7 +415,10 @@ async fn sync_inner(
 
     if peer_session.you_are_removed {
         mark_self_removed(state);
-        warn!("[sync] this device was removed from circle {}", state.circle_id);
+        warn!(
+            "[sync] this device was removed from circle {}",
+            state.circle_id
+        );
         return Err(anyhow::anyhow!("this device was removed from circle"));
     }
     if remote_is_removed || state.is_self_removed() {
@@ -604,7 +607,9 @@ async fn sync_inner(
         return Err(anyhow::anyhow!("peer removed during sync handshake"));
     }
     if state.is_self_removed() {
-        return Err(anyhow::anyhow!("this device was removed during sync handshake"));
+        return Err(anyhow::anyhow!(
+            "this device was removed during sync handshake"
+        ));
     }
 
     // Subscribe to awareness before the handshake, then flush anything that

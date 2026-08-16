@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use base64::prelude::*;
-use openmls::prelude::*;
 use openmls::prelude::GroupId;
+use openmls::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
 use tls_codec::{Deserialize as _, Serialize as _};
@@ -45,8 +45,7 @@ impl MlsGroupManager {
         ratchet_tree_bytes: Option<&[u8]>,
     ) -> Result<Self> {
         let mut b = welcome_bytes;
-        let msg = MlsMessageIn::tls_deserialize(&mut b)
-            .context("deserialize Welcome message")?;
+        let msg = MlsMessageIn::tls_deserialize(&mut b).context("deserialize Welcome message")?;
 
         let welcome = match msg.extract() {
             MlsMessageBodyIn::Welcome(w) => w,
@@ -56,8 +55,7 @@ impl MlsGroupManager {
         let ratchet_tree = ratchet_tree_bytes
             .map(|bytes| {
                 let mut b = bytes;
-                RatchetTreeIn::tls_deserialize(&mut b)
-                    .context("deserialize ratchet tree")
+                RatchetTreeIn::tls_deserialize(&mut b).context("deserialize ratchet tree")
             })
             .transpose()?;
 
@@ -84,8 +82,8 @@ impl MlsGroupManager {
         key_package_bytes: &[u8],
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let mut b = key_package_bytes;
-        let key_package_in = KeyPackageIn::tls_deserialize(&mut b)
-            .context("deserialize KeyPackage")?;
+        let key_package_in =
+            KeyPackageIn::tls_deserialize(&mut b).context("deserialize KeyPackage")?;
 
         let key_package = key_package_in
             .validate(identity.provider.crypto(), ProtocolVersion::Mls10)
@@ -121,11 +119,7 @@ impl MlsGroupManager {
 
     // ── Admin: remove a member ────────────────────────────────────────────────
 
-    pub fn remove_member(
-        &mut self,
-        identity: &MlsIdentity,
-        leaf_index: u32,
-    ) -> Result<Vec<u8>> {
+    pub fn remove_member(&mut self, identity: &MlsIdentity, leaf_index: u32) -> Result<Vec<u8>> {
         let (commit, _, _) = self
             .group
             .remove_members(
@@ -139,21 +133,15 @@ impl MlsGroupManager {
             .merge_pending_commit(&identity.provider)
             .map_err(|e| anyhow::anyhow!("merge remove commit: {e:?}"))?;
 
-        commit
-            .tls_serialize_detached()
-            .context("serialize Commit")
+        commit.tls_serialize_detached().context("serialize Commit")
     }
 
     // ── Non-admin: apply an incoming Commit ───────────────────────────────────
 
-    pub fn apply_commit(
-        &mut self,
-        identity: &MlsIdentity,
-        commit_bytes: &[u8],
-    ) -> Result<()> {
+    pub fn apply_commit(&mut self, identity: &MlsIdentity, commit_bytes: &[u8]) -> Result<()> {
         let mut b = commit_bytes;
-        let message = MlsMessageIn::tls_deserialize(&mut b)
-            .context("deserialize Commit message")?;
+        let message =
+            MlsMessageIn::tls_deserialize(&mut b).context("deserialize Commit message")?;
 
         let protocol_message = message
             .try_into_protocol_message()
@@ -164,9 +152,7 @@ impl MlsGroupManager {
             .process_message(&identity.provider, protocol_message)
             .map_err(|e| anyhow::anyhow!("process Commit: {e:?}"))?;
 
-        if let ProcessedMessageContent::StagedCommitMessage(staged) =
-            processed.into_content()
-        {
+        if let ProcessedMessageContent::StagedCommitMessage(staged) = processed.into_content() {
             self.group
                 .merge_staged_commit(&identity.provider, *staged)
                 .map_err(|e| anyhow::anyhow!("merge staged commit: {e:?}"))?;
@@ -210,9 +196,14 @@ impl MlsGroupManager {
         let group_id_b64 = BASE64_STANDARD.encode(&group_id_bytes);
 
         let storage_map: HashMap<String, String> = {
-            let values = identity.provider.storage().values.read()
+            let values = identity
+                .provider
+                .storage()
+                .values
+                .read()
                 .map_err(|_| anyhow::anyhow!("storage lock poisoned"))?;
-            values.iter()
+            values
+                .iter()
                 .map(|(k, v)| (BASE64_STANDARD.encode(k), BASE64_STANDARD.encode(v)))
                 .collect()
         };
@@ -225,8 +216,11 @@ impl MlsGroupManager {
         let mls_dir = circle_dir.join("mls");
         std::fs::create_dir_all(&mls_dir)
             .with_context(|| format!("create {}", mls_dir.display()))?;
-        std::fs::write(mls_dir.join("group.json"), serde_json::to_string_pretty(&json)?)
-            .context("write group.json")?;
+        std::fs::write(
+            mls_dir.join("group.json"),
+            serde_json::to_string_pretty(&json)?,
+        )
+        .context("write group.json")?;
         Ok(())
     }
 
@@ -236,24 +230,34 @@ impl MlsGroupManager {
             return Ok(None);
         }
 
-        let json: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&path).context("read group.json")?
-        ).context("parse group.json")?;
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).context("read group.json")?)
+                .context("parse group.json")?;
 
-        let group_id_b64 = json["group_id"].as_str()
+        let group_id_b64 = json["group_id"]
+            .as_str()
             .context("missing group_id in group.json")?;
-        let group_id_bytes = BASE64_STANDARD.decode(group_id_b64)
+        let group_id_bytes = BASE64_STANDARD
+            .decode(group_id_b64)
             .context("decode group_id")?;
         let group_id = GroupId::from_slice(&group_id_bytes);
 
         {
-            let storage_obj = json["storage"].as_object()
+            let storage_obj = json["storage"]
+                .as_object()
                 .context("missing storage in group.json")?;
-            let mut values = identity.provider.storage().values.write()
+            let mut values = identity
+                .provider
+                .storage()
+                .values
+                .write()
                 .map_err(|_| anyhow::anyhow!("storage lock poisoned"))?;
             for (k_b64, v_b64) in storage_obj {
-                let k = BASE64_STANDARD.decode(k_b64).context("decode storage key")?;
-                let v = BASE64_STANDARD.decode(v_b64.as_str().context("storage value not string")?)
+                let k = BASE64_STANDARD
+                    .decode(k_b64)
+                    .context("decode storage key")?;
+                let v = BASE64_STANDARD
+                    .decode(v_b64.as_str().context("storage value not string")?)
                     .context("decode storage value")?;
                 values.insert(k, v);
             }

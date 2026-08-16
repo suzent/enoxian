@@ -1,8 +1,8 @@
-use anyhow::{Context, Result};
 use crate::{
     cli::{IdentityAction, IdentityArgs},
     identity::{DeviceIdentity, UserIdentity},
 };
+use anyhow::{Context, Result};
 
 pub fn run(args: IdentityArgs) -> Result<()> {
     match args.action {
@@ -37,8 +37,7 @@ fn show() -> Result<()> {
 }
 
 fn set_label(label: String) -> Result<()> {
-    let mut device = DeviceIdentity::load()
-        .context("no device identity — start enoxd first")?;
+    let mut device = DeviceIdentity::load().context("no device identity — start enoxd first")?;
     device.device_label = label.clone();
     device.save()?;
     println!("Device label updated to '{label}'");
@@ -47,8 +46,7 @@ fn set_label(label: String) -> Result<()> {
 }
 
 fn set_user_handle(handle: String) -> Result<()> {
-    let mut device = DeviceIdentity::load()
-        .context("no device identity — start enoxd first")?;
+    let mut device = DeviceIdentity::load().context("no device identity — start enoxd first")?;
     device.set_user_handle(handle.clone());
     device.save()?;
     println!("User handle set to '{handle}'");
@@ -57,8 +55,7 @@ fn set_user_handle(handle: String) -> Result<()> {
 }
 
 fn create_user(handle: String) -> Result<()> {
-    let mut device = DeviceIdentity::load()
-        .context("no device identity — start enoxd first")?;
+    let mut device = DeviceIdentity::load().context("no device identity — start enoxd first")?;
 
     let (user, mnemonic) = UserIdentity::generate(handle.clone())?;
     user.link_device(&mut device, &mnemonic)?;
@@ -78,8 +75,7 @@ fn create_user(handle: String) -> Result<()> {
 }
 
 fn link_user(handle: String, mnemonic: String) -> Result<()> {
-    let mut device = DeviceIdentity::load()
-        .context("no device identity — start enoxd first")?;
+    let mut device = DeviceIdentity::load().context("no device identity — start enoxd first")?;
 
     let user = UserIdentity::from_mnemonic(&mnemonic, handle.clone())?;
     user.link_device(&mut device, &mnemonic)?;

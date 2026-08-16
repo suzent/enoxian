@@ -49,7 +49,10 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     // Establish the baseline. A pre-existing baseline whose content differs
     // from the current workspace means offline edits — propose them.
     let disk = snapshot_workspace(&state, &store)?;
-    let mut baseline = match store.baseline_id().and_then(|id| store.load_snapshot(&id).ok()) {
+    let mut baseline = match store
+        .baseline_id()
+        .and_then(|id| store.load_snapshot(&id).ok())
+    {
         Some(prev) => {
             let diff = SnapshotDiff::between(&prev, &disk);
             if diff.is_empty() {
@@ -57,8 +60,14 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
             } else {
                 store.save_snapshot(&disk)?;
                 create_proposal(
-                    &state, &store, &prev, &disk, diff.changed_paths(), &device_label,
-                    ProposalSource::Ambient, ProposalStatus::Pending,
+                    &state,
+                    &store,
+                    &prev,
+                    &disk,
+                    diff.changed_paths(),
+                    &device_label,
+                    ProposalSource::Ambient,
+                    ProposalStatus::Pending,
                 )?;
                 store.set_baseline(&disk.id)?;
                 disk
@@ -268,9 +277,9 @@ fn classify_window(
     let mut agent_paths: Vec<String> = Vec::new();
 
     let is_restored = |path: &str| {
-        expected.get(path).is_some_and(|want| {
-            result.files.get(path).map(|e| &e.hash) == want.as_ref()
-        })
+        expected
+            .get(path)
+            .is_some_and(|want| result.files.get(path).map(|e| &e.hash) == want.as_ref())
     };
 
     for path in interactive_diff.changed_paths() {
@@ -280,7 +289,10 @@ fn classify_window(
         if is_restored(&path) {
             folded += 1;
         } else if let Some(author) = interactive.get(&path) {
-            interactive_by_author.entry(author.clone()).or_default().push(path);
+            interactive_by_author
+                .entry(author.clone())
+                .or_default()
+                .push(path);
         }
     }
 
@@ -295,7 +307,11 @@ fn classify_window(
         }
     }
 
-    WindowPlan { folded, interactive_by_author, agent_paths }
+    WindowPlan {
+        folded,
+        interactive_by_author,
+        agent_paths,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -341,7 +357,9 @@ fn snapshot_workspace(state: &AppState, store: &ProposalStore) -> anyhow::Result
     let mut files = BTreeMap::new();
     let mut stack = vec![state.workspace.clone()];
     while let Some(dir) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in rd.flatten() {
             let path = entry.path();
             let rel = match path.strip_prefix(&state.workspace) {
@@ -355,7 +373,13 @@ fn snapshot_workspace(state: &AppState, store: &ProposalStore) -> anyhow::Result
                 stack.push(path);
             } else if let Ok(data) = std::fs::read(&path) {
                 let hash = store.blobs.put(&data)?;
-                files.insert(rel, FileEntry { hash, size: data.len() as u64 });
+                files.insert(
+                    rel,
+                    FileEntry {
+                        hash,
+                        size: data.len() as u64,
+                    },
+                );
             }
         }
     }
@@ -379,7 +403,13 @@ fn snapshot_dirty(
         match std::fs::read(&abs) {
             Ok(data) => {
                 let hash = store.blobs.put(&data)?;
-                files.insert(rel.clone(), FileEntry { hash, size: data.len() as u64 });
+                files.insert(
+                    rel.clone(),
+                    FileEntry {
+                        hash,
+                        size: data.len() as u64,
+                    },
+                );
             }
             Err(_) => {
                 files.remove(rel);
@@ -399,7 +429,13 @@ mod tests {
     fn snap(entries: &[(&str, &str)]) -> Snapshot {
         let mut files = BTreeMap::new();
         for (path, hash) in entries {
-            files.insert(path.to_string(), FileEntry { hash: (*hash).into(), size: 1 });
+            files.insert(
+                path.to_string(),
+                FileEntry {
+                    hash: (*hash).into(),
+                    size: 1,
+                },
+            );
         }
         Snapshot::new(files)
     }

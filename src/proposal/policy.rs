@@ -80,9 +80,18 @@ mod tests {
     #[test]
     fn defaults_match_design_doc() {
         let policy = AcceptancePolicy::default();
-        assert_eq!(policy.decide(TriggerOrigin::LocalUser), AcceptAction::AutoAccept);
-        assert_eq!(policy.decide(TriggerOrigin::RemoteMember), AcceptAction::PendingReview);
-        assert_eq!(policy.decide(TriggerOrigin::Unattributed), AcceptAction::PendingReview);
+        assert_eq!(
+            policy.decide(TriggerOrigin::LocalUser),
+            AcceptAction::AutoAccept
+        );
+        assert_eq!(
+            policy.decide(TriggerOrigin::RemoteMember),
+            AcceptAction::PendingReview
+        );
+        assert_eq!(
+            policy.decide(TriggerOrigin::Unattributed),
+            AcceptAction::PendingReview
+        );
     }
 
     #[test]
@@ -91,9 +100,15 @@ mod tests {
             auto_accept_local: true,
             auto_accept_remote: true,
         };
-        assert_eq!(policy.decide(TriggerOrigin::RemoteMember), AcceptAction::AutoAccept);
+        assert_eq!(
+            policy.decide(TriggerOrigin::RemoteMember),
+            AcceptAction::AutoAccept
+        );
         // Unattributed stays pending even with permissive settings.
-        assert_eq!(policy.decide(TriggerOrigin::Unattributed), AcceptAction::PendingReview);
+        assert_eq!(
+            policy.decide(TriggerOrigin::Unattributed),
+            AcceptAction::PendingReview
+        );
     }
 
     #[test]

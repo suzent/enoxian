@@ -42,6 +42,11 @@ appended automatically. Keep the section for a version accurate before tagging.
 - Proposal sync now fetches missing content-addressed blobs after proposal
   manifests arrive, so large proposal files omitted from bundles can become
   reviewable and revertible on other peers.
+- Release binaries now expose `--version`, and installers verify published
+  SHA256 checksums before replacing binaries.
+- Release automation now gates tags on version/CHANGELOG consistency, Rust and
+  frontend checks, builds all platform artifacts before publishing, and can
+  update an optional Homebrew tap.
 
 ## [0.2.0] — 2026-07-05
 

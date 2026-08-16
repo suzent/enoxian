@@ -34,14 +34,18 @@ diffs.
 ### Linux / macOS
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/suzent/enoxian/main/scripts/install.sh | sh
+curl -fsSL https://github.com/suzent/enoxian/releases/latest/download/install.sh | sh
 ```
 
 ### Windows PowerShell
 
 ```powershell
-irm https://raw.githubusercontent.com/suzent/enoxian/main/scripts/install.ps1 | iex
+irm https://github.com/suzent/enoxian/releases/latest/download/install.ps1 | iex
 ```
+
+Release installers verify the downloaded binary against the published
+`SHA256SUMS` before replacing anything. See
+[docs/guide/releasing.md](docs/guide/releasing.md) for the release process.
 
 ### From Source
 
@@ -58,7 +62,7 @@ The source build creates:
 | `target/debug/enoxd` | Long-running daemon: P2P node, file watcher, HTTP/WS server |
 | `target/debug/enox` | Short-lived CLI that talks to the local daemon |
 
-Rust 1.83 or newer is required. Node.js is only needed when building the
+Rust 1.88 or newer is required. Node.js is only needed when building the
 frontend in release mode.
 
 ---
@@ -224,3 +228,7 @@ rules for this repository live in [AGENTS.md](AGENTS.md).
 | `reqwest` | CLI HTTP client |
 | `clap` | CLI argument parsing |
 | `openmls` | MLS membership state |
+
+## License
+
+enoxian is available under the [MIT License](LICENSE).

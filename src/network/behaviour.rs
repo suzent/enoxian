@@ -40,37 +40,55 @@ pub enum EnochEvent {
 }
 
 impl From<mdns::Event> for EnochEvent {
-    fn from(e: mdns::Event) -> Self { Self::Mdns(e) }
+    fn from(e: mdns::Event) -> Self {
+        Self::Mdns(e)
+    }
 }
 
 impl From<kad::Event> for EnochEvent {
-    fn from(e: kad::Event) -> Self { Self::Kad(e) }
+    fn from(e: kad::Event) -> Self {
+        Self::Kad(e)
+    }
 }
 
 impl From<identify::Event> for EnochEvent {
-    fn from(e: identify::Event) -> Self { Self::Identify(e) }
+    fn from(e: identify::Event) -> Self {
+        Self::Identify(e)
+    }
 }
 
 impl From<ping::Event> for EnochEvent {
-    fn from(e: ping::Event) -> Self { Self::Ping(e) }
+    fn from(e: ping::Event) -> Self {
+        Self::Ping(e)
+    }
 }
 
 impl From<rendezvous::client::Event> for EnochEvent {
-    fn from(e: rendezvous::client::Event) -> Self { Self::Rendezvous(e) }
+    fn from(e: rendezvous::client::Event) -> Self {
+        Self::Rendezvous(e)
+    }
 }
 
 impl From<relay::client::Event> for EnochEvent {
-    fn from(e: relay::client::Event) -> Self { Self::RelayClient(e) }
+    fn from(e: relay::client::Event) -> Self {
+        Self::RelayClient(e)
+    }
 }
 
 impl From<relay::Event> for EnochEvent {
-    fn from(e: relay::Event) -> Self { Self::Relay(e) }
+    fn from(e: relay::Event) -> Self {
+        Self::Relay(e)
+    }
 }
 
 impl From<dcutr::Event> for EnochEvent {
-    fn from(e: dcutr::Event) -> Self { Self::Dcutr(e) }
+    fn from(e: dcutr::Event) -> Self {
+        Self::Dcutr(e)
+    }
 }
 
 impl From<()> for EnochEvent {
-    fn from(_: ()) -> Self { Self::Stream }
+    fn from(_: ()) -> Self {
+        Self::Stream
+    }
 }

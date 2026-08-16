@@ -5,7 +5,8 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "enoxd",
-    about = "enoxian daemon — serves all known Circles over HTTP/P2P"
+    about = "enoxian daemon — serves all known Circles over HTTP/P2P",
+    version = env!("CARGO_PKG_VERSION")
 )]
 pub struct DaemonCli {
     /// Port to listen on
@@ -41,7 +42,8 @@ pub struct DaemonCli {
 #[derive(Parser)]
 #[command(
     name = "enox",
-    about = "enoxian agent CLI — collaborate inside a Circle"
+    about = "enoxian agent CLI — collaborate inside a Circle",
+    version = env!("CARGO_PKG_VERSION")
 )]
 pub struct AgentCli {
     /// Output raw JSON (machine-readable)
@@ -130,7 +132,7 @@ pub enum AgentCommands {
     },
     /// Stop the running enoxd daemon
     Stop,
-    /// Update enox and enoxd to the latest version
+    /// Update a development install (stable installs use the release installer)
     Update {
         /// Build from source instead of downloading a release binary.
         /// Use this during development.

@@ -42,6 +42,9 @@ pub async fn run(
     }
 
     println!("✦ Left circle '{}'. Config removed.", cfg.circle_name);
-    println!("  Note: your workspace files at {} are untouched.", cfg.workspace_dir);
+    println!(
+        "  Note: your workspace files at {} are untouched.",
+        cfg.workspace_dir
+    );
     Ok(())
 }

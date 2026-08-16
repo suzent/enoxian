@@ -148,7 +148,10 @@ pub fn normalize_workspace_dir(path: &std::path::Path) -> Result<PathBuf> {
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
                 if !normalized.pop() {
-                    anyhow::bail!("workspace path escapes its filesystem root: {}", path.display());
+                    anyhow::bail!(
+                        "workspace path escapes its filesystem root: {}",
+                        path.display()
+                    );
                 }
             }
             other => normalized.push(other.as_os_str()),

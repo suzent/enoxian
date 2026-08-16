@@ -13,11 +13,15 @@ use crate::{
 pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> Result<()> {
     let configs = load_all()?;
     let config = resolve::resolve(&args.circle, &configs)
-        .with_context(|| format!("circle '{}' not found — run `enox circles` to list known circles", args.circle))?
+        .with_context(|| {
+            format!(
+                "circle '{}' not found — run `enox circles` to list known circles",
+                args.circle
+            )
+        })?
         .clone();
 
-    let psk_bytes = hex::decode(&config.psk_hex)
-        .context("config.toml has invalid psk_hex")?;
+    let psk_bytes = hex::decode(&config.psk_hex).context("config.toml has invalid psk_hex")?;
     let psk: [u8; 32] = psk_bytes
         .try_into()
         .map_err(|_| anyhow::anyhow!("psk_hex must be 32 bytes (64 hex chars)"))?;
@@ -33,7 +37,9 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
     //   1. explicit --peer flag
     //   2. ExternalAddrConfirmed (Identify from a connected peer — most reliable)
     //   3. best listen addr sorted: public IP > Tailscale (100.64/10) > RFC1918
-    let peer_addr = args.peer.clone()
+    let peer_addr = args
+        .peer
+        .clone()
         .or_else(|| p2p.as_ref()?.external_addrs.first().cloned())
         .or_else(|| {
             let addrs = p2p.as_ref()?.listen_addrs.as_slice();
@@ -44,13 +50,14 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
     // The user never has to think about this — if they joined via a relay invite,
     // they can forward that same relay to the people they invite.
     let cli_relay = match args.relay {
-        Some(ref s) => Some(rdvz::resolve_relay(s, client).await
-            .with_context(|| format!("could not resolve relay server '{s}'"))?),
+        Some(ref s) => Some(
+            rdvz::resolve_relay(s, client)
+                .await
+                .with_context(|| format!("could not resolve relay server '{s}'"))?,
+        ),
         None => None,
     };
-    let relay_addr = if let Some(addr) = cli_relay
-        .or_else(|| config.relay_addrs.first().cloned())
-    {
+    let relay_addr = if let Some(addr) = cli_relay.or_else(|| config.relay_addrs.first().cloned()) {
         Some(addr)
     } else {
         rdvz::resolve_default_relay().await
@@ -58,8 +65,11 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
 
     // rendezvous_addr: explicit flag (auto-resolved) > saved in circle config.
     let cli_rendezvous = match args.rendezvous {
-        Some(ref s) => Some(rdvz::resolve(s, client).await
-            .with_context(|| format!("could not resolve rendezvous server '{s}'"))?),
+        Some(ref s) => Some(
+            rdvz::resolve(s, client)
+                .await
+                .with_context(|| format!("could not resolve rendezvous server '{s}'"))?,
+        ),
         None => None,
     };
     let rendezvous_addr = cli_rendezvous.or_else(|| config.rendezvous_addrs.first().cloned());
@@ -68,17 +78,20 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
     let admin_pubkey_bytes = try_load_admin_pubkey(&config.circle_id);
 
     let uri = invite::encode(&InvitePayload {
-        circle_id:   config.circle_id.clone(),
-        psk_bytes:   psk,
+        circle_id: config.circle_id.clone(),
+        psk_bytes: psk,
         circle_name: Some(config.circle_name.clone()),
         expires_at,
-        peer_addr:   peer_addr.clone(),
+        peer_addr: peer_addr.clone(),
         admin_pubkey_bytes,
-        relay_addr:  relay_addr.clone(),
+        relay_addr: relay_addr.clone(),
         rendezvous_addr: rendezvous_addr.clone(),
     });
 
-    println!("✦ Invite for '{}' (valid {}):", config.circle_name, args.ttl);
+    println!(
+        "✦ Invite for '{}' (valid {}):",
+        config.circle_name, args.ttl
+    );
     println!();
     println!("  {uri}");
     println!();
@@ -128,13 +141,17 @@ async fn fetch_p2p_info(client: &reqwest::Client, api_base: &str) -> Option<P2PI
     let parse_addrs = |key: &str| -> Vec<String> {
         p2p.get(key)
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default()
     };
     Some(P2PInfo {
         peer_id,
         external_addrs: parse_addrs("external_addrs"),
-        listen_addrs:   parse_addrs("listen_addrs"),
+        listen_addrs: parse_addrs("listen_addrs"),
     })
 }
 
@@ -160,7 +177,8 @@ fn best_listen_addr(addrs: &[String]) -> Option<&str> {
         }
         1 // public IP — most preferred
     }
-    addrs.iter()
+    addrs
+        .iter()
         .min_by_key(|a| rank(a.as_str()))
         .map(String::as_str)
 }

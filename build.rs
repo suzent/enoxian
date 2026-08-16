@@ -25,14 +25,16 @@ fn main() {
 
     let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
 
-    // Install deps if node_modules is missing.
+    // Install the exact locked dependency graph if node_modules is missing.
+    // Release CI always runs `npm ci` explicitly before Cargo, but keeping this
+    // fallback makes local `cargo build --release` convenient and reproducible.
     if !frontend.join("node_modules").exists() {
         let status = Command::new(npm)
-            .args(["install"])
+            .args(["ci"])
             .current_dir(&frontend)
             .status()
-            .expect("npm install failed — is Node.js installed?");
-        assert!(status.success(), "npm install exited with {status}");
+            .expect("npm ci failed — is Node.js installed?");
+        assert!(status.success(), "npm ci exited with {status}");
     }
 
     let status = Command::new(npm)
@@ -42,10 +44,7 @@ fn main() {
         .expect("npm run build failed — is Node.js installed?");
     assert!(status.success(), "npm run build exited with {status}");
 
-    println!(
-        "cargo:warning=Frontend built → {}",
-        static_dir.display()
-    );
+    println!("cargo:warning=Frontend built → {}", static_dir.display());
 
     // Re-run if any frontend source file changes.
     println!("cargo:rerun-if-changed=frontend/src");
