@@ -68,7 +68,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6"
 
 # Phase 1 — CRDT + HTTP/WS server
-yrs = "0.26"
+yrs = "0.27"
 axum = { version = "0.8", features = ["ws", "macros"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
