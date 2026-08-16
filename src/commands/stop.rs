@@ -1,10 +1,7 @@
 use anyhow::Result;
 
 pub async fn run(client: &reqwest::Client, root: &str) -> Result<()> {
-    let resp = client
-        .post(format!("{root}/shutdown"))
-        .send()
-        .await;
+    let resp = client.post(format!("{root}/shutdown")).send().await;
 
     match resp {
         Ok(r) if r.status().is_success() => println!("✓ enoxd stopped"),

@@ -60,7 +60,8 @@ enox update --dev [--src <PATH>] [--no-pull]
 | `--src <PATH>` | saved | Path to the enoxian source directory. Saved to `~/.enoxian/config.toml` on first use — not required after that |
 | `--no-pull` | — | Skip `git pull`, just rebuild |
 
-Without `--dev`, prints a message pointing to M12 stable binary downloads (not yet available).
+Without `--dev`, points stable users to the authenticated, checksum-verified
+release installer. In-process self-update is not implemented yet.
 
 **First-time setup per machine:**
 ```bash

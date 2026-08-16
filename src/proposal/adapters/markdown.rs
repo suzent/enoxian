@@ -41,10 +41,14 @@ pub fn diff(before: &str, after: &str) -> FileChange {
         }
     }
 
-    let formatting_only = entries.is_empty()
-        && super::super::adapters::whitespace_normalized_eq(before, after);
+    let formatting_only =
+        entries.is_empty() && super::super::adapters::whitespace_normalized_eq(before, after);
 
-    FileChange { kind: DiffKind::Markdown, entries, formatting_only }
+    FileChange {
+        kind: DiffKind::Markdown,
+        entries,
+        formatting_only,
+    }
 }
 
 /// Split into `heading text → section body`. Content before the first heading is
@@ -55,12 +59,19 @@ fn sections(md: &str) -> BTreeMap<String, String> {
     let mut body = String::new();
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
 
-    let flush = |name: &str, body: &mut String, seen: &mut BTreeMap<String, usize>, out: &mut BTreeMap<String, String>| {
+    let flush = |name: &str,
+                 body: &mut String,
+                 seen: &mut BTreeMap<String, usize>,
+                 out: &mut BTreeMap<String, String>| {
         if body.is_empty() && name == "(preamble)" {
             return;
         }
         let count = seen.entry(name.to_string()).or_insert(0);
-        let key = if *count == 0 { name.to_string() } else { format!("{name} ({})", *count + 1) };
+        let key = if *count == 0 {
+            name.to_string()
+        } else {
+            format!("{name} ({})", *count + 1)
+        };
         *count += 1;
         out.insert(key, std::mem::take(body));
     };
@@ -101,10 +112,13 @@ mod tests {
     use super::*;
 
     fn section_changes(c: &FileChange) -> Vec<(String, SectionChange)> {
-        c.entries.iter().filter_map(|e| match e {
-            DiffEntry::Section { name, change } => Some((name.clone(), *change)),
-            _ => None,
-        }).collect()
+        c.entries
+            .iter()
+            .filter_map(|e| match e {
+                DiffEntry::Section { name, change } => Some((name.clone(), *change)),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]

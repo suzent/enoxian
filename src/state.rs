@@ -1,15 +1,15 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
-use std::sync::atomic::AtomicBool;
+use crate::control::{
+    ChatMessage, CircleEvent, Task, TaskStatus, CHAT_KEY, MLS_REMOVED_KEY, TASKS_KEY,
+};
 use dashmap::DashMap;
 use libp2p::{multiaddr::Protocol, swarm::ConnectionId, Multiaddr};
 use serde::Serialize;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use yrs::{Any, Doc, Map, Observable, Out, Transact};
-use crate::control::{
-    CHAT_KEY, ChatMessage, CircleEvent, MLS_REMOVED_KEY, TASKS_KEY, Task, TaskStatus,
-};
 
 pub const EVENT_CAPACITY: usize = 256;
 
@@ -107,9 +107,22 @@ pub struct AppState {
 
 impl AppState {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(circle_id: String, circle_name: String, workspace: PathBuf, circle_dir: PathBuf, admin_pubkey_hex: String, agent_id: String, session_id: u64, peer_id: String, join_policy: crate::config::JoinPolicy, owner: String, mls: crate::mls::SharedMlsState) -> Self {
+    pub fn new(
+        circle_id: String,
+        circle_name: String,
+        workspace: PathBuf,
+        circle_dir: PathBuf,
+        admin_pubkey_hex: String,
+        agent_id: String,
+        session_id: u64,
+        peer_id: String,
+        join_policy: crate::config::JoinPolicy,
+        owner: String,
+        mls: crate::mls::SharedMlsState,
+    ) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_CAPACITY);
-        let (interactive_writes_tx, _): (broadcast::Sender<(String, Option<String>)>, _) = broadcast::channel(EVENT_CAPACITY);
+        let (interactive_writes_tx, _): (broadcast::Sender<(String, Option<String>)>, _) =
+            broadcast::channel(EVENT_CAPACITY);
         let (review_writes_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_awareness_tx, _) = broadcast::channel(EVENT_CAPACITY);
@@ -118,12 +131,14 @@ impl AppState {
 
         // Forward control doc updates to P2P peers (skip updates that arrived from peers).
         let all_tx = all_updates_tx.clone();
-        let sub = control.observe_update_v1(move |txn, event| {
-            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
-            if !is_p2p {
-                let _ = all_tx.send(("__control__".to_string(), event.update.clone()));
-            }
-        }).expect("observe control doc failed");
+        let sub = control
+            .observe_update_v1(move |txn, event| {
+                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                if !is_p2p {
+                    let _ = all_tx.send(("__control__".to_string(), event.update.clone()));
+                }
+            })
+            .expect("observe control doc failed");
         std::mem::forget(sub);
 
         // Observe chat array for P2P-delivered messages and fire SSE events.
@@ -131,75 +146,83 @@ impl AppState {
         let chat_arr = control.get_or_insert_array(CHAT_KEY);
         let events_for_chat = events_tx.clone();
         let seen_chat_ids = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
-        let chat_sub = chat_arr.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::array::ArrayEvent| {
-            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
-            let mut seen = seen_chat_ids.lock().unwrap();
-            for change in event.delta(txn) {
-                if let yrs::types::Change::Added(values) = change {
-                    for val in values {
-                        if let yrs::Out::Any(yrs::Any::String(s)) = val {
-                            if let Ok(msg) = serde_json::from_str::<ChatMessage>(s) {
-                                if !seen.insert(msg.id.clone()) || !is_p2p {
-                                    continue;
-                                }
-                                let _ = events_for_chat.send(CircleEvent::MessagePosted { message: msg.clone() });
-                                for mention in &msg.mentions {
-                                    let _ = events_for_chat.send(CircleEvent::AgentMentioned {
-                                        agent_id: mention.clone(),
+        let chat_sub = chat_arr.observe(
+            move |txn: &yrs::TransactionMut, event: &yrs::types::array::ArrayEvent| {
+                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                let mut seen = seen_chat_ids.lock().unwrap();
+                for change in event.delta(txn) {
+                    if let yrs::types::Change::Added(values) = change {
+                        for val in values {
+                            if let yrs::Out::Any(yrs::Any::String(s)) = val {
+                                if let Ok(msg) = serde_json::from_str::<ChatMessage>(s) {
+                                    if !seen.insert(msg.id.clone()) || !is_p2p {
+                                        continue;
+                                    }
+                                    let _ = events_for_chat.send(CircleEvent::MessagePosted {
                                         message: msg.clone(),
                                     });
+                                    for mention in &msg.mentions {
+                                        let _ = events_for_chat.send(CircleEvent::AgentMentioned {
+                                            agent_id: mention.clone(),
+                                            message: msg.clone(),
+                                        });
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-        });
+            },
+        );
         std::mem::forget(chat_sub);
 
         // Observe tasks for P2P-delivered changes and fire SSE events. Local task
         // APIs emit their own events; this covers updates that arrived via CRDT sync.
         let tasks_map = control.get_or_insert_map(TASKS_KEY);
         let events_for_tasks = events_tx.clone();
-        let tasks_sub = tasks_map.observe(move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
-            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
-            if !is_p2p { return; }
+        let tasks_sub = tasks_map.observe(
+            move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                if !is_p2p {
+                    return;
+                }
 
-            for change in event.keys(txn).values() {
-                match change {
-                    yrs::types::EntryChange::Inserted(yrs::Out::Any(yrs::Any::String(s))) => {
-                        if let Ok(task) = serde_json::from_str::<Task>(s) {
-                            let _ = events_for_tasks.send(CircleEvent::TaskCreated {
-                                task_id: task.task_id,
-                            });
+                for change in event.keys(txn).values() {
+                    match change {
+                        yrs::types::EntryChange::Inserted(yrs::Out::Any(yrs::Any::String(s))) => {
+                            if let Ok(task) = serde_json::from_str::<Task>(s) {
+                                let _ = events_for_tasks.send(CircleEvent::TaskCreated {
+                                    task_id: task.task_id,
+                                });
+                            }
                         }
-                    }
-                    yrs::types::EntryChange::Updated(_, yrs::Out::Any(yrs::Any::String(s))) => {
-                        if let Ok(task) = serde_json::from_str::<Task>(s) {
-                            match task.status {
-                                TaskStatus::Claimed => {
-                                    let _ = events_for_tasks.send(CircleEvent::TaskClaimed {
-                                        task_id: task.task_id,
-                                        agent_id: task.claimed_by.unwrap_or_default(),
-                                    });
-                                }
-                                TaskStatus::Done => {
-                                    let _ = events_for_tasks.send(CircleEvent::TaskDone {
-                                        task_id: task.task_id,
-                                    });
-                                }
-                                TaskStatus::Open => {
-                                    let _ = events_for_tasks.send(CircleEvent::TaskCreated {
-                                        task_id: task.task_id,
-                                    });
+                        yrs::types::EntryChange::Updated(_, yrs::Out::Any(yrs::Any::String(s))) => {
+                            if let Ok(task) = serde_json::from_str::<Task>(s) {
+                                match task.status {
+                                    TaskStatus::Claimed => {
+                                        let _ = events_for_tasks.send(CircleEvent::TaskClaimed {
+                                            task_id: task.task_id,
+                                            agent_id: task.claimed_by.unwrap_or_default(),
+                                        });
+                                    }
+                                    TaskStatus::Done => {
+                                        let _ = events_for_tasks.send(CircleEvent::TaskDone {
+                                            task_id: task.task_id,
+                                        });
+                                    }
+                                    TaskStatus::Open => {
+                                        let _ = events_for_tasks.send(CircleEvent::TaskCreated {
+                                            task_id: task.task_id,
+                                        });
+                                    }
                                 }
                             }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
-            }
-        });
+            },
+        );
         std::mem::forget(tasks_sub);
 
         // Proposals are not replicated through the control doc. They sync via
@@ -253,20 +276,22 @@ impl AppState {
         let all_tx = self.all_updates.clone();
         let path_owned = rel_path.to_string();
 
-        let sub = doc.observe_update_v1(move |txn, event| {
-            let raw = event.update.clone();
-            let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
-            // Always notify local WS subscribers.
-            let _ = tx.send(raw.clone());
-            // Only forward to P2P if the update was NOT from a remote peer.
-            // This prevents echoing a received update back to the sender.
-            if !is_p2p {
-                let _ = all_tx.send((path_owned.clone(), raw));
-            }
-            // CRDT state is now saved synchronously in flush_to_disk and handle_event,
-            // not here, to avoid the race condition where a background save can be
-            // killed mid-write if the daemon shuts down between flush_to_disk and save.
-        }).expect("observe_update_v1 failed");
+        let sub = doc
+            .observe_update_v1(move |txn, event| {
+                let raw = event.update.clone();
+                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                // Always notify local WS subscribers.
+                let _ = tx.send(raw.clone());
+                // Only forward to P2P if the update was NOT from a remote peer.
+                // This prevents echoing a received update back to the sender.
+                if !is_p2p {
+                    let _ = all_tx.send((path_owned.clone(), raw));
+                }
+                // CRDT state is now saved synchronously in flush_to_disk and handle_event,
+                // not here, to avoid the race condition where a background save can be
+                // killed mid-write if the daemon shuts down between flush_to_disk and save.
+            })
+            .expect("observe_update_v1 failed");
 
         // The Subscription token is RAII — dropping it unregisters the observer.
         // Docs live for the entire daemon lifetime, so leaking is safe here.
@@ -293,10 +318,7 @@ impl AppState {
     pub fn is_peer_removed(&self, peer_id: &str) -> bool {
         let removed = self.control.get_or_insert_map(MLS_REMOVED_KEY);
         let txn = self.control.transact();
-        matches!(
-            removed.get(&txn, peer_id),
-            Some(Out::Any(Any::String(_)))
-        )
+        matches!(removed.get(&txn, peer_id), Some(Out::Any(Any::String(_))))
     }
 
     pub fn is_self_removed(&self) -> bool {
@@ -388,10 +410,7 @@ fn classify_connection_address(address: &Multiaddr) -> ConnectionKind {
             }
             Protocol::Ip6(ip) => {
                 let segments = ip.segments();
-                if segments[0] == 0xfd7a
-                    && segments[1] == 0x115c
-                    && segments[2] == 0xa1e0
-                {
+                if segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0 {
                     return ConnectionKind::Tailscale;
                 }
                 if ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local() {
@@ -419,13 +438,19 @@ mod tests {
     #[test]
     fn classifies_peer_connection_routes() {
         assert_eq!(kind("/ip4/192.168.1.20/tcp/50902"), ConnectionKind::Lan);
-        assert_eq!(kind("/ip4/100.96.12.3/tcp/50902"), ConnectionKind::Tailscale);
+        assert_eq!(
+            kind("/ip4/100.96.12.3/tcp/50902"),
+            ConnectionKind::Tailscale
+        );
         assert_eq!(
             kind("/ip6/fd7a:115c:a1e0::1234/tcp/50902"),
             ConnectionKind::Tailscale,
         );
         assert_eq!(kind("/ip4/203.0.113.8/tcp/50902"), ConnectionKind::Public);
-        assert_eq!(kind("/dns4/member.example.com/tcp/50902"), ConnectionKind::Public);
+        assert_eq!(
+            kind("/dns4/member.example.com/tcp/50902"),
+            ConnectionKind::Public
+        );
         assert_eq!(
             kind("/dns4/relay.example.com/tcp/36521/p2p/12D3KooWJ5dNQYxvLwRQFqz3YxVwvhQdJXLwRj2xByLsMvjJxSxa/p2p-circuit"),
             ConnectionKind::Relay,

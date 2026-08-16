@@ -202,8 +202,10 @@ mod tests {
 
     #[test]
     fn edit_roundtrips_through_toml() {
-        let mut cfg = AgentConfig::default();
-        cfg.reaction = Reaction::Push;
+        let mut cfg = AgentConfig {
+            reaction: Reaction::Push,
+            ..Default::default()
+        };
         cfg.set_agent(
             "claude",
             AgentCommand {

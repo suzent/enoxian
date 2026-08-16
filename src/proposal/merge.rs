@@ -205,7 +205,9 @@ mod tests {
         let result = snap(&[("a.txt", "agent edit")]);
         assert_eq!(
             three_way(&base, &main, &result),
-            MergeOutcome::Conflicted { paths: vec!["a.txt".to_string()] }
+            MergeOutcome::Conflicted {
+                paths: vec!["a.txt".to_string()]
+            }
         );
     }
 
@@ -224,7 +226,9 @@ mod tests {
         let result = snap(&[("a.txt", "agent edit")]);
         assert_eq!(
             three_way(&base, &main, &result),
-            MergeOutcome::Conflicted { paths: vec!["a.txt".to_string()] }
+            MergeOutcome::Conflicted {
+                paths: vec!["a.txt".to_string()]
+            }
         );
     }
 }

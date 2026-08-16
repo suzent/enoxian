@@ -1,13 +1,12 @@
-pub mod identity;
 pub mod group;
+pub mod identity;
 
-pub use identity::MlsIdentity;
 pub use group::MlsGroupManager;
+pub use identity::MlsIdentity;
 
 pub use openmls::prelude::Ciphersuite;
 
-pub const CIPHERSUITE: Ciphersuite =
-    Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+pub const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;

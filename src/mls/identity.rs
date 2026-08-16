@@ -94,8 +94,8 @@ impl MlsIdentity {
         let json = std::fs::read_to_string(Self::identity_path(circle_dir))?;
         let stored: StoredIdentity = serde_json::from_str(&json)?;
 
-        let signer: SignatureKeyPair = serde_json::from_value(stored.signer_json)
-            .context("deserialize MLS signer")?;
+        let signer: SignatureKeyPair =
+            serde_json::from_value(stored.signer_json).context("deserialize MLS signer")?;
         let credential_with_key: CredentialWithKey =
             serde_json::from_value(stored.credential_with_key_json)
                 .context("deserialize MLS credential")?;
@@ -117,7 +117,12 @@ impl MlsIdentity {
 
     pub fn generate_key_package(&self) -> Result<Vec<u8>> {
         let bundle = KeyPackage::builder()
-            .build(CIPHERSUITE, &self.provider, &self.signer, self.credential_with_key.clone())
+            .build(
+                CIPHERSUITE,
+                &self.provider,
+                &self.signer,
+                self.credential_with_key.clone(),
+            )
             .map_err(|e| anyhow::anyhow!("build KeyPackage: {e:?}"))?;
 
         bundle

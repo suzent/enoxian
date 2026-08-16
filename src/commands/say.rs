@@ -1,17 +1,17 @@
 use anyhow::Result;
 use serde_json::json;
 
-pub async fn run(
-    client: &reqwest::Client,
-    base: &str,
-    text: String,
-) -> Result<()> {
+pub async fn run(client: &reqwest::Client, base: &str, text: String) -> Result<()> {
     let agent_id = fetch_agent_id(client, base).await;
     let body = json!({
         "text": text,
         "agent_id": agent_id,
     });
-    let resp = client.post(format!("{base}/chat")).json(&body).send().await?;
+    let resp = client
+        .post(format!("{base}/chat"))
+        .json(&body)
+        .send()
+        .await?;
     if resp.status().is_success() {
         let val: serde_json::Value = resp.json().await?;
         println!("✓ sent (id: {})", val["id"].as_str().unwrap_or("?"));

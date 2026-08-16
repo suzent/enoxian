@@ -1,9 +1,9 @@
 //! Shared daemon state — holds one AppState per active circle.
 
-use std::sync::Arc;
-use dashmap::DashMap;
-use tokio_util::sync::CancellationToken;
 use crate::state::AppState;
+use dashmap::DashMap;
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 /// Top-level state threaded through all axum handlers.
 /// Clone is cheap — all fields are Arc.

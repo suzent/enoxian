@@ -3,7 +3,7 @@ use std::path::Path;
 /// Generates the relative path for a conflict copy of `rel_path`.
 /// Format: `<rel_path>.conflict.<agent_id>`
 pub fn conflict_rel_path(rel_path: &str, agent_id: &str) -> String {
-    format!("{}.conflict.{}", rel_path, agent_id)
+    format!("{rel_path}.conflict.{agent_id}")
 }
 
 /// Walk the workspace directory tree and return all relative paths that look

@@ -258,11 +258,11 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
 
             // TCP + PSK: for direct circle-peer connections.
             let tcp = tcp::tokio::Transport::new(tcp::Config::default())
-            .and_then(move |s, _| pnet_config.handshake(s))
-            .upgrade(upgrade::Version::V1Lazy)
-            .authenticate(noise::Config::new(key)?)
-            .multiplex(yamux::Config::default())
-            .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
+                .and_then(move |s, _| pnet_config.handshake(s))
+                .upgrade(upgrade::Version::V1Lazy)
+                .authenticate(noise::Config::new(key)?)
+                .multiplex(yamux::Config::default())
+                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
 
             // Relay: for circuit addresses (invite peer_addr may be a relay circuit).
             let relay = relay_transport

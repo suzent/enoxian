@@ -1,6 +1,10 @@
+use crate::daemon::DaemonState;
+use crate::presence;
+use crate::state::AppState;
+use crate::store::fs::flush_to_disk;
 use axum::{
-    extract::{Path, Query, State, WebSocketUpgrade},
     extract::ws::{Message as WsMsg, WebSocket},
+    extract::{Path, Query, State, WebSocketUpgrade},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -9,13 +13,9 @@ use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 use yrs::sync::protocol::{Message, SyncMessage};
-use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
 use yrs::updates::decoder::Decode;
+use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
 use yrs::{ReadTxn, Transact, Update};
-use crate::daemon::DaemonState;
-use crate::presence;
-use crate::state::AppState;
-use crate::store::fs::flush_to_disk;
 
 #[derive(Deserialize)]
 pub struct WsParams {
@@ -30,10 +30,17 @@ pub async fn ws_yjs_handler(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "circle not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
     };
     let path = params.path.clone();
-    ws.on_upgrade(move |socket| handle_socket(socket, state, path)).into_response()
+    ws.on_upgrade(move |socket| handle_socket(socket, state, path))
+        .into_response()
 }
 
 async fn handle_socket(socket: WebSocket, state: AppState, doc_path: String) {
@@ -48,7 +55,11 @@ async fn handle_socket(socket: WebSocket, state: AppState, doc_path: String) {
         let msg = Message::Sync(SyncMessage::SyncStep1(sv));
         let mut enc = EncoderV1::new();
         msg.encode(&mut enc);
-        if sender.send(WsMsg::Binary(enc.to_vec().into())).await.is_err() {
+        if sender
+            .send(WsMsg::Binary(enc.to_vec().into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -100,7 +111,9 @@ async fn handle_incoming(
     doc_path: &str,
     awareness_tx: &tokio::sync::broadcast::Sender<Vec<u8>>,
 ) {
-    if data.is_empty() { return; }
+    if data.is_empty() {
+        return;
+    }
 
     // y-protocols wire format: first varuint byte is the message type.
     // Type 0 = MSG_SYNC (yrs can decode), type 1 = MSG_AWARENESS.
@@ -115,9 +128,7 @@ async fn handle_incoming(
         return;
     }
 
-    let mut decoder = yrs::updates::decoder::DecoderV1::new(
-        yrs::encoding::read::Cursor::new(data)
-    );
+    let mut decoder = yrs::updates::decoder::DecoderV1::new(yrs::encoding::read::Cursor::new(data));
     let msg = match Message::decode(&mut decoder) {
         Ok(m) => m,
         Err(e) => {
@@ -135,8 +146,7 @@ async fn handle_incoming(
             let _ = sender.send(WsMsg::Binary(enc.to_vec().into())).await;
         }
 
-        Message::Sync(SyncMessage::SyncStep2(raw))
-        | Message::Sync(SyncMessage::Update(raw)) => {
+        Message::Sync(SyncMessage::SyncStep2(raw)) | Message::Sync(SyncMessage::Update(raw)) => {
             match Update::decode_v1(&raw) {
                 Ok(update) => {
                     let mut txn = doc.transact_mut();

@@ -8,14 +8,17 @@ The quickest path — downloads the latest release for your platform and install
 **Linux / macOS:**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/suzent/enoxian/main/scripts/install.sh | sh
+curl -fsSL https://github.com/suzent/enoxian/releases/latest/download/install.sh | sh
 ```
 
-**Windows (PowerShell):**
+**Windows:**
 
 ```powershell
-irm https://raw.githubusercontent.com/suzent/enoxian/main/scripts/install.ps1 | iex
+irm https://github.com/suzent/enoxian/releases/latest/download/install.ps1 | iex
 ```
+
+Every release includes `SHA256SUMS`, which the installers verify before
+installation.
 
 **Homebrew** (once the tap is published):
 
@@ -23,13 +26,13 @@ irm https://raw.githubusercontent.com/suzent/enoxian/main/scripts/install.ps1 | 
 brew install suzent/tap/enoxian
 ```
 
-Pin a version with `ENOXIAN_VERSION=v0.1.4` (or `$env:ENOXIAN_VERSION`), or set
+Pin a version with `ENOXIAN_VERSION=v0.2.0` (or `$env:ENOXIAN_VERSION`), or set
 `ENOXIAN_BIN_DIR` to change the install directory. To build from source instead,
 see below.
 
 ## Prerequisites (build from source)
 
-- Rust 1.83 or newer
+- Rust 1.88 or newer
 - Cargo
 - Node.js (only for building the frontend in release mode)
 

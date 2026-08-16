@@ -85,7 +85,10 @@ mod tests {
         journal.capture_before("a.txt").unwrap();
 
         let v1_hash = BlobStore::hash(b"v1");
-        assert_eq!(journal.before.get("a.txt").unwrap().as_deref(), Some(v1_hash.as_str()));
+        assert_eq!(
+            journal.before.get("a.txt").unwrap().as_deref(),
+            Some(v1_hash.as_str())
+        );
         assert_eq!(journal.touched_paths().collect::<Vec<_>>(), vec!["a.txt"]);
     }
 

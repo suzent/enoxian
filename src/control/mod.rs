@@ -134,7 +134,10 @@ pub enum AgentStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum MemberRole { Admin, Member }
+pub enum MemberRole {
+    Admin,
+    Member,
+}
 
 impl std::fmt::Display for MemberRole {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -182,22 +185,55 @@ pub struct ChatMessage {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CircleEvent {
-    FileUpdated { path: String },
-    FileDeleted { path: String },
-    LockAcquired { path: String, agent_id: String },
-    LockReleased { path: String, agent_id: String },
-    TaskCreated { task_id: String },
-    TaskClaimed { task_id: String, agent_id: String },
-    TaskDone { task_id: String },
-    PresenceChanged { agent_id: String },
-    MemberAdded { peer_id: String },
-    MemberRemoved { peer_id: String },
+    FileUpdated {
+        path: String,
+    },
+    FileDeleted {
+        path: String,
+    },
+    LockAcquired {
+        path: String,
+        agent_id: String,
+    },
+    LockReleased {
+        path: String,
+        agent_id: String,
+    },
+    TaskCreated {
+        task_id: String,
+    },
+    TaskClaimed {
+        task_id: String,
+        agent_id: String,
+    },
+    TaskDone {
+        task_id: String,
+    },
+    PresenceChanged {
+        agent_id: String,
+    },
+    MemberAdded {
+        peer_id: String,
+    },
+    MemberRemoved {
+        peer_id: String,
+    },
     /// A chat message was posted to the circle.
-    MessagePosted { message: ChatMessage },
+    MessagePosted {
+        message: ChatMessage,
+    },
     /// A message mentioned a specific agent — the agent's wake signal.
-    AgentMentioned { agent_id: String, message: ChatMessage },
+    AgentMentioned {
+        agent_id: String,
+        message: ChatMessage,
+    },
     /// The proposal engine captured a workspace change (M14).
-    ProposalCreated { proposal_id: String },
+    ProposalCreated {
+        proposal_id: String,
+    },
     /// A proposal's status changed (accepted / rejected / reverted).
-    ProposalUpdated { proposal_id: String, status: String },
+    ProposalUpdated {
+        proposal_id: String,
+        status: String,
+    },
 }

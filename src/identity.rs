@@ -73,7 +73,14 @@ impl DeviceIdentity {
     pub fn generate(device_label: String) -> Self {
         let mut seed = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut seed);
-        DeviceIdentity { seed, device_label, user_handle: None, user_pubkey_hex: None, user_attestation_hex: None, agents: Vec::new() }
+        DeviceIdentity {
+            seed,
+            device_label,
+            user_handle: None,
+            user_pubkey_hex: None,
+            user_attestation_hex: None,
+            agents: Vec::new(),
+        }
     }
 
     // ── Persistence ───────────────────────────────────────────────────────────
@@ -99,8 +106,8 @@ impl DeviceIdentity {
 
     pub fn load() -> Result<Self> {
         let path = identity_path()?;
-        let raw = std::fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let raw =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let file: IdentityFile = toml::from_str(&raw).context("parse identity.toml")?;
         let bytes = hex::decode(&file.device_key_hex).context("decode device_key_hex")?;
         if bytes.len() != 32 {
@@ -192,7 +199,9 @@ impl UserIdentity {
 
     /// Restore from a BIP-39 mnemonic (used when linking a second device).
     pub fn from_mnemonic(mnemonic: &str, handle: String) -> Result<Self> {
-        let m = mnemonic.parse::<bip39::Mnemonic>().context("parse mnemonic")?;
+        let m = mnemonic
+            .parse::<bip39::Mnemonic>()
+            .context("parse mnemonic")?;
         let seed_bytes = m.to_entropy();
         if seed_bytes.len() != 32 {
             bail!("mnemonic entropy must be 32 bytes");
@@ -205,10 +214,13 @@ impl UserIdentity {
     fn keypair(&self) -> Result<Keypair> {
         let hk = Hkdf::<Sha256>::new(Some(b"enoxian-user-v1"), &self.seed);
         let mut okm = [0u8; 32];
-        hk.expand(b"user-root-key", &mut okm).map_err(|_| anyhow::anyhow!("HKDF failed"))?;
+        hk.expand(b"user-root-key", &mut okm)
+            .map_err(|_| anyhow::anyhow!("HKDF failed"))?;
         let secret = libp2p::identity::ed25519::SecretKey::try_from_bytes(okm)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok(Keypair::from(libp2p::identity::ed25519::Keypair::from(secret)))
+        Ok(Keypair::from(libp2p::identity::ed25519::Keypair::from(
+            secret,
+        )))
     }
 
     pub fn pubkey_hex(&self) -> Result<String> {
@@ -259,7 +271,13 @@ fn default_device_label() -> String {
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().split('.').next().unwrap_or("device").to_lowercase())
+        .map(|s| {
+            s.trim()
+                .split('.')
+                .next()
+                .unwrap_or("device")
+                .to_lowercase()
+        })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "device".to_string())
 }
@@ -267,7 +285,9 @@ fn default_device_label() -> String {
 /// Read just the identity file without constructing a full DeviceIdentity.
 /// Used by the status/CLI to display identity info without key material.
 pub fn read_identity_display() -> Option<(String, Option<String>)> {
-    identity_path().ok().and_then(|p| std::fs::read_to_string(p).ok())
+    identity_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| toml::from_str::<IdentityFile>(&s).ok())
         .map(|f| (f.device_label, f.user_handle))
 }
@@ -278,7 +298,8 @@ pub fn read_identity_display() -> Option<(String, Option<String>)> {
 /// device automatically advertises what it can run, without duplicating the
 /// list by hand. Deduplicated, order-stable (identity first, then config).
 pub fn read_local_agents() -> Vec<String> {
-    let mut agents: Vec<String> = identity_path().ok()
+    let mut agents: Vec<String> = identity_path()
+        .ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| toml::from_str::<IdentityFile>(&s).ok())
         .map(|f| f.agents)
@@ -339,6 +360,12 @@ mod tests {
             user_attestation_hex: None,
             agents: Vec::new(),
         };
-        assert_eq!(pid_before, d2.derive_circle_keypair("c1").unwrap().public().to_peer_id());
+        assert_eq!(
+            pid_before,
+            d2.derive_circle_keypair("c1")
+                .unwrap()
+                .public()
+                .to_peer_id()
+        );
     }
 }

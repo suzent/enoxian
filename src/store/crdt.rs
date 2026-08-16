@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 use yrs::updates::decoder::Decode;
+use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
 /// Path where the binary CRDT state for a doc is persisted.
 /// Hidden directory so the watcher ignores it (`.` prefix rule).
@@ -33,7 +33,9 @@ pub async fn restore(workspace: &Path, rel_path: &str, doc: &Arc<Doc>) -> bool {
         Ok(u) => u,
         Err(_) => return false,
     };
-    doc.transact_mut_with("restore").apply_update(update).is_ok()
+    doc.transact_mut_with("restore")
+        .apply_update(update)
+        .is_ok()
 }
 
 pub async fn delete(workspace: &Path, rel_path: &str) {

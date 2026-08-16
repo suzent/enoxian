@@ -167,7 +167,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             } else {
                 MemberRole::Member
             };
-            let msg = format!("add:{}:{}", peer_id, role);
+            let msg = format!("add:{peer_id}:{role}");
             let signature = keypair
                 .sign(msg.as_bytes())
                 .map(hex::encode)
@@ -541,10 +541,9 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     // ── Build the P2P swarm ───────────────────────────────────────────────────
     let pnet_config = pnet::PnetConfig::new(pnet::PreSharedKey::new(psk_bytes));
     let keypair_clone = keypair.clone();
-    let relay_peer_ids =
-        crate::network::public_relay_transport::relay_peer_ids_from_addrs(
-            config.relay_addrs.iter(),
-        );
+    let relay_peer_ids = crate::network::public_relay_transport::relay_peer_ids_from_addrs(
+        config.relay_addrs.iter(),
+    );
     let relay_base_addrs = std::sync::Arc::new(std::sync::RwLock::new(
         config
             .relay_addrs
@@ -562,9 +561,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             config.rendezvous_addrs.iter(),
         ),
     );
-    let public_relay_peer_ids = std::sync::Arc::new(std::sync::RwLock::new(
-        public_relay_peer_ids,
-    ));
+    let public_relay_peer_ids = std::sync::Arc::new(std::sync::RwLock::new(public_relay_peer_ids));
     let public_relay_peer_ids_for_transport = public_relay_peer_ids.clone();
 
     // relay::client::new produces the relay transport (for dialing circuits) and
@@ -591,11 +588,11 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
 
             // TCP + PSK: used for LAN / direct connections within the circle.
             let tcp = tcp::tokio::Transport::new(tcp::Config::default())
-            .and_then(move |s, _| pnet_config.handshake(s))
-            .upgrade(upgrade::Version::V1Lazy)
-            .authenticate(noise::Config::new(key)?)
-            .multiplex(yamux::Config::default())
-            .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
+                .and_then(move |s, _| pnet_config.handshake(s))
+                .upgrade(upgrade::Version::V1Lazy)
+                .authenticate(noise::Config::new(key)?)
+                .multiplex(yamux::Config::default())
+                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
 
             // Relay: used for circuit connections through a relay node.
             // No PSK here — relay connections are already over an authenticated channel.
@@ -1322,7 +1319,7 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
         let (owner, agent_id, device_label, agents) = pending_entry
             .map(|p| (p.owner, p.agent_id, p.device_label, p.agents))
             .unwrap_or_default();
-        let msg = format!("add:{}:member:owner:{}", peer_id_str, owner);
+        let msg = format!("add:{peer_id_str}:member:owner:{owner}");
         let entry = MemberEntry {
             peer_id: peer_id_str.clone(),
             owner,

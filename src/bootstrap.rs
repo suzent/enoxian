@@ -19,9 +19,9 @@ use libp2p::{
     core::{muxing::StreamMuxerBox, upgrade},
     futures::future::Either,
     futures::StreamExt,
-    identify, kad, noise, quic, relay, rendezvous, tcp, yamux,
+    identify, kad, noise, quic, relay, rendezvous,
     swarm::SwarmEvent,
-    Multiaddr, SwarmBuilder, Transport,
+    tcp, yamux, Multiaddr, SwarmBuilder, Transport,
 };
 use std::{num::NonZeroU32, time::Duration};
 use tracing::{info, warn};
@@ -55,12 +55,15 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
             let quic_t = quic::tokio::Transport::new(quic::Config::new(key))
                 .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
 
-            Ok(libp2p::dns::tokio::Transport::system(
-                tcp.or_transport(quic_t).map(|e, _| match e {
-                    Either::Left(x) => x,
-                    Either::Right(x) => x,
-                })
-            )?.map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer))))
+            Ok(
+                libp2p::dns::tokio::Transport::system(tcp.or_transport(quic_t).map(
+                    |e, _| match e {
+                        Either::Left(x) => x,
+                        Either::Right(x) => x,
+                    },
+                ))?
+                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer))),
+            )
         })?
         .with_behaviour(|key| {
             let pid = key.public().to_peer_id();
@@ -115,10 +118,10 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
         .with_state(peer_id_str.clone());
     let http_addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(http_addr).await
+        let listener = tokio::net::TcpListener::bind(http_addr)
+            .await
             .expect("failed to bind HTTP listener");
-        axum::serve(listener, app).await
-            .expect("HTTP server error");
+        axum::serve(listener, app).await.expect("HTTP server error");
     });
 
     loop {
@@ -136,23 +139,43 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
                 info!("    {address}/p2p/{peer_id}");
                 info!("  Or just run: enox invite <circle> --rendezvous <hostname>");
             }
-            SwarmEvent::ConnectionEstablished { peer_id: remote, endpoint, .. } => {
-                info!("[bootstrap] peer connected: {remote} via {}", endpoint.get_remote_address());
+            SwarmEvent::ConnectionEstablished {
+                peer_id: remote,
+                endpoint,
+                ..
+            } => {
+                info!(
+                    "[bootstrap] peer connected: {remote} via {}",
+                    endpoint.get_remote_address()
+                );
             }
-            SwarmEvent::ConnectionClosed { peer_id: remote, cause, .. } => {
+            SwarmEvent::ConnectionClosed {
+                peer_id: remote,
+                cause,
+                ..
+            } => {
                 info!("[bootstrap] peer disconnected: {remote}: {cause:?}");
             }
             SwarmEvent::Behaviour(BootstrapEvent::Rendezvous(e)) => {
                 use rendezvous::server::Event;
                 match &e {
                     Event::PeerRegistered { peer, registration } => {
-                        info!("[rendezvous] registered: {peer} ns={}", registration.namespace);
+                        info!(
+                            "[rendezvous] registered: {peer} ns={}",
+                            registration.namespace
+                        );
                     }
                     Event::PeerUnregistered { peer, namespace } => {
                         info!("[rendezvous] unregistered: {peer} ns={namespace}");
                     }
-                    Event::DiscoverServed { enquirer, registrations } => {
-                        info!("[rendezvous] served {} registrations to {enquirer}", registrations.len());
+                    Event::DiscoverServed {
+                        enquirer,
+                        registrations,
+                    } => {
+                        info!(
+                            "[rendezvous] served {} registrations to {enquirer}",
+                            registrations.len()
+                        );
                     }
                     _ => tracing::debug!("[rendezvous] {e:?}"),
                 }
@@ -160,10 +183,16 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
             SwarmEvent::Behaviour(BootstrapEvent::Relay(e)) => {
                 use relay::Event;
                 match &e {
-                    Event::ReservationReqAccepted { src_peer_id, renewed } => {
+                    Event::ReservationReqAccepted {
+                        src_peer_id,
+                        renewed,
+                    } => {
                         info!("[relay] reservation accepted: peer={src_peer_id} renewed={renewed}");
                     }
-                    Event::ReservationReqDenied { src_peer_id, status } => {
+                    Event::ReservationReqDenied {
+                        src_peer_id,
+                        status,
+                    } => {
                         warn!("[relay] reservation denied: peer={src_peer_id} status={status:?}");
                     }
                     Event::ReservationClosed { src_peer_id } => {
@@ -172,13 +201,24 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
                     Event::ReservationTimedOut { src_peer_id } => {
                         info!("[relay] reservation timed out: peer={src_peer_id}");
                     }
-                    Event::CircuitReqAccepted { src_peer_id, dst_peer_id } => {
+                    Event::CircuitReqAccepted {
+                        src_peer_id,
+                        dst_peer_id,
+                    } => {
                         info!("[relay] circuit accepted: src={src_peer_id} dst={dst_peer_id}");
                     }
-                    Event::CircuitReqDenied { src_peer_id, dst_peer_id, status } => {
+                    Event::CircuitReqDenied {
+                        src_peer_id,
+                        dst_peer_id,
+                        status,
+                    } => {
                         warn!("[relay] circuit denied: src={src_peer_id} dst={dst_peer_id} status={status:?}");
                     }
-                    Event::CircuitClosed { src_peer_id, dst_peer_id, error } => {
+                    Event::CircuitClosed {
+                        src_peer_id,
+                        dst_peer_id,
+                        error,
+                    } => {
                         if let Some(error) = error {
                             warn!("[relay] circuit closed: src={src_peer_id} dst={dst_peer_id} error={error}");
                         } else {
@@ -189,7 +229,9 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
                 }
             }
             SwarmEvent::Behaviour(BootstrapEvent::Identify(identify::Event::Received {
-                peer_id: remote, info, ..
+                peer_id: remote,
+                info,
+                ..
             })) => {
                 for addr in &info.listen_addrs {
                     swarm.behaviour_mut().kad.add_address(&remote, addr.clone());
@@ -204,16 +246,17 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
 }
 
 fn relay_server_config() -> relay::Config {
-    let mut config = relay::Config::default();
-
     // Enoxian keeps sync and presence streams alive; libp2p's generic defaults
     // (16 circuits, 2 minutes, 128 KiB) cause reconnect churn under normal use.
-    config.max_reservations = 512;
-    config.max_reservations_per_peer = 8;
-    config.max_circuits = 128;
-    config.max_circuits_per_peer = 16;
-    config.max_circuit_duration = Duration::from_secs(30 * 60);
-    config.max_circuit_bytes = 64 * 1024 * 1024;
+    let mut config = relay::Config {
+        max_reservations: 512,
+        max_reservations_per_peer: 8,
+        max_circuits: 128,
+        max_circuits_per_peer: 16,
+        max_circuit_duration: Duration::from_secs(30 * 60),
+        max_circuit_bytes: 64 * 1024 * 1024,
+        ..Default::default()
+    };
 
     // Keep abuse protection, but permit short reconnect bursts after a network
     // transition. The stock bucket only refills one request every two minutes.
@@ -266,14 +309,12 @@ fn load_or_create_keypair() -> Result<libp2p::identity::Keypair> {
     std::fs::create_dir_all(&dir).context("failed to create ~/.enoxian")?;
     let path = dir.join("bootstrap.key");
     if path.exists() {
-        let hex = std::fs::read_to_string(&path)
-            .context("failed to read bootstrap.key")?;
+        let hex = std::fs::read_to_string(&path).context("failed to read bootstrap.key")?;
         keypair_from_hex(hex.trim())
     } else {
         let keypair = generate_keypair();
         let hex = keypair_to_hex(&keypair)?;
-        std::fs::write(&path, &hex)
-            .context("failed to write bootstrap.key")?;
+        std::fs::write(&path, &hex).context("failed to write bootstrap.key")?;
         info!("Generated new bootstrap keypair → {}", path.display());
         Ok(keypair)
     }
@@ -289,7 +330,9 @@ mod tests {
 
     #[test]
     fn public_ipv6_is_advertised() {
-        assert!(is_public_listen_addr(&addr("/ip6/2606:4700:4700::1111/tcp/36521")));
+        assert!(is_public_listen_addr(&addr(
+            "/ip6/2606:4700:4700::1111/tcp/36521"
+        )));
     }
 
     #[test]

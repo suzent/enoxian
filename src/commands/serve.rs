@@ -2,7 +2,9 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use tracing::{info, warn};
 
-use crate::{api, cli::ServeArgs, config, daemon::DaemonState, identity::DeviceIdentity, lifecycle};
+use crate::{
+    api, cli::ServeArgs, config, daemon::DaemonState, identity::DeviceIdentity, lifecycle,
+};
 
 pub async fn run(args: ServeArgs) -> Result<()> {
     // ── Device identity: first-run setup ─────────────────────────────────────
@@ -43,7 +45,9 @@ pub async fn run(args: ServeArgs) -> Result<()> {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             loop {
                 interval.tick().await;
-                let Ok(cfgs) = config::load_all() else { continue };
+                let Ok(cfgs) = config::load_all() else {
+                    continue;
+                };
                 for cfg in cfgs {
                     if !cfg.disabled && !d.is_active(&cfg.circle_id) {
                         info!("[hot-reload] starting circle '{}'", cfg.circle_name);
@@ -75,10 +79,16 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     // output to <repo>/static). Try the crate-root static dir first, then the
     // parent (workspace) layout, so it resolves in both dev and packaged builds.
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let static_dir = [manifest.join("static"), manifest.parent().map(|p| p.join("static")).unwrap_or_default()]
-        .into_iter()
-        .find(|p| p.join("index.html").exists())
-        .unwrap_or_else(|| manifest.join("static"));
+    let static_dir = [
+        manifest.join("static"),
+        manifest
+            .parent()
+            .map(|p| p.join("static"))
+            .unwrap_or_default(),
+    ]
+    .into_iter()
+    .find(|p| p.join("index.html").exists())
+    .unwrap_or_else(|| manifest.join("static"));
     if static_dir.join("index.html").exists() {
         use tower_http::services::ServeDir;
         // The HTML entry point injects the API token as window.__ENOX_TOKEN__.
@@ -144,7 +154,8 @@ fn ensure_identity() -> Result<DeviceIdentity> {
     }
 
     // Check env-var override first (for automated / headless setups).
-    let label_from_env = std::env::var("ENOXIAN_DEVICE_LABEL").ok()
+    let label_from_env = std::env::var("ENOXIAN_DEVICE_LABEL")
+        .ok()
         .filter(|s| !s.is_empty());
 
     let label = if let Some(l) = label_from_env {
@@ -162,7 +173,11 @@ fn ensure_identity() -> Result<DeviceIdentity> {
         let mut input = String::new();
         let _ = std::io::stdin().read_line(&mut input);
         let trimmed = input.trim().to_string();
-        if trimmed.is_empty() { default } else { trimmed }
+        if trimmed.is_empty() {
+            default
+        } else {
+            trimmed
+        }
     };
 
     let device = DeviceIdentity::generate(label);
@@ -178,11 +193,15 @@ fn is_interactive() -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::io::AsRawFd;
-        extern "C" { fn isatty(fd: std::os::raw::c_int) -> std::os::raw::c_int; }
+        extern "C" {
+            fn isatty(fd: std::os::raw::c_int) -> std::os::raw::c_int;
+        }
         unsafe { isatty(std::io::stdin().as_raw_fd()) != 0 }
     }
     #[cfg(not(unix))]
-    { true }
+    {
+        true
+    }
 }
 
 fn hostname_label() -> String {
@@ -190,7 +209,13 @@ fn hostname_label() -> String {
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().split('.').next().unwrap_or("device").to_lowercase())
+        .map(|s| {
+            s.trim()
+                .split('.')
+                .next()
+                .unwrap_or("device")
+                .to_lowercase()
+        })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "device".to_string())
 }

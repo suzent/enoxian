@@ -40,8 +40,7 @@ pub async fn run(args: InitArgs) -> Result<()> {
             let default = config::normalize_workspace_dir(&default_workspace_dir(&args.name)?)?;
             if config::workspace_conflict(&default, &circle_id, &existing)?.is_some() {
                 config::normalize_workspace_dir(&config::disambiguated_workspace_dir(
-                    &args.name,
-                    &circle_id,
+                    &args.name, &circle_id,
                 )?)?
             } else {
                 default
@@ -85,17 +84,17 @@ pub async fn run(args: InitArgs) -> Result<()> {
     };
 
     let config = CircleConfig {
-        circle_id:         circle_id.clone(),
-        circle_name:       args.name.clone(),
-        psk_hex:           hex::encode(psk),
+        circle_id: circle_id.clone(),
+        circle_name: args.name.clone(),
+        psk_hex: hex::encode(psk),
         keypair_proto_hex: keypair_to_hex(&keypair)?,
-        workspace_dir:     workspace_dir.to_string_lossy().into_owned(),
-        admin_pubkey_hex:  admin_pubkey_hex.clone(),
-        disabled:          false,
-        force_relay:       false,
-        peers:             vec![],
-        relay_addrs:       vec![],
-        rendezvous_addrs:  vec![],
+        workspace_dir: workspace_dir.to_string_lossy().into_owned(),
+        admin_pubkey_hex: admin_pubkey_hex.clone(),
+        disabled: false,
+        force_relay: false,
+        peers: vec![],
+        relay_addrs: vec![],
+        rendezvous_addrs: vec![],
         join_policy,
         owner,
     };
@@ -113,20 +112,21 @@ pub async fn run(args: InitArgs) -> Result<()> {
     let mls_identity = MlsIdentity::generate(&peer_id.to_string())?;
     mls_identity.save(&cdir)?;
     let mls_group = MlsGroupManager::create(&mls_identity)?;
-    mls_group.save(&mls_identity, &cdir)
+    mls_group
+        .save(&mls_identity, &cdir)
         .map_err(|e| anyhow::anyhow!("failed to save MLS group: {e}"))?;
 
     // ── Generate invite ───────────────────────────────────────────────────────
     let ttl = invite::parse_ttl(&args.ttl)?;
     let admin_pubkey_bytes = hex::decode(&admin_pubkey_hex).ok();
     let invite_uri = invite::encode(&InvitePayload {
-        circle_id:   circle_id.clone(),
-        psk_bytes:   psk,
+        circle_id: circle_id.clone(),
+        psk_bytes: psk,
         circle_name: Some(args.name.clone()),
-        expires_at:  Utc::now() + ttl,
-        peer_addr:   None,
+        expires_at: Utc::now() + ttl,
+        peer_addr: None,
         admin_pubkey_bytes,
-        relay_addr:  None,
+        relay_addr: None,
         rendezvous_addr: None,
     });
 
@@ -137,8 +137,14 @@ pub async fn run(args: InitArgs) -> Result<()> {
     println!();
     println!("  invite    : {invite_uri}");
     println!();
-    println!("  Share the invite link to let peers join (valid for {}).", args.ttl);
-    println!("  Generate a new link anytime: enox invite \"{}\"", args.name);
+    println!(
+        "  Share the invite link to let peers join (valid for {}).",
+        args.ttl
+    );
+    println!(
+        "  Generate a new link anytime: enox invite \"{}\"",
+        args.name
+    );
 
     Ok(())
 }

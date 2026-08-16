@@ -1,12 +1,7 @@
 # Homebrew formula for enoxian (enox + enoxd).
 #
-# Installs the prebuilt release binaries. The `version` and per-asset `sha256`s
-# are updated automatically by the `formula` job in .github/workflows/release.yml
-# after each release build (it downloads the published tarballs and rewrites the
-# sha256 lines). To update by hand: `shasum -a 256 <asset>`.
-#
-# Usage once published in a tap (e.g. `suzent/tap`):
-#   brew install suzent/tap/enoxian
+# The version and per-asset SHA256 values are updated by the optional Homebrew
+# tap job in .github/workflows/release.yml after a release is published.
 class Enoxian < Formula
   desc "Peer-to-peer collaboration layer for humans and AI agents"
   homepage "https://github.com/suzent/enoxian"
@@ -27,7 +22,7 @@ class Enoxian < Formula
   on_linux do
     on_arm do
       url "https://github.com/suzent/enoxian/releases/download/v#{version}/enoxian-linux-aarch64.tar.gz"
-      sha256 "27ca82c3a7cff87c8f3d8f93d5439cd64803c5f7a4c76a0000282ab1aecf7d81"
+      sha256 "27ca82c3a7cff87c3d8f93d5439cd64803c5f7a4c76a0000282ab1aecf7d81"
     end
     on_intel do
       url "https://github.com/suzent/enoxian/releases/download/v#{version}/enoxian-linux-x86_64.tar.gz"
@@ -41,6 +36,7 @@ class Enoxian < Formula
   end
 
   test do
-    assert_match "enox", shell_output("#{bin}/enox --help")
+    assert_match version.to_s, shell_output("#{bin}/enox --version")
+    assert_match version.to_s, shell_output("#{bin}/enoxd --version")
   end
 end

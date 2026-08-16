@@ -44,8 +44,8 @@ impl Snapshot {
     pub fn load(dir: &Path, id: &str) -> Result<Self> {
         super::validate_storage_id("snapshot", id)?;
         let path = dir.join(format!("{id}.json"));
-        let bytes = std::fs::read(&path)
-            .with_context(|| format!("reading snapshot {}", path.display()))?;
+        let bytes =
+            std::fs::read(&path).with_context(|| format!("reading snapshot {}", path.display()))?;
         Ok(serde_json::from_slice(&bytes)?)
     }
 }
@@ -60,7 +60,10 @@ mod tests {
         let mut files = BTreeMap::new();
         files.insert(
             "src/main.rs".to_string(),
-            FileEntry { hash: "ab".repeat(32), size: 42 },
+            FileEntry {
+                hash: "ab".repeat(32),
+                size: 42,
+            },
         );
         let snap = Snapshot::new(files);
         snap.save(dir.path()).unwrap();

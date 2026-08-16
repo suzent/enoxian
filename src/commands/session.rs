@@ -53,7 +53,9 @@ pub async fn finish(circle: Option<&str>) -> Result<()> {
             let actor = session.actor_id.clone().unwrap_or_default();
             LocalChangeSession::clear_claimed(&circle_dir)?;
             println!("✓ claimed session for '{actor}' closed");
-            println!("  any changes made during it will surface as a proposal — `enox proposal list`.");
+            println!(
+                "  any changes made during it will surface as a proposal — `enox proposal list`."
+            );
             Ok(())
         }
         _ => bail!("no open claimed session on this workspace"),

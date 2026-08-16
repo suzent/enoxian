@@ -8,7 +8,11 @@ use serde_json::Value;
 
 /// Short, table-friendly id (first 8 chars).
 fn short(id: &str) -> &str {
-    if id.len() >= 8 { &id[..8] } else { id }
+    if id.len() >= 8 {
+        &id[..8]
+    } else {
+        id
+    }
 }
 
 /// `list` prints 8-char id prefixes, but the daemon looks proposals up by exact
@@ -64,7 +68,11 @@ pub async fn list(client: &reqwest::Client, base: &str, json: bool) -> Result<()
             1 => first.to_string(),
             n => format!("{first} (+{})", n - 1),
         };
-        let by = if device.is_empty() { String::new() } else { format!("  @ {device}") };
+        let by = if device.is_empty() {
+            String::new()
+        } else {
+            format!("  @ {device}")
+        };
         println!("  [{status:<8}] {id}  {files}{by}");
     }
     Ok(())

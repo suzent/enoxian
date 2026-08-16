@@ -19,8 +19,8 @@ pub struct LineHunk {
 
 pub fn diff(before: &str, after: &str) -> FileChange {
     let hunks = line_hunks(before, after);
-    let formatting_only = !hunks.is_empty()
-        && super::super::adapters::whitespace_normalized_eq(before, after);
+    let formatting_only =
+        !hunks.is_empty() && super::super::adapters::whitespace_normalized_eq(before, after);
     FileChange {
         kind: DiffKind::Text,
         entries: hunks.into_iter().map(DiffEntry::LineHunk).collect(),
@@ -46,7 +46,12 @@ pub(crate) fn line_hunks(before: &str, after: &str) -> Vec<LineHunk> {
             }
         }
         if !removed.is_empty() || !added.is_empty() {
-            hunks.push(LineHunk { before_start, after_start, removed, added });
+            hunks.push(LineHunk {
+                before_start,
+                after_start,
+                removed,
+                added,
+            });
         }
     }
     hunks
@@ -71,7 +76,10 @@ mod tests {
     #[test]
     fn flags_whitespace_only_change() {
         let c = diff("a b\n", "a  b\n");
-        assert!(c.formatting_only, "whitespace-only change is formatting noise");
+        assert!(
+            c.formatting_only,
+            "whitespace-only change is formatting noise"
+        );
     }
 
     #[test]

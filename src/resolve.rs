@@ -47,10 +47,7 @@ pub fn resolve<'a>(target: &str, configs: &'a [CircleConfig]) -> Result<&'a Circ
         _ => {}
     }
 
-    bail!(
-        "no circle found matching '{}' — run `enox circles` to list known circles",
-        target
-    )
+    bail!("no circle found matching '{target}' — run `enox circles` to list known circles")
 }
 
 /// Pick the one active circle, or error if there are zero or many.

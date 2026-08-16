@@ -18,9 +18,15 @@ pub fn diff(ext: &str, before: &str, after: &str) -> FileChange {
     let mut entries = Vec::new();
     for (name, bbody) in &bs {
         match as_.get(name) {
-            None => entries.push(DiffEntry::Section { name: name.clone(), change: SectionChange::Removed }),
+            None => entries.push(DiffEntry::Section {
+                name: name.clone(),
+                change: SectionChange::Removed,
+            }),
             Some(abody) if abody != bbody => {
-                entries.push(DiffEntry::Section { name: name.clone(), change: SectionChange::Modified });
+                entries.push(DiffEntry::Section {
+                    name: name.clone(),
+                    change: SectionChange::Modified,
+                });
                 for hunk in super::text::line_hunks(bbody, abody) {
                     entries.push(DiffEntry::LineHunk(hunk));
                 }
@@ -30,14 +36,21 @@ pub fn diff(ext: &str, before: &str, after: &str) -> FileChange {
     }
     for name in as_.keys() {
         if !bs.contains_key(name) {
-            entries.push(DiffEntry::Section { name: name.clone(), change: SectionChange::Added });
+            entries.push(DiffEntry::Section {
+                name: name.clone(),
+                change: SectionChange::Added,
+            });
         }
     }
 
-    let formatting_only = entries.is_empty()
-        && super::super::adapters::whitespace_normalized_eq(before, after);
+    let formatting_only =
+        entries.is_empty() && super::super::adapters::whitespace_normalized_eq(before, after);
 
-    FileChange { kind: DiffKind::Code, entries, formatting_only }
+    FileChange {
+        kind: DiffKind::Code,
+        entries,
+        formatting_only,
+    }
 }
 
 /// Split source into `definition name → body`, grouping lines under the nearest
@@ -65,12 +78,21 @@ fn sections(ext: &str, src: &str) -> BTreeMap<String, String> {
     out
 }
 
-fn insert(out: &mut BTreeMap<String, String>, seen: &mut BTreeMap<String, usize>, name: &str, body: String) {
+fn insert(
+    out: &mut BTreeMap<String, String>,
+    seen: &mut BTreeMap<String, usize>,
+    name: &str,
+    body: String,
+) {
     if body.trim().is_empty() {
         return;
     }
     let count = seen.entry(name.to_string()).or_insert(0);
-    let key = if *count == 0 { name.to_string() } else { format!("{name} #{}", *count + 1) };
+    let key = if *count == 0 {
+        name.to_string()
+    } else {
+        format!("{name} #{}", *count + 1)
+    };
     *count += 1;
     out.insert(key, body);
 }
@@ -82,9 +104,20 @@ fn definition_name(ext: &str, line: &str) -> Option<String> {
     let t = line.trim_start();
     // Keywords that introduce a named definition across the supported languages.
     const KWS: &[&str] = &[
-        "fn ", "pub fn ", "async fn ", "pub async fn ",
-        "struct ", "enum ", "trait ", "impl ",
-        "class ", "def ", "func ", "function ", "interface ", "type ",
+        "fn ",
+        "pub fn ",
+        "async fn ",
+        "pub async fn ",
+        "struct ",
+        "enum ",
+        "trait ",
+        "impl ",
+        "class ",
+        "def ",
+        "func ",
+        "function ",
+        "interface ",
+        "type ",
     ];
     for kw in KWS {
         if let Some(rest) = t.strip_prefix(kw) {
@@ -110,10 +143,13 @@ mod tests {
     use super::*;
 
     fn changes(c: &FileChange) -> Vec<(String, SectionChange)> {
-        c.entries.iter().filter_map(|e| match e {
-            DiffEntry::Section { name, change } => Some((name.clone(), *change)),
-            _ => None,
-        }).collect()
+        c.entries
+            .iter()
+            .filter_map(|e| match e {
+                DiffEntry::Section { name, change } => Some((name.clone(), *change)),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -138,9 +174,18 @@ mod tests {
 
     #[test]
     fn recognizes_multiple_languages() {
-        assert_eq!(definition_name("py", "def foo():").as_deref(), Some("def foo"));
-        assert_eq!(definition_name("go", "func Bar() {").as_deref(), Some("func Bar"));
-        assert_eq!(definition_name("java", "class Baz {").as_deref(), Some("class Baz"));
+        assert_eq!(
+            definition_name("py", "def foo():").as_deref(),
+            Some("def foo")
+        );
+        assert_eq!(
+            definition_name("go", "func Bar() {").as_deref(),
+            Some("func Bar")
+        );
+        assert_eq!(
+            definition_name("java", "class Baz {").as_deref(),
+            Some("class Baz")
+        );
         assert_eq!(definition_name("rs", "    let x = 1;"), None);
     }
 }

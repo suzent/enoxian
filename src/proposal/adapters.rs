@@ -56,10 +56,7 @@ pub enum DiffEntry {
         after: Option<String>,
     },
     /// A named section changed (markdown heading, code function/class).
-    Section {
-        name: String,
-        change: SectionChange,
-    },
+    Section { name: String, change: SectionChange },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -99,12 +96,11 @@ pub fn diff_file(path: &str, before: &[u8], after: &[u8]) -> FileChange {
 
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
-        "json" => json::diff(before_s, after_s)
-            .unwrap_or_else(|| text::diff(before_s, after_s)),
+        "json" => json::diff(before_s, after_s).unwrap_or_else(|| text::diff(before_s, after_s)),
         "md" | "markdown" => markdown::diff(before_s, after_s),
         // Common source extensions get the code adapter.
-        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "java" | "c" | "cc" | "cpp"
-        | "h" | "hpp" | "rb" | "cs" | "swift" | "kt" | "php" => code::diff(&ext, before_s, after_s),
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "java" | "c" | "cc" | "cpp" | "h"
+        | "hpp" | "rb" | "cs" | "swift" | "kt" | "php" => code::diff(&ext, before_s, after_s),
         _ => text::diff(before_s, after_s),
     }
 }
@@ -124,21 +120,33 @@ mod tests {
 
     #[test]
     fn dispatches_by_extension() {
-        assert_eq!(diff_file("a.json", b"{}", br#"{"x":1}"#).kind, DiffKind::Json);
+        assert_eq!(
+            diff_file("a.json", b"{}", br#"{"x":1}"#).kind,
+            DiffKind::Json
+        );
         assert_eq!(diff_file("a.md", b"# a", b"# b").kind, DiffKind::Markdown);
-        assert_eq!(diff_file("a.rs", b"fn a(){}", b"fn a(){1}").kind, DiffKind::Code);
+        assert_eq!(
+            diff_file("a.rs", b"fn a(){}", b"fn a(){1}").kind,
+            DiffKind::Code
+        );
         assert_eq!(diff_file("a.txt", b"x", b"y").kind, DiffKind::Text);
     }
 
     #[test]
     fn non_utf8_is_binary() {
-        assert_eq!(diff_file("a.bin", &[0xff, 0xfe], &[0x00]).kind, DiffKind::Binary);
+        assert_eq!(
+            diff_file("a.bin", &[0xff, 0xfe], &[0x00]).kind,
+            DiffKind::Binary
+        );
     }
 
     #[test]
     fn invalid_json_falls_back_to_text() {
         // `.json` that doesn't parse should still produce a text diff, not panic.
-        assert_eq!(diff_file("a.json", b"not json", b"also not").kind, DiffKind::Text);
+        assert_eq!(
+            diff_file("a.json", b"not json", b"also not").kind,
+            DiffKind::Text
+        );
     }
 
     #[test]

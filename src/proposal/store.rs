@@ -52,7 +52,11 @@ impl ProposalStore {
     pub fn baseline_id(&self) -> Option<String> {
         let id = std::fs::read_to_string(self.root.join("baseline")).ok()?;
         let id = id.trim().to_string();
-        if id.is_empty() { None } else { Some(id) }
+        if id.is_empty() {
+            None
+        } else {
+            Some(id)
+        }
     }
 
     pub fn set_baseline(&self, id: &str) -> Result<()> {
@@ -69,8 +73,8 @@ impl ProposalStore {
     pub fn load_proposal(&self, id: &str) -> Result<Proposal> {
         super::validate_storage_id("proposal", id)?;
         let path = self.proposals_dir().join(format!("{id}.json"));
-        let bytes = std::fs::read(&path)
-            .with_context(|| format!("reading proposal {}", path.display()))?;
+        let bytes =
+            std::fs::read(&path).with_context(|| format!("reading proposal {}", path.display()))?;
         Ok(serde_json::from_slice(&bytes)?)
     }
 
@@ -101,7 +105,8 @@ mod tests {
         let store = ProposalStore::open(dir.path()).unwrap();
 
         let older = Proposal::ambient("c".into(), "s0".into(), "s1".into(), vec!["a.txt".into()]);
-        let mut newer = Proposal::ambient("c".into(), "s1".into(), "s2".into(), vec!["b.txt".into()]);
+        let mut newer =
+            Proposal::ambient("c".into(), "s1".into(), "s2".into(), vec!["b.txt".into()]);
         newer.created_at = older.created_at + chrono::Duration::seconds(5);
         store.save_proposal(&older).unwrap();
         store.save_proposal(&newer).unwrap();

@@ -1,4 +1,5 @@
-# Bump the version, commit, tag, and push — triggers the GitHub Actions release build.
+# Prepare a version bump commit. Tag only after the commit is merged to main
+# and all required CI checks are green.
 #
 # Usage:
 #   .\scripts\bump.ps1 patch   # 0.1.0 → 0.1.1
@@ -10,7 +11,17 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$CargoToml = Join-Path (Split-Path $PSScriptRoot -Parent) "Cargo.toml"
+$RepoDir = Split-Path $PSScriptRoot -Parent
+$CargoToml = Join-Path $RepoDir "Cargo.toml"
+$Changelog = Join-Path $RepoDir "CHANGELOG.md"
+
+if ((git -C $RepoDir branch --show-current) -ne 'main') {
+    throw 'Release preparation must start from main'
+}
+git -C $RepoDir diff --quiet
+if ($LASTEXITCODE -ne 0) { throw 'Tracked files have uncommitted changes' }
+git -C $RepoDir diff --cached --quiet
+if ($LASTEXITCODE -ne 0) { throw 'The index has uncommitted changes' }
 
 # ── Read current version ──────────────────────────────────────────────────────
 $content = Get-Content $CargoToml -Raw
@@ -34,6 +45,27 @@ $new = switch ($Part) {
 }
 
 Write-Host "▶ Bumping $current → $new"
+$branch = "chore/release-v$new"
+git -C $RepoDir switch -c $branch
+if ($LASTEXITCODE -ne 0) { throw "Could not create $branch" }
+
+# Cut the Unreleased section and update compare links.
+$date = Get-Date -Format 'yyyy-MM-dd'
+$changelogContent = Get-Content $Changelog -Raw
+$releaseHeader = "## [Unreleased]`r`n`r`n## [$new] — $date"
+$changelogContent = [regex]::Replace(
+    $changelogContent,
+    '(?m)^## \[Unreleased\]\r?$',
+    $releaseHeader,
+    1
+)
+$changelogContent = [regex]::Replace(
+    $changelogContent,
+    '(?m)^\[Unreleased\]: .+$',
+    "[Unreleased]: https://github.com/suzent/enoxian/compare/v$new...HEAD"
+)
+$changelogContent = $changelogContent.TrimEnd() + "`r`n[$new]: https://github.com/suzent/enoxian/compare/v$current...v$new`r`n"
+Set-Content $Changelog $changelogContent -NoNewline
 
 # ── Update Cargo.toml ─────────────────────────────────────────────────────────
 $updated = $content -replace '(?m)(^version\s*=\s*)"[^"]*"', "`${1}`"$new`""
@@ -41,23 +73,18 @@ Set-Content $CargoToml $updated -NoNewline
 
 # ── cargo check to update Cargo.lock ─────────────────────────────────────────
 Write-Host "▶ Updating Cargo.lock..."
-Push-Location (Split-Path $PSScriptRoot -Parent)
+Push-Location $RepoDir
 cargo check --quiet 2>$null
 Pop-Location
 
-# ── Commit, tag, push ─────────────────────────────────────────────────────────
-$tag = "v$new"
-Write-Host "▶ Committing and tagging $tag..."
-git add (Join-Path (Split-Path $PSScriptRoot -Parent) "Cargo.toml") `
-        (Join-Path (Split-Path $PSScriptRoot -Parent) "Cargo.lock")
+# ── Commit only; CI must pass before the tag is created ───────────────────────
+Write-Host "▶ Creating release preparation commit..."
+git add $CargoToml (Join-Path $RepoDir "Cargo.lock") $Changelog
 git commit -m "chore: bump version to $new"
-git tag $tag
-git push
-git push origin $tag
 
 Write-Host ""
-Write-Host "✦ Released $tag — GitHub Actions is building the binaries."
-Write-Host "  Watch: https://github.com/suzent/enoxian/actions"
-Write-Host ""
-Write-Host "  Once the build finishes, deploy:"
-Write-Host "    .\scripts\deploy-rendezvous.ps1 <host> -Update"
+Write-Host "✦ Prepared v$new on $branch. Push it and open a PR:"
+Write-Host "    git push -u origin $branch"
+Write-Host "  After merge and required CI are green, tag main:"
+Write-Host "    git tag -s v$new -m 'enoxian v$new'"
+Write-Host "    git push origin v$new"

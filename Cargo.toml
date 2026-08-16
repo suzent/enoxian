@@ -2,7 +2,12 @@
 name = "enoxian"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.83.0"
+rust-version = "1.88.0"
+publish = false
+description = "Peer-to-peer collaboration layer for humans and AI agents"
+license = "MIT"
+repository = "https://github.com/suzent/enoxian"
+homepage = "https://github.com/suzent/enoxian"
 
 [[bin]]
 name = "enoxd"

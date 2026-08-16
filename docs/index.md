@@ -13,6 +13,7 @@ exact CLI/API behavior.
 | [guide/invite.md](guide/invite.md) | Invite URI format, TTLs, relay/rendezvous addresses, security notes |
 | [guide/agents.md](guide/agents.md) | Configuring local agents, mention reactions, ACP/argv drivers |
 | [guide/dev-guide.md](guide/dev-guide.md) | Developer workflow: multi-machine setup, `enox update`, cargo-watch |
+| [guide/releasing.md](guide/releasing.md) | CI jobs, release gates, checksummed installers, and Homebrew automation |
 
 ## Reference
 

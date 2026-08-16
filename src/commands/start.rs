@@ -8,7 +8,8 @@ pub async fn run(port: u16) -> Result<()> {
     #[cfg(unix)]
     {
         Command::new(&enoxd)
-            .arg("--port").arg(port.to_string())
+            .arg("--port")
+            .arg(port.to_string())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -19,7 +20,8 @@ pub async fn run(port: u16) -> Result<()> {
     {
         use std::os::windows::process::CommandExt;
         Command::new(&enoxd)
-            .arg("--port").arg(port.to_string())
+            .arg("--port")
+            .arg(port.to_string())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .creation_flags(0x00000010) // CREATE_NEW_CONSOLE

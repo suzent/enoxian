@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Bump the version, commit, tag, and push — triggers the GitHub Actions release build.
+# Prepare a version bump commit. Tagging happens only after this commit is
+# merged to main and its required CI checks are green.
 #
 # Usage:
 #   ./scripts/bump.sh patch   # 0.1.0 → 0.1.1
@@ -16,6 +17,16 @@ fi
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CARGO_TOML="$REPO_DIR/Cargo.toml"
+CHANGELOG="$REPO_DIR/CHANGELOG.md"
+
+[[ "$(git -C "$REPO_DIR" branch --show-current)" == "main" ]] || {
+    echo "Error: release preparation must start from main"
+    exit 1
+}
+git -C "$REPO_DIR" diff --quiet && git -C "$REPO_DIR" diff --cached --quiet || {
+    echo "Error: tracked files have uncommitted changes"
+    exit 1
+}
 
 # ── Read current version ──────────────────────────────────────────────────────
 if ! grep -qE '^version\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"' "$CARGO_TOML"; then
@@ -46,6 +57,25 @@ case "$PART" in
 esac
 
 echo "▶ Bumping $CURRENT → $NEW"
+BRANCH="chore/release-v$NEW"
+git -C "$REPO_DIR" switch -c "$BRANCH"
+
+# Cut the Unreleased section and update compare links.
+DATE="$(date +%Y-%m-%d)"
+awk -v header="## [$NEW] — $DATE" '
+    !done && $0 == "## [Unreleased]" {
+        print
+        print ""
+        print header
+        done=1
+        next
+    }
+    { print }
+' "$CHANGELOG" > "$CHANGELOG.tmp"
+mv "$CHANGELOG.tmp" "$CHANGELOG"
+sed -i.bak -E "s|^\[Unreleased\]: .*|[Unreleased]: https://github.com/suzent/enoxian/compare/v$NEW...HEAD|" "$CHANGELOG"
+printf '[%s]: https://github.com/suzent/enoxian/compare/v%s...v%s\n' "$NEW" "$CURRENT" "$NEW" >> "$CHANGELOG"
+rm -f "$CHANGELOG.bak"
 
 # ── Update Cargo.toml ─────────────────────────────────────────────────────────
 sed -i.bak -E "s/^(version\s*=\s*)\"[^\"]*\"/\1\"$NEW\"/" "$CARGO_TOML"
@@ -55,18 +85,14 @@ rm -f "$CARGO_TOML.bak"
 echo "▶ Updating Cargo.lock..."
 (cd "$REPO_DIR" && cargo check --quiet 2>/dev/null)
 
-# ── Commit, tag, push ─────────────────────────────────────────────────────────
-TAG="v$NEW"
-echo "▶ Committing and tagging $TAG..."
-git -C "$REPO_DIR" add "$CARGO_TOML" "$REPO_DIR/Cargo.lock"
+# ── Commit only; CI must pass before the tag is created ───────────────────────
+echo "▶ Creating release preparation commit..."
+git -C "$REPO_DIR" add "$CARGO_TOML" "$REPO_DIR/Cargo.lock" "$CHANGELOG"
 git -C "$REPO_DIR" commit -m "chore: bump version to $NEW"
-git -C "$REPO_DIR" tag "$TAG"
-git -C "$REPO_DIR" push
-git -C "$REPO_DIR" push origin "$TAG"
 
 echo ""
-echo "✦ Released $TAG — GitHub Actions is building the binaries."
-echo "  Watch: https://github.com/suzent/enoxian/actions"
-echo ""
-echo "  Once the build finishes, deploy:"
-echo "    ./scripts/rendezvous/deploy-rendezvous.sh <host> --update"
+echo "✦ Prepared v$NEW on $BRANCH. Push it and open a PR:"
+echo "    git push -u origin $BRANCH"
+echo "  After merge and required CI are green, tag main:"
+echo "    git tag -s v$NEW -m 'enoxian v$NEW'"
+echo "    git push origin v$NEW"
