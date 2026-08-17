@@ -134,7 +134,7 @@ Practical guidance:
 
 ## Relay And Rendezvous
 
-The bootstrap server (`enoxd --bootstrap`) is centralized network
+The bootstrap server (`enox bootstrap serve`) is centralized network
 infrastructure, not a centralized trust core. It learns metadata such as peer
 IDs, circle UUID namespaces, timing, addresses, and traffic volume. It does not
 hold the PSK and does not parse circle sync frames.
@@ -152,7 +152,7 @@ connection. Full content-layer E2EE is planned separately.
 
 ## Local Daemon API
 
-`enoxd` also exposes a local HTTP/WebSocket API for the CLI and web UI. This API
+The managed daemon also exposes a local HTTP/WebSocket API for the CLI and web UI. This API
 is a control plane, not the WAN relay. It can read and mutate circle state, so it
 must be treated as privileged local infrastructure.
 

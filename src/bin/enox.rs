@@ -1,5 +1,5 @@
 use clap::Parser;
-use enoxian::cli::{AgentCli, AgentCommands};
+use enoxian::cli::{AgentCli, AgentCommands, BootstrapAction, DaemonAction};
 
 fn daemon_root() -> String {
     let base = std::env::var("ENOXIAN_API")
@@ -62,6 +62,18 @@ async fn main() -> anyhow::Result<()> {
         AgentCommands::Open => enoxian::commands::open::run(&root),
         AgentCommands::Start { port } => enoxian::commands::start::run(port).await,
         AgentCommands::Stop => enoxian::commands::stop::run(&client, &root).await,
+        AgentCommands::Daemon(args) => match args.action {
+            DaemonAction::Run(args) => enoxian::commands::serve::run(args).await,
+        },
+        AgentCommands::Bootstrap(args) => match args.action {
+            BootstrapAction::Serve(args) => {
+                let relay_port = args.relay_port.unwrap_or(args.port.saturating_add(1));
+                enoxian::bootstrap::run(args.port, relay_port, args.advertise_host.as_deref()).await
+            }
+        },
+        AgentCommands::Service(args) => {
+            enoxian::commands::service::run(args.action, &client, &root).await
+        }
         AgentCommands::Update { dev, src, no_pull } => {
             enoxian::commands::update::run(dev, src, no_pull).await
         }
@@ -207,6 +219,9 @@ async fn main() -> anyhow::Result<()> {
                 | AgentCommands::Leave { .. }
                 | AgentCommands::Start { .. }
                 | AgentCommands::Stop
+                | AgentCommands::Daemon(_)
+                | AgentCommands::Bootstrap(_)
+                | AgentCommands::Service(_)
                 | AgentCommands::Update { .. }
                 | AgentCommands::Identity(_)
                 | AgentCommands::Agent(_)

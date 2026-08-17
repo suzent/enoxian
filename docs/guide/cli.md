@@ -22,7 +22,7 @@ The target daemon URL is configured via `ENOXIAN_API` (default: `http://127.0.0.
 
 ### `start`
 
-Start the `enoxd` daemon in the background. Returns to the shell immediately.
+Start the Enoxian daemon in the background. Returns to the shell immediately.
 
 ```bash
 enox start [--port <PORT>]
@@ -32,7 +32,8 @@ enox start [--port <PORT>]
 |------|---------|-------------|
 | `--port` | `36521` | Port for the HTTP/WS server |
 
-Finds the `enoxd` binary next to itself first, then falls back to `~/.cargo/bin/enoxd`.
+Starts the current `enox` binary in `daemon run` mode. If a managed login
+service is installed, the platform service manager starts it instead.
 
 ---
 
@@ -46,9 +47,43 @@ enox stop
 
 ---
 
+### `daemon run`
+
+Run the local daemon in the foreground for debugging or an external supervisor:
+
+```bash
+enox daemon run [--port 36521] [--bind-lan] [--bind <IP>]
+```
+
+### `service`
+
+Install and manage an opt-in per-user login service:
+
+```bash
+enox service install [--port 36521] [--force]
+enox service status
+enox service start|stop|restart
+enox service logs
+enox service uninstall
+```
+
+Linux uses a systemd user unit, macOS uses a LaunchAgent, and Windows uses a
+login Scheduled Task. Agent mention execution remains independently controlled
+by `enox agent reaction pull|push` and defaults to `pull`.
+
+### `bootstrap serve`
+
+Run a public rendezvous and circuit-relay server:
+
+```bash
+enox bootstrap serve --port 36521 [--relay-port 36522] [--advertise-host HOST]
+```
+
+---
+
 ### `update`
 
-Pull the latest code and reinstall `enox` and `enoxd`.
+Pull the latest code and reinstall the unified `enox` binary.
 
 ```bash
 enox update --dev [--src <PATH>] [--no-pull]
@@ -125,7 +160,7 @@ enox enter enoxian://v1/... --rendezvous /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<id>
 - Same circle (same UUID) → "Already a member", exits cleanly
 - Same name, different circle → workspace auto-suffixed (`MyCircle-d4e2e7`)
 - Expired invite → rejected immediately
-- Relay and rendezvous addresses from the invite are saved to `config.toml` automatically and used by future `enoxd` starts
+- Relay and rendezvous addresses from the invite are saved to `config.toml` automatically and used by future daemon starts
 
 ---
 
@@ -248,7 +283,7 @@ enox [--circle <NAME>] open
 
 ## Identity
 
-Identity commands edit this device's local identity file. Restart `enoxd` after
+Identity commands edit this device's local identity file. Run `enox service restart` after
 changing the label or user handle if you want presence IDs to reflect the change
 immediately.
 

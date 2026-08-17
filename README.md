@@ -24,7 +24,8 @@ diffs.
   proposals from agents, scripts, and claimed sessions.
 - **P2P membership**: invite links, LAN discovery, relay/rendezvous WAN
   bootstrap, admin-signed members, and MLS-backed removal state.
-- **Local-first API**: `enoxd` exposes a loopback HTTP/SSE/WebSocket API used by
+- **Local-first API**: the managed Enoxian daemon exposes a loopback
+  HTTP/SSE/WebSocket API used by
   the CLI, web UI, and automation.
 
 ---
@@ -42,7 +43,7 @@ writable user location without requiring `sudo`. To pin a version or location:
 
 ```sh
 curl -fsSL https://github.com/suzent/enoxian/releases/latest/download/install.sh | \
-  sh -s -- --version v0.2.1 --bin-dir "$HOME/.local/bin"
+  sh -s -- --version v0.3.0 --bin-dir "$HOME/.local/bin"
 ```
 
 ### Windows PowerShell
@@ -52,9 +53,14 @@ irm https://github.com/suzent/enoxian/releases/latest/download/install.ps1 | iex
 ```
 
 PowerShell installs to `%LOCALAPPDATA%\enoxian\bin` and adds it to the user
-`PATH`. To pin a version, set `$env:ENOXIAN_VERSION = 'v0.2.1'` first.
+`PATH`. To pin a version, set `$env:ENOXIAN_VERSION = 'v0.3.0'` first.
 
-Release installers verify checksums and the downloaded binaries before making
+To keep Enoxian available after login, opt into the per-user service during
+installation (`--enable-service` on Linux/macOS or `-EnableService` on Windows),
+or run `enox service install` later. Agent mention execution remains disabled
+until the user explicitly selects `enox agent reaction push`.
+
+Release installers verify checksums and the downloaded binary before making
 an atomic, rollback-protected replacement. See
 [docs/guide/releasing.md](docs/guide/releasing.md) for the release process.
 
@@ -66,12 +72,9 @@ cd enoxian
 cargo build
 ```
 
-The source build creates:
-
-| Binary | Role |
-|--------|------|
-| `target/debug/enoxd` | Long-running daemon: P2P node, file watcher, HTTP/WS server |
-| `target/debug/enox` | Short-lived CLI that talks to the local daemon |
+The source build creates one `target/debug/enox` binary. CLI commands are
+short-lived, while `enox daemon run` is the foreground daemon used internally
+by `enox start` and managed login services.
 
 Rust 1.88 or newer is required. Node.js is only needed when building the
 frontend in release mode.
@@ -90,6 +93,13 @@ Start the daemon:
 
 ```sh
 enox start
+```
+
+Or install a login-time service with crash recovery:
+
+```sh
+enox service install
+enox service status
 ```
 
 Use the CLI:
@@ -180,7 +190,7 @@ argv fallback agents, mention targeting, and session memory.
 └─────────────────────────────────┘
 ```
 
-Every participant runs one `enoxd` daemon for a workspace. Editors and agents
+Every participant runs one Enoxian daemon for all enabled Circles. Editors and agents
 use normal filesystem IO; the daemon watches files, syncs CRDT updates to peers,
 and serves the local API. `enox` is a thin CLI client over that API.
 
@@ -191,7 +201,7 @@ For a fuller walkthrough, start with
 
 ## Current Status
 
-The current package version is **0.2.1**.
+The current package version is **0.3.0**.
 
 | Area | Status |
 |------|--------|

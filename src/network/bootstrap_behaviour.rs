@@ -1,6 +1,6 @@
 use libp2p::{identify, kad, ping, relay, rendezvous, swarm::NetworkBehaviour};
 
-/// Swarm behaviour for the public bootstrap server (enoxd --bootstrap).
+/// Swarm behaviour for the public bootstrap server (`enox bootstrap serve`).
 /// Provides rendezvous (peer discovery) and circuit relay for circle members.
 /// Does not join any circle — holds no PSK.
 #[derive(NetworkBehaviour)]

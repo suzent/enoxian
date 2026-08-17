@@ -37,7 +37,11 @@ fn run_dev(src: Option<PathBuf>, no_pull: bool) -> Result<()> {
 
 #[cfg(unix)]
 fn install_unix(src: &Path) -> Result<()> {
-    println!("▶ Installing binaries to ~/.cargo/bin/ ...");
+    println!("▶ Stopping Enoxian...");
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new(exe).arg("stop").status();
+    }
+    println!("▶ Installing enox to ~/.cargo/bin/ ...");
     // On Unix, running executables can be replaced in-place (inode swap).
     let status = Command::new("cargo")
         .args(["install", "--path", &src.to_string_lossy(), "--bins"])
@@ -45,7 +49,7 @@ fn install_unix(src: &Path) -> Result<()> {
     if !status.success() {
         bail!("cargo install failed");
     }
-    restart_daemon()?;
+    restart_service()?;
     println!("✓ Update complete");
     Ok(())
 }
@@ -54,7 +58,7 @@ fn install_unix(src: &Path) -> Result<()> {
 fn install_windows(src: &PathBuf) -> Result<()> {
     use std::os::windows::process::CommandExt;
 
-    println!("▶ Building release binaries...");
+    println!("▶ Building release binary...");
     let status = Command::new("cargo")
         .args(["build", "--release", "--bins"])
         .current_dir(src)
@@ -63,43 +67,39 @@ fn install_windows(src: &PathBuf) -> Result<()> {
         bail!("cargo build failed");
     }
 
-    // Kill enoxd now (not locked). enox.exe itself is still locked until we exit.
-    // Suppress output — "process not found" is expected if daemon wasn't running.
-    Command::new("taskkill")
-        .args(["/F", "/IM", "enoxd.exe"])
+    // Ask the unified daemon process to stop. The current CLI remains locked
+    // until this update command exits, so replacement is deferred below.
+    Command::new(std::env::current_exe()?)
+        .arg("stop")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .ok();
 
-    // Write a PowerShell script to copy binaries + restart daemon after enox.exe exits.
+    // Write a PowerShell script to replace enox and restart it after this CLI exits.
     let cargo_bin = home_cargo_bin()?;
     let enox_src = src.join("target\\release\\enox.exe");
-    let enoxd_src = src.join("target\\release\\enoxd.exe");
     let enox_dst = cargo_bin.join("enox.exe");
-    let enoxd_dst = cargo_bin.join("enoxd.exe");
+    let legacy_enoxd = cargo_bin.join("enoxd.exe");
     let script_path = std::env::temp_dir().join("enox-update.ps1");
 
     let script = format!(
         "Start-Sleep -Seconds 2\n\
          $log = \"$env:TEMP\\enox-update.log\"\n\
-         \"$(Get-Date): copying binaries\" | Out-File $log\n\
+         \"$(Get-Date): copying enox\" | Out-File $log\n\
          Copy-Item -Force '{enox_src}' '{enox_dst}'\n\
-         Copy-Item -Force '{enoxd_src}' '{enoxd_dst}'\n\
-         \"$(Get-Date): starting enoxd\" | Out-File $log -Append\n\
-         Start-Process -FilePath '{enoxd_dst}' -WindowStyle Hidden\n\
+         Remove-Item -Force '{legacy_enoxd}' -ErrorAction SilentlyContinue\n\
+         \"$(Get-Date): starting Enoxian\" | Out-File $log -Append\n\
+         Start-Process -FilePath '{enox_dst}' -ArgumentList 'start' -WindowStyle Hidden\n\
          \"$(Get-Date): done\" | Out-File $log -Append\n\
          Remove-Item $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue\n",
         enox_src = enox_src.display(),
-        enoxd_src = enoxd_src.display(),
         enox_dst = enox_dst.display(),
-        enoxd_dst = enoxd_dst.display(),
+        legacy_enoxd = legacy_enoxd.display(),
     );
     std::fs::write(&script_path, script)?;
 
-    // Spawn PowerShell in a new hidden console — runs after this process exits.
-    // CREATE_NEW_CONSOLE (0x10) gives PowerShell its own console so it can run properly.
-    // -WindowStyle Hidden keeps it invisible.
+    // Spawn PowerShell in a hidden console; it runs after this process exits.
     Command::new("powershell")
         .args([
             "-NonInteractive",
@@ -111,10 +111,8 @@ fn install_windows(src: &PathBuf) -> Result<()> {
         .creation_flags(0x00000010) // CREATE_NEW_CONSOLE
         .spawn()?;
 
-    println!(
-        "✓ Binaries built. Replacements will be applied in 2 seconds after this process exits."
-    );
-    println!("  enoxd will restart automatically.");
+    println!("✓ Binary built. Replacement will be applied after this process exits.");
+    println!("  Enoxian will restart automatically.");
     Ok(())
 }
 
@@ -160,15 +158,13 @@ fn resolve_src(arg: Option<PathBuf>) -> Result<PathBuf> {
 }
 
 #[cfg(unix)]
-fn restart_daemon() -> Result<()> {
-    println!("▶ Restarting enoxd...");
-    Command::new("pkill").args(["-f", "enoxd"]).status().ok();
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    Command::new("enoxd")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-    println!("✓ enoxd restarted");
+fn restart_service() -> Result<()> {
+    println!("▶ Restarting Enoxian...");
+    let status = Command::new("enox").arg("start").status()?;
+    if !status.success() {
+        bail!("failed to restart Enoxian");
+    }
+    println!("✓ Enoxian restarted");
     Ok(())
 }
 

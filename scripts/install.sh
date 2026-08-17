@@ -9,19 +9,21 @@ REPO="suzent/enoxian"
 VERSION="${ENOXIAN_VERSION:-latest}"
 BIN_DIR="${ENOXIAN_BIN_DIR:-}"
 DOWNLOAD_BASE="${ENOXIAN_DOWNLOAD_BASE:-}"
+ENABLE_SERVICE="${ENOXIAN_ENABLE_SERVICE:-0}"
 
 usage() {
   cat <<'EOF'
 Install enoxian on Linux or macOS.
 
-Usage: install.sh [--version VERSION] [--bin-dir DIRECTORY] [--help]
+Usage: install.sh [--version VERSION] [--bin-dir DIRECTORY] [--enable-service] [--help]
 
 Options:
   --version VERSION   Install a release such as v0.3.0 (default: latest)
   --bin-dir DIRECTORY Install into DIRECTORY
+  --enable-service    Start Enoxian now and automatically at login
   -h, --help          Show this help
 
-Environment equivalents: ENOXIAN_VERSION, ENOXIAN_BIN_DIR
+Environment equivalents: ENOXIAN_VERSION, ENOXIAN_BIN_DIR, ENOXIAN_ENABLE_SERVICE
 EOF
 }
 
@@ -33,6 +35,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --version) [ "$#" -ge 2 ] || err "--version needs a value"; VERSION="$2"; shift 2 ;;
     --bin-dir) [ "$#" -ge 2 ] || err "--bin-dir needs a value"; BIN_DIR="$2"; shift 2 ;;
+    --enable-service) ENABLE_SERVICE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option '$1' (try --help)" ;;
   esac
@@ -78,7 +81,6 @@ tmp="$(mktemp -d 2>/dev/null || mktemp -d -t enoxian)"
 committed=0
 changed=0
 had_enox=0
-had_enoxd=0
 
 cleanup() {
   code=$?
@@ -86,7 +88,6 @@ cleanup() {
   if [ "$changed" -eq 1 ] && [ "$committed" -eq 0 ]; then
     info "installation failed; restoring the previous installation"
     if [ "$had_enox" -eq 1 ]; then cp "$tmp/backup/enox" "$BIN_DIR/enox"; else rm -f "$BIN_DIR/enox"; fi
-    if [ "$had_enoxd" -eq 1 ]; then cp "$tmp/backup/enoxd" "$BIN_DIR/enoxd"; else rm -f "$BIN_DIR/enoxd"; fi
   fi
   rm -rf "$tmp"
   exit "$code"
@@ -129,10 +130,9 @@ fi
 info "checksum verified"
 
 tar -C "$tmp" -xzf "$tmp/$asset" || err "failed to extract $asset"
-[ -f "$tmp/enox" ] && [ -f "$tmp/enoxd" ] || err "archive is missing enox or enoxd"
-chmod +x "$tmp/enox" "$tmp/enoxd"
+[ -f "$tmp/enox" ] || err "archive is missing enox"
+chmod +x "$tmp/enox"
 staged_version="$($tmp/enox --version 2>/dev/null)" || err "downloaded enox failed its pre-install check"
-$tmp/enoxd --version >/dev/null 2>&1 || err "downloaded enoxd failed its pre-install check"
 if [ "$VERSION" != "latest" ]; then
   case "$staged_version" in
     *"${VERSION#v}"*) ;;
@@ -143,22 +143,27 @@ fi
 mkdir -p "$BIN_DIR" || err "cannot create $BIN_DIR; choose a writable directory with --bin-dir"
 [ -w "$BIN_DIR" ] || err "$BIN_DIR is not writable; choose another directory with --bin-dir"
 mkdir "$tmp/backup"
+if [ -x "$BIN_DIR/enox" ]; then
+  "$BIN_DIR/enox" stop >/dev/null 2>&1 || true
+fi
 if [ -f "$BIN_DIR/enox" ]; then cp "$BIN_DIR/enox" "$tmp/backup/enox"; had_enox=1; fi
-if [ -f "$BIN_DIR/enoxd" ]; then cp "$BIN_DIR/enoxd" "$tmp/backup/enoxd"; had_enoxd=1; fi
 
-for binary in enox enoxd; do
-  cp "$tmp/$binary" "$BIN_DIR/.${binary}.new.$$"
-  chmod 0755 "$BIN_DIR/.${binary}.new.$$"
-  mv -f "$BIN_DIR/.${binary}.new.$$" "$BIN_DIR/$binary"
-  changed=1
-done
+cp "$tmp/enox" "$BIN_DIR/.enox.new.$$"
+chmod 0755 "$BIN_DIR/.enox.new.$$"
+mv -f "$BIN_DIR/.enox.new.$$" "$BIN_DIR/enox"
+changed=1
 
 "$BIN_DIR/enox" --version >/dev/null 2>&1 || err "installed enox failed its post-install check"
-"$BIN_DIR/enoxd" --version >/dev/null 2>&1 || err "installed enoxd failed its post-install check"
 committed=1
+rm -f "$BIN_DIR/enoxd"
 
 info "installed $staged_version"
-info "binaries: $BIN_DIR/enox and $BIN_DIR/enoxd"
+info "binary: $BIN_DIR/enox"
+if [ "$ENABLE_SERVICE" = "1" ]; then
+  "$BIN_DIR/enox" service install --force || err "enox installed, but login service setup failed"
+else
+  info "optional: run 'enox service install' to start automatically when you sign in"
+fi
 case ":$PATH:" in
   *":$BIN_DIR:"*) info "next: run 'enox init --name my-project'" ;;
   *)
@@ -167,6 +172,3 @@ case ":$PATH:" in
     echo "  export PATH=\"$BIN_DIR:\$PATH\""
     ;;
 esac
-if have pgrep && pgrep -x enoxd >/dev/null 2>&1; then
-  info "an older enoxd process is still running; restart it to use the new version"
-fi

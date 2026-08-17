@@ -39,7 +39,7 @@ pub async fn run(client: &reqwest::Client, daemon_base: &str, json: bool) -> Res
             } else if configs.is_empty() {
                 println!("No circles found — run `enox init` to create one.");
             } else {
-                println!("Known circles (enoxd not running):");
+                println!("Known circles (Enoxian is not running):");
                 for c in &configs {
                     let tag = if c.disabled { " [paused]" } else { "" };
                     println!("  {}{} — {}", c.circle_name, tag, c.circle_id);

@@ -1,11 +1,11 @@
-# Homebrew formula for enoxian (enox + enoxd).
+# Homebrew formula for the unified enox CLI and background service.
 #
 # The version and per-asset SHA256 values are updated by the optional Homebrew
 # tap job in .github/workflows/release.yml after a release is published.
 class Enoxian < Formula
   desc "Peer-to-peer collaboration layer for humans and AI agents"
   homepage "https://github.com/suzent/enoxian"
-  version "0.2.0"
+  version "0.3.0"
   license "MIT"
 
   on_macos do
@@ -32,11 +32,11 @@ class Enoxian < Formula
 
   def install
     bin.install "enox"
-    bin.install "enoxd"
   end
 
   test do
     assert_match version.to_s, shell_output("#{bin}/enox --version")
-    assert_match version.to_s, shell_output("#{bin}/enoxd --version")
+    system "#{bin}/enox", "daemon", "run", "--help"
+    system "#{bin}/enox", "service", "status"
   end
 end

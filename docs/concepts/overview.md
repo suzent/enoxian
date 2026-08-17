@@ -13,7 +13,7 @@ The unit of collaboration is called a **Circle**.
 ```
   Alice's laptop          Bob's desktop           Alice's suzent agent
   ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
-  │  enoxd      │◄───────►│  enoxd      │◄───────►│  enoxd      │
+  │ Enoxian     │◄───────►│ Enoxian     │◄───────►│ Enoxian     │
   │  ~/project/ │  P2P    │  ~/project/ │  P2P    │  ~/project/ │
   │             │  mesh   │             │  mesh   │             │
   │  enox CLI   │         │  enox CLI   │         │  API calls  │
@@ -27,20 +27,20 @@ The unit of collaboration is called a **Circle**.
   └──────────┘             └──────────┘             └──────────┘
 ```
 
-Every participant runs one `enoxd` daemon per workspace. The daemon is the P2P node, the file syncer, and the HTTP server all in one. The `enox` CLI and any AI agent talk to it over localhost HTTP.
+Every participant runs one Enoxian daemon for all enabled Circles. The daemon is the P2P node, file syncer, and HTTP server. The `enox` CLI and AI agents talk to it over localhost HTTP.
 
 ---
 
 ## Two Binaries
 
 ```
-enoxd   long-running daemon
+enox daemon run   long-running foreground mode
          ├── P2P swarm (libp2p)    — connects to other daemons
          ├── File watcher (notify) — disk ↔ CRDT sync
          └── HTTP server (axum)    — serves enox CLI + AI agents
 
 enox    short-lived CLI
-         └── reqwest HTTP calls    → enoxd on localhost:36521
+         └── reqwest HTTP calls    → Enoxian on localhost:36521
 ```
 
 A human types `enox status`. The CLI calls `GET /circles/{id}/api/status` on the local daemon and prints the result. That's the entire interface. AI agents do the same thing via HTTP calls.
@@ -58,7 +58,7 @@ owner        "alice"
              │
              ├── peer_id   "12D3KooW..."
              │             the machine/daemon — unique libp2p keypair
-             │             one per enoxd instance, persists across restarts
+             │             one per daemon instance, persists across restarts
              │             this is what the MLS group tracks
              │
              │   agent_id  "alice"          ← human CLI on this machine
@@ -66,7 +66,7 @@ owner        "alice"
              │   agent_id  "claude-code"    ← claude on same machine
              │
              │   (multiple agents share one peer_id — they all connect
-             │    to the same enoxd daemon via localhost HTTP)
+             │    to the same daemon via localhost HTTP)
              │
              └── peer_id   "QmXyz..."
                            alice's second machine (desktop)
@@ -235,7 +235,7 @@ Peers connect to each other over libp2p with a layered transport:
          ▼                              ▼
   ┌──────────────────────────────────────────────────────┐
   │                   Bootstrap Server                   │
-  │              enoxd --bootstrap (public VPS)          │
+  │           enox bootstrap serve (public VPS)          │
   │                                                      │
   │   QUIC only (no PSK) — not a circle member           │
   │   Rendezvous: peers register & discover each other   │
@@ -403,7 +403,7 @@ The workspace (`~/enoxian/my-project/`) and the credentials (`~/.enoxian/circles
 enox init --name "proj" --owner alice     create circle, you are admin
 enox invite "proj"                         generate invite link
 enox enter enoxian://...  --owner bob    join from invite
-enoxd                                      start daemon (all known circles)
+enox start                                 start daemon (all known circles)
 
 enox status                               circle overview
 enox who                                  who is online

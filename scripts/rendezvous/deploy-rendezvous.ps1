@@ -1,4 +1,4 @@
-# Deploy enoxd to a Linux VPS as a rendezvous server.
+# Deploy the unified enox binary to a Linux VPS as a rendezvous server.
 #
 # Build modes (in order of preference):
 #   default          Download latest release binary from GitHub (fastest, no build needed)
@@ -28,7 +28,7 @@ $ErrorActionPreference = "Stop"
 $ScriptsDir = Split-Path $PSScriptRoot -Parent
 $RepoDir = Split-Path $ScriptsDir -Parent
 $Repo    = "suzent/enoxian"
-$RemoteBinary = "/tmp/enoxd"
+$RemoteBinary = "/tmp/enox"
 
 if ($RelayPort -eq 0) {
     $RelayPort = $Port + 1
@@ -56,16 +56,16 @@ if ($BuildOnRemote) {
     if ($LASTEXITCODE -ne 0) { throw "tar failed" }
 
     Write-Host "▶ Building on remote via Docker (piping source)..."
-    Get-Content $TarFile -AsByteStream | ssh $Target "docker run --rm -i -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=gcc -v enoxian-cargo-cache:/usr/local/cargo/registry -v enoxian-out:/out rust:alpine sh -c 'apk add --no-cache musl-dev gcc build-base && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --target x86_64-unknown-linux-musl --release --bin enoxd && cp target/x86_64-unknown-linux-musl/release/enoxd /out/enoxd'"
+    Get-Content $TarFile -AsByteStream | ssh $Target "docker run --rm -i -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=gcc -v enoxian-cargo-cache:/usr/local/cargo/registry -v enoxian-out:/out rust:alpine sh -c 'apk add --no-cache musl-dev gcc build-base && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --target x86_64-unknown-linux-musl --release --bin enox && cp target/x86_64-unknown-linux-musl/release/enox /out/enox'"
     if ($LASTEXITCODE -ne 0) { throw "Remote build failed" }
 
-    ssh $Target "docker run --rm -v enoxian-out:/out busybox cp /out/enoxd /tmp/enoxd && chmod +x /tmp/enoxd"
+    ssh $Target "docker run --rm -v enoxian-out:/out busybox cp /out/enox /tmp/enox && chmod +x /tmp/enox"
     if ($LASTEXITCODE -ne 0) { throw "Failed to extract binary from Docker volume" }
 
 } elseif ($Local) {
     # ── Cross-compile locally ─────────────────────────────────────────────────
     $LinuxTarget = "$Arch-unknown-linux-musl"
-    $BinaryPath  = Join-Path $RepoDir "target\$LinuxTarget\release\enoxd"
+    $BinaryPath  = Join-Path $RepoDir "target\$LinuxTarget\release\enox"
 
     $useCross = $null -ne (Get-Command cross -ErrorAction SilentlyContinue)
     $useWsl   = $null -ne (Get-Command wsl   -ErrorAction SilentlyContinue)
@@ -77,7 +77,7 @@ if ($BuildOnRemote) {
         }
     }
 
-    Write-Host "▶ Building enoxd for Linux ($LinuxTarget)..."
+    Write-Host "▶ Building enox for Linux ($LinuxTarget)..."
     Push-Location $RepoDir
 
     if ($useCross) {
@@ -85,7 +85,7 @@ if ($BuildOnRemote) {
         $oldSkipFrontend = $env:ENOXIAN_SKIP_FRONTEND_BUILD
         $env:ENOXIAN_SKIP_FRONTEND_BUILD = "1"
         try {
-            cross build --release --bin enoxd --target $LinuxTarget
+            cross build --release --bin enox --target $LinuxTarget
             if ($LASTEXITCODE -ne 0) { throw "cross build failed" }
         } finally {
             $env:ENOXIAN_SKIP_FRONTEND_BUILD = $oldSkipFrontend
@@ -102,7 +102,7 @@ command -v musl-gcc &>/dev/null || sudo apt-get install -y -q build-essential mu
 . "`$HOME/.cargo/env"
 rustup target add $LinuxTarget
 cd "$wslRepoDir"
-cargo build --release --bin enoxd --target $LinuxTarget 2>&1
+cargo build --release --bin enox --target $LinuxTarget 2>&1
 "@ | Set-Content -Encoding utf8 $tmpScript
         $wslTmp = (wsl wslpath ($tmpScript.Replace('\','/'))).Trim()
         wsl bash $wslTmp
@@ -117,7 +117,7 @@ cargo build --release --bin enoxd --target $LinuxTarget 2>&1
     if (-not (Test-Path $BinaryPath)) { throw "Binary not found at $BinaryPath" }
     $size = (Get-Item $BinaryPath).Length / 1MB
     Write-Host "  Built: $BinaryPath ($([math]::Round($size,1)) MB)"
-    $RemoteBinary = (ssh $Target "mktemp /tmp/enoxd.XXXXXX").Trim()
+    $RemoteBinary = (ssh $Target "mktemp /tmp/enox.XXXXXX").Trim()
     if ($LASTEXITCODE -ne 0 -or -not $RemoteBinary) { throw "failed to allocate remote temp file" }
     scp $BinaryPath "${Target}:$RemoteBinary"
     if ($LASTEXITCODE -ne 0) { throw "scp failed" }
@@ -137,7 +137,7 @@ cargo build --release --bin enoxd --target $LinuxTarget 2>&1
     $apiUrl   = "https://api.github.com/repos/$Repo/releases/assets/$($assetObj.id)"
     Write-Host "  $($release.tag_name): $($assetObj.name)"
     $curlAuth = if ($Token) { "-H 'Authorization: Bearer $Token'" } else { "" }
-    ssh $Target "mkdir -p /tmp/enoxian-release && curl -fsSL $curlAuth -H 'Accept: application/octet-stream' '$apiUrl' -o /tmp/enoxian.tar.gz && tar -xzf /tmp/enoxian.tar.gz -C /tmp/enoxian-release && find /tmp/enoxian-release -name enoxd -type f -exec cp {} /tmp/enoxd \; && chmod +x /tmp/enoxd && rm -rf /tmp/enoxian-release /tmp/enoxian.tar.gz"
+    ssh $Target "mkdir -p /tmp/enoxian-release && curl -fsSL $curlAuth -H 'Accept: application/octet-stream' '$apiUrl' -o /tmp/enoxian.tar.gz && tar -xzf /tmp/enoxian.tar.gz -C /tmp/enoxian-release && cp /tmp/enoxian-release/enox /tmp/enox && chmod +x /tmp/enox && rm -rf /tmp/enoxian-release /tmp/enoxian.tar.gz"
     if ($LASTEXITCODE -ne 0) { throw "Download failed" }
 }
 
@@ -146,12 +146,12 @@ if ($Update -and -not $AdvertiseHost) {
     Write-Host "▶ Updating binary and restarting service..."
     ssh $Target @'
 set -e
-cp /tmp/enoxd /usr/local/bin/enoxd
-chmod +x /usr/local/bin/enoxd
-systemctl restart enoxd-bootstrap
+cp /tmp/enox /usr/local/bin/enox
+chmod +x /usr/local/bin/enox
+systemctl restart enoxian-bootstrap
 sleep 1
-systemctl is-active enoxd-bootstrap && echo "✦ Service restarted" \
-    || { journalctl -u enoxd-bootstrap -n 10 --no-pager; exit 1; }
+systemctl is-active enoxian-bootstrap && echo "✦ Service restarted" \
+    || { journalctl -u enoxian-bootstrap -n 10 --no-pager; exit 1; }
 '@
 } else {
     Write-Host "▶ Running setup on $Target..."

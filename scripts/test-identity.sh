@@ -5,7 +5,6 @@
 set -euo pipefail
 
 ENOX="${ENOX:-./target/debug/enox}"
-ENOXD="${ENOXD:-./target/debug/enoxd}"
 # Use high ports that won't conflict with the live daemon (36521)
 D1_PORT=36551
 D2_PORT=36552
@@ -31,7 +30,7 @@ export ENOXIAN_API="http://127.0.0.1:$D1_PORT"
 
 section "First-run identity creation (non-interactive, ENOXIAN_DEVICE_LABEL)"
 export ENOXIAN_DEVICE_LABEL="test-machine"
-"$ENOXD" --port $D1_PORT > "$TMPDIR_TEST/d1.log" 2>&1 &
+"$ENOX" daemon run --port $D1_PORT > "$TMPDIR_TEST/d1.log" 2>&1 &
 DAEMON_PID=$!
 sleep 2
 
@@ -49,7 +48,7 @@ ok "identity show works"
 section "Stable peer ID across restarts"
 PEER_ID_1=$(echo "$OUTPUT" | grep "peer ID" | awk '{print $NF}')
 kill $DAEMON_PID 2>/dev/null; sleep 1
-"$ENOXD" --port $D1_PORT >> "$TMPDIR_TEST/d1.log" 2>&1 &
+"$ENOX" daemon run --port $D1_PORT >> "$TMPDIR_TEST/d1.log" 2>&1 &
 DAEMON_PID=$!
 sleep 2
 OUTPUT2=$("$ENOX" identity show)
@@ -96,7 +95,7 @@ ok "create-user produced 24-word mnemonic"
 D2_HOME="$TMPDIR_TEST/home2"
 mkdir -p "$D2_HOME"
 HOME="$D2_HOME" ENOXIAN_API="http://127.0.0.1:$D2_PORT" \
-    "$ENOXD" --port $D2_PORT >> "$TMPDIR_TEST/d2.log" 2>&1 &
+    "$ENOX" daemon run --port $D2_PORT >> "$TMPDIR_TEST/d2.log" 2>&1 &
 D2_PID=$!
 sleep 2
 # Second device needs an identity first (daemon creates it), then we link

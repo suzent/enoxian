@@ -1,43 +1,6 @@
 use clap::{Parser, Subcommand};
 
-// ── Daemon CLI ─────────────────────────────────────────────────────────────
-
-#[derive(Parser)]
-#[command(
-    name = "enoxd",
-    about = "enoxian daemon — serves all known Circles over HTTP/P2P",
-    version = env!("CARGO_PKG_VERSION")
-)]
-pub struct DaemonCli {
-    /// Port to listen on
-    #[arg(long, default_value = "36521")]
-    pub port: u16,
-
-    /// TCP port for public circuit relay when running with --bootstrap.
-    /// Defaults to --port + 1 when omitted.
-    #[arg(long)]
-    pub relay_port: Option<u16>,
-
-    /// Public DNS hostname advertised by the bootstrap server, e.g. relay.enoxian.com.
-    #[arg(long, env = "ENOXIAN_ADVERTISE_HOST")]
-    pub advertise_host: Option<String>,
-
-    /// Run as a public bootstrap server (rendezvous + relay, no circles).
-    /// Generates a stable keypair at ~/.enoxian/bootstrap.key on first run.
-    /// Circle members connect via QUIC — no PSK required.
-    #[arg(long)]
-    pub bootstrap: bool,
-
-    /// Bind the HTTP/WS API to all interfaces (0.0.0.0) instead of loopback.
-    #[arg(long)]
-    pub bind_lan: bool,
-
-    /// Explicit bind address (overrides --bind-lan). E.g. 127.0.0.1 or 0.0.0.0.
-    #[arg(long)]
-    pub bind: Option<std::net::IpAddr>,
-}
-
-// ── Agent CLI ──────────────────────────────────────────────────────────────
+// ── CLI ────────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
 #[command(
@@ -124,14 +87,20 @@ pub enum AgentCommands {
     },
     /// Open the Circle UI in the default browser
     Open,
-    /// Start the enoxd daemon in the background
+    /// Start the Enoxian background service
     Start {
         /// Port to listen on
-        #[arg(long, default_value = "36521")]
-        port: u16,
+        #[arg(long)]
+        port: Option<u16>,
     },
-    /// Stop the running enoxd daemon
+    /// Stop the running Enoxian background service
     Stop,
+    /// Run the local daemon in the foreground (advanced)
+    Daemon(DaemonArgs),
+    /// Run a public rendezvous and circuit-relay server
+    Bootstrap(BootstrapArgs),
+    /// Install and manage login-time background startup
+    Service(ServiceArgs),
     /// Update a development install (stable installs use the release installer)
     Update {
         /// Build from source instead of downloading a release binary.
@@ -400,7 +369,7 @@ pub struct InviteArgs {
     pub rendezvous: Option<String>,
 }
 
-#[derive(Parser)]
+#[derive(clap::Args, Clone)]
 pub struct ServeArgs {
     /// Port to listen on
     #[arg(long, default_value = "36521")]
@@ -416,4 +385,80 @@ pub struct ServeArgs {
     /// Explicit bind address (overrides --bind-lan). E.g. 127.0.0.1 or 0.0.0.0.
     #[arg(long)]
     pub bind: Option<std::net::IpAddr>,
+}
+
+#[derive(clap::Args)]
+pub struct DaemonArgs {
+    #[command(subcommand)]
+    pub action: DaemonAction,
+}
+
+#[derive(Subcommand)]
+pub enum DaemonAction {
+    /// Run all enabled Circles and the local API in the foreground
+    Run(ServeArgs),
+}
+
+#[derive(clap::Args)]
+pub struct BootstrapArgs {
+    #[command(subcommand)]
+    pub action: BootstrapAction,
+}
+
+#[derive(Subcommand)]
+pub enum BootstrapAction {
+    /// Serve rendezvous discovery and circuit relay traffic
+    Serve(BootstrapServeArgs),
+}
+
+#[derive(clap::Args)]
+pub struct BootstrapServeArgs {
+    /// QUIC rendezvous and HTTP status port
+    #[arg(long, default_value = "36521")]
+    pub port: u16,
+
+    /// TCP circuit relay port (defaults to --port + 1)
+    #[arg(long)]
+    pub relay_port: Option<u16>,
+
+    /// Public DNS hostname advertised by the bootstrap server
+    #[arg(long, env = "ENOXIAN_ADVERTISE_HOST")]
+    pub advertise_host: Option<String>,
+}
+
+#[derive(clap::Args)]
+pub struct ServiceArgs {
+    #[command(subcommand)]
+    pub action: ServiceAction,
+}
+
+#[derive(Subcommand)]
+pub enum ServiceAction {
+    /// Install, enable, and start the per-user login service
+    Install {
+        /// Local API port saved in the service definition
+        #[arg(long, default_value = "36521")]
+        port: u16,
+        /// Bind the privileged API beyond loopback
+        #[arg(long)]
+        bind_lan: bool,
+        /// Explicit bind address (overrides --bind-lan)
+        #[arg(long)]
+        bind: Option<std::net::IpAddr>,
+        /// Replace an existing service definition
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show service installation, process, and API health
+    Status,
+    /// Start the installed service
+    Start,
+    /// Stop the service without uninstalling it
+    Stop,
+    /// Restart the installed service
+    Restart,
+    /// Follow service logs
+    Logs,
+    /// Stop and remove the managed service
+    Uninstall,
 }

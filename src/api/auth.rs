@@ -1,6 +1,6 @@
 //! Local API authentication.
 //!
-//! The `enoxd` HTTP API is a **privileged control plane**: it can add agents,
+//! The Enoxian HTTP API is a **privileged control plane**: it can add agents,
 //! arm push-mode (letting a chat mention run a process), start/stop circles, and
 //! more. Because it is served over loopback, the threat is not a remote attacker
 //! but a **local one** — most importantly a malicious webpage in the operator's

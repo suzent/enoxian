@@ -2,8 +2,8 @@
 
 ## Install (prebuilt binaries)
 
-The quickest path — downloads the latest release for your platform and installs
-`enox` and `enoxd`.
+The quickest path downloads the latest release for your platform and installs
+the unified `enox` binary.
 
 **Linux / macOS:**
 
@@ -26,7 +26,7 @@ installation.
 brew install suzent/tap/enoxian
 ```
 
-Pin a version with `ENOXIAN_VERSION=v0.2.1` (or `$env:ENOXIAN_VERSION`), or set
+Pin a version with `ENOXIAN_VERSION=v0.3.0` (or `$env:ENOXIAN_VERSION`), or set
 `ENOXIAN_BIN_DIR` to change the install directory. To build from source instead,
 see below.
 
@@ -47,21 +47,19 @@ cargo build
 Binaries are placed at:
 
 ```
-target/debug/enoxd    # daemon
-target/debug/enox     # agent CLI
+target/debug/enox     # CLI and daemon/service runtime
 ```
 
 For production use:
 
 ```bash
 cargo build --release
-# target/release/enoxd  target/release/enox
+# target/release/enox
 ```
 
 ### Install to PATH
 
-To use `enox` and `enoxd` as plain commands without a path prefix, install both
-binaries from source:
+To use `enox` as a plain command without a path prefix, install it from source:
 
 ```bash
 cargo install --path . --bins
@@ -75,7 +73,7 @@ enox update --dev --src .
 
 On subsequent runs the `--src` path is remembered, so `enox update --dev` is
 enough. On Windows, the running `enox.exe` is replaced via a deferred PowerShell
-script after the process exits; `enoxd` is restarted automatically.
+script after the process exits; Enoxian is restarted automatically.
 
 ---
 
@@ -113,16 +111,16 @@ enox init --name "MyCircle" --dir ~/projects/myapp
 
 ## Step 2 — Start the Daemon
 
-`enoxd` loads all enabled circles from `~/.enoxian/circles/` and serves them over
+The daemon loads all enabled circles from `~/.enoxian/circles/` and serves them over
 one local HTTP/WebSocket API port:
 
 ```bash
 # bash / MSYS2
-RUST_LOG=info ./target/debug/enoxd
+RUST_LOG=info ./target/debug/enox daemon run
 
 # PowerShell
 $env:RUST_LOG = "info"
-.\target\debug\enoxd.exe
+.\target\debug\enox.exe daemon run
 ```
 
 You can also start it in the background:
@@ -133,16 +131,16 @@ enox start
 
 By default the daemon identifies its local editor/user presence as
 `human-<peer-suffix>`. To run multiple agents from the same machine or give the
-local user a stable custom name, set `ENOXIAN_AGENT_ID` before starting
-`enoxd`:
+local user a stable custom name, set `ENOXIAN_AGENT_ID` before starting the
+daemon:
 
 ```bash
-ENOXIAN_AGENT_ID=codex ./target/debug/enoxd
+ENOXIAN_AGENT_ID=codex ./target/debug/enox daemon run
 ```
 
 ```powershell
 $env:ENOXIAN_AGENT_ID = "codex"
-.\target\debug\enoxd.exe
+.\target\debug\enox.exe daemon run
 ```
 
 The displayed ID becomes `codex-<peer-suffix>`, so `human`, `codex`, `cursor`,
@@ -151,7 +149,7 @@ or any other custom name can coexist on the same peer.
 Expected output:
 
 ```
-INFO  Starting enoxd — 1 circle(s) found
+INFO  Starting Enoxian — 1 circle(s) found
 INFO    Circle 'MyCircle' (8e563c41-...) — PeerID: 12D3KooW... — Workspace: /Users/suzy/enoxian/MyCircle
 INFO  HTTP/WS listening on 127.0.0.1:36521
 INFO  [8e563c41-...] P2P listening on /ip4/192.168.1.x/tcp/<random>
@@ -160,7 +158,7 @@ INFO  [8e563c41-...] P2P listening on /ip4/192.168.1.x/tcp/<random>
 All circles share one HTTP port. Each enabled circle gets its own P2P swarm on a
 random port.
 
-> **After any `cargo build`** restart `enoxd` to pick up the new binary.
+> **After any `cargo build`** run `enox service restart` to pick up the new binary.
 
 ---
 
@@ -239,11 +237,11 @@ enox enter enoxian://v1/CRxkUjpNaBcDeFgH...
   Config    → ~/.enoxian/circles/8e563c41-.../config.toml
   ✦ Verified peer 12D3KooW... via /ip4/192.168.1.192/tcp/4494
 
-  Start the daemon: enoxd
+  Start the daemon: enox start
   Then: enox --circle "MyCircle" status
 ```
 
-Then start `enoxd` on the second machine. It picks up the saved circle and
+Then run `enox start` on the second machine. It picks up the saved circle and
 connects over mDNS on the same LAN.
 
 **Name conflict:** if you already have a local circle named `MyCircle` with a different ID, the workspace is auto-disambiguated:

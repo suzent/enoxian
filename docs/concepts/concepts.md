@@ -12,7 +12,7 @@ A **Circle** is the top-level unit of collaboration. It is identified by a UUID 
 | `workspace_dir` | Local directory that is watched and synced (default: `~/enoxian/<circle-name>/`) |
 | Control Doc | In-memory Yjs document holding tasks, presence, locks, chat, members, and MLS coordination state |
 
-Circles are created with `enox init` and joined with `enox enter`. Every participant runs their own `enoxd` daemon, which connects to other daemons over libp2p.
+Circles are created with `enox init` and joined with `enox enter`. Every participant runs an Enoxian daemon, which connects to other daemons over libp2p.
 
 ---
 

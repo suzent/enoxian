@@ -19,11 +19,11 @@ cd ~/enoxian
 cargo build --bins
 ```
 
-This produces debug binaries at `target/debug/enoxd` and `target/debug/enox`.
+This produces the unified debug binary at `target/debug/enox`.
 
 ### 2. Install to PATH (recommended)
 
-`cargo install` puts `enox` and `enoxd` into `~/.cargo/bin/`, which is already in your PATH after Rust is installed. After this you can just type `enox` from anywhere.
+`cargo install` puts `enox` into `~/.cargo/bin/`, which is already in your PATH after Rust is installed. After this you can type `enox` from anywhere.
 
 ```bash
 cargo install --path .
@@ -55,7 +55,7 @@ The `--src` path is just the folder you cloned the repo into — wherever `Cargo
 enox update --dev
 ```
 
-This runs `git pull`, rebuilds with `cargo install`, and restarts `enoxd` automatically.
+This runs `git pull`, rebuilds with `cargo install`, and restarts Enoxian automatically.
 
 To rebuild without pulling (e.g. you made local edits):
 
@@ -78,11 +78,11 @@ This does the same thing: pull → build → restart daemon.
 While editing code, use `cargo watch` to rebuild on every save:
 
 ```bash
-# Just rebuild (you restart enoxd manually)
+# Just rebuild (you restart Enoxian manually)
 cargo watch -x "build --bins"
 
-# Rebuild and restart enoxd automatically
-cargo watch -x "build --bins" -s "pkill -f enoxd; sleep 1; ./target/debug/enoxd &"
+# Rebuild and restart Enoxian automatically
+cargo watch -x "build --bins" -s "./target/debug/enox stop || true; sleep 1; ./target/debug/enox start"
 ```
 
 ---
@@ -124,11 +124,11 @@ Stable binary downloads are not yet available — they are planned in M12 (Packa
 
 ```bash
 # Run daemon with full logs
-RUST_LOG=info enoxd           # Mac / Linux
-$env:RUST_LOG = "info"; enoxd # Windows PowerShell
+RUST_LOG=info enox daemon run           # Mac / Linux
+$env:RUST_LOG = "info"; enox daemon run # Windows PowerShell
 
 # More verbose (includes debug output from enoxian crate)
-RUST_LOG=debug enoxd
+RUST_LOG=debug enox daemon run
 
 # dev-sync.sh logs to:
 ~/.enoxian/daemon.log
@@ -144,11 +144,11 @@ Run once with `--src` to save the path:
 enox update --dev --src /path/to/enoxian
 ```
 
-**`enoxd` won't start after update**
+**Enoxian won't start after update**
 The old process may still be running. Kill it manually:
 ```bash
-pkill -f enoxd          # Mac / Linux
-taskkill /F /IM enoxd.exe   # Windows
+enox stop
+enox start
 ```
 
 **Circles not discovered across machines**

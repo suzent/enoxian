@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy enoxd to a Linux VPS as a rendezvous server.
+# Deploy the unified enox binary to a Linux VPS as a rendezvous server.
 #
 # Build modes (in order of preference):
 #   default           Download latest release binary from GitHub (fastest)
@@ -55,7 +55,7 @@ if [[ -n "$ADVERTISE_HOST" && ! "$ADVERTISE_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
 fi
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-ASSET="enoxd-linux-$ARCH"
+ASSET="enoxian-linux-$ARCH.tar.gz"
 
 # Load GITHUB_TOKEN from .env if not already set
 if [[ -z "$TOKEN" && -f "$REPO_DIR/.env" ]]; then
@@ -74,29 +74,29 @@ if $BUILD_ON_REMOTE; then
             -v enoxian-cargo-cache:/usr/local/cargo/registry \
             -v enoxian-out:/out \
             rust:alpine \
-            sh -c 'apk add --no-cache musl-dev gcc build-base && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --target x86_64-unknown-linux-musl --release --bin enoxd && cp target/x86_64-unknown-linux-musl/release/enoxd /out/enoxd'"
+            sh -c 'apk add --no-cache musl-dev gcc build-base && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --target x86_64-unknown-linux-musl --release --bin enox && cp target/x86_64-unknown-linux-musl/release/enox /out/enox'"
 
     ssh "$SSH_TARGET" \
-        "docker run --rm -v enoxian-out:/out busybox cp /out/enoxd /tmp/enoxd && chmod +x /tmp/enoxd"
+        "docker run --rm -v enoxian-out:/out busybox cp /out/enox /tmp/enox && chmod +x /tmp/enox"
 
 elif $LOCAL; then
     LINUX_TARGET="${ARCH}-unknown-linux-gnu"
-    BINARY="$REPO_DIR/target/$LINUX_TARGET/release/enoxd"
-    echo "▶ Building enoxd for Linux ($LINUX_TARGET)..."
+    BINARY="$REPO_DIR/target/$LINUX_TARGET/release/enox"
+    echo "▶ Building enox for Linux ($LINUX_TARGET)..."
     cd "$REPO_DIR"
 
     if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "$ARCH" ]]; then
-        cargo build --release --bin enoxd
-        BINARY="$REPO_DIR/target/release/enoxd"
+        cargo build --release --bin enox
+        BINARY="$REPO_DIR/target/release/enox"
     elif command -v cross &>/dev/null; then
-        cross build --release --bin enoxd --target "$LINUX_TARGET"
+        cross build --release --bin enox --target "$LINUX_TARGET"
     else
         echo "Error: install cross (cargo install cross) or use --build-on-remote"
         exit 1
     fi
 
     echo "▶ Uploading..."
-    scp "$BINARY" "${SSH_TARGET}:/tmp/enoxd"
+    scp "$BINARY" "${SSH_TARGET}:/tmp/enox"
 
 else
     # ── Download latest GitHub release (default) ─────────────────────────────
@@ -118,9 +118,9 @@ else
     API_URL="https://api.github.com/repos/$REPO/releases/assets/$ASSET_ID"
     echo "  $TAG: $ASSET"
     if [[ -n "$TOKEN" ]]; then
-        ssh "$SSH_TARGET" "curl -fsSL -H 'Authorization: Bearer $TOKEN' -H 'Accept: application/octet-stream' '$API_URL' -o /tmp/enoxd && chmod +x /tmp/enoxd"
+        ssh "$SSH_TARGET" "mkdir -p /tmp/enoxian-release && curl -fsSL -H 'Authorization: Bearer $TOKEN' -H 'Accept: application/octet-stream' '$API_URL' -o /tmp/enoxian.tar.gz && tar -xzf /tmp/enoxian.tar.gz -C /tmp/enoxian-release && cp /tmp/enoxian-release/enox /tmp/enox && chmod +x /tmp/enox && rm -rf /tmp/enoxian-release /tmp/enoxian.tar.gz"
     else
-        ssh "$SSH_TARGET" "curl -fsSL -H 'Accept: application/octet-stream' '$API_URL' -o /tmp/enoxd && chmod +x /tmp/enoxd"
+        ssh "$SSH_TARGET" "mkdir -p /tmp/enoxian-release && curl -fsSL -H 'Accept: application/octet-stream' '$API_URL' -o /tmp/enoxian.tar.gz && tar -xzf /tmp/enoxian.tar.gz -C /tmp/enoxian-release && cp /tmp/enoxian-release/enox /tmp/enox && chmod +x /tmp/enox && rm -rf /tmp/enoxian-release /tmp/enoxian.tar.gz"
     fi
 fi
 
@@ -129,12 +129,12 @@ if $UPDATE_ONLY && [[ -z "$ADVERTISE_HOST" ]]; then
     echo "▶ Updating binary and restarting service..."
     ssh "$SSH_TARGET" "
         set -e
-        cp /tmp/enoxd /usr/local/bin/enoxd
-        chmod +x /usr/local/bin/enoxd
-        systemctl restart enoxd-bootstrap
+        cp /tmp/enox /usr/local/bin/enox
+        chmod +x /usr/local/bin/enox
+        systemctl restart enoxian-bootstrap
         sleep 1
-        systemctl is-active enoxd-bootstrap && echo '✦ Service restarted' \
-            || { journalctl -u enoxd-bootstrap -n 10 --no-pager; exit 1; }
+        systemctl is-active enoxian-bootstrap && echo '✦ Service restarted' \
+            || { journalctl -u enoxian-bootstrap -n 10 --no-pager; exit 1; }
     "
 else
     echo "▶ Running setup on $SSH_TARGET..."

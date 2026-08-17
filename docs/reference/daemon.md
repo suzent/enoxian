@@ -1,9 +1,12 @@
-# Daemon Reference — `enoxd`
+# Daemon Reference — `enox daemon run`
 
-The `enoxd` binary is the long-running daemon. It serves **all known Circles** over a single HTTP/WS port, with each Circle getting its own P2P swarm on a random port.
+`enox daemon run` is the long-running mode of the unified `enox` binary. It
+serves **all known Circles** over a single HTTP/WS port, with each Circle getting
+its own P2P swarm on a random port. Normal users should prefer `enox start` or
+`enox service install`.
 
 ```
-Usage: enoxd [OPTIONS]
+Usage: enox daemon run [OPTIONS]
 
 Options:
   --port <PORT>    HTTP port [default: 36521]
@@ -113,9 +116,9 @@ Files in the workspace are watched recursively. Any write triggers a CRDT update
 ## Log levels
 
 ```bash
-RUST_LOG=info  enoxd          # recommended for normal use
-RUST_LOG=debug enoxd          # full verbosity including libp2p internals
-RUST_LOG=warn  enoxd          # errors and warnings only
+RUST_LOG=info  enox daemon run          # recommended for normal use
+RUST_LOG=debug enox daemon run          # full verbosity including libp2p internals
+RUST_LOG=warn  enox daemon run          # errors and warnings only
 ```
 
 ---
@@ -126,13 +129,13 @@ The HTTP/WS API is a **privileged control plane** — it can add agents, arm
 push-mode (letting a chat mention run a process), start/stop circles, and edit
 config. It is not a public endpoint. Three defenses guard it:
 
-**Loopback by default.** `enoxd` binds `127.0.0.1` only, so nothing off-host can
+**Loopback by default.** The daemon binds `127.0.0.1` only, so nothing off-host can
 reach it. Opt into wider exposure explicitly:
 
 ```bash
-enoxd                       # 127.0.0.1 (default)
-enoxd --bind-lan            # 0.0.0.0 — reachable on the LAN (logs a warning)
-enoxd --bind 192.168.1.5    # a specific interface
+enox daemon run                       # 127.0.0.1 (default)
+enox daemon run --bind-lan            # 0.0.0.0 — reachable on the LAN
+enox daemon run --bind 192.168.1.5    # a specific interface
 ```
 
 **Token auth.** Every API request must present a token (generated on first start,
@@ -176,11 +179,11 @@ return to automatic routing. A successful relayed member connection appears as
 
 ## Bootstrap mode
 
-`enoxd --bootstrap` runs a public rendezvous + circuit relay server. It does not
+`enox bootstrap serve` runs a public rendezvous + circuit relay server. It does not
 load circles and holds no circle PSKs.
 
 ```bash
-enoxd --bootstrap --port 36521
+enox bootstrap serve --port 36521
 ```
 
 The server listens over QUIC for libp2p rendezvous/relay traffic and exposes
