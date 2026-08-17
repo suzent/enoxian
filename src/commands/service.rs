@@ -95,13 +95,18 @@ pub fn start() -> Result<()> {
 
 fn install(port: u16, bind_lan: bool, bind: Option<IpAddr>, force: bool) -> Result<()> {
     let definition = service_definition();
-    if definition.exists() && !force {
+    #[cfg(windows)]
+    let stale_definition = definition.exists() && !windows_task_exists();
+    #[cfg(not(windows))]
+    let stale_definition = false;
+
+    if definition.exists() && !force && !stale_definition {
         bail!(
             "managed service already exists at {} — use --force to replace it",
             definition.display()
         );
     }
-    if definition.exists() {
+    if definition.exists() && !stale_definition {
         stop()?;
     }
     if let Some(parent) = definition.parent() {
@@ -169,8 +174,8 @@ fn install(port: u16, bind_lan: bool, bind: Option<IpAddr>, force: bool) -> Resu
         let user_id = std::env::var("USERDOMAIN")
             .map(|domain| format!("{domain}\\{username}"))
             .unwrap_or(username);
-        fs::write(&definition, windows_task(&wrapper, &user_id))?;
-        run_checked(
+        write_windows_task(&definition, &windows_task(&wrapper, &user_id))?;
+        if let Err(error) = run_checked(
             Command::new("schtasks").args([
                 "/Create",
                 "/TN",
@@ -180,7 +185,11 @@ fn install(port: u16, bind_lan: bool, bind: Option<IpAddr>, force: bool) -> Resu
                 "/F",
             ]),
             "install scheduled task",
-        )?;
+        ) {
+            let _ = remove_if_exists(&definition);
+            let _ = remove_if_exists(&wrapper);
+            return Err(error);
+        }
         start()?;
     }
 
@@ -421,11 +430,32 @@ fn launch_agent(exe: &Path, args: &[String], log_dir: &Path) -> String {
 #[cfg(windows)]
 fn windows_task(wrapper: &Path, user_id: &str) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n  <RegistrationInfo><Description>Enoxian collaboration service</Description></RegistrationInfo>\n  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{}</UserId></LogonTrigger></Triggers>\n  <Principals><Principal id=\"Author\"><UserId>{}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n  <Settings>\n    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n    <RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure>\n    <Enabled>true</Enabled>\n  </Settings>\n  <Actions Context=\"Author\"><Exec><Command>cmd.exe</Command><Arguments>/d /c &quot;&quot;{}&quot;&quot;</Arguments></Exec></Actions>\n</Task>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n  <RegistrationInfo><Description>Enoxian collaboration service</Description></RegistrationInfo>\n  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{}</UserId></LogonTrigger></Triggers>\n  <Principals><Principal id=\"Author\"><UserId>{}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n  <Settings>\n    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n    <RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure>\n    <Enabled>true</Enabled>\n  </Settings>\n  <Actions Context=\"Author\"><Exec><Command>cmd.exe</Command><Arguments>/d /c &quot;&quot;{}&quot;&quot;</Arguments></Exec></Actions>\n</Task>\n",
         xml_escape(user_id),
         xml_escape(user_id),
         xml_escape(&wrapper.to_string_lossy())
     )
+}
+
+#[cfg(windows)]
+fn write_windows_task(path: &Path, xml: &str) -> Result<()> {
+    let mut bytes = Vec::with_capacity(2 + xml.len() * 2);
+    bytes.extend_from_slice(&[0xff, 0xfe]);
+    for unit in xml.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))
+}
+
+#[cfg(windows)]
+fn windows_task_exists() -> bool {
+    Command::new("schtasks")
+        .args(["/Query", "/TN", "Enoxian"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "macos")]
@@ -520,6 +550,24 @@ mod tests {
         assert!(task.contains("<RunLevel>LeastPrivilege</RunLevel>"));
         assert!(task.contains(r"C:\Users\A &amp; B"));
         assert!(task.contains(r"DESKTOP\A&amp;B"));
+        assert!(task.starts_with(r#"<?xml version="1.0" encoding="UTF-16"?>"#));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_definition_is_written_as_utf16le_with_bom() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("task.xml");
+        let xml = windows_task(Path::new(r"C:\enox\run.cmd"), r"DESKTOP\user");
+        write_windows_task(&path, &xml).unwrap();
+
+        let bytes = fs::read(path).unwrap();
+        assert_eq!(&bytes[..2], &[0xff, 0xfe]);
+        let units = bytes[2..]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        assert_eq!(String::from_utf16(&units).unwrap(), xml);
     }
 
     #[cfg(target_os = "linux")]
