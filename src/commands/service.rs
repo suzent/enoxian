@@ -224,6 +224,7 @@ fn stop() -> Result<()> {
         let _ = Command::new("schtasks")
             .args(["/End", "/TN", "Enoxian"])
             .status();
+        stop_windows_daemons();
     }
 
     println!("✓ Enoxian service stopped");
@@ -435,6 +436,16 @@ fn windows_task(wrapper: &Path, user_id: &str) -> String {
         xml_escape(user_id),
         xml_escape(&wrapper.to_string_lossy())
     )
+}
+
+#[cfg(windows)]
+fn stop_windows_daemons() {
+    const SCRIPT: &str = "Get-CimInstance Win32_Process -Filter \"Name = 'enox.exe'\" | Where-Object { $_.CommandLine -match '(?i)(^|\\s)\\\"?daemon\\\"?\\s+\\\"?run\\\"?(\\s|$)' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
+    let _ = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 #[cfg(windows)]
