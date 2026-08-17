@@ -37,6 +37,14 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-08-17
+
+### Fixed
+
+- Windows login-service stop, restart, and forced reinstall now clean up daemon
+  processes left by Task Scheduler's logging wrapper, reliably releasing the
+  API port while preserving `enox service logs`.
+
 ## [0.3.1] — 2026-08-17
 
 ### Fixed
@@ -156,7 +164,8 @@ git history and `docs/plan/archived/milestones.md` for the M1–M14 feature set
 (P2P sync, presence/tasks/locks/chat, members + MLS membership, WAN bootstrap,
 and the local workspace proposal layer).
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/suzent/enoxian/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/suzent/enoxian/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/suzent/enoxian/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/suzent/enoxian/compare/v0.2.0...v0.2.1
