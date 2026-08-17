@@ -98,7 +98,7 @@ Local API security.
 
 **Tasks:**
 
-- [x] Default `enoxd` HTTP/WS listener to loopback. (`src/commands/serve.rs`)
+- [x] Default daemon HTTP/WS listener to loopback. (`src/commands/serve.rs`)
 - [x] Add explicit flags for LAN/public binding (`--bind-lan`, `--bind <ip>`).
 - [x] Replace permissive CORS with a local origin allowlist. (`src/api/mod.rs`)
 - [x] Local API token auth for CLI and browser clients. (`src/api/auth.rs`;

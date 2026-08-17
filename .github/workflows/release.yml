@@ -206,22 +206,29 @@ jobs:
         if: matrix.target != 'aarch64-unknown-linux-musl'
         run: cargo build --release --locked --bins --target ${{ matrix.target }}
 
-      - name: Smoke test native Unix binaries
+      - name: Smoke test native Unix binary
         if: runner.os != 'Windows' && matrix.smoke
         shell: bash
         run: |
           set -euo pipefail
           bin="target/${{ matrix.target }}/release"
           "$bin/enox" --version | grep -F "${{ needs.verify.outputs.version }}"
-          "$bin/enoxd" --version | grep -F "${{ needs.verify.outputs.version }}"
+          "$bin/enox" daemon run --help >/dev/null
+          "$bin/enox" bootstrap serve --help >/dev/null
+          "$bin/enox" service --help >/dev/null
 
-      - name: Smoke test Windows binaries
+      - name: Smoke test Windows binary
         if: runner.os == 'Windows' && matrix.smoke
         shell: pwsh
         run: |
           $bin = "target/${{ matrix.target }}/release"
           (& "$bin/enox.exe" --version) | Select-String -SimpleMatch "${{ needs.verify.outputs.version }}"
-          (& "$bin/enoxd.exe" --version) | Select-String -SimpleMatch "${{ needs.verify.outputs.version }}"
+          & "$bin/enox.exe" daemon run --help *> $null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$bin/enox.exe" bootstrap serve --help *> $null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$bin/enox.exe" service --help *> $null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Unix
         if: runner.os != 'Windows'
@@ -230,8 +237,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/enox" dist/
-          cp "target/${{ matrix.target }}/release/enoxd" dist/
-          tar -C dist -czf "${{ matrix.asset }}" enox enoxd
+          tar -C dist -czf "${{ matrix.asset }}" enox
 
       - name: Package Windows
         if: runner.os == 'Windows'
@@ -239,8 +245,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/enox.exe" dist/
-          Copy-Item "target/${{ matrix.target }}/release/enoxd.exe" dist/
-          Compress-Archive -Path dist/enox.exe,dist/enoxd.exe -DestinationPath "${{ matrix.asset }}"
+          Compress-Archive -Path dist/enox.exe -DestinationPath "${{ matrix.asset }}"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -323,6 +328,49 @@ jobs:
           fi
           gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+
+  install-smoke:
+    name: Install smoke (${{ matrix.os }})
+    needs: [verify, publish]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      TAG: ${{ needs.verify.outputs.tag }}
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - name: Exercise published installer on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_dir="$RUNNER_TEMP/enoxian-bin"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/install.sh" \
+            -o "$RUNNER_TEMP/install.sh"
+          sh "$RUNNER_TEMP/install.sh" --version "$TAG" --bin-dir "$bin_dir"
+          "$bin_dir/enox" --version | grep -F "$VERSION"
+          "$bin_dir/enox" service status
+          test ! -e "$bin_dir/enoxd"
+
+      - name: Exercise published installer on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $binDir = Join-Path $env:RUNNER_TEMP 'enoxian-bin'
+          $installer = Join-Path $env:RUNNER_TEMP 'install.ps1'
+          Invoke-WebRequest -Uri "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/install.ps1" -OutFile $installer
+          & $installer -Version $env:TAG -BinDir $binDir -NoPathUpdate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          (& (Join-Path $binDir 'enox.exe') --version) |
+            Select-String -SimpleMatch $env:VERSION
+          & (Join-Path $binDir 'enox.exe') service status
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path (Join-Path $binDir 'enoxd.exe')) {
+            throw 'legacy enoxd.exe should not be installed'
+          }
 
   homebrew:
     name: Update Homebrew tap

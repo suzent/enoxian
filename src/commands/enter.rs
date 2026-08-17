@@ -131,7 +131,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
             }
             println!();
             println!(
-                "  Restart the daemon to apply: enox update --dev --no-pull (or restart enoxd)"
+                "  Restart the daemon to apply: enox update --dev --no-pull (or `enox service restart`)"
             );
             println!("  Then: enox --circle \"{circle_name}\" status");
             return Ok(());
@@ -210,7 +210,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
     let Some(peer_addr_str) = peer else {
         println!();
         println!("  No peer address in invite. Start the daemon to connect via mDNS:");
-        println!("    enoxd");
+        println!("    enox start");
         println!("    enox --circle \"{circle_name}\" status");
         return Ok(());
     };
@@ -325,13 +325,13 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         println!("  ✦ Verified peer {peer_id} via {}", endpoint.get_remote_address());
                         println!();
-                        println!("  Start the daemon: enoxd");
+                        println!("  Start the daemon: enox start");
                         println!("  Then: enox --circle \"{circle_name}\" status");
                         return Ok(());
                     }
                     SwarmEvent::OutgoingConnectionError { error, .. } => {
                         warn!("Could not reach peer: {error}");
-                        println!("  (Config saved — connect via mDNS when enoxd starts)");
+                        println!("  (Config saved — connect via mDNS when Enoxian starts)");
                         return Ok(());
                     }
                     SwarmEvent::Behaviour(EnochEvent::Ping(_)) => {}

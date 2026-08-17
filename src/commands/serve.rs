@@ -22,7 +22,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
 
     let active: Vec<_> = all_configs.iter().filter(|c| !c.disabled).collect();
     info!(
-        "Starting enoxd — {} circle(s) found ({} active)",
+        "Starting Enoxian — {} circle(s) found ({} active)",
         all_configs.len(),
         active.len()
     );
@@ -141,7 +141,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         .await
         .context("axum server error")?;
 
-    info!("enoxd stopped");
+    info!("Enoxian stopped");
     Ok(())
 }
 

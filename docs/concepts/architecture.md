@@ -4,7 +4,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     enoxd (circle mode)                     │
+│                 enox daemon run (circle mode)               │
 │                                                             │
 │  ┌─────────────┐   ┌────────────────────┐   ┌────────────┐  │
 │  │  libp2p     │   │   axum HTTP + WS   │   │   notify   │  │
@@ -33,7 +33,7 @@
           │                   │
           ▼                   ▼
   ┌──────────────┐   ┌──────────────────┐   ┌──────────────────┐
-  │  enoxd peer  │   │    enox CLI      │   │ enoxd            │
+  │ Enoxian peer │   │    enox CLI      │   │ Enoxian daemon   │
   │  (other node)│   │  or AI agent     │   │ --bootstrap      │
   └──────────────┘   └──────────────────┘   │ (QUIC only,      │
                                             │ no PSK,          │
@@ -63,8 +63,8 @@
 | FS lock | `src/control/fs_lock.rs` | `set_readonly()` — chmod wrapper |
 | P2P sync | `src/network/sync.rs` | `/enoxian/sync/1.0.0` stream handler; 3-phase handshake + continuous update exchange |
 | P2P behaviour | `src/network/behaviour.rs` | `EnochBehaviour` combining all libp2p behaviours (mDNS, Kad, Identify, Ping, Rendezvous client, RelayClient, Relay, DCUtR, Stream) |
-| Bootstrap behaviour | `src/network/bootstrap_behaviour.rs` | `BootstrapBehaviour` for `enoxd --bootstrap`: Rendezvous server + Relay + Identify + Ping + Kad |
-| Bootstrap server | `src/bootstrap.rs` | `enoxd --bootstrap` — QUIC-only rendezvous + relay node; no PSK; no circles |
+| Bootstrap behaviour | `src/network/bootstrap_behaviour.rs` | `BootstrapBehaviour` for `enox bootstrap serve`: Rendezvous server + Relay + Identify + Ping + Kad |
+| Bootstrap server | `src/bootstrap.rs` | `enox bootstrap serve` — QUIC-only rendezvous + relay node; no PSK; no circles |
 | Serve command | `src/commands/serve.rs` | Main daemon loop; one swarm per circle + axum HTTP server |
 | CLI commands | `src/commands/*.rs` | `reqwest` calls to the REST API |
 | CLI definitions | `src/cli.rs` | `clap` arg structs for both binaries |
@@ -215,7 +215,7 @@ The workspace path is stored in `config.toml` as `workspace_dir` and can be any 
 src/
 ├── bin/
 │   ├── enox.rs                 # Agent CLI entry point
-│   └── enoxd.rs                # Daemon entry point
+│   └── enox.rs                 # Unified CLI, daemon, bootstrap and service entry point
 ├── api/
 │   ├── mod.rs                   # axum Router
 │   ├── events.rs                # GET /api/events
@@ -224,7 +224,8 @@ src/
 │   ├── tasks.rs                 # GET/POST /api/tasks
 │   └── who.rs                   # GET /api/who
 ├── commands/
-│   ├── serve.rs                 # enoxd main loop
+│   ├── serve.rs                 # daemon main loop
+│   ├── service.rs               # launchd/systemd/Scheduled Task lifecycle
 │   ├── bind.rs                  # enox bind
 │   ├── claim.rs                 # enox claim
 │   ├── done_cmd.rs              # enox done
@@ -246,7 +247,7 @@ src/
 ├── config.rs                    # config.toml load/save
 ├── crypto.rs                    # Keypair generation + hex encoding
 ├── lib.rs                       # Crate root
-├── bootstrap.rs                 # enoxd --bootstrap server (QUIC rendezvous + relay)
+├── bootstrap.rs                 # enox bootstrap serve (QUIC rendezvous + relay)
 ├── network/
 │   ├── behaviour.rs             # EnochBehaviour + EnochEvent (libp2p)
 │   ├── bootstrap_behaviour.rs   # BootstrapBehaviour + BootstrapEvent (--bootstrap mode)
@@ -268,7 +269,7 @@ Each circle swarm uses three transport legs combined via `or_transport`:
 
 The PSK is transport-level: it runs before Noise. Bootstrap servers do not know any circle's PSK, so they are unreachable over the PSK-TCP leg. Circle members reach them exclusively over QUIC.
 
-The bootstrap server (`enoxd --bootstrap`) runs **QUIC only** — it never participates in a circle and holds no PSK.
+The bootstrap server (`enox bootstrap serve`) runs **QUIC only** — it never participates in a circle and holds no PSK.
 
 The axum HTTP/WebSocket server is a privileged local control plane for the CLI
 and browser UI. It is not the WAN relay path. `/ws/yjs` syncs local browser

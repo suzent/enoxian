@@ -33,7 +33,7 @@ pub struct CircleConfig {
     /// Admin public key hex (Ed25519). Present on all peers; private key only on admin machines.
     #[serde(default)]
     pub admin_pubkey_hex: String,
-    /// If true, enoxd skips this circle at startup and does not start its swarm.
+    /// If true, the daemon skips this circle at startup and does not start its swarm.
     #[serde(default)]
     pub disabled: bool,
     /// Diagnostic mode: only connect to circle peers through circuit relay.

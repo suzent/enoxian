@@ -18,6 +18,7 @@ pub mod release;
 pub mod rendezvous;
 pub mod say;
 pub mod serve;
+pub mod service;
 pub mod session;
 pub mod start;
 pub mod status;

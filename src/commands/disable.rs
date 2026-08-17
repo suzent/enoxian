@@ -23,7 +23,7 @@ pub async fn run(
     let _ = client.post(&url).send().await;
 
     println!(
-        "✦ Circle '{}' disabled — enoxd will skip it on next start.",
+        "✦ Circle '{}' disabled — Enoxian will skip it on next start.",
         cfg.circle_name
     );
     println!("  Re-enable with: enox enable");

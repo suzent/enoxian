@@ -37,6 +37,33 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-17
+
+### Added
+
+- Added `enox service install|status|start|stop|restart|logs|uninstall` for
+  opt-in login-time startup through systemd user units, macOS LaunchAgents, and
+  Windows Scheduled Tasks.
+- Release publication now runs the published one-click installer on clean
+  Linux, macOS, and Windows runners before the release is considered validated.
+- Installers can enable login-time startup explicitly with `--enable-service`
+  or `-EnableService`; Agent mention execution remains a separate opt-in.
+
+### Changed
+
+- Enoxian now ships one `enox` executable. `enox start` launches the same binary
+  in background daemon mode, while `enox daemon run` provides a foreground mode
+  for debugging and external supervisors.
+- Public rendezvous and relay deployments now use `enox bootstrap serve`, and
+  the VPS scripts migrate the old binary and systemd unit automatically.
+- Background startup writes persistent logs and uses crash-restart policies
+  without exposing the privileged local API beyond loopback by default.
+
+### Removed
+
+- Removed the standalone `enoxd` executable and its duplicated packaging,
+  update, installation, and documentation paths.
+
 ## [0.2.1] — 2026-08-16
 
 ### Added
@@ -121,7 +148,8 @@ git history and `docs/plan/archived/milestones.md` for the M1–M14 feature set
 (P2P sync, presence/tasks/locks/chat, members + MLS membership, WAN bootstrap,
 and the local workspace proposal layer).
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/suzent/enoxian/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/suzent/enoxian/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/suzent/enoxian/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/suzent/enoxian/releases/tag/v0.1.4

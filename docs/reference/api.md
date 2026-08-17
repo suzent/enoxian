@@ -1,6 +1,6 @@
 # REST API Reference
 
-`enoxd` exposes a single HTTP server (default port `36521`). Routes are split
+The managed Enoxian daemon exposes a single HTTP server (default port `36521`). Routes are split
 between daemon-level routes, device-local routes, and per-circle routes scoped
 to a circle ID.
 

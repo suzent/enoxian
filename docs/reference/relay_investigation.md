@@ -1,7 +1,7 @@
 # Enoxian Public Relay & Rendezvous Investigation
 
 ## Overview
-An attempt was made to deploy a public `enoxd --bootstrap` server on DigitalOcean to act as a fallback discovery (Rendezvous) and tunneling (Circuit Relay) server. The goal was to allow two Enoxian devices behind strict NATs to sync seamlessly over the public internet without requiring a VPN like Tailscale.
+An attempt was made to deploy a public bootstrap server on DigitalOcean to act as a fallback discovery (Rendezvous) and tunneling (Circuit Relay) server. The goal was to allow two Enoxian devices behind strict NATs to sync seamlessly over the public internet without requiring a VPN like Tailscale.
 
 While the first server deployed successfully, the clients failed to establish a P2P sync stream through it due to several interconnected architectural limitations in how Enoxian wrapped `libp2p` transports and reused ports.
 
@@ -13,7 +13,7 @@ While the first server deployed successfully, the clients failed to establish a 
 ## Core Issues Discovered
 
 ### 1. DNS Resolution in Transports
-By default, the `enoxd` libp2p swarm was built without the `libp2p::dns` wrapper. When an invite contained a domain name (e.g., `/dns4/relay.enoxian.com/udp/36521/quic-v1/...`), the client crashed with `Multiaddr is not supported`.
+At the time, the Enoxian libp2p swarm was built without the `libp2p::dns` wrapper. When an invite contained a domain name (e.g., `/dns4/relay.enoxian.com/udp/36521/quic-v1/...`), the client crashed with `Multiaddr is not supported`.
 - **Fix Applied:** Wrapped the TCP, Relay, and QUIC transports in `libp2p::dns::tokio::Transport::system(...)` in `src/lifecycle.rs`.
 
 ### 2. Rendezvous Registration Requires External IPs

@@ -102,13 +102,13 @@ Generating a new invite does **not** invalidate old ones — it just produces a 
 When a relay multiaddr is embedded in an invite:
 
 1. `enox enter` saves the relay address to `relay_addrs` in the circle's `config.toml`
-2. On the next `enoxd` start, the node calls `swarm.listen_on(<relay>/p2p-circuit)` which reserves a slot on the relay
+2. On the next daemon start, the node calls `swarm.listen_on(<relay>/p2p-circuit)` which reserves a slot on the relay
 3. The node is now reachable from any network through the relay, even behind NAT or strict firewall
 4. When two peers both reach each other through the relay, DCUtR (Direct Connection Upgrade through Relay) attempts a direct hole-punch — the relay is only used for coordination, not ongoing traffic
 
 The relay node can be either:
 
-- a public bootstrap relay (`enoxd --bootstrap`), which holds no PSK and joins no circle
+- a public bootstrap relay (`enox bootstrap serve`), which holds no PSK and joins no circle
 - a regular circle member with a public address, which is also a full member and therefore does hold the PSK
 
 In both cases, the relay forwards libp2p circuit traffic rather than interpreting the circle sync protocol. Direct connection upgrade through relay (DCUtR) may move peers off the relay once a direct path is established.
@@ -129,14 +129,14 @@ The peer ID and listening port are printed by `enox invite` when the daemon is r
 
 ## WAN invites with bootstrap server (`--rendezvous`)
 
-For the case where **no** circle member has a public IP, the bootstrap server (`enoxd --bootstrap`) acts as a rendezvous point and circuit relay. Circle members connect to it via QUIC (no PSK), register under their circle UUID namespace, and discover each other.
+For the case where **no** circle member has a public IP, `enox bootstrap serve` acts as a rendezvous point and circuit relay. Circle members connect to it via QUIC (no PSK), register under their circle UUID namespace, and discover each other.
 
 The bootstrap server is not a circle member — it holds no PSK and cannot read synced content.
 
 When a rendezvous multiaddr is embedded in an invite:
 
 1. `enox enter` saves it to `rendezvous_addrs` in `config.toml`
-2. On `enoxd` start, the circle swarm dials the bootstrap server over QUIC
+2. On daemon start, the circle swarm dials the bootstrap server over QUIC
 3. It registers under namespace = circle UUID; TTL = 2h (refreshed hourly)
 4. It discovers other members registered under the same namespace and dials them
 5. Direct PSK-TCP connections are attempted between discovered members
@@ -146,7 +146,7 @@ When a rendezvous multiaddr is embedded in an invite:
 
 ```bash
 # On the VPS:
-enoxd --bootstrap --port 36521
+enox bootstrap serve --port 36521
 
 # Startup log shows:
 #   Bootstrap listening on /ip4/0.0.0.0/udp/36521/quic-v1
@@ -194,7 +194,7 @@ Membership is enforced separately by the admin-signed member list and `mls_remov
 | Opaque — PSK not visible in plain text | ✅ (base64url encoded) |
 | Works offline / without a server | ✅ |
 | WAN connectivity via relay | ✅ (circuit relay + DCUtR) |
-| WAN connectivity via bootstrap rendezvous | ✅ (`enoxd --bootstrap` — both behind NAT) |
+| WAN connectivity via bootstrap rendezvous | ✅ (`enox bootstrap serve` — both behind NAT) |
 | Relay traffic encrypted end-to-end | ✅ (relay forwards Noise-encrypted bytes; cannot read content) |
 | Bootstrap server learns nothing about content | ✅ (only knows peer IDs and circle UUIDs) |
 | Connectivity auto-embedded by daemon | ✅ (`enox invite` queries daemon, no manual flags needed) |

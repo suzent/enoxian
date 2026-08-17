@@ -1,4 +1,4 @@
-//! Bootstrap server mode (`enoxd --bootstrap`).
+//! Bootstrap server mode (`enox bootstrap serve`).
 //!
 //! Runs a public rendezvous + circuit-relay node that circle members can use
 //! for WAN peer discovery.  The server holds no PSK and joins no circle.
@@ -6,7 +6,7 @@
 //!
 //! # Setup (enox.suzent.com)
 //!
-//! 1. On the server: `enoxd --bootstrap --port 36521 --relay-port 36522`
+//! 1. On the server: `enox bootstrap serve --port 36521 --relay-port 36522`
 //!    Copy the printed peer ID from the log.
 //! 2. Share the multiaddr with circle members:
 //!    `/ip4/<PUBLIC_IP>/udp/36521/quic-v1/p2p/<PEER_ID>`

@@ -17,7 +17,7 @@ async fn resolve_peer_id(client: &reqwest::Client, base: &str, hint: &str) -> Re
         .get(base)
         .send()
         .await
-        .context("failed to reach daemon — is enoxd running?")?;
+        .context("failed to reach daemon — run `enox start`")?;
     let members: serde_json::Value = resp.json().await?;
     let members = members.as_array().context("unexpected response")?;
 
@@ -61,7 +61,7 @@ pub async fn run(
                 .get(&base)
                 .send()
                 .await
-                .context("failed to reach daemon — is enoxd running?")?;
+                .context("failed to reach daemon — run `enox start`")?;
             let val: serde_json::Value = resp.json().await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&val)?);
@@ -169,7 +169,7 @@ pub async fn run(
                 .get(&url)
                 .send()
                 .await
-                .context("failed to reach daemon — is enoxd running?")?;
+                .context("failed to reach daemon — run `enox start`")?;
             let val: serde_json::Value = resp.json().await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&val)?);
@@ -260,7 +260,7 @@ pub async fn run(
                 .get(&base)
                 .send()
                 .await
-                .context("failed to reach daemon — is enoxd running?")?;
+                .context("failed to reach daemon — run `enox start`")?;
             let val: serde_json::Value = resp.json().await?;
             let peer_ids: Vec<String> = val
                 .as_array()

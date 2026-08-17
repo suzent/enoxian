@@ -16,7 +16,7 @@ pub fn run(args: IdentityArgs) -> Result<()> {
 
 fn show() -> Result<()> {
     let device = DeviceIdentity::load()
-        .context("no device identity found — start enoxd once to create one")?;
+        .context("no device identity found — run `enox start` once to create one")?;
     let kp = device.device_keypair()?;
     let peer_id = kp.public().to_peer_id();
     println!("Device identity");
@@ -37,25 +37,28 @@ fn show() -> Result<()> {
 }
 
 fn set_label(label: String) -> Result<()> {
-    let mut device = DeviceIdentity::load().context("no device identity — start enoxd first")?;
+    let mut device =
+        DeviceIdentity::load().context("no device identity — run `enox start` first")?;
     device.device_label = label.clone();
     device.save()?;
     println!("Device label updated to '{label}'");
-    println!("Restart enoxd for presence to reflect the change.");
+    println!("Run `enox service restart` for presence to reflect the change.");
     Ok(())
 }
 
 fn set_user_handle(handle: String) -> Result<()> {
-    let mut device = DeviceIdentity::load().context("no device identity — start enoxd first")?;
+    let mut device =
+        DeviceIdentity::load().context("no device identity — run `enox start` first")?;
     device.set_user_handle(handle.clone());
     device.save()?;
     println!("User handle set to '{handle}'");
-    println!("Restart enoxd for presence to reflect the change.");
+    println!("Run `enox service restart` for presence to reflect the change.");
     Ok(())
 }
 
 fn create_user(handle: String) -> Result<()> {
-    let mut device = DeviceIdentity::load().context("no device identity — start enoxd first")?;
+    let mut device =
+        DeviceIdentity::load().context("no device identity — run `enox start` first")?;
 
     let (user, mnemonic) = UserIdentity::generate(handle.clone())?;
     user.link_device(&mut device, &mnemonic)?;
@@ -70,17 +73,18 @@ fn create_user(handle: String) -> Result<()> {
     println!("  {mnemonic}");
     println!();
     println!("  To link another device: enox identity link-user \"{handle}\" \"<mnemonic>\"");
-    println!("  Restart enoxd for presence to reflect the change.");
+    println!("  Run `enox service restart` for presence to reflect the change.");
     Ok(())
 }
 
 fn link_user(handle: String, mnemonic: String) -> Result<()> {
-    let mut device = DeviceIdentity::load().context("no device identity — start enoxd first")?;
+    let mut device =
+        DeviceIdentity::load().context("no device identity — run `enox start` first")?;
 
     let user = UserIdentity::from_mnemonic(&mnemonic, handle.clone())?;
     user.link_device(&mut device, &mnemonic)?;
 
     println!("✦ Device linked to user '{handle}'");
-    println!("  Restart enoxd for presence to reflect the change.");
+    println!("  Run `enox service restart` for presence to reflect the change.");
     Ok(())
 }

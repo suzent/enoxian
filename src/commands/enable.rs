@@ -23,6 +23,6 @@ pub async fn run(
     let _ = client.post(&url).send().await;
 
     println!("✦ Circle '{}' enabled.", cfg.circle_name);
-    println!("  If enoxd is running it will start within ~10s (hot-reload).");
+    println!("  If Enoxian is running it will start within ~10s (hot-reload).");
     Ok(())
 }

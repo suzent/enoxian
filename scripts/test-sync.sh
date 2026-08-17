@@ -8,7 +8,6 @@
 set -euo pipefail
 
 ENOX="${ENOX:-./target/debug/enox}"
-ENOXD="${ENOXD:-./target/debug/enoxd}"
 
 TMPDIR_TEST=$(mktemp -d)
 D1_HOME="$TMPDIR_TEST/d1"
@@ -21,8 +20,8 @@ fail()    { echo "  ✗ $*"; exit 1; }
 section() { echo; echo "── $* ──"; }
 
 cleanup() {
-    pkill -f "enoxd --port $D1_PORT" 2>/dev/null || true
-    pkill -f "enoxd --port $D2_PORT" 2>/dev/null || true
+    pkill -f "enox daemon run --port $D1_PORT" 2>/dev/null || true
+    pkill -f "enox daemon run --port $D2_PORT" 2>/dev/null || true
     rm -rf "$TMPDIR_TEST"
 }
 trap cleanup EXIT
@@ -37,7 +36,7 @@ cargo build --bins -q && ok "built"
 section "Start daemon 1 (circle creator)"
 mkdir -p "$D1_HOME"
 export ENOXIAN_DEVICE_LABEL="device-one"
-HOME="$D1_HOME" ENOXIAN_API="http://127.0.0.1:$D1_PORT" "$ENOXD" --port $D1_PORT > "$TMPDIR_TEST/d1.log" 2>&1 &
+HOME="$D1_HOME" ENOXIAN_API="http://127.0.0.1:$D1_PORT" "$ENOX" daemon run --port $D1_PORT > "$TMPDIR_TEST/d1.log" 2>&1 &
 sleep 2
 ok "daemon 1 up on port $D1_PORT"
 
@@ -56,7 +55,7 @@ ok "circle $CIRCLE_ID created"
 section "Start daemon 2 and enter circle"
 mkdir -p "$D2_HOME"
 export ENOXIAN_DEVICE_LABEL="device-two"
-HOME="$D2_HOME" ENOXIAN_API="http://127.0.0.1:$D2_PORT" "$ENOXD" --port $D2_PORT > "$TMPDIR_TEST/d2.log" 2>&1 &
+HOME="$D2_HOME" ENOXIAN_API="http://127.0.0.1:$D2_PORT" "$ENOX" daemon run --port $D2_PORT > "$TMPDIR_TEST/d2.log" 2>&1 &
 sleep 2
 ok "daemon 2 up on port $D2_PORT"
 
@@ -127,8 +126,8 @@ ok "no PSK mismatch connection errors"
 
 section "Stable peer IDs — same device ID after reconnect"
 D1_PEER_BEFORE=$(curl1 "/circles/$CIRCLE_ID/api/status" | python3 -c "import sys,json;print(json.load(sys.stdin)['p2p']['peer_id'])")
-pkill -f "enoxd --port $D1_PORT" 2>/dev/null; sleep 1
-HOME="$D1_HOME" "$ENOXD" --port $D1_PORT >> "$TMPDIR_TEST/d1.log" 2>&1 &
+pkill -f "enox daemon run --port $D1_PORT" 2>/dev/null; sleep 1
+HOME="$D1_HOME" "$ENOX" daemon run --port $D1_PORT >> "$TMPDIR_TEST/d1.log" 2>&1 &
 sleep 2
 D1_PEER_AFTER=$(curl1 "/circles/$CIRCLE_ID/api/status" | python3 -c "import sys,json;print(json.load(sys.stdin)['p2p']['peer_id'])")
 [[ "$D1_PEER_BEFORE" == "$D1_PEER_AFTER" ]] || fail "peer ID changed after restart: $D1_PEER_BEFORE → $D1_PEER_AFTER"

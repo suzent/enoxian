@@ -59,7 +59,7 @@ pub async fn set_identity(Json(req): Json<SetIdentityRequest>) -> impl IntoRespo
         )
             .into_response();
     }
-    Json(json!({"status": "ok", "note": "restart enoxd for agent_id to reflect changes"}))
+    Json(json!({"status": "ok", "note": "restart Enoxian for agent_id to reflect changes"}))
         .into_response()
 }
 

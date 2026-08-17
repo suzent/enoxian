@@ -72,9 +72,9 @@ The deploy script downloads the latest pre-built binary from GitHub Releases and
 ```
 
 This will:
-1. Download the latest `enoxd-linux-<arch>` release asset to the VPS
+1. Download the matching `enoxian-linux-<arch>.tar.gz` release and extract `enox`
 2. Create an `enoxian` system user
-3. Install a systemd service (`enoxd-bootstrap`)
+3. Install a systemd service (`enoxian-bootstrap`)
 4. Open port `36521` on ufw/firewalld
 5. Start the service and print the server address
 
@@ -160,14 +160,14 @@ If you prefer to set up manually or are not using systemd:
 ### 1. Copy the binary
 
 ```bash
-cargo build --release --bin enoxd
-scp target/release/enoxd user@your-vps:/usr/local/bin/enoxd
+cargo build --release --bin enox
+scp target/release/enox user@your-vps:/usr/local/bin/enox
 ```
 
 ### 2. Run directly
 
 ```bash
-enoxd --bootstrap --port 36521 --relay-port 36522 --advertise-host enox.yourdomain.com
+enox bootstrap serve --port 36521 --relay-port 36522 --advertise-host enox.yourdomain.com
 ```
 
 The server generates a stable Ed25519 keypair at `~/.enoxian/bootstrap.key` on first run. The peer ID is stable across restarts — **do not delete this file**.
@@ -190,14 +190,14 @@ Bootstrap listening on /ip4/0.0.0.0/tcp/36522
 ### 3. Systemd service (manual)
 
 ```ini
-# /etc/systemd/system/enoxd-bootstrap.service
+# /etc/systemd/system/enoxian-bootstrap.service
 [Unit]
 Description=enoxian Bootstrap Server (rendezvous + relay)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/enoxd --bootstrap --port 36521 --relay-port 36522 --advertise-host enox.yourdomain.com
+ExecStart=/usr/local/bin/enox bootstrap serve --port 36521 --relay-port 36522 --advertise-host enox.yourdomain.com
 Restart=always
 RestartSec=5
 User=enoxian
@@ -210,7 +210,7 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl enable --now enoxd-bootstrap
+sudo systemctl enable --now enoxian-bootstrap
 ```
 
 ### 4. Firewall
@@ -241,10 +241,10 @@ curl http://your-vps:36521/peer-id
 # {"peer_id":"12D3KooWrdv..."}
 
 # Check service status on the VPS
-systemctl status enoxd-bootstrap
+systemctl status enoxian-bootstrap
 
 # Live logs
-journalctl -u enoxd-bootstrap -f
+journalctl -u enoxian-bootstrap -f
 ```
 
 ---

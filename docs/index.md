@@ -19,8 +19,8 @@ exact CLI/API behavior.
 
 | File | Description |
 |------|-------------|
-| [reference/api.md](reference/api.md) | Local REST/SSE/WebSocket API exposed by `enoxd` |
-| [reference/daemon.md](reference/daemon.md) | `enoxd` startup, config files, routes, and environment variables |
+| [reference/api.md](reference/api.md) | Local REST/SSE/WebSocket API exposed by Enoxian |
+| [reference/daemon.md](reference/daemon.md) | Daemon/service startup, config files, routes, and environment variables |
 | [reference/protocol.md](reference/protocol.md) | Yjs sync WebSocket and event-stream protocol details |
 | [reference/rendezvous-setup.md](reference/rendezvous-setup.md) | Deploying and using a bootstrap rendezvous/relay server |
 

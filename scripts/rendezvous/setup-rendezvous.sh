@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Run this on the VPS to install enoxd as a systemd bootstrap service.
-# The enoxd binary must already be present in the same directory as this script,
-# or at /tmp/enoxd (deploy-rendezvous.sh puts it there).
+# Run this on the VPS to install `enox bootstrap serve` as a systemd service.
+# The enox binary must be available at /tmp/enox unless BINARY_SRC overrides it.
 #
 # Usage:
 #   bash setup-rendezvous.sh [--port PORT] [--relay-port PORT] [--advertise-host HOST]
@@ -33,9 +32,10 @@ if [[ -n "$ADVERTISE_HOST" && ! "$ADVERTISE_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
     exit 1
 fi
 
-BINARY_SRC="${BINARY_SRC:-/tmp/enoxd}"
-BINARY_DST="/usr/local/bin/enoxd"
-SERVICE_FILE="/etc/systemd/system/enoxd-bootstrap.service"
+BINARY_SRC="${BINARY_SRC:-/tmp/enox}"
+BINARY_DST="/usr/local/bin/enox"
+SERVICE_NAME="enoxian-bootstrap"
+SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
 SERVICE_USER="enoxian"
 
 echo "Setting up enoxian rendezvous server on port $PORT and relay port $RELAY_PORT"
@@ -53,7 +53,9 @@ if [[ ! -f "$BINARY_SRC" ]]; then
     exit 1
 fi
 
-systemctl stop enoxd-bootstrap 2>/dev/null || true
+systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+systemctl disable --now enoxd-bootstrap 2>/dev/null || true
+rm -f /etc/systemd/system/enoxd-bootstrap.service /usr/local/bin/enoxd
 
 echo "  Installing binary $BINARY_DST"
 cp "$BINARY_SRC" "$BINARY_DST"
@@ -80,7 +82,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$BINARY_DST --bootstrap --port $PORT --relay-port $RELAY_PORT$ADVERTISE_ARGS
+ExecStart=$BINARY_DST bootstrap serve --port $PORT --relay-port $RELAY_PORT$ADVERTISE_ARGS
 Restart=always
 RestartSec=5
 User=$SERVICE_USER
@@ -110,12 +112,12 @@ fi
 # Enable and start
 echo "  Enabling and starting service"
 systemctl daemon-reload
-systemctl enable enoxd-bootstrap
-systemctl reset-failed enoxd-bootstrap 2>/dev/null || true
-systemctl start enoxd-bootstrap
+systemctl enable "$SERVICE_NAME"
+systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
+systemctl start "$SERVICE_NAME"
 
 sleep 1
-if systemctl is-active --quiet enoxd-bootstrap; then
+if systemctl is-active --quiet "$SERVICE_NAME"; then
     echo ""
     echo "Rendezvous server running on port $PORT; relay on TCP $RELAY_PORT"
     echo ""
@@ -126,9 +128,9 @@ if systemctl is-active --quiet enoxd-bootstrap; then
     echo "  To embed in invites from your local machine:"
     echo "    enox invite <circle> --rendezvous $(curl -sf https://api4.my-ip.io/ip 2>/dev/null || hostname -I | awk '{print $1}')"
     echo ""
-    echo "  Logs: journalctl -u enoxd-bootstrap -f"
+    echo "  Logs: journalctl -u $SERVICE_NAME -f"
 else
     echo "Error: service failed to start"
-    journalctl -u enoxd-bootstrap -n 20 --no-pager
+    journalctl -u "$SERVICE_NAME" -n 20 --no-pager
     exit 1
 fi

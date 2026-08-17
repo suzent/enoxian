@@ -6,6 +6,7 @@ param(
     [string]$Version = $(if ($env:ENOXIAN_VERSION) { $env:ENOXIAN_VERSION } else { 'latest' }),
     [string]$BinDir = $env:ENOXIAN_BIN_DIR,
     [switch]$NoPathUpdate,
+    [switch]$EnableService,
     [switch]$Help
 )
 
@@ -16,7 +17,7 @@ if ($Help) {
     @'
 Install enoxian on 64-bit Windows.
 
-Usage: .\install.ps1 [-Version VERSION] [-BinDir DIRECTORY] [-NoPathUpdate] [-Help]
+Usage: .\install.ps1 [-Version VERSION] [-BinDir DIRECTORY] [-NoPathUpdate] [-EnableService] [-Help]
 
 Environment equivalents: ENOXIAN_VERSION, ENOXIAN_BIN_DIR
 '@ | Write-Host
@@ -43,8 +44,13 @@ $Base = if ($env:ENOXIAN_DOWNLOAD_BASE) {
 if (-not $BinDir) { $BinDir = Join-Path $env:LOCALAPPDATA 'enoxian\bin' }
 $BinDir = [IO.Path]::GetFullPath($BinDir)
 
+$installedEnox = Join-Path $BinDir 'enox.exe'
+if (Test-Path $installedEnox -PathType Leaf) {
+    & $installedEnox stop *> $null
+    Start-Sleep -Milliseconds 500
+}
 if (Get-Process -Name enoxd -ErrorAction SilentlyContinue) {
-    throw "enoxian installer: enoxd is running. Run 'enox stop', then retry the installer."
+    throw "enoxian installer: legacy enoxd is still running. Run 'enox stop', then retry."
 }
 
 $Tmp = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ("enoxian-" + [guid]::NewGuid()))
@@ -68,16 +74,12 @@ try {
     Write-Host 'enoxian installer: checksum verified'
 
     Expand-Archive -Path (Join-Path $Tmp $Asset) -DestinationPath $Tmp -Force
-    foreach ($binary in @('enox.exe', 'enoxd.exe')) {
-        if (-not (Test-Path (Join-Path $Tmp $binary) -PathType Leaf)) {
-            throw "enoxian installer: archive is missing $binary"
-        }
+    if (-not (Test-Path (Join-Path $Tmp 'enox.exe') -PathType Leaf)) {
+        throw 'enoxian installer: archive is missing enox.exe'
     }
 
     $stagedVersion = & (Join-Path $Tmp 'enox.exe') --version
     if ($LASTEXITCODE -ne 0) { throw 'enoxian installer: downloaded enox failed its pre-install check' }
-    & (Join-Path $Tmp 'enoxd.exe') --version *> $null
-    if ($LASTEXITCODE -ne 0) { throw 'enoxian installer: downloaded enoxd failed its pre-install check' }
     if ($Version -ne 'latest' -and $stagedVersion -notmatch [regex]::Escape($Version.TrimStart('v'))) {
         throw "enoxian installer: downloaded version '$stagedVersion' does not match requested $Version"
     }
@@ -85,21 +87,18 @@ try {
     New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
     $backupDir = Join-Path $Tmp 'backup'
     New-Item -ItemType Directory -Path $backupDir | Out-Null
-    foreach ($binary in @('enox.exe', 'enoxd.exe')) {
-        $destination = Join-Path $BinDir $binary
-        $existing[$binary] = Test-Path $destination -PathType Leaf
-        if ($existing[$binary]) { Copy-Item $destination (Join-Path $backupDir $binary) }
-        $stagedDestination = Join-Path $BinDir ".$binary.new"
-        Copy-Item (Join-Path $Tmp $binary) $stagedDestination -Force
-        Move-Item $stagedDestination $destination -Force
-        $changed = $true
-    }
+    $destination = Join-Path $BinDir 'enox.exe'
+    $existing['enox.exe'] = Test-Path $destination -PathType Leaf
+    if ($existing['enox.exe']) { Copy-Item $destination (Join-Path $backupDir 'enox.exe') }
+    $stagedDestination = Join-Path $BinDir '.enox.exe.new'
+    Copy-Item (Join-Path $Tmp 'enox.exe') $stagedDestination -Force
+    Move-Item $stagedDestination $destination -Force
+    $changed = $true
 
     & (Join-Path $BinDir 'enox.exe') --version *> $null
     if ($LASTEXITCODE -ne 0) { throw 'enoxian installer: installed enox failed its post-install check' }
-    & (Join-Path $BinDir 'enoxd.exe') --version *> $null
-    if ($LASTEXITCODE -ne 0) { throw 'enoxian installer: installed enoxd failed its post-install check' }
     $committed = $true
+    Remove-Item (Join-Path $BinDir 'enoxd.exe') -Force -ErrorAction SilentlyContinue
 
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $pathEntries = @($userPath -split ';' | Where-Object { $_ })
@@ -109,12 +108,18 @@ try {
         Write-Host "enoxian installer: added $BinDir to your user PATH; open a new terminal"
     }
     Write-Host "enoxian installer: installed $stagedVersion"
-    Write-Host "enoxian installer: binaries: $BinDir\enox.exe and $BinDir\enoxd.exe"
+    Write-Host "enoxian installer: binary: $BinDir\enox.exe"
+    if ($EnableService) {
+        & (Join-Path $BinDir 'enox.exe') service install --force
+        if ($LASTEXITCODE -ne 0) { throw 'enoxian installer: enox installed, but login service setup failed' }
+    } else {
+        Write-Host "enoxian installer: optional: run 'enox service install' to start automatically when you sign in"
+    }
     Write-Host "enoxian installer: next: open a new terminal and run 'enox init --name my-project'"
 } catch {
     if ($changed -and -not $committed) {
         Write-Warning 'enoxian installer: installation failed; restoring the previous installation'
-        foreach ($binary in @('enox.exe', 'enoxd.exe')) {
+        foreach ($binary in @('enox.exe')) {
             $destination = Join-Path $BinDir $binary
             if ($existing.ContainsKey($binary) -and $existing[$binary]) {
                 Copy-Item (Join-Path $Tmp "backup\$binary") $destination -Force

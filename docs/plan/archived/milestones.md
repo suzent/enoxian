@@ -135,7 +135,7 @@ Completed work:
 
 **Status:** Complete
 
-`enoxd` serves a React frontend at `/app`.
+The Enoxian daemon serves a React frontend at `/app`.
 
 Completed work:
 
@@ -182,7 +182,7 @@ Completed work:
 - Relay client and relay server behavior.
 - DCUtR hole punching.
 - QUIC transport leg for bootstrap/rendezvous.
-- `enoxd --bootstrap` mode.
+- Public bootstrap mode (now `enox bootstrap serve`).
 - Stable bootstrap keypair.
 - Relay and rendezvous addresses in config and invites.
 - `enox invite` auto-embeds connectivity hints.
