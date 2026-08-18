@@ -21,15 +21,11 @@ cargo build --bins
 
 This produces the unified debug binary at `target/debug/enox`.
 
-### 2. Install to PATH (recommended)
+### 2. Install the release binary (recommended)
 
-`cargo install` puts `enox` into `~/.cargo/bin/`, which is already in your PATH after Rust is installed. After this you can type `enox` from anywhere.
-
-```bash
-cargo install --path .
-```
-
-Run this once per machine. After that, use `enox update --dev` to keep them current.
+Use the normal release installer once, optionally enabling the login service.
+Development updates then replace that same managed binary, so PATH and service
+definitions never split across stable and Cargo installations.
 
 ### 3. Register the source directory
 
@@ -55,7 +51,9 @@ The `--src` path is just the folder you cloned the repo into — wherever `Cargo
 enox update --dev
 ```
 
-This runs `git pull`, rebuilds with `cargo install`, and restarts Enoxian automatically.
+This fast-forwards the source checkout, builds the release binary, replaces the
+currently managed `enox` executable, and restores the previous service mode. It
+waits for API health and rolls back automatically if the new daemon fails.
 
 To rebuild without pulling (e.g. you made local edits):
 
@@ -107,16 +105,23 @@ Both machines always run the same version.
 
 ---
 
+Check which binary and channel are active:
+
+```bash
+enox update --status
+```
+
 ## Dev vs Stable
 
-| | Dev (`--dev`) | Stable (future) |
+| | Dev (`--dev`) | Stable |
 |---|---|---|
-| Source | Builds from your local clone | Downloads pre-built binary from GitHub Releases |
+| Source | Builds from your local clone | Downloads a verified binary from GitHub Releases |
 | Rust required | Yes | No |
 | Build time | ~5s incremental | Instant |
 | Use when | Actively developing | End users just want the latest |
 
-Stable binary downloads are not yet available — they are planned in M12 (Packaging & Distribution). Until then all users build from source.
+Rerun the release installer at any time to switch the same managed path back to
+the stable channel.
 
 ---
 
@@ -145,11 +150,9 @@ enox update --dev --src /path/to/enoxian
 ```
 
 **Enoxian won't start after update**
-The old process may still be running. Kill it manually:
-```bash
-enox stop
-enox start
-```
+The updater restores the previous binary automatically when its 20-second API
+health check fails. Inspect `enox update --status` and the service logs before
+retrying.
 
 **Circles not discovered across machines**
 Both machines must be on the same LAN for mDNS to work. For WAN, use an anchor node (M11).

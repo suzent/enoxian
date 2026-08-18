@@ -74,9 +74,14 @@ async fn main() -> anyhow::Result<()> {
         AgentCommands::Service(args) => {
             enoxian::commands::service::run(args.action, &client, &root).await
         }
-        AgentCommands::Update { dev, src, no_pull } => {
-            enoxian::commands::update::run(dev, src, no_pull).await
-        }
+        AgentCommands::Update {
+            dev,
+            src,
+            no_pull,
+            status,
+            record_stable,
+        } => enoxian::commands::update::run(dev, src, no_pull, status, record_stable).await,
+        AgentCommands::UpdateApply(args) => enoxian::commands::update::apply(args),
         AgentCommands::Identity(args) => enoxian::commands::identity::run(args),
 
         // Local workspace commands — operate on the circle's files/config
@@ -223,6 +228,7 @@ async fn main() -> anyhow::Result<()> {
                 | AgentCommands::Bootstrap(_)
                 | AgentCommands::Service(_)
                 | AgentCommands::Update { .. }
+                | AgentCommands::UpdateApply(_)
                 | AgentCommands::Identity(_)
                 | AgentCommands::Agent(_)
                 | AgentCommands::Session(_) => unreachable!(),

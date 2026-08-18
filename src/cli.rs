@@ -101,19 +101,28 @@ pub enum AgentCommands {
     Bootstrap(BootstrapArgs),
     /// Install and manage login-time background startup
     Service(ServiceArgs),
-    /// Update a development install (stable installs use the release installer)
+    /// Update Enoxian or inspect the active update channel
     Update {
         /// Build from source instead of downloading a release binary.
         /// Use this during development.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "status")]
         dev: bool,
         /// Path to the enoxian source directory (saved after first use)
-        #[arg(long)]
+        #[arg(long, requires = "dev")]
         src: Option<std::path::PathBuf>,
         /// Skip git pull (just rebuild)
-        #[arg(long)]
+        #[arg(long, requires = "dev")]
         no_pull: bool,
+        /// Show channel, source, managed binary, version, and service state
+        #[arg(long, conflicts_with_all = ["dev", "src", "no_pull"])]
+        status: bool,
+        /// Installer-only marker for a verified stable release
+        #[arg(long, hide = true, conflicts_with_all = ["dev", "src", "no_pull", "status"])]
+        record_stable: bool,
     },
+    /// Complete a deferred self-update after the old executable exits
+    #[command(name = "update-apply", hide = true)]
+    UpdateApply(UpdateApplyArgs),
     /// Manage this device's identity (label, user linking)
     Identity(IdentityArgs),
     /// Review workspace change proposals (list, show, accept, reject, revert)
@@ -122,6 +131,18 @@ pub enum AgentCommands {
     Agent(AgentRunArgs),
     /// Declare a local change session (claimed session mode)
     Session(SessionArgs),
+}
+
+#[derive(clap::Args)]
+pub struct UpdateApplyArgs {
+    #[arg(long)]
+    pub source: std::path::PathBuf,
+    #[arg(long)]
+    pub target: std::path::PathBuf,
+    #[arg(long)]
+    pub service: bool,
+    #[arg(long)]
+    pub dev_source: std::path::PathBuf,
 }
 
 #[derive(clap::Args)]

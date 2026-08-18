@@ -87,6 +87,7 @@ Pull the latest code and reinstall the unified `enox` binary.
 
 ```bash
 enox update --dev [--src <PATH>] [--no-pull]
+enox update --status
 ```
 
 | Flag | Default | Description |
@@ -94,9 +95,16 @@ enox update --dev [--src <PATH>] [--no-pull]
 | `--dev` | — | Build from source (for developers) |
 | `--src <PATH>` | saved | Path to the enoxian source directory. Saved to `~/.enoxian/config.toml` on first use — not required after that |
 | `--no-pull` | — | Skip `git pull`, just rebuild |
+| `--status` | — | Show the active channel, version, managed binary, source, and service mode |
 
-Without `--dev`, points stable users to the authenticated, checksum-verified
-release installer. In-process self-update is not implemented yet.
+Development updates replace the binary already referenced by the installed
+login service, then restore the same managed/unmanaged startup mode. The new
+binary must pass a version check and API health check; otherwise the previous
+binary is restored automatically. A successful dev update remembers the
+channel, so later `enox update` commands continue using the saved source.
+
+Stable installs still use the authenticated, checksum-verified release
+installer. Running that installer records the channel as `stable` again.
 
 **First-time setup per machine:**
 ```bash
