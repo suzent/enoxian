@@ -37,6 +37,14 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+## [0.3.6] — 2026-08-18
+
+### Fixed
+
+- The Windows installer now stops and waits for an existing managed service
+  before replacing `enox.exe`, then restarts it automatically. Failed upgrades
+  also restore the previous service instead of leaving Enoxian stopped.
+
 ## [0.3.5] — 2026-08-18
 
 ### Fixed
@@ -191,7 +199,8 @@ git history and `docs/plan/archived/milestones.md` for the M1–M14 feature set
 (P2P sync, presence/tasks/locks/chat, members + MLS membership, WAN bootstrap,
 and the local workspace proposal layer).
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.6...HEAD
+[0.3.6]: https://github.com/suzent/enoxian/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/suzent/enoxian/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/suzent/enoxian/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/suzent/enoxian/compare/v0.3.2...v0.3.3

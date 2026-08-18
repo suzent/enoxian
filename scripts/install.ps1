@@ -45,19 +45,51 @@ if (-not $BinDir) { $BinDir = Join-Path $env:LOCALAPPDATA 'enoxian\bin' }
 $BinDir = [IO.Path]::GetFullPath($BinDir)
 
 $installedEnox = Join-Path $BinDir 'enox.exe'
-if (Test-Path $installedEnox -PathType Leaf) {
-    & $installedEnox stop *> $null
-    Start-Sleep -Milliseconds 500
-}
+$serviceDefinition = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.enoxian\service\managed-task.txt'
+$serviceWasInstalled = Test-Path $serviceDefinition -PathType Leaf
 if (Get-Process -Name enoxd -ErrorAction SilentlyContinue) {
     throw "enoxian installer: legacy enoxd is still running. Run 'enox stop', then retry."
+}
+
+function Wait-EnoxianBinaryUnlocked([string]$Path, [int]$TimeoutMilliseconds = 10000) {
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        try {
+            $stream = [IO.File]::Open(
+                $Path,
+                [IO.FileMode]::Open,
+                [IO.FileAccess]::ReadWrite,
+                [IO.FileShare]::None
+            )
+            $stream.Dispose()
+            return
+        } catch [IO.IOException] {
+            Start-Sleep -Milliseconds 250
+        }
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "enoxian installer: timed out waiting for the running service to release $Path"
 }
 
 $Tmp = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ("enoxian-" + [guid]::NewGuid()))
 $changed = $false
 $committed = $false
+$serviceRestarted = $false
 $existing = @{}
 try {
+    if (Test-Path $installedEnox -PathType Leaf) {
+        & $installedEnox service stop *> $null
+        if ($LASTEXITCODE -ne 0) {
+            & $installedEnox stop *> $null
+            if ($LASTEXITCODE -ne 0) {
+                throw 'enoxian installer: failed to stop the existing Enoxian process'
+            }
+        }
+        if ($serviceWasInstalled) {
+            & schtasks.exe /End /TN Enoxian *> $null
+        }
+        Wait-EnoxianBinaryUnlocked $installedEnox
+    }
+
     Write-Host 'enoxian installer: detected windows/x86_64'
     Write-Host "enoxian installer: downloading $Asset ($Version)"
     Invoke-WebRequest -Uri "$Base/$Asset" -OutFile (Join-Path $Tmp $Asset) -UseBasicParsing
@@ -114,6 +146,12 @@ try {
     if ($EnableService) {
         & (Join-Path $BinDir 'enox.exe') service install --force
         if ($LASTEXITCODE -ne 0) { throw 'enoxian installer: enox installed, but login service setup failed' }
+        $serviceRestarted = $true
+    } elseif ($serviceWasInstalled) {
+        & (Join-Path $BinDir 'enox.exe') service start
+        if ($LASTEXITCODE -ne 0) { throw 'enoxian installer: enox installed, but the existing login service failed to restart' }
+        $serviceRestarted = $true
+        Write-Host 'enoxian installer: existing login service preserved and restarted'
     } else {
         Write-Host "enoxian installer: optional: run 'enox service install' to start automatically when you sign in"
     }
@@ -128,6 +166,18 @@ try {
             } else {
                 Remove-Item $destination -Force -ErrorAction SilentlyContinue
             }
+        }
+    }
+    if ($serviceWasInstalled -and -not $serviceRestarted -and (Test-Path $installedEnox -PathType Leaf)) {
+        try {
+            & $installedEnox service start *> $null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Warning 'enoxian installer: restored the previous login service after the failed update'
+            } else {
+                Write-Warning "enoxian installer: could not restore the previous login service; run 'enox service start'"
+            }
+        } catch {
+            Write-Warning "enoxian installer: could not restore the previous login service; run 'enox service start'"
         }
     }
     throw
