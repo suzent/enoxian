@@ -199,7 +199,69 @@ fn install(port: u16, bind_lan: bool, bind: Option<IpAddr>, force: bool) -> Resu
     println!("✓ Enoxian will start automatically when you sign in");
     println!("  definition: {}", definition.display());
     println!("  disable: enox service uninstall");
+    remember_managed_executable(&exe);
     Ok(())
+}
+
+fn remember_managed_executable(exe: &Path) {
+    let mut cfg = crate::config::load_global();
+    cfg.managed_executable = Some(exe.to_string_lossy().into_owned());
+    let _ = crate::config::save_global(&cfg);
+}
+
+pub fn installed_executable() -> Option<PathBuf> {
+    if !is_installed() {
+        return None;
+    }
+
+    #[cfg(windows)]
+    {
+        let wrapper = service_definition().parent()?.join("run.cmd");
+        let contents = fs::read_to_string(wrapper).ok()?;
+        return windows_executable_from_wrapper(&contents);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let contents = fs::read_to_string(service_definition()).ok()?;
+        let command = contents
+            .lines()
+            .find_map(|line| line.strip_prefix("ExecStart=\""))?;
+        let end = command.find('"')?;
+        return Some(PathBuf::from(&command[..end]));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let contents = fs::read_to_string(service_definition()).ok()?;
+        let arguments = contents.split("<key>ProgramArguments</key>").nth(1)?;
+        let first = arguments.split("<string>").nth(1)?;
+        let end = first.find("</string>")?;
+        return Some(PathBuf::from(xml_unescape(&first[..end])));
+    }
+
+    #[allow(unreachable_code)]
+    None
+}
+
+#[cfg(windows)]
+fn windows_executable_from_wrapper(contents: &str) -> Option<PathBuf> {
+    let command = contents
+        .lines()
+        .find(|line| line.trim_start().starts_with('"'))?;
+    let rest = command.trim_start().strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(PathBuf::from(&rest[..end]))
+}
+
+#[cfg(target_os = "macos")]
+fn xml_unescape(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&gt;", ">")
+        .replace("&lt;", "<")
+        .replace("&amp;", "&")
 }
 
 fn stop() -> Result<()> {
@@ -579,6 +641,16 @@ mod tests {
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect::<Vec<_>>();
         assert_eq!(String::from_utf16(&units).unwrap(), xml);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_wrapper_exposes_the_managed_executable() {
+        let wrapper = "@echo off\r\n\"C:\\Program Files\\enoxian\\enox.exe\" \"daemon\" \"run\" >> log 2>&1\r\n";
+        assert_eq!(
+            windows_executable_from_wrapper(wrapper).unwrap(),
+            PathBuf::from(r"C:\Program Files\enoxian\enox.exe")
+        );
     }
 
     #[cfg(target_os = "linux")]

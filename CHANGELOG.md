@@ -37,6 +37,15 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-08-18
+
+### Changed
+
+- Development updates now replace the binary already owned by the login service
+  instead of creating a competing `~/.cargo/bin` installation. Updates preserve
+  managed/unmanaged startup mode, verify API health, roll back failed swaps, and
+  expose channel details through `enox update --status`.
+
 ## [0.3.2] — 2026-08-17
 
 ### Fixed
@@ -164,7 +173,8 @@ git history and `docs/plan/archived/milestones.md` for the M1–M14 feature set
 (P2P sync, presence/tasks/locks/chat, members + MLS membership, WAN bootstrap,
 and the local workspace proposal layer).
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/suzent/enoxian/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/suzent/enoxian/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/suzent/enoxian/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/suzent/enoxian/compare/v0.2.1...v0.3.0

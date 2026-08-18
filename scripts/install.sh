@@ -154,6 +154,7 @@ mv -f "$BIN_DIR/.enox.new.$$" "$BIN_DIR/enox"
 changed=1
 
 "$BIN_DIR/enox" --version >/dev/null 2>&1 || err "installed enox failed its post-install check"
+"$BIN_DIR/enox" update --record-stable >/dev/null 2>&1 || err "failed to record the stable update channel"
 committed=1
 rm -f "$BIN_DIR/enoxd"
 

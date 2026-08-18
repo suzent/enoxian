@@ -84,6 +84,12 @@ pub struct GlobalConfig {
     /// Path to the enoxian source directory, saved by `enox update --dev`.
     #[serde(default)]
     pub dev_src: Option<String>,
+    /// Active update source (`stable` or `dev`).
+    #[serde(default)]
+    pub update_channel: Option<String>,
+    /// Binary path owned by the installed login service.
+    #[serde(default)]
+    pub managed_executable: Option<String>,
 }
 
 pub fn global_config_path() -> Result<PathBuf> {

@@ -97,6 +97,8 @@ try {
 
     & (Join-Path $BinDir 'enox.exe') --version *> $null
     if ($LASTEXITCODE -ne 0) { throw 'enoxian installer: installed enox failed its post-install check' }
+    & (Join-Path $BinDir 'enox.exe') update --record-stable *> $null
+    if ($LASTEXITCODE -ne 0) { throw 'enoxian installer: failed to record the stable update channel' }
     $committed = $true
     Remove-Item (Join-Path $BinDir 'enoxd.exe') -Force -ErrorAction SilentlyContinue
 
