@@ -81,10 +81,13 @@ pub fn start() -> Result<()> {
     }
 
     #[cfg(windows)]
-    run_checked(
-        Command::new("schtasks").args(["/Run", "/TN", "Enoxian"]),
-        "start scheduled task",
-    )?;
+    {
+        migrate_legacy_windows_task()?;
+        run_checked(
+            Command::new("schtasks").args(["/Run", "/TN", "Enoxian"]),
+            "start scheduled task",
+        )?;
+    }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     bail!("managed services are not supported on this platform");
@@ -170,10 +173,7 @@ fn install(port: u16, bind_lan: bool, bind: Option<IpAddr>, force: bool) -> Resu
                 log_dir.join("service.log").display()
             ),
         )?;
-        let username = std::env::var("USERNAME").context("USERNAME is not set")?;
-        let user_id = std::env::var("USERDOMAIN")
-            .map(|domain| format!("{domain}\\{username}"))
-            .unwrap_or(username);
+        let user_id = windows_user_id()?;
         write_windows_task(&definition, &windows_task(&wrapper, &user_id))?;
         if let Err(error) = run_checked(
             Command::new("schtasks").args([
@@ -492,12 +492,61 @@ fn launch_agent(exe: &Path, args: &[String], log_dir: &Path) -> String {
 
 #[cfg(windows)]
 fn windows_task(wrapper: &Path, user_id: &str) -> String {
+    let wrapper = wrapper.to_string_lossy().replace('\'', "''");
+    let command = format!("$ErrorActionPreference = 'Stop'; & '{wrapper}'; exit $LASTEXITCODE");
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n  <RegistrationInfo><Description>Enoxian collaboration service</Description></RegistrationInfo>\n  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{}</UserId></LogonTrigger></Triggers>\n  <Principals><Principal id=\"Author\"><UserId>{}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n  <Settings>\n    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n    <RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure>\n    <Enabled>true</Enabled>\n  </Settings>\n  <Actions Context=\"Author\"><Exec><Command>cmd.exe</Command><Arguments>/d /c &quot;&quot;{}&quot;&quot;</Arguments></Exec></Actions>\n</Task>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n  <RegistrationInfo><Description>Enoxian collaboration service</Description></RegistrationInfo>\n  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{}</UserId></LogonTrigger></Triggers>\n  <Principals><Principal id=\"Author\"><UserId>{}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n  <Settings>\n    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n    <RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure>\n    <Enabled>true</Enabled>\n  </Settings>\n  <Actions Context=\"Author\"><Exec><Command>powershell.exe</Command><Arguments>-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;{}&quot;</Arguments></Exec></Actions>\n</Task>\n",
         xml_escape(user_id),
         xml_escape(user_id),
-        xml_escape(&wrapper.to_string_lossy())
+        xml_escape(&command)
     )
+}
+
+#[cfg(windows)]
+fn windows_user_id() -> Result<String> {
+    let username = std::env::var("USERNAME").context("USERNAME is not set")?;
+    Ok(std::env::var("USERDOMAIN")
+        .map(|domain| format!("{domain}\\{username}"))
+        .unwrap_or(username))
+}
+
+#[cfg(windows)]
+fn migrate_legacy_windows_task() -> Result<()> {
+    let definition = service_definition();
+    let existing = read_windows_task(&definition)?;
+    if !existing.contains("<Command>cmd.exe</Command>") {
+        return Ok(());
+    }
+
+    let wrapper = definition
+        .parent()
+        .expect("service definition has a parent")
+        .join("run.cmd");
+    if !wrapper.is_file() {
+        bail!(
+            "legacy Windows service wrapper is missing at {} — run enox service install --force",
+            wrapper.display()
+        );
+    }
+
+    let _ = Command::new("schtasks")
+        .args(["/End", "/TN", "Enoxian"])
+        .status();
+    stop_windows_daemons();
+    write_windows_task(&definition, &windows_task(&wrapper, &windows_user_id()?))?;
+    run_checked(
+        Command::new("schtasks").args([
+            "/Create",
+            "/TN",
+            "Enoxian",
+            "/XML",
+            &definition.to_string_lossy(),
+            "/F",
+        ]),
+        "migrate scheduled task to hidden background startup",
+    )?;
+    println!("✓ Migrated Enoxian service to hidden background startup");
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -518,6 +567,20 @@ fn write_windows_task(path: &Path, xml: &str) -> Result<()> {
         bytes.extend_from_slice(&unit.to_le_bytes());
     }
     fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))
+}
+
+#[cfg(windows)]
+fn read_windows_task(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    if bytes.starts_with(&[0xff, 0xfe]) {
+        let units = bytes[2..]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        return String::from_utf16(&units)
+            .with_context(|| format!("invalid UTF-16 in {}", path.display()));
+    }
+    String::from_utf8(bytes).with_context(|| format!("invalid UTF-8 in {}", path.display()))
 }
 
 #[cfg(windows)]
@@ -623,6 +686,10 @@ mod tests {
         assert!(task.contains("<RunLevel>LeastPrivilege</RunLevel>"));
         assert!(task.contains(r"C:\Users\A &amp; B"));
         assert!(task.contains(r"DESKTOP\A&amp;B"));
+        assert!(task.contains("<Command>powershell.exe</Command>"));
+        assert!(task.contains("-WindowStyle Hidden"));
+        assert!(task.contains("exit $LASTEXITCODE"));
+        assert!(!task.contains("<Command>cmd.exe</Command>"));
         assert!(task.starts_with(r#"<?xml version="1.0" encoding="UTF-16"?>"#));
     }
 
@@ -634,13 +701,9 @@ mod tests {
         let xml = windows_task(Path::new(r"C:\enox\run.cmd"), r"DESKTOP\user");
         write_windows_task(&path, &xml).unwrap();
 
-        let bytes = fs::read(path).unwrap();
+        let bytes = fs::read(&path).unwrap();
         assert_eq!(&bytes[..2], &[0xff, 0xfe]);
-        let units = bytes[2..]
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect::<Vec<_>>();
-        assert_eq!(String::from_utf16(&units).unwrap(), xml);
+        assert_eq!(read_windows_task(&path).unwrap(), xml);
     }
 
     #[cfg(windows)]
