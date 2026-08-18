@@ -1,6 +1,9 @@
 use crate::{cli::UpdateApplyArgs, config};
 use anyhow::{bail, Context, Result};
-use std::fs::{self, OpenOptions};
+use std::fs;
+#[cfg(windows)]
+use std::fs::OpenOptions;
+#[cfg(windows)]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
