@@ -2,6 +2,11 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use tracing::{info, warn};
 
+#[cfg(not(debug_assertions))]
+#[derive(rust_embed::Embed)]
+#[folder = "static/"]
+struct FrontendAssets;
+
 use crate::{
     api, cli::ServeArgs, config, daemon::DaemonState, identity::DeviceIdentity, lifecycle,
 };
@@ -75,45 +80,81 @@ pub async fn run(args: ServeArgs) -> Result<()> {
 
     let mut app = api_app;
 
-    // Serve the compiled frontend at /app (built by `npm run build` in frontend/,
-    // output to <repo>/static). Try the crate-root static dir first, then the
-    // parent (workspace) layout, so it resolves in both dev and packaged builds.
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let static_dir = [
-        manifest.join("static"),
-        manifest
-            .parent()
-            .map(|p| p.join("static"))
-            .unwrap_or_default(),
-    ]
-    .into_iter()
-    .find(|p| p.join("index.html").exists())
-    .unwrap_or_else(|| manifest.join("static"));
-    if static_dir.join("index.html").exists() {
-        use tower_http::services::ServeDir;
-        // The HTML entry point injects the API token as window.__ENOX_TOKEN__.
-        let index_html = std::fs::read_to_string(static_dir.join("index.html")).unwrap_or_default();
-        let injected = index_html.replacen(
-            "</head>",
-            &format!("<script>window.__ENOX_TOKEN__=\"{token}\";</script></head>"),
-            1,
-        );
+    // Release binaries embed the production frontend so the one-file installer
+    // can always serve /app. Debug builds retain the on-disk lookup used by the
+    // Vite/local development workflow.
+    #[cfg(not(debug_assertions))]
+    {
+        use axum::{
+            body::Body,
+            http::{header, StatusCode, Uri},
+            response::{Html, IntoResponse, Response},
+            routing::get,
+        };
+
+        let index_html = FrontendAssets::get("index.html")
+            .context("release binary is missing embedded frontend/index.html")?;
+        let index_html = String::from_utf8(index_html.data.into_owned())
+            .context("embedded frontend/index.html is not UTF-8")?;
+        let injected = inject_frontend_token(&index_html, &token);
         let index_route = || {
-            axum::routing::get({
+            get({
                 let html = injected.clone();
-                move || async move { axum::response::Html(html) }
+                move || async move { Html(html) }
             })
         };
-        // The built SPA references its assets at absolute root paths (/assets/…,
-        // /logo.svg). So: serve the token-injected HTML at /app, and let any
-        // otherwise-unmatched path fall through to ServeDir (which serves those
-        // root assets and 404s for the rest). Neither is auth-gated; the token
-        // lives in the HTML, which a cross-origin page cannot read.
+
+        async fn embedded_asset(uri: Uri) -> Response {
+            let path = uri.path().trim_start_matches('/');
+            let Some(asset) = FrontendAssets::get(path) else {
+                return StatusCode::NOT_FOUND.into_response();
+            };
+            Response::builder()
+                .header(header::CONTENT_TYPE, frontend_content_type(path))
+                .body(Body::from(asset.data.into_owned()))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+
         app = app
             .route("/app", index_route())
             .route("/app/", index_route())
-            .fallback_service(ServeDir::new(&static_dir));
-        info!("Serving frontend at /app from {}", static_dir.display());
+            .fallback(embedded_asset);
+        info!("Serving embedded frontend at /app");
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        // Serve the compiled frontend at /app when it exists on disk. Try the
+        // crate-root static dir first, then the parent workspace layout.
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let static_dir = [
+            manifest.join("static"),
+            manifest
+                .parent()
+                .map(|p| p.join("static"))
+                .unwrap_or_default(),
+        ]
+        .into_iter()
+        .find(|p| p.join("index.html").exists())
+        .unwrap_or_else(|| manifest.join("static"));
+        if static_dir.join("index.html").exists() {
+            use tower_http::services::ServeDir;
+            let index_html =
+                std::fs::read_to_string(static_dir.join("index.html")).unwrap_or_default();
+            let injected = inject_frontend_token(&index_html, &token);
+            let index_route = || {
+                axum::routing::get({
+                    let html = injected.clone();
+                    move || async move { axum::response::Html(html) }
+                })
+            };
+            // Built assets use absolute root paths (/assets/…, /logo.svg).
+            app = app
+                .route("/app", index_route())
+                .route("/app/", index_route())
+                .fallback_service(ServeDir::new(&static_dir));
+            info!("Serving frontend at /app from {}", static_dir.display());
+        }
     }
 
     // Bind to loopback by default — the API is a privileged control plane, not
@@ -143,6 +184,31 @@ pub async fn run(args: ServeArgs) -> Result<()> {
 
     info!("Enoxian stopped");
     Ok(())
+}
+
+fn inject_frontend_token(index_html: &str, token: &str) -> String {
+    index_html.replacen(
+        "</head>",
+        &format!("<script>window.__ENOX_TOKEN__=\"{token}\";</script></head>"),
+        1,
+    )
+}
+
+#[cfg(not(debug_assertions))]
+fn frontend_content_type(path: &str) -> &'static str {
+    match std::path::Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+    {
+        "css" => "text/css; charset=utf-8",
+        "html" => "text/html; charset=utf-8",
+        "js" => "text/javascript; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "wasm" => "application/wasm",
+        _ => "application/octet-stream",
+    }
 }
 
 /// Load the device identity or run a first-time setup prompt.
@@ -218,4 +284,31 @@ fn hostname_label() -> String {
         })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "device".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frontend_token_is_injected_before_head_closes() {
+        let html = "<html><head><title>Enoxian</title></head><body></body></html>";
+        let injected = inject_frontend_token(html, "abc123");
+        assert!(injected.contains("<script>window.__ENOX_TOKEN__=\"abc123\";</script></head>"));
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_frontend_contains_entry_point_and_assets() {
+        assert!(FrontendAssets::get("index.html").is_some());
+        assert!(FrontendAssets::get("logo.svg").is_some());
+        assert_eq!(
+            frontend_content_type("assets/app.js"),
+            "text/javascript; charset=utf-8"
+        );
+        assert_eq!(
+            frontend_content_type("assets/app.css"),
+            "text/css; charset=utf-8"
+        );
+    }
 }

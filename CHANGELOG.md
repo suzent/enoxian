@@ -37,6 +37,15 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-08-18
+
+### Fixed
+
+- Release binaries now embed the production WebUI, so `enox open` and `/app`
+  work after a one-file install without requiring a source checkout or separate
+  static asset directory. Release CI exercises both the HTML entry point and a
+  hashed JavaScript asset on Linux and Windows.
+
 ## [0.3.3] — 2026-08-18
 
 ### Changed
@@ -173,7 +182,8 @@ git history and `docs/plan/archived/milestones.md` for the M1–M14 feature set
 (P2P sync, presence/tasks/locks/chat, members + MLS membership, WAN bootstrap,
 and the local workspace proposal layer).
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/suzent/enoxian/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/suzent/enoxian/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/suzent/enoxian/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/suzent/enoxian/compare/v0.3.0...v0.3.1

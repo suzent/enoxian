@@ -1,6 +1,6 @@
 [package]
 name = "enoxian"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 rust-version = "1.88.0"
 publish = false
@@ -77,6 +77,7 @@ notify = "8"
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
 libp2p-stream = "0.4.0-alpha"
 open = "5"
+rust-embed = "8.12"
 
 # M11 — MLS group key management (RFC 9420)
 openmls = "0.8"
