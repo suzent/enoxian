@@ -283,6 +283,9 @@ Agents not seen in 90 seconds are shown as stale.
 
 Open the local Circle UI in the default browser.
 
+The production WebUI is embedded in the release binary, so this works after a
+one-file install without a source checkout or separate static asset directory.
+
 ```bash
 enox [--circle <NAME>] open
 ```

@@ -43,7 +43,7 @@ writable user location without requiring `sudo`. To pin a version or location:
 
 ```sh
 curl -fsSL https://github.com/suzent/enoxian/releases/latest/download/install.sh | \
-  sh -s -- --version v0.3.0 --bin-dir "$HOME/.local/bin"
+  sh -s -- --version v0.3.4 --bin-dir "$HOME/.local/bin"
 ```
 
 ### Windows PowerShell
@@ -53,7 +53,7 @@ irm https://github.com/suzent/enoxian/releases/latest/download/install.ps1 | iex
 ```
 
 PowerShell installs to `%LOCALAPPDATA%\enoxian\bin` and adds it to the user
-`PATH`. To pin a version, set `$env:ENOXIAN_VERSION = 'v0.3.0'` first.
+`PATH`. To pin a version, set `$env:ENOXIAN_VERSION = 'v0.3.4'` first.
 
 To keep Enoxian available after login, opt into the per-user service during
 installation (`--enable-service` on Linux/macOS or `-EnableService` on Windows),
@@ -109,6 +109,13 @@ enox status
 enox tasks
 enox who
 enox watch
+```
+
+Open the embedded WebUI without installing a separate web server or asset
+directory:
+
+```sh
+enox open
 ```
 
 With multiple local circles, pass `--circle` or set `ENOXIAN_CIRCLE`:
