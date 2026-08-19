@@ -37,6 +37,14 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+## [0.3.7] — 2026-08-19
+
+### Fixed
+
+- Windows login startup now uses a windowless WScript launcher instead of a
+  PowerShell-to-`cmd.exe` console chain. `enox start` no longer opens a command
+  window, and existing 0.3.5/0.3.6 service definitions migrate automatically.
+
 ## [0.3.6] — 2026-08-18
 
 ### Fixed
@@ -199,7 +207,8 @@ git history and `docs/plan/archived/milestones.md` for the M1–M14 feature set
 (P2P sync, presence/tasks/locks/chat, members + MLS membership, WAN bootstrap,
 and the local workspace proposal layer).
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/suzent/enoxian/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/suzent/enoxian/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/suzent/enoxian/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/suzent/enoxian/compare/v0.3.3...v0.3.4
