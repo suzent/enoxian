@@ -82,7 +82,7 @@ pub fn start() -> Result<()> {
 
     #[cfg(windows)]
     {
-        migrate_legacy_windows_task()?;
+        migrate_windows_task_to_windowless_launcher()?;
         run_checked(
             Command::new("schtasks").args(["/Run", "/TN", "Enoxian"]),
             "start scheduled task",
@@ -161,6 +161,10 @@ fn install(port: u16, bind_lan: bool, bind: Option<IpAddr>, force: bool) -> Resu
             .parent()
             .expect("service definition has a parent")
             .join("run.cmd");
+        let launcher = definition
+            .parent()
+            .expect("service definition has a parent")
+            .join("run.vbs");
         let command_line = std::iter::once(exe.to_string_lossy().to_string())
             .chain(daemon_args.iter().cloned())
             .map(|part| format!("\"{}\"", part.replace('"', "\"\"")))
@@ -173,8 +177,9 @@ fn install(port: u16, bind_lan: bool, bind: Option<IpAddr>, force: bool) -> Resu
                 log_dir.join("service.log").display()
             ),
         )?;
+        write_windows_utf16(&launcher, &windows_launcher(&wrapper))?;
         let user_id = windows_user_id()?;
-        write_windows_task(&definition, &windows_task(&wrapper, &user_id))?;
+        write_windows_task(&definition, &windows_task(&launcher, &user_id))?;
         if let Err(error) = run_checked(
             Command::new("schtasks").args([
                 "/Create",
@@ -188,6 +193,7 @@ fn install(port: u16, bind_lan: bool, bind: Option<IpAddr>, force: bool) -> Resu
         ) {
             let _ = remove_if_exists(&definition);
             let _ = remove_if_exists(&wrapper);
+            let _ = remove_if_exists(&launcher);
             return Err(error);
         }
         start()?;
@@ -317,6 +323,7 @@ fn uninstall() -> Result<()> {
             .status();
         if let Some(parent) = definition.parent() {
             remove_if_exists(&parent.join("run.cmd"))?;
+            remove_if_exists(&parent.join("run.vbs"))?;
         }
         remove_if_exists(&definition)?;
     }
@@ -491,14 +498,20 @@ fn launch_agent(exe: &Path, args: &[String], log_dir: &Path) -> String {
 }
 
 #[cfg(windows)]
-fn windows_task(wrapper: &Path, user_id: &str) -> String {
-    let wrapper = wrapper.to_string_lossy().replace('\'', "''");
-    let command = format!("$ErrorActionPreference = 'Stop'; & '{wrapper}'; exit $LASTEXITCODE");
+fn windows_launcher(wrapper: &Path) -> String {
+    let wrapper = wrapper.to_string_lossy().replace('"', "\"\"");
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n  <RegistrationInfo><Description>Enoxian collaboration service</Description></RegistrationInfo>\n  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{}</UserId></LogonTrigger></Triggers>\n  <Principals><Principal id=\"Author\"><UserId>{}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n  <Settings>\n    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n    <RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure>\n    <Enabled>true</Enabled>\n  </Settings>\n  <Actions Context=\"Author\"><Exec><Command>powershell.exe</Command><Arguments>-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;{}&quot;</Arguments></Exec></Actions>\n</Task>\n",
+        "Option Explicit\r\nDim shell\r\nSet shell = CreateObject(\"WScript.Shell\")\r\nWScript.Quit shell.Run(\"\"\"{wrapper}\"\"\", 0, True)\r\n"
+    )
+}
+
+#[cfg(windows)]
+fn windows_task(launcher: &Path, user_id: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n  <RegistrationInfo><Description>Enoxian collaboration service</Description></RegistrationInfo>\n  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{}</UserId></LogonTrigger></Triggers>\n  <Principals><Principal id=\"Author\"><UserId>{}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n  <Settings>\n    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n    <RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure>\n    <Enabled>true</Enabled>\n  </Settings>\n  <Actions Context=\"Author\"><Exec><Command>wscript.exe</Command><Arguments>//B //NoLogo &quot;{}&quot;</Arguments></Exec></Actions>\n</Task>\n",
         xml_escape(user_id),
         xml_escape(user_id),
-        xml_escape(&command)
+        xml_escape(&launcher.to_string_lossy())
     )
 }
 
@@ -511,10 +524,10 @@ fn windows_user_id() -> Result<String> {
 }
 
 #[cfg(windows)]
-fn migrate_legacy_windows_task() -> Result<()> {
+fn migrate_windows_task_to_windowless_launcher() -> Result<()> {
     let definition = service_definition();
     let existing = read_windows_task(&definition)?;
-    if !existing.contains("<Command>cmd.exe</Command>") {
+    if existing.contains("<Command>wscript.exe</Command>") {
         return Ok(());
     }
 
@@ -528,12 +541,17 @@ fn migrate_legacy_windows_task() -> Result<()> {
             wrapper.display()
         );
     }
+    let launcher = definition
+        .parent()
+        .expect("service definition has a parent")
+        .join("run.vbs");
+    write_windows_utf16(&launcher, &windows_launcher(&wrapper))?;
 
     let _ = Command::new("schtasks")
         .args(["/End", "/TN", "Enoxian"])
         .status();
     stop_windows_daemons();
-    write_windows_task(&definition, &windows_task(&wrapper, &windows_user_id()?))?;
+    write_windows_task(&definition, &windows_task(&launcher, &windows_user_id()?))?;
     run_checked(
         Command::new("schtasks").args([
             "/Create",
@@ -543,9 +561,9 @@ fn migrate_legacy_windows_task() -> Result<()> {
             &definition.to_string_lossy(),
             "/F",
         ]),
-        "migrate scheduled task to hidden background startup",
+        "migrate scheduled task to windowless background startup",
     )?;
-    println!("✓ Migrated Enoxian service to hidden background startup");
+    println!("✓ Migrated Enoxian service to windowless background startup");
     Ok(())
 }
 
@@ -561,9 +579,14 @@ fn stop_windows_daemons() {
 
 #[cfg(windows)]
 fn write_windows_task(path: &Path, xml: &str) -> Result<()> {
-    let mut bytes = Vec::with_capacity(2 + xml.len() * 2);
+    write_windows_utf16(path, xml)
+}
+
+#[cfg(windows)]
+fn write_windows_utf16(path: &Path, contents: &str) -> Result<()> {
+    let mut bytes = Vec::with_capacity(2 + contents.len() * 2);
     bytes.extend_from_slice(&[0xff, 0xfe]);
-    for unit in xml.encode_utf16() {
+    for unit in contents.encode_utf16() {
         bytes.extend_from_slice(&unit.to_le_bytes());
     }
     fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))
@@ -678,7 +701,7 @@ mod tests {
     #[test]
     fn windows_definition_is_login_scoped_and_recovers_from_failure() {
         let task = windows_task(
-            Path::new(r"C:\Users\A & B\.enoxian\service\run.cmd"),
+            Path::new(r"C:\Users\A & B\.enoxian\service\run.vbs"),
             r"DESKTOP\A&B",
         );
         assert!(task.contains("<LogonTrigger>"));
@@ -686,11 +709,18 @@ mod tests {
         assert!(task.contains("<RunLevel>LeastPrivilege</RunLevel>"));
         assert!(task.contains(r"C:\Users\A &amp; B"));
         assert!(task.contains(r"DESKTOP\A&amp;B"));
-        assert!(task.contains("<Command>powershell.exe</Command>"));
-        assert!(task.contains("-WindowStyle Hidden"));
-        assert!(task.contains("exit $LASTEXITCODE"));
+        assert!(task.contains("<Command>wscript.exe</Command>"));
+        assert!(task.contains("//B //NoLogo"));
         assert!(!task.contains("<Command>cmd.exe</Command>"));
+        assert!(!task.contains("<Command>powershell.exe</Command>"));
         assert!(task.starts_with(r#"<?xml version="1.0" encoding="UTF-16"?>"#));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_launcher_runs_the_wrapper_without_a_window_and_waits() {
+        let launcher = windows_launcher(Path::new(r#"C:\Users\A "quoted"\run.cmd"#));
+        assert!(launcher.contains(r#"shell.Run("""C:\Users\A ""quoted""\run.cmd""", 0, True)"#));
     }
 
     #[cfg(windows)]
@@ -698,7 +728,7 @@ mod tests {
     fn windows_definition_is_written_as_utf16le_with_bom() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("task.xml");
-        let xml = windows_task(Path::new(r"C:\enox\run.cmd"), r"DESKTOP\user");
+        let xml = windows_task(Path::new(r"C:\enox\run.vbs"), r"DESKTOP\user");
         write_windows_task(&path, &xml).unwrap();
 
         let bytes = fs::read(&path).unwrap();
