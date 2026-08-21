@@ -18,7 +18,7 @@
 use super::config::{AgentConfig, Reaction};
 use super::driver::{self, Initiator};
 use super::mention::Mention;
-use crate::control::CircleEvent;
+use crate::control::{ChatActivity, ChatActivityKind, CircleEvent};
 use crate::proposal::store::ProposalStore;
 use crate::state::AppState;
 use tokio::sync::broadcast;
@@ -105,6 +105,13 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     // gets a clean instruction. Capture before shadowing.
                     let task = strip_mention(&message.text, &agent_id);
                     let agent_id = agent.to_string();
+                    publish_agent_activity(
+                        &state,
+                        &agent_id,
+                        &message.id,
+                        ChatActivityKind::Seen,
+                        true,
+                    );
 
                     // Sender-origin sets the acceptance-policy posture: a mention
                     // posted from this very device is local; anything else is a
@@ -116,9 +123,25 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     };
 
                     let sender = message.agent_id.clone();
+                    let message_id = message.id.clone();
                     let state = state.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = react(&state, &agent_id, &cmd, &task, &sender, initiator).await {
+                        if let Err(e) = react(
+                            &state,
+                            &agent_id,
+                            &cmd,
+                            &task,
+                            &sender,
+                            &message_id,
+                            initiator,
+                        ).await {
+                            publish_agent_activity(
+                                &state,
+                                &agent_id,
+                                &message_id,
+                                ChatActivityKind::Working,
+                                false,
+                            );
                             tracing::warn!("[agent] run of `{agent_id}` failed: {e:#}");
                             let reason = concise_error(&e);
                             let text = format!("@{agent_id} failed to start · {reason}");
@@ -159,8 +182,11 @@ async fn react(
     cmd: &super::config::AgentCommand,
     task: &str,
     sender: &str,
+    message_id: &str,
     initiator: Initiator,
 ) -> anyhow::Result<()> {
+    publish_agent_activity(state, agent_id, message_id, ChatActivityKind::Working, true);
+
     // Anchor the change session on the engine's current baseline (S0) so the
     // agent's edits diff cleanly against it.
     let store = ProposalStore::open(&state.workspace)?;
@@ -175,7 +201,7 @@ async fn react(
     // session we include the standing brief about the enoxian environment.
     let prompt = super::context::build_prompt(state, agent_id, sender, task, resume.is_some());
 
-    let outcome = driver::launch(driver::LaunchRequest {
+    let launch = driver::launch(driver::LaunchRequest {
         agent_name: agent_id,
         cmd,
         task: &prompt,
@@ -184,8 +210,26 @@ async fn react(
         circle_id: &state.circle_id,
         initiator,
         resume: resume.as_deref(),
-    })
-    .await?;
+    });
+    tokio::pin!(launch);
+
+    // Long agent runs renew their lease. If this process disappears, peers
+    // naturally hide the indicator after the last 45-second lease expires.
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    heartbeat.tick().await;
+    let outcome = loop {
+        tokio::select! {
+            result = &mut launch => break result?,
+            _ = heartbeat.tick() => publish_agent_activity(
+                state,
+                agent_id,
+                message_id,
+                ChatActivityKind::Working,
+                true,
+            ),
+        }
+    };
 
     // Remember the ACP session so the next mention continues the conversation.
     if let Some(sid) = &outcome.acp_session_id {
@@ -218,7 +262,40 @@ async fn react(
     } else {
         tracing::debug!("[agent] `{agent_id}` produced no text reply to post");
     }
+    publish_agent_activity(
+        state,
+        agent_id,
+        message_id,
+        ChatActivityKind::Working,
+        false,
+    );
     Ok(())
+}
+
+fn publish_agent_activity(
+    state: &AppState,
+    agent_id: &str,
+    message_id: &str,
+    kind: ChatActivityKind,
+    live: bool,
+) {
+    let now = chrono::Utc::now().timestamp();
+    let activity = ChatActivity {
+        activity_id: format!("agent:{message_id}:{agent_id}:{}", state.peer_id),
+        actor_id: agent_id.to_string(),
+        peer_id: state.peer_id.clone(),
+        kind,
+        message_id: Some(message_id.to_string()),
+        updated_at: now,
+        expires_at: if live {
+            now + crate::api::chat::AGENT_ACTIVITY_TTL_SECS
+        } else {
+            now - 1
+        },
+    };
+    if let Err(error) = crate::api::chat::put_activity(state, activity) {
+        tracing::debug!("[agent] failed to publish chat activity: {error}");
+    }
 }
 
 /// Whether a mention scoped to `owner/device` addresses this device. Matches

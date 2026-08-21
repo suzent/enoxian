@@ -1,5 +1,6 @@
 use crate::control::{
-    ChatMessage, CircleEvent, Task, TaskStatus, CHAT_KEY, MLS_REMOVED_KEY, TASKS_KEY,
+    ChatActivity, ChatMessage, CircleEvent, Task, TaskStatus, CHAT_ACTIVITY_KEY, CHAT_KEY,
+    MLS_REMOVED_KEY, TASKS_KEY,
 };
 use dashmap::DashMap;
 use libp2p::{multiaddr::Protocol, swarm::ConnectionId, Multiaddr};
@@ -175,6 +176,40 @@ impl AppState {
             },
         );
         std::mem::forget(chat_sub);
+
+        // Chat activity is an ephemeral CRDT map. Local writers emit their own
+        // event; this observer turns P2P-delivered updates into local SSE
+        // notifications without adding anything to the durable transcript.
+        let activity_map = control.get_or_insert_map(CHAT_ACTIVITY_KEY);
+        let events_for_activity = events_tx.clone();
+        let activity_sub =
+            activity_map.observe(
+                move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+                    let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                    if !is_p2p {
+                        return;
+                    }
+                    for change in event.keys(txn).values() {
+                        let raw = match change {
+                            yrs::types::EntryChange::Inserted(yrs::Out::Any(yrs::Any::String(
+                                s,
+                            )))
+                            | yrs::types::EntryChange::Updated(
+                                _,
+                                yrs::Out::Any(yrs::Any::String(s)),
+                            ) => Some(s),
+                            _ => None,
+                        };
+                        if let Some(raw) = raw {
+                            if let Ok(activity) = serde_json::from_str::<ChatActivity>(raw) {
+                                let _ = events_for_activity
+                                    .send(CircleEvent::ChatActivityChanged { activity });
+                            }
+                        }
+                    }
+                },
+            );
+        std::mem::forget(activity_sub);
 
         // Observe tasks for P2P-delivered changes and fire SSE events. Local task
         // APIs emit their own events; this covers updates that arrived via CRDT sync.

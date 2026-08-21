@@ -115,7 +115,7 @@ impl<H: ClientHooks> AcpSession<H> {
     /// Spawn the agent command and complete the ACP handshake, leaving a
     /// session ready for `prompt`.
     ///
-    /// `command` is argv (e.g. `["npx", "@zed-industries/claude-code-acp"]`).
+    /// `command` is argv (e.g. a pinned managed `claude-agent-acp` executable).
     /// `workspace` is the absolute directory the agent operates in; all
     /// client-mediated file access is confined to it.
     ///

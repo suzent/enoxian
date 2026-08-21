@@ -2,7 +2,7 @@
 //!
 //! `agents.toml` is entirely hand/UI-configured: nothing here decides *which*
 //! agents a device will run. But the frontend can't ask a user to "add
-//! `claude-code-acp`" if it has no idea what's installed. This module answers a
+//! `claude-agent-acp`" if it has no idea what's installed. This module answers a
 //! narrower, read-only question — *is this program resolvable on this machine?*
 //! — and offers a small catalog of well-known agents so the UI can suggest
 //! one-click adds and badge configured entries as installed / missing.
@@ -34,8 +34,9 @@ pub const CATALOG: &[Candidate] = &[
     Candidate {
         name: "claude",
         driver: "acp",
-        command: &["npx", "@zed-industries/claude-code-acp"],
-        about: "Claude Code over the Agent Client Protocol (per-write visibility).",
+        command: &["claude-agent-acp"],
+        about:
+            "Claude Code CLI through a local ACP bridge (subscription and native config preserved).",
     },
     Candidate {
         name: "codex",
@@ -63,29 +64,36 @@ impl Candidate {
 /// This mirrors what a shell does before spawning, so it agrees with whether
 /// [`crate::agent::spawn::command`] would actually find the program.
 pub fn is_installed(program: &str) -> bool {
+    resolve(program).is_some()
+}
+
+/// Resolve `program` to the concrete executable that would be launched.
+///
+/// Unlike [`is_installed`], this preserves the path so managed adapters can
+/// point SDK-based bridges at the user's real CLI executable (for example via
+/// `CLAUDE_CODE_EXECUTABLE`).
+pub fn resolve(program: &str) -> Option<PathBuf> {
     if program.is_empty() {
-        return false;
+        return None;
     }
 
     let candidate = std::path::Path::new(program);
     // An explicit path (contains a separator) is resolved as-is, not searched.
     if candidate.components().count() > 1 || candidate.is_absolute() {
-        return resolves_as_file(candidate.to_path_buf());
+        return resolve_as_file(candidate.to_path_buf());
     }
 
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| resolves_as_file(dir.join(program)))
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).find_map(|dir| resolve_as_file(dir.join(program)))
 }
 
 /// True if `base` resolves to a runnable executable, trying each `PATHEXT`
 /// extension on Windows when `base` has none (so `dir/npx` matches
 /// `dir/npx.cmd`). On Unix, a match must additionally be executable — a shell
 /// won't run a non-`+x` file, so neither should we claim it's "installed".
-fn resolves_as_file(base: PathBuf) -> bool {
+fn resolve_as_file(base: PathBuf) -> Option<PathBuf> {
     if is_executable_file(&base) {
-        return true;
+        return Some(base);
     }
     #[cfg(windows)]
     {
@@ -98,13 +106,14 @@ fn resolves_as_file(base: PathBuf) -> bool {
                 // PATHEXT entries include the leading dot.
                 let mut with_ext = base.clone().into_os_string();
                 with_ext.push(ext);
-                if std::path::Path::new(&with_ext).is_file() {
-                    return true;
+                let path = PathBuf::from(with_ext);
+                if path.is_file() {
+                    return Some(path);
                 }
             }
         }
     }
-    false
+    None
 }
 
 /// A regular file that this OS would actually execute. Windows decides
@@ -192,13 +201,16 @@ mod tests {
         // A non-executable regular file is present but must NOT count as installed.
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(
-            !resolves_as_file(file.clone()),
+            resolve_as_file(file.clone()).is_none(),
             "non-+x file counted as installed"
         );
 
         // Flip the execute bit and it should now resolve.
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(resolves_as_file(file.clone()), "+x file not detected");
+        assert!(
+            resolve_as_file(file.clone()).is_some(),
+            "+x file not detected"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

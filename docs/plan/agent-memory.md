@@ -72,7 +72,7 @@ the brief, "Hi!" to a chat line) before doing the task. Two fixes:
 
 ## Session memory is agent-owned
 
-The ACP agent (e.g. `claude-code-acp`) owns the conversation state; enoxian only
+The ACP agent (e.g. the managed `claude-agent-acp` bridge) owns the conversation state; enoxian only
 persists the **session id** and hands it back via `session/load`. Same id →
 same memory, restored on the agent's side. enoxian does not accumulate or replay
 history itself — there is no enoxian-side transcript store for the agent beyond

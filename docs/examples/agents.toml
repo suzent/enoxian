@@ -12,9 +12,12 @@
 reaction = "push"
 
 # ── Claude Code over ACP ──────────────────────────────────────────────────────
-# enoxian speaks the Agent Client Protocol to the Zed Claude Code adapter.
-# enoxian is the ACP client; claude-code-acp is the agent. Requires Node/npx and
-# a working Claude Code auth on this machine.
+# enoxian speaks ACP to a transport bridge that drives the real Claude Code CLI.
+# First install the official `claude` CLI, run `claude auth login`, then run
+# `enox agent install claude`. System Node.js 22+ with npm is an adapter
+# prerequisite. Enoxian pins the bridge locally and passes the resolved CLI
+# through CLAUDE_CODE_EXECUTABLE so Claude's subscription, settings, MCP
+# servers, and project skills remain authoritative.
 #
 # Mention "@claude fix the typos in README.md" in the circle chat and, under the
 # push policy above, the daemon runs this agent in the workspace. Whatever files
@@ -22,7 +25,7 @@ reaction = "push"
 # proposal — review with `enox proposal list`.
 [agents.claude]
 driver = "acp"
-command = ["npx", "@zed-industries/claude-code-acp"]
+command = ["<enoxian-home>/adapters/claude-agent-acp/0.69.0/node_modules/.bin/claude-agent-acp"]
 
 # ── Codex over ACP ────────────────────────────────────────────────────────────
 # enoxian speaks ACP to the Codex adapter (same mechanism as claude above).

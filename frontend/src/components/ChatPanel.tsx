@@ -1,6 +1,6 @@
 import { Fragment, useState, useEffect, useRef, useCallback } from 'react'
-import type { ChatMessage, Member, Presence } from '../types'
-import { getChat, postChat, chatStream, getMembers, getWho } from '../api'
+import type { ChatActivity, ChatMessage, Member, Presence } from '../types'
+import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho } from '../api'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 import CircleGlyph from './CircleGlyph'
@@ -145,6 +145,8 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [members, setMembers] = useState<Member[]>([])
   const [presence, setPresence] = useState<Presence[]>([])
+  const [activities, setActivities] = useState<Record<string, ChatActivity>>({})
+  const [activityClock, setActivityClock] = useState(() => Math.floor(Date.now() / 1000))
   // Plaintext value of the input, mirrored from MentionInput for send.
   const [input, setInput] = useState('')
   // The active `@fragment` under the caret (drives the popup), or null.
@@ -157,6 +159,20 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   const bottomRef = useRef<HTMLDivElement>(null)
   const seenRef = useRef(new Set<string>())
   const latestTsRef = useRef<number | null>(null)
+  const typingLastSentRef = useRef(0)
+  const typingClearRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const ingestActivity = useCallback((activity: ChatActivity) => {
+    setActivities(prev => {
+      if (activity.expires_at <= Math.floor(Date.now() / 1000)) {
+        if (!(activity.activity_id in prev)) return prev
+        const next = { ...prev }
+        delete next[activity.activity_id]
+        return next
+      }
+      return { ...prev, [activity.activity_id]: activity }
+    })
+  }, [])
 
   const addMsg = useCallback((msg: ChatMessage) => {
     if (seenRef.current.has(msg.id)) return
@@ -174,12 +190,16 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     setMessages([])
     setMembers([])
     setPresence([])
+    setActivities({})
 
     const refreshRoster = () => {
       getMembers(activeCircleId).then(m => { if (!cancelled) setMembers(m) }).catch(() => {})
       getWho(activeCircleId).then(p => { if (!cancelled) setPresence(p) }).catch(() => {})
     }
     refreshRoster()
+    getChatActivity(activeCircleId)
+      .then(items => { if (!cancelled) items.forEach(ingestActivity) })
+      .catch(() => {})
 
     const catchUp = () => {
       const since = latestTsRef.current === null ? undefined : Math.max(0, latestTsRef.current - 1)
@@ -194,6 +214,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
       try {
         const data = JSON.parse(e.data)
         if (data.type === 'message_posted') addMsg(data.message)
+        if (data.type === 'chat_activity_changed') ingestActivity(data.activity)
         if (data.type === 'member_added' || data.type === 'member_removed' || data.type === 'presence_changed') {
           refreshRoster()
         }
@@ -204,7 +225,29 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
       cancelled = true
       es.close()
     }
-  }, [activeCircleId, addMsg])
+  }, [activeCircleId, addMsg, ingestActivity])
+
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setActivityClock(Math.floor(Date.now() / 1000)),
+      1000,
+    )
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const stopTyping = useCallback(() => {
+    if (typingClearRef.current) {
+      clearTimeout(typingClearRef.current)
+      typingClearRef.current = null
+    }
+    const wasTyping = typingLastSentRef.current > 0
+    typingLastSentRef.current = 0
+    if (wasTyping && activeCircleId && status?.agent_id) {
+      setChatTyping(activeCircleId, status.agent_id, false).catch(() => {})
+    }
+  }, [activeCircleId, status?.agent_id])
+
+  useEffect(() => () => stopTyping(), [stopTyping])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -251,6 +294,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     setInput('')
     setFragment(null)
     setMentionActive(false)
+    stopTyping()
     postChat(activeCircleId, text, status.agent_id).catch(() => {})
   }
 
@@ -264,6 +308,19 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     // user explicitly arrows into the list again.
     setMentionActive(false)
     setMentionIndex(0)
+
+    if (!activeCircleId || !status?.agent_id || activeCircle?.disabled) return
+    if (typingClearRef.current) clearTimeout(typingClearRef.current)
+    if (!text.trim()) {
+      stopTyping()
+      return
+    }
+    const now = Date.now()
+    if (now - typingLastSentRef.current >= 2000) {
+      typingLastSentRef.current = now
+      setChatTyping(activeCircleId, status.agent_id, true).catch(() => {})
+    }
+    typingClearRef.current = setTimeout(stopTyping, 4000)
   }
 
   const applyMention = (item: MentionItem) => {
@@ -318,6 +375,20 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   const hasConversation = messages.length > 0
   const onlineCount = presence.filter(p => p.status === 'online').length
   const glyphSize = hasConversation ? 64 : 88
+  const liveActivities = Object.values(activities)
+    .filter(activity => activity.expires_at > activityClock && activity.actor_id !== status?.agent_id)
+    .sort((a, b) => a.updated_at - b.updated_at)
+
+  const describeActivity = (activity: ChatActivity) => {
+    const label = getSenderLabel(activity.actor_id)
+    const host = activity.peer_id ? members.find(member => member.peer_id === activity.peer_id) : undefined
+    const actor = label.agent
+      ? `${label.agent}${host?.device_label ? ` · ${host.device_label}` : ''}`
+      : `${label.user}${label.device ? ` · ${label.device}` : ''}`
+    if (activity.kind === 'typing') return `${actor} is typing…`
+    if (activity.kind === 'seen') return `${actor} saw the message`
+    return `${actor} is working…`
+  }
 
   return (
     <main className={`app-chat-panel flex min-h-0 flex-col z-10 overflow-hidden ${variant === 'main' ? 'chat-main sys-window' : 'border-r-2 border-obsidian bg-alabaster/85'}`}>
@@ -405,6 +476,17 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
             onSelect={applyMention}
             onHover={setMentionIndex}
           />
+        )}
+        {liveActivities.length > 0 && (
+          <div className="chat-activity" role="status" aria-live="polite">
+            {liveActivities.slice(0, 3).map(activity => (
+              <span key={activity.activity_id} className={`chat-activity__item chat-activity__item--${activity.kind}`}>
+                <i aria-hidden="true" />
+                {describeActivity(activity)}
+              </span>
+            ))}
+            {liveActivities.length > 3 && <span>+{liveActivities.length - 3} active</span>}
+          </div>
         )}
         <MentionInput
           ref={inputRef}

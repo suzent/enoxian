@@ -15,7 +15,7 @@
 //!
 //! [agents.claude]
 //! driver = "acp"
-//! command = ["npx", "@zed-industries/claude-code-acp"]
+//! command = ["<enoxian-home>/adapters/claude-agent-acp/<version>/node_modules/.bin/claude-agent-acp"]
 //!
 //! [agents.codex]
 //! driver = "argv"          # default
@@ -175,7 +175,7 @@ mod tests {
 
         [agents.claude]
         driver = "acp"
-        command = ["npx", "@zed-industries/claude-code-acp"]
+        command = ["claude-agent-acp"]
 
         [agents.codex]
         command = ["codex", "{{task}}"]
@@ -189,10 +189,7 @@ mod tests {
 
         let claude = cfg.resolve("claude").unwrap();
         assert_eq!(claude.driver, Driver::Acp);
-        assert_eq!(
-            claude.command,
-            vec!["npx", "@zed-industries/claude-code-acp"]
-        );
+        assert_eq!(claude.command, vec!["claude-agent-acp"]);
 
         let codex = cfg.resolve("codex").unwrap();
         assert_eq!(codex.driver, Driver::Argv, "driver defaults to argv");
@@ -209,7 +206,7 @@ mod tests {
         cfg.set_agent(
             "claude",
             AgentCommand {
-                command: vec!["npx".into(), "@zed-industries/claude-code-acp".into()],
+                command: vec!["claude-agent-acp".into()],
                 driver: Driver::Acp,
                 working_dir: None,
             },

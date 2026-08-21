@@ -597,8 +597,13 @@ is explicit; handling an `@mention` never downloads packages.
 ```bash
 enox agent plugins
 enox agent install codex-acp
-enox agent install claude-code-acp
+enox agent install claude
 ```
+
+`enox agent install claude` checks for the official Claude Code CLI and a valid
+`claude auth status`, plus system Node.js 22+ with npm, before installing the
+pinned ACP bridge. It does not install or manage Node.js. It accepts
+`claude-code-acp` as a legacy alias for migration.
 
 ### `agent add`
 

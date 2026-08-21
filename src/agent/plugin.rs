@@ -62,6 +62,15 @@ pub struct PluginView {
     pub configured: bool,
     pub legacy_configured: bool,
     pub executable: String,
+    /// Whether system Node.js 22+ and npm are ready for adapter installation.
+    pub node_runtime_installed: bool,
+    pub node_runtime_version: Option<String>,
+    /// Required underlying product CLI, when the adapter is only a bridge.
+    pub runtime_program: Option<String>,
+    /// Whether that underlying CLI is currently resolvable on PATH.
+    pub runtime_installed: Option<bool>,
+    /// Explicit login command shown when authentication is missing.
+    pub runtime_login_command: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +80,8 @@ pub struct CatalogEntry {
 }
 
 const CODEX_VERSION: &str = "1.1.14";
-const CLAUDE_VERSION: &str = "0.16.2";
+const CLAUDE_VERSION: &str = "0.69.0";
+const CLAUDE_PLUGIN_ID: &str = "claude-agent-acp";
 
 fn builtins() -> Vec<CatalogEntry> {
     vec![
@@ -89,13 +99,13 @@ fn builtins() -> Vec<CatalogEntry> {
         },
         CatalogEntry {
             manifest: PluginManifest {
-                id: "claude-code-acp".into(),
+                id: CLAUDE_PLUGIN_ID.into(),
                 agent: "claude".into(),
                 version: CLAUDE_VERSION.into(),
                 driver: Driver::Acp,
-                package: "@zed-industries/claude-code-acp".into(),
-                binary: "claude-code-acp".into(),
-                about: "Claude Code over ACP, installed once and launched offline.".into(),
+                package: "@agentclientprotocol/claude-agent-acp".into(),
+                binary: "claude-agent-acp".into(),
+                about: "Claude Code CLI through a pinned ACP transport bridge.".into(),
             },
             source: "builtin".into(),
         },
@@ -108,6 +118,21 @@ pub fn plugins_dir() -> Result<PathBuf> {
 
 pub fn adapters_dir() -> Result<PathBuf> {
     Ok(crate::config::enoxian_dir()?.join("adapters"))
+}
+
+fn system_node_status() -> (bool, Option<String>) {
+    let Some(node) = super::probe::resolve("node") else {
+        return (false, None);
+    };
+    let npm_installed = super::probe::resolve("npm").is_some();
+    let output = std::process::Command::new(node).arg("--version").output();
+    let Ok(output) = output else {
+        return (false, None);
+    };
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let compatible =
+        output.status.success() && npm_installed && node_major(&version).unwrap_or(0) >= 22;
+    (compatible, (!version.is_empty()).then_some(version))
 }
 
 /// Built-ins followed by valid third-party manifests. Invalid manifests are
@@ -160,7 +185,17 @@ pub fn catalog() -> Vec<CatalogEntry> {
 }
 
 pub fn find(id: &str) -> Option<CatalogEntry> {
-    catalog().into_iter().find(|entry| entry.manifest.id == id)
+    let canonical = match id {
+        "claude" | "claude-code-acp" => CLAUDE_PLUGIN_ID,
+        other => other,
+    };
+    catalog()
+        .into_iter()
+        .find(|entry| entry.manifest.id == canonical)
+}
+
+fn is_claude(manifest: &PluginManifest) -> bool {
+    manifest.id == CLAUDE_PLUGIN_ID
 }
 
 fn validate_manifest(m: &PluginManifest) -> Result<()> {
@@ -227,6 +262,7 @@ fn state_at(base: &Path, manifest: &PluginManifest) -> PluginState {
 pub fn views() -> Vec<PluginView> {
     let cfg = AgentConfig::load();
     let base = adapters_dir().unwrap_or_default();
+    let (node_runtime_installed, node_runtime_version) = system_node_status();
     catalog()
         .into_iter()
         .map(|entry| {
@@ -250,6 +286,13 @@ pub fn views() -> Vec<PluginView> {
                     .map(|c| c.command != expected)
                     .unwrap_or(false),
                 executable: executable.to_string_lossy().into_owned(),
+                node_runtime_installed,
+                node_runtime_version: node_runtime_version.clone(),
+                runtime_program: is_claude(&manifest).then(|| "claude".to_string()),
+                runtime_installed: is_claude(&manifest)
+                    .then(|| super::probe::is_installed("claude")),
+                runtime_login_command: is_claude(&manifest)
+                    .then(|| "claude auth login".to_string()),
             }
         })
         .collect()
@@ -262,6 +305,28 @@ impl Drop for InstallGuard {
     }
 }
 
+async fn require_system_npm() -> Result<PathBuf> {
+    let node = super::probe::resolve("node").context(
+        "agent adapters require system Node.js 22+ with npm; install it from https://nodejs.org and restart Enoxian",
+    )?;
+    let args = vec!["--version".to_string()];
+    let output = super::spawn::command(&node.to_string_lossy(), &args)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .context("failed to check the system Node.js version")?;
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || node_major(&version).unwrap_or(0) < 22 {
+        bail!(
+            "agent adapters require system Node.js 22+ with npm (found '{}'); update Node.js and restart Enoxian",
+            if version.is_empty() { "unknown" } else { &version }
+        );
+    }
+    super::probe::resolve("npm").context(
+        "agent adapters require npm, but it was not found on PATH; install npm and restart Enoxian",
+    )
+}
+
 /// Install a pinned adapter and configure its chat handle to launch the exact
 /// managed executable. This is the only networked phase; mention execution is
 /// offline and deterministic afterwards.
@@ -269,6 +334,10 @@ pub async fn install(id: &str) -> Result<AgentCommand> {
     let entry = find(id).with_context(|| format!("unknown agent plugin '{id}'"))?;
     let manifest = entry.manifest;
     validate_manifest(&manifest)?;
+    if is_claude(&manifest) {
+        verify_claude_runtime().await?;
+    }
+    let npm = require_system_npm().await?;
     let base = adapters_dir()?;
     let root = install_root(&base, &manifest);
     std::fs::create_dir_all(&root)?;
@@ -310,7 +379,7 @@ pub async fn install(id: &str) -> Result<AgentCommand> {
         "--".into(),
         spec,
     ];
-    let mut command = super::spawn::command("npm", &args);
+    let mut command = super::spawn::command(&npm.to_string_lossy(), &args);
     command
         .kill_on_drop(true)
         .stdin(Stdio::null())
@@ -319,7 +388,7 @@ pub async fn install(id: &str) -> Result<AgentCommand> {
     let output = command
         .output()
         .await
-        .context("failed to start npm; install Node.js/npm first")?;
+        .context("failed to start the adapter npm runtime")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = stderr
@@ -338,15 +407,49 @@ pub async fn install(id: &str) -> Result<AgentCommand> {
     if !exe.is_file() {
         bail!("plugin installed but '{}' was not created", exe.display());
     }
+    let mut cfg = AgentConfig::load_for_edit()?;
+    let working_dir = cfg
+        .resolve(&manifest.agent)
+        .and_then(|existing| existing.working_dir.clone());
     let command = AgentCommand {
         command: vec![exe.to_string_lossy().into_owned()],
         driver: manifest.driver,
-        working_dir: None,
+        working_dir,
     };
-    let mut cfg = AgentConfig::load_for_edit()?;
     cfg.set_agent(&manifest.agent, command.clone());
     cfg.save()?;
     Ok(command)
+}
+
+async fn verify_claude_runtime() -> Result<()> {
+    let claude = super::probe::resolve("claude").context(
+        "Claude Code CLI is required but was not found on PATH. Install it from https://code.claude.com/docs/en/getting-started, then run `claude auth login`",
+    )?;
+
+    let auth_args = vec!["auth".to_string(), "status".to_string()];
+    let auth = super::spawn::command(&claude.to_string_lossy(), &auth_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("failed to check Claude Code authentication")?;
+    if !auth.status.success() {
+        bail!(
+            "Claude Code CLI is installed but not authenticated. Run `claude auth login`, then retry `enox agent install claude`"
+        );
+    }
+    Ok(())
+}
+
+fn node_major(version: &str) -> Option<u32> {
+    version
+        .trim()
+        .trim_start_matches('v')
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// Detect legacy runtime package-manager launchers. They may technically be on
@@ -392,6 +495,26 @@ mod tests {
             .to_string_lossy()
             .replace('\\', "/");
         assert!(path.contains("codex-acp/1.1.14/node_modules/.bin/codex-acp"));
+    }
+
+    #[test]
+    fn claude_aliases_resolve_to_current_bridge() {
+        for id in ["claude", "claude-code-acp", "claude-agent-acp"] {
+            let entry = find(id).expect("Claude alias should resolve");
+            assert_eq!(entry.manifest.id, "claude-agent-acp");
+            assert_eq!(
+                entry.manifest.package,
+                "@agentclientprotocol/claude-agent-acp"
+            );
+            assert_eq!(entry.manifest.binary, "claude-agent-acp");
+        }
+    }
+
+    #[test]
+    fn parses_node_major_versions() {
+        assert_eq!(node_major("v22.14.0"), Some(22));
+        assert_eq!(node_major("24.1.2\n"), Some(24));
+        assert_eq!(node_major("not-a-version"), None);
     }
 
     #[test]
