@@ -9,6 +9,7 @@ use crate::proposal::blob::BlobStore;
 use crate::proposal::merge::{reverse_apply, RestoreOutcome};
 use crate::proposal::model::{Proposal, ProposalStatus};
 use crate::proposal::store::ProposalStore;
+use crate::workspace_event::{append_local_event, WorkspaceEventKind};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -288,6 +289,22 @@ async fn set_status(
                 .into_response();
         }
         if !conflicts.is_empty() {
+            conflicts.sort();
+            conflicts.dedup();
+            if let Err(e) = append_local_event(
+                &state,
+                state.agent_id.clone(),
+                WorkspaceEventKind::ConflictDetected {
+                    proposal_id: proposal.id.clone(),
+                    paths: conflicts.clone(),
+                },
+            ) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": format!("recording conflict event: {e}")})),
+                )
+                    .into_response();
+            }
             return (
                 StatusCode::CONFLICT,
                 Json(json!({
@@ -336,9 +353,93 @@ async fn set_status(
         )
             .into_response();
     }
-    // The decision replicates to peers via the proposal pull protocol on the
-    // next reconnect/reconcile; the `updated_at` stamp set above drives the
-    // cross-device conflict rule.
+
+    // Record the exact post-decision workspace snapshot. Accept is a metadata
+    // decision and therefore points at the proposal result; reject/revert may
+    // perform a three-way reverse apply that preserves later edits, so capture
+    // the actual disk result rather than assuming it equals the proposal base.
+    let materialized_snapshot = if matches!(
+        new_status,
+        ProposalStatus::Rejected | ProposalStatus::Reverted
+    ) {
+        match crate::proposal::engine::snapshot_workspace(&state, &store) {
+            Ok(snapshot) => {
+                if let Err(e) = store.save_snapshot(&snapshot) {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": format!("saving materialized snapshot: {e}")})),
+                    )
+                        .into_response();
+                }
+                if let Err(e) = append_local_event(
+                    &state,
+                    state.agent_id.clone(),
+                    WorkspaceEventKind::SnapshotRecorded {
+                        snapshot_id: snapshot.id.clone(),
+                        parent_snapshot: Some(proposal.result_snapshot.clone()),
+                    },
+                ) {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": format!("recording snapshot event: {e}")})),
+                    )
+                        .into_response();
+                }
+                snapshot.id
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": format!("capturing materialized snapshot: {e}")})),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        proposal.result_snapshot.clone()
+    };
+
+    let decision_kind = if new_status == ProposalStatus::Rejected {
+        WorkspaceEventKind::ProposalRejected {
+            proposal_id: proposal.id.clone(),
+            materialized_snapshot: materialized_snapshot.clone(),
+        }
+    } else {
+        WorkspaceEventKind::ProposalStatusChanged {
+            proposal_id: proposal.id.clone(),
+            status: new_status,
+            materialized_snapshot: materialized_snapshot.clone(),
+        }
+    };
+    if let Err(e) = append_local_event(&state, state.agent_id.clone(), decision_kind) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("recording proposal decision: {e}")})),
+        )
+            .into_response();
+    }
+    if matches!(
+        new_status,
+        ProposalStatus::Rejected | ProposalStatus::Reverted
+    ) {
+        if let Err(e) = append_local_event(
+            &state,
+            state.agent_id.clone(),
+            WorkspaceEventKind::MergeCompleted {
+                proposal_ids: vec![proposal.id.clone()],
+                result_snapshot: materialized_snapshot,
+            },
+        ) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("recording merge event: {e}")})),
+            )
+                .into_response();
+        }
+    }
+
+    // Legacy mutable records still reconcile for older peers; M15 peers use
+    // the live append-only event stream as the authoritative decision history.
     let status_str = serde_json::to_value(new_status)
         .ok()
         .and_then(|v| v.as_str().map(String::from))

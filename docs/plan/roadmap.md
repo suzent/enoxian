@@ -147,7 +147,7 @@ alongside M17 content encryption (and the agent chat-inbox, see
 
 ### M15 — Event Log And Blob Sync
 
-**Status:** In progress. The proposal anti-entropy/blob slice is complete:
+**Status:** Complete. The proposal anti-entropy/blob slice is complete:
 `/enoxian/proposals/1.0.0` now reconciles on-disk proposal stores on each peer
 connection and transfers only missing or status-diverged proposal bundles
 (`src/network/proposal_sync.rs`). Proposal status conflicts converge via the
@@ -157,9 +157,13 @@ manifests are applied, peers request any missing content-addressed blobs so
 large proposal files can become reviewable and revertible away from the origin
 device.
 
-The remaining work is the broader event-log layer: an event schema for workspace
-state, snapshot materialization, and conflict metadata. That layer is still
-design-pending and should be built carefully with multi-peer tests.
+The broader event-log layer is implemented in `src/workspace_event.rs` and the
+persistent `/enoxian/events/1.0.0` stream in `src/network/event_sync.rs`. See
+[event-log.md](event-log.md). Events carry causal parents and Lamport clocks;
+materialization derives the current snapshot, proposal decisions, merges,
+forks, and conflict paths. Proposal-related events carry proposal bundles and
+stream live, while the older pull protocol remains as compatibility and
+large-blob reconciliation.
 
 Move cross-device workspace coordination toward events, snapshot manifests, and
 content-addressed blobs instead of raw folder mirroring.
@@ -178,10 +182,10 @@ content-addressed blobs instead of raw folder mirroring.
       `src/state.rs`)
 - [x] Deterministic proposal status conflict rule using
       `(status_rank, updated_at)`. (`src/proposal/model.rs`)
-- [ ] Event schema for workspace forks, snapshots, proposals, merges, rejects, and conflicts.
-- [ ] Snapshot materialization from event log.
-- [ ] Conflict metadata sync across peers.
-- [ ] Promote proposal status changes into the dedicated event log once that log
+- [x] Event schema for workspace forks, snapshots, proposals, merges, rejects, and conflicts.
+- [x] Snapshot materialization from event log.
+- [x] Conflict metadata sync across peers.
+- [x] Promote proposal status changes into the dedicated event log once that log
       exists, replacing the connection-time-only reconciliation model.
 
 ### M16 — Diff And Merge Adapters

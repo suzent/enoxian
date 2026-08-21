@@ -328,6 +328,13 @@ async fn run_inner(
             Err(e) => warn!("[proposal-sync] applying {}: {e}", bundle.proposal.id),
         }
     }
+    // M15 events are authoritative for proposal decisions. If the proposal
+    // bundle and event streams raced, reconcile now that metadata is present.
+    if let Ok(events) =
+        crate::workspace_event::EventStore::open(&state.workspace, state.circle_id.clone())
+    {
+        crate::network::event_sync::reconcile_proposals(state, &events, &store);
+    }
 
     // After manifests arrive, fetch the missing content-addressed blobs they
     // reference. This is what lets oversized proposal files become reviewable

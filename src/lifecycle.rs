@@ -32,7 +32,7 @@ use crate::{
     mls::{MlsGroupManager, MlsIdentity, SharedMlsState},
     network::{
         behaviour::{EnochBehaviour, EnochEvent},
-        proposal_sync, sync,
+        event_sync, proposal_sync, sync,
     },
     presence,
     state::AppState,
@@ -533,6 +533,24 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     }
 
     spawn_watcher(state.clone(), workspace, token.clone()).await?;
+    // Upgrade pre-M15 proposal history into the append-only event log before
+    // any peer event stream starts. Fresh proposals append events themselves.
+    match (
+        crate::proposal::store::ProposalStore::open(&state.workspace),
+        crate::workspace_event::EventStore::open(&state.workspace, state.circle_id.clone()),
+    ) {
+        (Ok(proposals), Ok(events)) => {
+            let device = crate::identity::read_identity_display()
+                .and_then(|(_, device_label)| device_label)
+                .unwrap_or_else(|| state.agent_id.clone());
+            if let Err(error) = events.backfill_proposals(&proposals, &state.peer_id, &device) {
+                warn!("[workspace-event] proposal backfill failed: {error}");
+            }
+        }
+        (Err(error), _) | (_, Err(error)) => {
+            warn!("[workspace-event] store initialization failed: {error}");
+        }
+    }
     crate::proposal::engine::spawn_engine(state.clone(), token.clone());
     crate::agent::reaction::spawn_reaction(state.clone(), token.clone());
     presence::spawn_presence(state.clone(), agent_id, token.clone());
@@ -872,6 +890,32 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         }
     });
 
+    // ── Accept persistent workspace-event streams ────────────────────────────
+    let mut event_accept_ctrl = swarm.behaviour().stream.new_control();
+    let state_for_events = state.clone();
+    let event_accept_token = token.clone();
+    tokio::spawn(async move {
+        let mut incoming = match event_accept_ctrl.accept(event_sync::PROTOCOL) {
+            Ok(streams) => streams,
+            Err(error) => {
+                warn!("[event-sync] accept failed: {error}");
+                return;
+            }
+        };
+        loop {
+            tokio::select! {
+                _ = event_accept_token.cancelled() => break,
+                item = incoming.next() => match item {
+                    Some((peer_id, stream)) => {
+                        let state = state_for_events.clone();
+                        tokio::spawn(event_sync::run(peer_id, stream, state, false));
+                    }
+                    None => break,
+                }
+            }
+        }
+    });
+
     // ── Swarm event loop ──────────────────────────────────────────────────────
     let circle_id = config.circle_id.clone();
     let open_ctrl = swarm.behaviour().stream.new_control();
@@ -1026,6 +1070,16 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                                     match pctrl.open_stream(peer_id, proposal_sync::PROTOCOL).await {
                                         Ok(stream) => proposal_sync::run(peer_id, stream, ps, true).await,
                                         Err(e) => warn!("[proposal-sync] open_stream to {peer_id}: {e}"),
+                                    }
+                                });
+                                // Reconcile once, then keep the append-only M15
+                                // event stream open for live decisions/conflicts.
+                                let mut ectrl = open_ctrl.clone();
+                                let es = state_for_swarm.clone();
+                                tokio::spawn(async move {
+                                    match ectrl.open_stream(peer_id, event_sync::PROTOCOL).await {
+                                        Ok(stream) => event_sync::run(peer_id, stream, es, true).await,
+                                        Err(e) => warn!("[event-sync] open_stream to {peer_id}: {e}"),
                                     }
                                 });
                             }

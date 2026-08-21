@@ -276,6 +276,23 @@ and browser UI. It is not the WAN relay path. `/ws/yjs` syncs local browser
 clients with the local daemon; cross-machine file sync uses the libp2p stream
 protocol (`/enoxian/sync/1.0.0`).
 
+### Workspace event log
+
+M15 adds an immutable coordination surface alongside live CRDT text sync:
+
+```text
+native workspace write
+  -> proposal snapshots + content-addressed blobs
+  -> causal workspace event (.enox_events/events/<id>.json)
+  -> /enoxian/events/1.0.0 initial anti-entropy + live forwarding
+  -> deterministic materialized snapshot/status/conflict state
+```
+
+Proposal-related event frames include the existing proposal bundle, so peers
+receive manifests and ordinary blobs with live decisions. The older proposal
+pull protocol remains available for compatibility and missing large blobs. See
+[the M15 event-log design](../plan/event-log.md).
+
 ---
 
 ## Dependency Stack

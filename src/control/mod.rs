@@ -266,4 +266,8 @@ pub enum CircleEvent {
         proposal_id: String,
         status: String,
     },
+    /// An immutable M15 workspace event was appended locally or received.
+    WorkspaceEventAppended {
+        event_id: String,
+    },
 }

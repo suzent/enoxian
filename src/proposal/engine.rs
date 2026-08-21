@@ -24,6 +24,7 @@ use super::snapshot::{FileEntry, Snapshot};
 use super::store::ProposalStore;
 use crate::control::CircleEvent;
 use crate::state::AppState;
+use crate::workspace_event::{append_local_event, WorkspaceEventKind};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -338,6 +339,25 @@ fn create_proposal(
     proposal.origin_peer_id = state.peer_id.clone();
     proposal.origin_device = device_label.to_string();
     store.save_proposal(&proposal)?;
+    let snapshot_event = append_local_event(
+        state,
+        device_label,
+        WorkspaceEventKind::SnapshotRecorded {
+            snapshot_id: result.id.clone(),
+            parent_snapshot: Some(base.id.clone()),
+        },
+    )?;
+    let proposal_event = append_local_event(
+        state,
+        device_label,
+        WorkspaceEventKind::ProposalCreated {
+            proposal_id: proposal.id.clone(),
+            base_snapshot: base.id.clone(),
+            result_snapshot: result.id.clone(),
+            changed_paths: proposal.changed_paths.clone(),
+            initial_status: proposal.status,
+        },
+    )?;
     tracing::info!(
         "[proposal] created {} ({:?}/{:?}, {} paths)",
         proposal.id,
@@ -345,9 +365,13 @@ fn create_proposal(
         status,
         proposal.changed_paths.len()
     );
-    // Replication is pull-based: peers fetch this proposal via the proposal
-    // pull protocol (`crate::network::proposal_sync`) when they next connect and
-    // reconcile. No eager push (per the once-per-connect design decision).
+    tracing::debug!(
+        "[workspace-event] recorded snapshot={} proposal={}",
+        snapshot_event.id,
+        proposal_event.id
+    );
+    // Proposal payloads still reconcile on connect for backwards compatibility;
+    // the event log streams the immutable decision history live (M15).
     let _ = state.events.send(CircleEvent::ProposalCreated {
         proposal_id: proposal.id,
     });
@@ -355,7 +379,10 @@ fn create_proposal(
 }
 
 /// Full workspace walk — used for the startup baseline and lag recovery.
-fn snapshot_workspace(state: &AppState, store: &ProposalStore) -> anyhow::Result<Snapshot> {
+pub(crate) fn snapshot_workspace(
+    state: &AppState,
+    store: &ProposalStore,
+) -> anyhow::Result<Snapshot> {
     let mut files = BTreeMap::new();
     let mut stack = vec![state.workspace.clone()];
     while let Some(dir) = stack.pop() {
