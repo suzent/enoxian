@@ -37,6 +37,8 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+## [0.3.8] — 2026-08-21
+
 ### Added
 
 - Chat now shows short-lived typing and working indicators for people and
@@ -222,7 +224,7 @@ git history and `docs/plan/archived/milestones.md` for the M1–M14 feature set
 (P2P sync, presence/tasks/locks/chat, members + MLS membership, WAN bootstrap,
 and the local workspace proposal layer).
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.8...HEAD
 [0.3.7]: https://github.com/suzent/enoxian/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/suzent/enoxian/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/suzent/enoxian/compare/v0.3.4...v0.3.5
@@ -234,3 +236,4 @@ and the local workspace proposal layer).
 [0.2.1]: https://github.com/suzent/enoxian/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/suzent/enoxian/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/suzent/enoxian/releases/tag/v0.1.4
+[0.3.8]: https://github.com/suzent/enoxian/compare/v0.3.7...v0.3.8
