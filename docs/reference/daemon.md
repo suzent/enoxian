@@ -25,7 +25,7 @@ Options:
    - Spawn a file watcher on the circle's workspace directory
    - Build a libp2p swarm with Noise/Yamux, mDNS, Kademlia, Identify, Ping, Rendezvous, Relay/DCUtR, and stream protocols
    - Dial configured peers, relay addresses, and rendezvous servers
-   - Spawn the stream accept task for `/enoxian/sync/1.0.0`
+   - Spawn the membership bootstrap and encrypted `/enoxian/sync/2.0.0` stream accept tasks
    - Spawn the swarm event loop and register the circle in shared daemon state
 4. Start a single HTTP/WS server on `--port` serving all circles
 

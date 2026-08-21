@@ -49,14 +49,14 @@ on any peer staying online.
 ## 3. Mechanism: a second stream protocol
 
 The daemon already multiplexes app protocols over `libp2p_stream`
-(`stream::Behaviour`). The CRDT sync runs on `/enoxian/sync/1.0.0`
+(`stream::Behaviour`). The CRDT sync runs on `/enoxian/sync/2.0.0`
 (`src/network/sync.rs`), accepted and opened in `src/lifecycle.rs` via
 `stream_control.accept(PROTOCOL)` / `open_ctrl.open_stream(peer, PROTOCOL)`.
 
 Add a sibling protocol:
 
 ```
-/enoxian/proposals/1.0.0
+/enoxian/proposals/2.0.0
 ```
 
 wired the same way — one `accept` task and one `open_stream` call per peer
@@ -155,7 +155,7 @@ via the control-doc map, which new peers no longer write or read. So an
 old↔new pair will not sync proposals until the old peer updates. This is
 acceptable here because the circle is small and self-updated; it is the
 trade-off for the simplest code and an immediate end to map growth. (File
-content sync is unaffected — it runs on the separate `/enoxian/sync/1.0.0`
+content sync is unaffected — it runs on the separate `/enoxian/sync/2.0.0`
 protocol.)
 
 The disk store, `ProposalBundle`, `from_store`, and `apply_to_store` are reused
@@ -192,8 +192,8 @@ Shipped as one change:
    instead of the current "changed if status differs" overwrite.
 2. **Protocol.** Added `src/network/proposal_sync.rs` implementing the
    HAVE/REQUEST/BUNDLE exchange (§3) with the delta computation as a pure,
-   tested function. Wired `accept` + `open_stream` for `/enoxian/proposals/1.0.0`
-   in `lifecycle.rs`, mirroring the `/enoxian/sync/1.0.0` setup, behind the same
+   tested function. Wired `accept` + `open_stream` for `/enoxian/proposals/2.0.0`
+   in `lifecycle.rs`, mirroring the `/enoxian/sync/2.0.0` setup, behind the same
    `mls_removed` tombstone gate. Extended the same protocol with
    WANT_BLOBS/BLOBS so peers fetch missing content-addressed blobs referenced by
    proposal manifests.

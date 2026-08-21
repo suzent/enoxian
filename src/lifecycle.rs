@@ -32,7 +32,7 @@ use crate::{
     mls::{MlsGroupManager, MlsIdentity, SharedMlsState},
     network::{
         behaviour::{EnochBehaviour, EnochEvent},
-        event_sync, proposal_sync, sync,
+        event_sync, mls_bootstrap, proposal_sync, sync,
     },
     presence,
     state::AppState,
@@ -838,7 +838,33 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         });
     }
 
-    // ── Accept incoming sync streams ──────────────────────────────────────────
+    // ── Accept the narrow MLS membership bootstrap stream ────────────────────
+    let mut bootstrap_control = swarm.behaviour().stream.new_control();
+    let state_for_bootstrap = state.clone();
+    let bootstrap_token = token.clone();
+    tokio::spawn(async move {
+        let mut incoming = match bootstrap_control.accept(mls_bootstrap::PROTOCOL) {
+            Ok(streams) => streams,
+            Err(error) => {
+                warn!("[mls-bootstrap] accept failed: {error}");
+                return;
+            }
+        };
+        loop {
+            tokio::select! {
+                _ = bootstrap_token.cancelled() => break,
+                item = incoming.next() => match item {
+                    Some((peer_id, stream)) => {
+                        let state = state_for_bootstrap.clone();
+                        tokio::spawn(mls_bootstrap::run(peer_id, stream, state, false));
+                    }
+                    None => break,
+                }
+            }
+        }
+    });
+
+    // ── Accept incoming encrypted sync streams ────────────────────────────────
     let mut stream_control = swarm.behaviour().stream.new_control();
     let state_for_accept = state.clone();
     let accept_token = token.clone();
@@ -1055,6 +1081,14 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         if endpoint.is_dialer() {
                             // Don't open sync stream to rendezvous-only servers.
                             if !rendezvous_peers.read().unwrap().contains(&peer_id) {
+                                let mut bootstrap_ctrl = open_ctrl.clone();
+                                let bootstrap_state = state_for_swarm.clone();
+                                tokio::spawn(async move {
+                                    match bootstrap_ctrl.open_stream(peer_id, mls_bootstrap::PROTOCOL).await {
+                                        Ok(stream) => mls_bootstrap::run(peer_id, stream, bootstrap_state, true).await,
+                                        Err(error) => warn!("[mls-bootstrap] open_stream to {peer_id}: {error}"),
+                                    }
+                                });
                                 let mut ctrl = open_ctrl.clone();
                                 let s = state_for_swarm.clone();
                                 tokio::spawn(async move {
@@ -1406,7 +1440,7 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
 // ── PSK rotation helpers ──────────────────────────────────────────────────────
 
 /// Called by the joiner when mls_welcomes[our_peer_id] arrives via P2P sync.
-async fn consume_welcome(welcome_hex: String, mls: SharedMlsState, state: AppState) {
+pub(crate) async fn consume_welcome(welcome_hex: String, mls: SharedMlsState, state: AppState) {
     let welcome_bytes = match hex::decode(&welcome_hex) {
         Ok(b) => b,
         Err(_) => return,
@@ -1416,7 +1450,7 @@ async fn consume_welcome(welcome_hex: String, mls: SharedMlsState, state: AppSta
     // PSK or rotate the transport key here: the transport PSK is a stable
     // per-circle network gate, and eviction is enforced by the mls_removed
     // sync-gate (see docs/plan/identity.md). MLS membership is still tracked for
-    // the sync gate and for future content-layer encryption.
+    // the sync gate and content-layer encryption.
     let mut mls_locked = mls.lock().await;
     // Skip if we already joined (race: observer fires twice).
     if mls_locked.group.is_some() {
@@ -1435,14 +1469,19 @@ async fn consume_welcome(welcome_hex: String, mls: SharedMlsState, state: AppSta
     };
     let _ = group.save(identity, &state.circle_dir);
     mls_locked.group = Some(group);
+    let _ = mls_locked.refresh_content_secret();
     info!("[mls] joined group via Welcome (membership tracked; transport PSK stays stable)");
 }
 
 /// Called for every new MlsCommitEntry that arrives from a peer.
-/// Skips commits already applied (epoch < current), skips our own commits,
+/// Skips commits already applied (post-commit epoch <= current), skips our own commits,
 /// and does nothing if the group becomes inactive (we were removed — we'll
 /// be locked out naturally when others rotate to the new PSK).
-async fn apply_commit_entry(entry: MlsCommitEntry, mls: SharedMlsState, state: AppState) {
+pub(crate) async fn apply_commit_entry(
+    entry: MlsCommitEntry,
+    mls: SharedMlsState,
+    state: AppState,
+) {
     // Don't apply commits we ourselves produced.
     if entry.sender_peer_id == state.peer_id {
         return;
@@ -1454,7 +1493,7 @@ async fn apply_commit_entry(entry: MlsCommitEntry, mls: SharedMlsState, state: A
     };
 
     // Apply the commit to keep our MLS group state in sync (epoch advances are
-    // tracked for the sync gate and future content encryption). We do NOT derive
+    // tracked for the sync gate and content encryption). We do NOT derive
     // an epoch PSK or rotate the transport key — the transport PSK is a stable
     // per-circle gate and eviction is the mls_removed sync-gate. See
     // docs/plan/identity.md.
@@ -1467,9 +1506,8 @@ async fn apply_commit_entry(entry: MlsCommitEntry, mls: SharedMlsState, state: A
         None => return, // not in group yet — will consume via Welcome path
     };
     let current_epoch = group.epoch();
-    // Commit at epoch N advances us from epoch N → N+1.
-    // Skip if we're already past this epoch.
-    if entry.epoch < current_epoch {
+    // Entries record the post-commit epoch. Skip if we already reached it.
+    if entry.epoch <= current_epoch {
         return;
     }
 
@@ -1481,6 +1519,7 @@ async fn apply_commit_entry(entry: MlsCommitEntry, mls: SharedMlsState, state: A
                 entry.epoch,
                 group.epoch()
             );
+            let _ = mls_locked.refresh_content_secret();
         }
         Err(e) => {
             warn!("[mls] apply_commit (epoch {}): {e}", entry.epoch);

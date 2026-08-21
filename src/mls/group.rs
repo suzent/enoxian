@@ -8,8 +8,8 @@ use tls_codec::{Deserialize as _, Serialize as _};
 
 use super::{identity::MlsIdentity, CIPHERSUITE};
 
-const PSK_LABEL: &str = "enoxian-psk";
-const PSK_LEN: usize = 32;
+const CONTENT_LABEL: &str = "enoxian-content-v1";
+const CONTENT_SECRET_LEN: usize = 32;
 
 pub struct MlsGroupManager {
     pub group: MlsGroup,
@@ -161,12 +161,17 @@ impl MlsGroupManager {
         Ok(())
     }
 
-    // ── Derive the pnet PSK from the current MLS epoch ────────────────────────
+    // ── Derive the message-layer root secret from the current MLS epoch ──────
 
-    pub fn epoch_psk(&self, identity: &MlsIdentity) -> Result<[u8; 32]> {
+    pub fn content_secret(&self, identity: &MlsIdentity) -> Result<[u8; 32]> {
         let raw = self
             .group
-            .export_secret(identity.provider.crypto(), PSK_LABEL, &[], PSK_LEN)
+            .export_secret(
+                identity.provider.crypto(),
+                CONTENT_LABEL,
+                &[],
+                CONTENT_SECRET_LEN,
+            )
             .map_err(|e| anyhow::anyhow!("MLS export_secret: {e:?}"))?;
 
         raw.try_into()
@@ -267,5 +272,49 @@ impl MlsGroupManager {
             .map_err(|e| anyhow::anyhow!("load MLS group: {e:?}"))?;
 
         Ok(group.map(|g| Self { group: g }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exporter_tracks_epochs_and_offline_member_catches_up() {
+        let alice = MlsIdentity::generate("alice").unwrap();
+        let bob = MlsIdentity::generate("bob").unwrap();
+        let carol = MlsIdentity::generate("carol").unwrap();
+        let mut alice_group = MlsGroupManager::create(&alice).unwrap();
+
+        let bob_package = bob.generate_key_package().unwrap();
+        let (_bob_commit, bob_welcome, _) = alice_group.add_member(&alice, &bob_package).unwrap();
+        let mut bob_group = MlsGroupManager::join_from_welcome(&bob, &bob_welcome, None).unwrap();
+        let epoch_one = alice_group.content_secret(&alice).unwrap();
+        assert_eq!(epoch_one, bob_group.content_secret(&bob).unwrap());
+
+        // Bob is offline while Alice adds Carol. Applying the durable commit on
+        // reconnect advances Bob to the same exporter secret.
+        let carol_package = carol.generate_key_package().unwrap();
+        let (carol_commit, _carol_welcome, _) =
+            alice_group.add_member(&alice, &carol_package).unwrap();
+        let epoch_two = alice_group.content_secret(&alice).unwrap();
+        assert_ne!(epoch_one, epoch_two);
+        bob_group.apply_commit(&bob, &carol_commit).unwrap();
+        assert_eq!(epoch_two, bob_group.content_secret(&bob).unwrap());
+    }
+
+    #[test]
+    fn removed_member_cannot_export_the_new_epoch_secret() {
+        let alice = MlsIdentity::generate("alice").unwrap();
+        let bob = MlsIdentity::generate("bob").unwrap();
+        let mut alice_group = MlsGroupManager::create(&alice).unwrap();
+        let (_commit, welcome, _) = alice_group
+            .add_member(&alice, &bob.generate_key_package().unwrap())
+            .unwrap();
+        let mut bob_group = MlsGroupManager::join_from_welcome(&bob, &welcome, None).unwrap();
+        let bob_leaf = alice_group.leaf_index_for_peer("bob").unwrap();
+        let remove = alice_group.remove_member(&alice, bob_leaf).unwrap();
+        bob_group.apply_commit(&bob, &remove).unwrap();
+        assert!(bob_group.content_secret(&bob).is_err());
     }
 }

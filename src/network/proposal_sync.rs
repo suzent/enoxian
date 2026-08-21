@@ -1,4 +1,4 @@
-//! Proposal pull protocol — `/enoxian/proposals/1.0.0`.
+//! Encrypted proposal pull protocol — `/enoxian/proposals/2.0.0`.
 //!
 //! Proposals are durable, ever-growing review history. Replicating them through
 //! the in-memory, fully-replicated control doc made it grow without bound (see
@@ -33,7 +33,8 @@ use crate::proposal::store::ProposalStore;
 use crate::proposal::sync::ProposalBundle;
 use crate::state::AppState;
 
-pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/proposals/1.0.0");
+pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/proposals/2.0.0");
+const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 /// One advertised proposal: its id and a fingerprint of its mutable state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,23 +165,36 @@ fn apply_blob_payloads(store: &ProposalStore, blobs: &[BlobPayload]) -> Result<u
 
 // ── Wire framing: [u32 len][JSON] ────────────────────────────────────────────
 
-async fn write_msg<W: AsyncWriteExt + Unpin>(w: &mut W, msg: &Msg) -> Result<()> {
+async fn write_msg<W: AsyncWriteExt + Unpin>(w: &mut W, state: &AppState, msg: &Msg) -> Result<()> {
     let bytes = serde_json::to_vec(msg)?;
-    w.write_all(&(bytes.len() as u32).to_be_bytes()).await?;
-    w.write_all(&bytes).await?;
+    let frame = crate::network::content_crypto::seal(
+        state,
+        crate::network::content_crypto::FrameKind::Proposal,
+        &bytes,
+    )
+    .await?;
+    anyhow::ensure!(frame.len() <= MAX_FRAME_BYTES, "proposal frame too large");
+    w.write_all(&(frame.len() as u32).to_be_bytes()).await?;
+    w.write_all(&frame).await?;
     w.flush().await?;
     Ok(())
 }
 
-async fn read_msg<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Msg> {
+async fn read_msg<R: AsyncReadExt + Unpin>(r: &mut R, state: &AppState) -> Result<Msg> {
     let mut len = [0u8; 4];
     r.read_exact(&mut len).await?;
     let len = u32::from_be_bytes(len) as usize;
     // Guard against a malformed/hostile length prefix.
-    anyhow::ensure!(len <= 64 * 1024 * 1024, "proposal frame too large: {len}");
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf).await?;
-    serde_json::from_slice(&buf).context("decoding proposal message")
+    anyhow::ensure!(len <= MAX_FRAME_BYTES, "proposal frame too large: {len}");
+    let mut frame = vec![0u8; len];
+    r.read_exact(&mut frame).await?;
+    let bytes = crate::network::content_crypto::open(
+        state,
+        crate::network::content_crypto::FrameKind::Proposal,
+        &frame,
+    )
+    .await?;
+    serde_json::from_slice(&bytes).context("decoding proposal message")
 }
 
 // ── Entry points (mirror sync::run_sync) ─────────────────────────────────────
@@ -248,18 +262,18 @@ async fn run_inner(
     let my_haves = local_haves(&store);
     let peer_haves = if is_initiator {
         ensure_peer_authorized(state, &peer_id)?;
-        write_msg(&mut tx, &Msg::Have(my_haves)).await?;
-        match read_msg(&mut rx).await? {
+        write_msg(&mut tx, state, &Msg::Have(my_haves)).await?;
+        match read_msg(&mut rx, state).await? {
             Msg::Have(h) => h,
             _ => return Err(anyhow::anyhow!("expected HAVE")),
         }
     } else {
-        let h = match read_msg(&mut rx).await? {
+        let h = match read_msg(&mut rx, state).await? {
             Msg::Have(h) => h,
             _ => return Err(anyhow::anyhow!("expected HAVE")),
         };
         ensure_peer_authorized(state, &peer_id)?;
-        write_msg(&mut tx, &Msg::Have(local_haves(&store))).await?;
+        write_msg(&mut tx, state, &Msg::Have(local_haves(&store))).await?;
         h
     };
     ensure_peer_authorized(state, &peer_id)?;
@@ -268,18 +282,18 @@ async fn run_inner(
     let want = compute_wants(&local_haves(&store), &peer_haves);
     let peer_want = if is_initiator {
         ensure_peer_authorized(state, &peer_id)?;
-        write_msg(&mut tx, &Msg::Want(want.clone())).await?;
-        match read_msg(&mut rx).await? {
+        write_msg(&mut tx, state, &Msg::Want(want.clone())).await?;
+        match read_msg(&mut rx, state).await? {
             Msg::Want(w) => w,
             _ => return Err(anyhow::anyhow!("expected WANT")),
         }
     } else {
-        let w = match read_msg(&mut rx).await? {
+        let w = match read_msg(&mut rx, state).await? {
             Msg::Want(w) => w,
             _ => return Err(anyhow::anyhow!("expected WANT")),
         };
         ensure_peer_authorized(state, &peer_id)?;
-        write_msg(&mut tx, &Msg::Want(want.clone())).await?;
+        write_msg(&mut tx, state, &Msg::Want(want.clone())).await?;
         w
     };
     ensure_peer_authorized(state, &peer_id)?;
@@ -288,18 +302,18 @@ async fn run_inner(
     let outgoing = bundles_for(&store, &peer_want);
     let incoming = if is_initiator {
         ensure_peer_authorized(state, &peer_id)?;
-        write_msg(&mut tx, &Msg::Bundles(outgoing)).await?;
-        match read_msg(&mut rx).await? {
+        write_msg(&mut tx, state, &Msg::Bundles(outgoing)).await?;
+        match read_msg(&mut rx, state).await? {
             Msg::Bundles(b) => b,
             _ => return Err(anyhow::anyhow!("expected BUNDLES")),
         }
     } else {
-        let b = match read_msg(&mut rx).await? {
+        let b = match read_msg(&mut rx, state).await? {
             Msg::Bundles(b) => b,
             _ => return Err(anyhow::anyhow!("expected BUNDLES")),
         };
         ensure_peer_authorized(state, &peer_id)?;
-        write_msg(&mut tx, &Msg::Bundles(outgoing)).await?;
+        write_msg(&mut tx, state, &Msg::Bundles(outgoing)).await?;
         b
     };
     ensure_peer_authorized(state, &peer_id)?;
@@ -342,18 +356,18 @@ async fn run_inner(
     let want_blobs = missing_blob_hashes(&store);
     let peer_want_blobs = if is_initiator {
         ensure_peer_authorized(state, &peer_id)?;
-        write_msg(&mut tx, &Msg::WantBlobs(want_blobs.clone())).await?;
-        match read_msg(&mut rx).await? {
+        write_msg(&mut tx, state, &Msg::WantBlobs(want_blobs.clone())).await?;
+        match read_msg(&mut rx, state).await? {
             Msg::WantBlobs(w) => w,
             _ => return Err(anyhow::anyhow!("expected WANT_BLOBS")),
         }
     } else {
-        let w = match read_msg(&mut rx).await? {
+        let w = match read_msg(&mut rx, state).await? {
             Msg::WantBlobs(w) => w,
             _ => return Err(anyhow::anyhow!("expected WANT_BLOBS")),
         };
         ensure_peer_authorized(state, &peer_id)?;
-        write_msg(&mut tx, &Msg::WantBlobs(want_blobs.clone())).await?;
+        write_msg(&mut tx, state, &Msg::WantBlobs(want_blobs.clone())).await?;
         w
     };
     ensure_peer_authorized(state, &peer_id)?;
@@ -361,18 +375,18 @@ async fn run_inner(
     let outgoing_blobs = blob_payloads_for(&store, &peer_want_blobs);
     let incoming_blobs = if is_initiator {
         ensure_peer_authorized(state, &peer_id)?;
-        write_msg(&mut tx, &Msg::Blobs(outgoing_blobs)).await?;
-        match read_msg(&mut rx).await? {
+        write_msg(&mut tx, state, &Msg::Blobs(outgoing_blobs)).await?;
+        match read_msg(&mut rx, state).await? {
             Msg::Blobs(b) => b,
             _ => return Err(anyhow::anyhow!("expected BLOBS")),
         }
     } else {
-        let b = match read_msg(&mut rx).await? {
+        let b = match read_msg(&mut rx, state).await? {
             Msg::Blobs(b) => b,
             _ => return Err(anyhow::anyhow!("expected BLOBS")),
         };
         ensure_peer_authorized(state, &peer_id)?;
-        write_msg(&mut tx, &Msg::Blobs(outgoing_blobs)).await?;
+        write_msg(&mut tx, state, &Msg::Blobs(outgoing_blobs)).await?;
         b
     };
 

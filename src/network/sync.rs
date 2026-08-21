@@ -24,7 +24,8 @@ use yrs::{
 use crate::control::MLS_REMOVED_KEY;
 use crate::state::AppState;
 
-pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/sync/1.0.0");
+pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/sync/2.0.0");
+const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const AWARENESS_PATH_PREFIX: &str = "\0awareness/";
 const DELETE_PATH_PREFIX: &str = "\0delete/";
 const REVOKED_PATH: &str = "\0revoked";
@@ -48,28 +49,66 @@ struct SessionHello {
 
 // ── Wire helpers ──────────────────────────────────────────────────────────────
 
-async fn write_frame<W: AsyncWriteExt + Unpin>(w: &mut W, path: &str, data: &[u8]) -> Result<()> {
+async fn write_frame<W: AsyncWriteExt + Unpin>(
+    w: &mut W,
+    state: &AppState,
+    path: &str,
+    data: &[u8],
+) -> Result<()> {
     let pb = path.as_bytes();
-    w.write_all(&(pb.len() as u32).to_be_bytes()).await?;
-    w.write_all(pb).await?;
-    w.write_all(&(data.len() as u32).to_be_bytes()).await?;
-    w.write_all(data).await?;
+    let mut plaintext = Vec::with_capacity(8 + pb.len() + data.len());
+    plaintext.extend_from_slice(&(pb.len() as u32).to_be_bytes());
+    plaintext.extend_from_slice(pb);
+    plaintext.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    plaintext.extend_from_slice(data);
+    let frame = crate::network::content_crypto::seal(
+        state,
+        crate::network::content_crypto::FrameKind::Crdt,
+        &plaintext,
+    )
+    .await?;
+    anyhow::ensure!(frame.len() <= MAX_FRAME_BYTES, "sync frame too large");
+    w.write_all(&(frame.len() as u32).to_be_bytes()).await?;
+    w.write_all(&frame).await?;
     w.flush().await?;
     Ok(())
 }
 
-async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<(String, Vec<u8>)> {
+async fn read_frame<R: AsyncReadExt + Unpin>(
+    r: &mut R,
+    state: &AppState,
+) -> Result<(String, Vec<u8>)> {
     let mut u32buf = [0u8; 4];
     r.read_exact(&mut u32buf).await?;
+    let frame_len = u32::from_be_bytes(u32buf) as usize;
+    anyhow::ensure!(
+        frame_len <= MAX_FRAME_BYTES,
+        "sync frame too large: {frame_len}"
+    );
+    let mut frame = vec![0; frame_len];
+    r.read_exact(&mut frame).await?;
+    let plaintext = crate::network::content_crypto::open(
+        state,
+        crate::network::content_crypto::FrameKind::Crdt,
+        &frame,
+    )
+    .await?;
+    let mut cursor = std::io::Cursor::new(plaintext);
+    std::io::Read::read_exact(&mut cursor, &mut u32buf)?;
     let plen = u32::from_be_bytes(u32buf) as usize;
-    let mut pbuf = vec![0u8; plen];
-    r.read_exact(&mut pbuf).await?;
+    anyhow::ensure!(plen <= MAX_FRAME_BYTES, "sync path too large");
+    let mut pbuf = vec![0; plen];
+    std::io::Read::read_exact(&mut cursor, &mut pbuf)?;
     let path = String::from_utf8(pbuf)?;
-
-    r.read_exact(&mut u32buf).await?;
+    std::io::Read::read_exact(&mut cursor, &mut u32buf)?;
     let dlen = u32::from_be_bytes(u32buf) as usize;
-    let mut data = vec![0u8; dlen];
-    r.read_exact(&mut data).await?;
+    anyhow::ensure!(dlen <= MAX_FRAME_BYTES, "sync payload too large");
+    let mut data = vec![0; dlen];
+    std::io::Read::read_exact(&mut cursor, &mut data)?;
+    anyhow::ensure!(
+        cursor.position() as usize == cursor.get_ref().len(),
+        "trailing sync frame bytes"
+    );
     Ok((path, data))
 }
 
@@ -81,21 +120,23 @@ async fn write_u32<W: AsyncWriteExt + Unpin>(w: &mut W, n: u32) -> Result<()> {
 
 async fn write_awareness_frame<W: AsyncWriteExt + Unpin>(
     w: &mut W,
+    state: &AppState,
     path: &str,
     data: &[u8],
 ) -> Result<()> {
     let path = format!("{AWARENESS_PATH_PREFIX}{path}");
-    write_frame(w, &path, data).await
+    write_frame(w, state, &path, data).await
 }
 
 async fn flush_pending_awareness<W: AsyncWriteExt + Unpin>(
     w: &mut W,
+    state: &AppState,
     rx: &mut tokio::sync::broadcast::Receiver<(String, Vec<u8>)>,
     peer_id: PeerId,
 ) -> Result<()> {
     loop {
         match rx.try_recv() {
-            Ok((path, data)) => write_awareness_frame(w, &path, &data).await?,
+            Ok((path, data)) => write_awareness_frame(w, state, &path, &data).await?,
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Lagged(n)) => {
                 debug!("[sync] lagged {n} awareness updates to {peer_id}");
@@ -160,11 +201,14 @@ async fn write_session_hello<W: AsyncWriteExt + Unpin>(
     you_are_removed: bool,
 ) -> Result<()> {
     let hello = encode_session_hello(state, you_are_removed)?;
-    write_frame(w, SESSION_PATH, &hello).await
+    write_frame(w, state, SESSION_PATH, &hello).await
 }
 
-async fn read_session_hello<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<PeerSession> {
-    let (path, data) = read_frame(r).await?;
+async fn read_session_hello<R: AsyncReadExt + Unpin>(
+    r: &mut R,
+    state: &AppState,
+) -> Result<PeerSession> {
+    let (path, data) = read_frame(r, state).await?;
     if path != SESSION_PATH {
         return Err(anyhow::anyhow!("expected sync session frame, got {path:?}"));
     }
@@ -407,9 +451,9 @@ async fn sync_inner(
 
     if is_initiator {
         write_session_hello(&mut tx, state, remote_is_removed).await?;
-        peer_session = read_session_hello(&mut rx).await?;
+        peer_session = read_session_hello(&mut rx, state).await?;
     } else {
-        peer_session = read_session_hello(&mut rx).await?;
+        peer_session = read_session_hello(&mut rx, state).await?;
         write_session_hello(&mut tx, state, remote_is_removed).await?;
     }
 
@@ -494,6 +538,7 @@ async fn sync_inner(
             let sv = doc.transact().state_vector();
             write_frame(
                 &mut tx,
+                state,
                 path,
                 &encode_sync(Message::Sync(SyncMessage::SyncStep1(sv))),
             )
@@ -502,7 +547,7 @@ async fn sync_inner(
 
         // Read SyncStep2 replies (one per our SyncStep1)
         for _ in 0..my_paths.len() {
-            let (path, data) = read_frame(&mut rx).await?;
+            let (path, data) = read_frame(&mut rx, state).await?;
             if let IncomingEvent::Apply { raw_update, .. } = parse_frame(path.clone(), &data) {
                 apply_update(state, &path, &raw_update, peer_id);
             }
@@ -513,7 +558,7 @@ async fn sync_inner(
         // for divergence detection rather than the (already merged) current state.
         let their_count = read_u32(&mut rx).await? as usize;
         for _ in 0..their_count {
-            let (path, data) = read_frame(&mut rx).await?;
+            let (path, data) = read_frame(&mut rx, state).await?;
             if let IncomingEvent::ResyncRequest {
                 sv: their_sv_bytes, ..
             } = parse_frame(path.clone(), &data)
@@ -535,6 +580,7 @@ async fn sync_inner(
                 let diff = doc.transact().encode_diff_v1(&sv);
                 write_frame(
                     &mut tx,
+                    state,
                     &path,
                     &encode_sync(Message::Sync(SyncMessage::SyncStep2(diff))),
                 )
@@ -545,7 +591,7 @@ async fn sync_inner(
         // Read initiator's SyncStep1 messages, send SyncStep2 for each
         let their_count = read_u32(&mut rx).await? as usize;
         for _ in 0..their_count {
-            let (path, data) = read_frame(&mut rx).await?;
+            let (path, data) = read_frame(&mut rx, state).await?;
             if let IncomingEvent::ResyncRequest {
                 sv: their_sv_bytes, ..
             } = parse_frame(path.clone(), &data)
@@ -567,6 +613,7 @@ async fn sync_inner(
                 let diff = doc.transact().encode_diff_v1(&sv);
                 write_frame(
                     &mut tx,
+                    state,
                     &path,
                     &encode_sync(Message::Sync(SyncMessage::SyncStep2(diff))),
                 )
@@ -585,6 +632,7 @@ async fn sync_inner(
             let sv = doc.transact().state_vector();
             write_frame(
                 &mut tx,
+                state,
                 path,
                 &encode_sync(Message::Sync(SyncMessage::SyncStep1(sv))),
             )
@@ -593,7 +641,7 @@ async fn sync_inner(
 
         // Read initiator's SyncStep2 replies
         for _ in 0..my_paths.len() {
-            let (path, data) = read_frame(&mut rx).await?;
+            let (path, data) = read_frame(&mut rx, state).await?;
             if let IncomingEvent::Apply { raw_update, .. } = parse_frame(path.clone(), &data) {
                 apply_update(state, &path, &raw_update, peer_id);
             }
@@ -603,7 +651,7 @@ async fn sync_inner(
     tracing::info!("[sync] handshake complete with {peer_id}");
 
     if state.is_peer_removed(&peer_id.to_string()) {
-        let _ = write_frame(&mut tx, REVOKED_PATH, &[]).await;
+        let _ = write_frame(&mut tx, state, REVOKED_PATH, &[]).await;
         return Err(anyhow::anyhow!("peer removed during sync handshake"));
     }
     if state.is_self_removed() {
@@ -616,7 +664,7 @@ async fn sync_inner(
     // happened while CRDT/session/conflict setup was running. Otherwise cursor
     // frames produced during the handshake are lost because awareness is
     // ephemeral and broadcast receivers only see events after subscription.
-    flush_pending_awareness(&mut tx, &mut all_awareness_rx, peer_id).await?;
+    flush_pending_awareness(&mut tx, state, &mut all_awareness_rx, peer_id).await?;
 
     // ── Post-handshake catch-up ───────────────────────────────────────────────
     //
@@ -629,14 +677,14 @@ async fn sync_inner(
     for path in all_doc_paths(state) {
         if sync_revoked(state, &peer_id) {
             if state.is_peer_removed(&peer_id.to_string()) {
-                let _ = write_frame(&mut tx, REVOKED_PATH, &[]).await;
+                let _ = write_frame(&mut tx, state, REVOKED_PATH, &[]).await;
             }
             return Err(anyhow::anyhow!("peer removed during sync catch-up"));
         }
         let msg = full_state_update(state, &path);
-        write_frame(&mut tx, &path, &msg).await?;
+        write_frame(&mut tx, state, &path, &msg).await?;
     }
-    flush_pending_awareness(&mut tx, &mut all_awareness_rx, peer_id).await?;
+    flush_pending_awareness(&mut tx, state, &mut all_awareness_rx, peer_id).await?;
 
     // ── Continuous exchange ───────────────────────────────────────────────────
     //
@@ -655,10 +703,11 @@ async fn sync_inner(
 
     let (evt_tx, mut evt_rx) = tokio::sync::mpsc::channel::<IncomingEvent>(256);
     let peer_str = peer_id.to_string();
+    let reader_state = state.clone();
 
     tokio::spawn(async move {
         loop {
-            match read_frame(&mut rx).await {
+            match read_frame(&mut rx, &reader_state).await {
                 Ok((path, data)) => {
                     if evt_tx.send(parse_frame(path, &data)).await.is_err() {
                         break;
@@ -691,7 +740,7 @@ async fn sync_inner(
                         if removed == &remote_peer_id
                 ) || sync_revoked(state, &peer_id) {
                     if state.is_peer_removed(&peer_id.to_string()) {
-                        let _ = write_frame(&mut tx, REVOKED_PATH, &[]).await;
+                        let _ = write_frame(&mut tx, state, REVOKED_PATH, &[]).await;
                     }
                     warn!("[sync] closing stream to removed peer {peer_id}");
                     break;
@@ -714,7 +763,7 @@ async fn sync_inner(
                         let doc = if path == "__control__" { state.control.clone() } else { state.get_or_create_doc(&path) };
                         let diff = doc.transact().encode_diff_v1(&sv);
                         let step2 = encode_sync(Message::Sync(SyncMessage::SyncStep2(diff)));
-                        write_frame(&mut tx, &path, &step2).await?;
+                        write_frame(&mut tx, state, &path, &step2).await?;
                     }
                     IncomingEvent::Awareness { path, data } => {
                         apply_awareness(state, &path, data);
@@ -735,7 +784,7 @@ async fn sync_inner(
             result = all_rx.recv() => {
                 if sync_revoked(state, &peer_id) {
                     if state.is_peer_removed(&peer_id.to_string()) {
-                        let _ = write_frame(&mut tx, REVOKED_PATH, &[]).await;
+                        let _ = write_frame(&mut tx, state, REVOKED_PATH, &[]).await;
                     }
                     warn!("[sync] stopped forwarding updates to removed peer {peer_id}");
                     break;
@@ -743,7 +792,7 @@ async fn sync_inner(
                 match result {
                     Ok((path, raw)) => {
                         let msg = encode_sync(Message::Sync(SyncMessage::Update(raw)));
-                        write_frame(&mut tx, &path, &msg).await?;
+                        write_frame(&mut tx, state, &path, &msg).await?;
                     }
                     Err(RecvError::Lagged(n)) => {
                         // We dropped n updates. Send our full CRDT state for every
@@ -752,7 +801,7 @@ async fn sync_inner(
                         warn!("[sync] lagged {n} updates to {peer_id} — sending full state");
                         for path in all_doc_paths(state) {
                             let msg = full_state_update(state, &path);
-                            write_frame(&mut tx, &path, &msg).await?;
+                            write_frame(&mut tx, state, &path, &msg).await?;
                         }
                     }
                     Err(RecvError::Closed) => break,
@@ -766,7 +815,7 @@ async fn sync_inner(
                 }
                 match result {
                     Ok((path, data)) => {
-                        write_awareness_frame(&mut tx, &path, &data).await?;
+                        write_awareness_frame(&mut tx, state, &path, &data).await?;
                     }
                     Err(RecvError::Lagged(n)) => {
                         // Awareness is ephemeral. If we drop cursor frames, the
@@ -785,7 +834,7 @@ async fn sync_inner(
                 match result {
                     Ok(path) => {
                         let path = format!("{DELETE_PATH_PREFIX}{path}");
-                        write_frame(&mut tx, &path, &[]).await?;
+                        write_frame(&mut tx, state, &path, &[]).await?;
                     }
                     Err(RecvError::Lagged(n)) => {
                         warn!("[sync] lagged {n} delete events to {peer_id}");

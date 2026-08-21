@@ -218,10 +218,11 @@ The current package version is **0.3.0**.
 | CLI, local API, SSE/WebSocket event stream | Complete |
 | WAN invites, relay/rendezvous bootstrap | Complete |
 | Members, identity, MLS membership/removal gate | Complete |
+| MLS-derived P2P content encryption | Complete |
 | Proposal capture, review, reject, revert | Complete |
 | ACP/argv agent execution, mention reactions, agent memory | Complete |
 | Cross-platform packaging and install scripts | Complete |
-| Content encryption for persisted workspace/control data | Planned |
+| At-rest encryption for persisted workspace/control data | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) and
 [docs/plan/roadmap.md](docs/plan/roadmap.md) for release notes and upcoming

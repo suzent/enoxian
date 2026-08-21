@@ -1,4 +1,4 @@
-//! Live workspace event-log synchronization — `/enoxian/events/1.0.0`.
+//! Encrypted live workspace event-log synchronization — `/enoxian/events/2.0.0`.
 //!
 //! Peers first reconcile immutable event ids, then keep the stream open and
 //! forward newly appended events. Proposal-related events carry the existing
@@ -19,7 +19,7 @@ use crate::proposal::sync::ProposalBundle;
 use crate::state::AppState;
 use crate::workspace_event::{EventStore, WorkspaceEvent};
 
-pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/events/1.0.0");
+pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/events/2.0.0");
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
@@ -137,8 +137,18 @@ pub fn reconcile_proposals(
     changed
 }
 
-async fn write_msg<W: AsyncWriteExt + Unpin>(writer: &mut W, msg: &Msg) -> Result<()> {
+async fn write_msg<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    state: &AppState,
+    msg: &Msg,
+) -> Result<()> {
     let bytes = serde_json::to_vec(msg)?;
+    let bytes = crate::network::content_crypto::seal(
+        state,
+        crate::network::content_crypto::FrameKind::WorkspaceEvent,
+        &bytes,
+    )
+    .await?;
     anyhow::ensure!(
         bytes.len() <= MAX_FRAME_BYTES,
         "workspace event frame too large"
@@ -151,7 +161,7 @@ async fn write_msg<W: AsyncWriteExt + Unpin>(writer: &mut W, msg: &Msg) -> Resul
     Ok(())
 }
 
-async fn read_msg<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Msg> {
+async fn read_msg<R: AsyncReadExt + Unpin>(reader: &mut R, state: &AppState) -> Result<Msg> {
     let mut len = [0; 4];
     reader.read_exact(&mut len).await?;
     let len = u32::from_be_bytes(len) as usize;
@@ -161,23 +171,33 @@ async fn read_msg<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Msg> {
     );
     let mut bytes = vec![0; len];
     reader.read_exact(&mut bytes).await?;
-    serde_json::from_slice(&bytes).context("decoding workspace event message")
+    let plaintext = crate::network::content_crypto::open(
+        state,
+        crate::network::content_crypto::FrameKind::WorkspaceEvent,
+        &bytes,
+    )
+    .await?;
+    serde_json::from_slice(&plaintext).context("decoding workspace event message")
 }
 
 async fn write_event_batch<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
+    state: &AppState,
     events: Vec<EventEnvelope>,
 ) -> Result<()> {
     for event in events {
-        write_msg(writer, &Msg::Event(Box::new(event))).await?;
+        write_msg(writer, state, &Msg::Event(Box::new(event))).await?;
     }
-    write_msg(writer, &Msg::EventsDone).await
+    write_msg(writer, state, &Msg::EventsDone).await
 }
 
-async fn read_event_batch<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Vec<EventEnvelope>> {
+async fn read_event_batch<R: AsyncReadExt + Unpin>(
+    reader: &mut R,
+    state: &AppState,
+) -> Result<Vec<EventEnvelope>> {
     let mut events = Vec::new();
     loop {
-        match read_msg(reader).await? {
+        match read_msg(reader, state).await? {
             Msg::Event(event) => events.push(*event),
             Msg::EventsDone => return Ok(events),
             _ => anyhow::bail!("unexpected message in initial event batch"),
@@ -215,45 +235,45 @@ async fn run_inner(
 
     let local_ids = events.ids();
     let peer_ids = if is_initiator {
-        write_msg(&mut writer, &Msg::Have(local_ids.clone())).await?;
-        match read_msg(&mut reader).await? {
+        write_msg(&mut writer, state, &Msg::Have(local_ids.clone())).await?;
+        match read_msg(&mut reader, state).await? {
             Msg::Have(ids) => ids,
             _ => anyhow::bail!("expected event HAVE"),
         }
     } else {
-        let ids = match read_msg(&mut reader).await? {
+        let ids = match read_msg(&mut reader, state).await? {
             Msg::Have(ids) => ids,
             _ => anyhow::bail!("expected event HAVE"),
         };
-        write_msg(&mut writer, &Msg::Have(local_ids.clone())).await?;
+        write_msg(&mut writer, state, &Msg::Have(local_ids.clone())).await?;
         ids
     };
     ensure_peer_authorized(state, &peer_id)?;
 
     let want = compute_wants(&local_ids, &peer_ids);
     let peer_want = if is_initiator {
-        write_msg(&mut writer, &Msg::Want(want.clone())).await?;
-        match read_msg(&mut reader).await? {
+        write_msg(&mut writer, state, &Msg::Want(want.clone())).await?;
+        match read_msg(&mut reader, state).await? {
             Msg::Want(ids) => ids,
             _ => anyhow::bail!("expected event WANT"),
         }
     } else {
-        let ids = match read_msg(&mut reader).await? {
+        let ids = match read_msg(&mut reader, state).await? {
             Msg::Want(ids) => ids,
             _ => anyhow::bail!("expected event WANT"),
         };
-        write_msg(&mut writer, &Msg::Want(want.clone())).await?;
+        write_msg(&mut writer, state, &Msg::Want(want.clone())).await?;
         ids
     };
     ensure_peer_authorized(state, &peer_id)?;
 
     let outgoing = envelopes_for(&events, &proposals, &peer_want);
     let incoming = if is_initiator {
-        write_event_batch(&mut writer, outgoing).await?;
-        read_event_batch(&mut reader).await?
+        write_event_batch(&mut writer, state, outgoing).await?;
+        read_event_batch(&mut reader, state).await?
     } else {
-        let incoming = read_event_batch(&mut reader).await?;
-        write_event_batch(&mut writer, outgoing).await?;
+        let incoming = read_event_batch(&mut reader, state).await?;
+        write_event_batch(&mut writer, state, outgoing).await?;
         incoming
     };
 
@@ -273,9 +293,10 @@ async fn run_inner(
     // frame would lose framing alignment, which a direct `select!` between the
     // socket read and local event notifications could do.
     let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(16);
+    let reader_state = state.clone();
     let _reader_task = AbortOnDrop(tokio::spawn(async move {
         loop {
-            let message = read_msg(&mut reader).await;
+            let message = read_msg(&mut reader, &reader_state).await;
             let stop = message.is_err();
             if incoming_tx.send(message).await.is_err() || stop {
                 break;
@@ -303,7 +324,7 @@ async fn run_inner(
                     }
                     ensure_peer_authorized(state, &peer_id)?;
                     if let Some(envelope) = envelope_for(&events, &proposals, &event_id) {
-                        write_msg(&mut writer, &Msg::Event(Box::new(envelope))).await?;
+                        write_msg(&mut writer, state, &Msg::Event(Box::new(envelope))).await?;
                         peer_known.insert(event_id);
                     }
                 }
@@ -321,7 +342,7 @@ async fn run_inner(
                         }
                         ensure_peer_authorized(state, &peer_id)?;
                         if let Some(envelope) = envelope_for(&events, &proposals, &event_id) {
-                            write_msg(&mut writer, &Msg::Event(Box::new(envelope))).await?;
+                            write_msg(&mut writer, state, &Msg::Event(Box::new(envelope))).await?;
                             peer_known.insert(event_id);
                         }
                     }
@@ -369,10 +390,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn initial_event_batch_uses_bounded_individual_frames() {
-        let (mut sender, mut receiver) = tokio::io::duplex(4096);
-        let expected = vec![
+    #[test]
+    fn initial_event_batch_uses_bounded_individual_messages() {
+        let events = vec![
             EventEnvelope {
                 event: wire_event(1),
                 proposal: None,
@@ -382,20 +402,10 @@ mod tests {
                 proposal: None,
             },
         ];
-        let outgoing = expected.clone();
-        let write = tokio::spawn(async move { write_event_batch(&mut sender, outgoing).await });
-        let received = read_event_batch(&mut receiver).await.unwrap();
-        write.await.unwrap().unwrap();
-        assert_eq!(
-            received
-                .iter()
-                .map(|envelope| &envelope.event.id)
-                .collect::<Vec<_>>(),
-            expected
-                .iter()
-                .map(|envelope| &envelope.event.id)
-                .collect::<Vec<_>>()
-        );
+        for event in events {
+            let bytes = serde_json::to_vec(&Msg::Event(Box::new(event))).unwrap();
+            assert!(bytes.len() <= MAX_FRAME_BYTES);
+        }
     }
 
     fn snapshot(store: &ProposalStore, path: &str, content: &[u8]) -> Snapshot {

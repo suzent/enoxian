@@ -45,5 +45,6 @@ behavior.
 | [plan/agent-workspaces.md](plan/agent-workspaces.md) | Local workspace proposal layer for ambient and triggered agents |
 | [plan/control-persistence.md](plan/control-persistence.md) | Persisting chat/tasks/members so an all-offline restart doesn't lose them |
 | [plan/agent-memory.md](plan/agent-memory.md) | Stateful agents, chat-based recovery, and the future chat-inbox feature |
-| [plan/identity.md](plan/identity.md) | Device identity, stable PSK, MLS membership, future content encryption |
+| [plan/identity.md](plan/identity.md) | Device identity, stable PSK, and MLS membership |
 | [plan/event-log.md](plan/event-log.md) | M15 causal workspace event log, materialization, and live peer sync |
+| [plan/content-encryption.md](plan/content-encryption.md) | M17 encrypted frame format, MLS keys, bootstrap, and epoch handling |

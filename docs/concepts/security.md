@@ -13,7 +13,7 @@ enoxian separates transport, identity, membership, and content:
 | Transport | Stable per-circle PSK via `libp2p::pnet` | The peer holds the circle network secret | Implemented |
 | Identity | Noise + per-circle Ed25519 key derived from the device key | The peer owns this device identity | Implemented |
 | Membership | Signed member list + `mls_removed` tombstone sync gate | The peer has not been explicitly evicted | Implemented |
-| Content | MLS epoch key encrypts CRDT updates | The peer can read current content | Planned |
+| Content | MLS exporter + HKDF + ChaCha20-Poly1305 | The peer holds the active MLS epoch secret and the frame was not modified | Implemented (M17) |
 
 The public bootstrap server is outside the circle trust boundary. It provides
 rendezvous and circuit relay only; it does not join any circle and does not hold
@@ -65,26 +65,43 @@ Eviction is enforced by `mls_removed`:
 4. `src/network/sync.rs` checks `mls_removed` before exchanging any CRDT data
    and rejects tombstoned peers.
 
-This blocks new sync sessions from removed peers. It does not yet provide
-cryptographic content secrecy against a removed peer racing a member that has
-not received the tombstone. That stronger guarantee is the planned content
-encryption layer.
+The MLS Remove commit advances the content-encryption epoch. A removed member
+can process the removal but cannot export the new epoch secret, so it cannot
+decrypt subsequent content frames. Tombstones remain a useful early sync gate;
+the MLS epoch is the cryptographic boundary.
 
 ## MLS
 
 enoxian uses IETF MLS (RFC 9420), implemented with `openmls`, for group
-membership cryptography and future content-layer encryption.
+membership cryptography and content-layer encryption.
 
 MLS commits are replicated in the control doc:
 
-- `epoch` — the epoch this commit advances from
+- `epoch` — the post-commit epoch
 - `data_hex` — TLS-serialized `MlsMessageOut`
 - `sender_peer_id` — who issued the commit
 - `ratchet_tree_hex` — ratchet tree extension data for joins
 
-Each daemon applies incoming commits serially to avoid races. The MLS epoch key
-is tracked for future content encryption; it is not derived into the transport
-PSK.
+Each daemon applies incoming commits serially and retains a small in-memory
+window of exporter secrets for frames already in flight. Offline members replay
+the durable commit sequence before opening content from a newer epoch. The MLS
+exporter secret is never used as the transport PSK.
+
+## Content Frames
+
+The v2 sync, proposal, and workspace-event protocols encrypt every logical
+payload with ChaCha20-Poly1305. The frame header contains a fixed magic value,
+format version, purpose, MLS epoch, and random nonce. The header and circle ID
+are authenticated as associated data. HKDF-SHA256 domain-separates CRDT,
+proposal, and event keys from the MLS exporter secret, preventing ciphertext
+from being moved between protocol purposes or circles.
+
+A separate `/enoxian/mls-bootstrap/1.0.0` stream solves the join/offline
+bootstrap cycle. It carries only KeyPackages, signed owner/pending/member
+records, targeted Welcomes, removal tombstones, and MLS commits. It is protected
+by the stable circle PSK and Noise, but not by the content key because a joiner
+does not have that key yet. It never carries workspace files, chat, tasks,
+proposal content, event-log entries, or blobs.
 
 ## Current Attacker Capabilities
 
@@ -104,9 +121,9 @@ PSK.
 |--------|-----------|
 | Open a transport connection | Yes, if the PSK is still known |
 | Complete a sync session with peers that have the tombstone | No |
-| Read new CRDT updates from tombstone-aware peers | No |
+| Read new CRDT/proposal/event content after the removal epoch | No |
 | Read data already synced to local disk | Yes |
-| Read future encrypted content after Layer 4 ships | No, if they lack the current MLS content key |
+| Read bootstrap membership records and MLS commits | Yes, after completing the PSK + Noise transport |
 
 ### Outside Peer Without The PSK
 
@@ -146,9 +163,19 @@ Data paths:
 - Circuit relay fallback: Noise-protected relay circuit when direct dialing
   fails.
 
-Relay traffic is opaque to the relay at the libp2p transport layer, but current
-circle members still receive plaintext CRDT updates after decrypting their peer
-connection. Full content-layer E2EE is planned separately.
+Relay traffic is opaque to the relay at both the libp2p transport layer and the
+MLS-derived content layer. Authorized current members decrypt content locally.
+
+## Residual Metadata Leakage
+
+M17 encrypts payloads, not traffic shape. A relay or network observer can still
+learn peer IDs used for routing, IP/address information available to the
+transport, connection timing and duration, protocol selection, frame sizes,
+frame counts, and traffic volume. The bootstrap stream additionally exposes
+membership delivery records to a peer that still knows the circle PSK. MLS
+epochs and nonces are visible in encrypted frame headers. File paths are inside
+the encrypted CRDT frame and proposal/event metadata and blobs are encrypted as
+one authenticated payload.
 
 ## Local Daemon API
 
@@ -189,9 +216,7 @@ Circle content is stored **unencrypted** on each device:
   persisted to `<circle_dir>/control.json` so it survives an all-offline restart
   (M14.5). Chat is written **plaintext**.
 
-This is consistent with the current threat model: transport is authenticated and
-PSK-gated, but there is no at-rest encryption yet. Anyone with filesystem access
-to a member's device can read that circle's content. **Content encryption is
-M17** (MLS-derived keys); until then, treat local disk as trusted and note that
-persisting chat widened what is written to disk. Full-disk encryption on the
-host is the recommended interim mitigation.
+M17 is message-layer encryption and deliberately does not alter native file IO
+or local persistence. Anyone with filesystem access to a member's device can
+still read that circle's content. Treat local disk as trusted and use host
+full-disk encryption where this is a concern.

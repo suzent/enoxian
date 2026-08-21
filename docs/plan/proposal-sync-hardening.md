@@ -12,7 +12,7 @@
   windows (`classify_window` in `src/proposal/engine.rs`, with unit tests).
 - **§1 (unbounded map growth) — done, via the pull protocol** rather than in-map
   pruning. Proposals no longer ride the control doc at all; they replicate
-  through `/enoxian/proposals/1.0.0` (`src/network/proposal_sync.rs`), which
+  through `/enoxian/proposals/2.0.0` (`src/network/proposal_sync.rs`), which
   reconciles the disk stores peer-to-peer once per connection. The
   `PROPOSALS_KEY` map, its observer, and `publish_proposal` are removed. See
   `proposal-pull-protocol.md` for the full design.

@@ -45,6 +45,7 @@ base64 = "0.22"
 sha2 = "0.11"
 hkdf = "0.13"
 bip39 = "2"
+chacha20poly1305 = "0.10"
 
 # M14 — line-level three-way merge for proposal revert/reject
 diffy = "0.4"

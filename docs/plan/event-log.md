@@ -46,7 +46,7 @@ merge by union and status precedence still converges.
 
 ## Peer protocol
 
-`/enoxian/events/1.0.0` performs an initial id-based anti-entropy exchange and
+`/enoxian/events/2.0.0` performs an MLS-encrypted initial id-based anti-entropy exchange and
 then stays open. New events are forwarded immediately, so status decisions and
 conflict metadata do not wait for a reconnect.
 

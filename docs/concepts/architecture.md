@@ -61,7 +61,7 @@
 | Lock arbitration | `src/control/arbitration.rs` | Replay `lock_log` array → current holder map |
 | Control types | `src/control/mod.rs` | Task, LockEntry, Presence, CircleEvent structs |
 | FS lock | `src/control/fs_lock.rs` | `set_readonly()` — chmod wrapper |
-| P2P sync | `src/network/sync.rs` | `/enoxian/sync/1.0.0` stream handler; 3-phase handshake + continuous update exchange |
+| P2P sync | `src/network/sync.rs` | MLS-encrypted `/enoxian/sync/2.0.0` stream handler; 3-phase handshake + continuous update exchange |
 | P2P behaviour | `src/network/behaviour.rs` | `EnochBehaviour` combining all libp2p behaviours (mDNS, Kad, Identify, Ping, Rendezvous client, RelayClient, Relay, DCUtR, Stream) |
 | Bootstrap behaviour | `src/network/bootstrap_behaviour.rs` | `BootstrapBehaviour` for `enox bootstrap serve`: Rendezvous server + Relay + Identify + Ping + Kad |
 | Bootstrap server | `src/bootstrap.rs` | `enox bootstrap serve` — QUIC-only rendezvous + relay node; no PSK; no circles |
@@ -251,7 +251,7 @@ src/
 ├── network/
 │   ├── behaviour.rs             # EnochBehaviour + EnochEvent (libp2p)
 │   ├── bootstrap_behaviour.rs   # BootstrapBehaviour + BootstrapEvent (--bootstrap mode)
-│   └── sync.rs                  # /enoxian/sync/1.0.0 — y-sync over libp2p Stream
+│   └── sync.rs                  # /enoxian/sync/2.0.0 — encrypted y-sync over libp2p Stream
 └── state.rs                     # AppState
 ```
 
@@ -274,7 +274,7 @@ The bootstrap server (`enox bootstrap serve`) runs **QUIC only** — it never pa
 The axum HTTP/WebSocket server is a privileged local control plane for the CLI
 and browser UI. It is not the WAN relay path. `/ws/yjs` syncs local browser
 clients with the local daemon; cross-machine file sync uses the libp2p stream
-protocol (`/enoxian/sync/1.0.0`).
+protocol (`/enoxian/sync/2.0.0`).
 
 ### Workspace event log
 
@@ -284,7 +284,7 @@ M15 adds an immutable coordination surface alongside live CRDT text sync:
 native workspace write
   -> proposal snapshots + content-addressed blobs
   -> causal workspace event (.enox_events/events/<id>.json)
-  -> /enoxian/events/1.0.0 initial anti-entropy + live forwarding
+  -> /enoxian/events/2.0.0 encrypted initial anti-entropy + live forwarding
   -> deterministic materialized snapshot/status/conflict state
 ```
 
@@ -302,7 +302,7 @@ pull protocol remains available for compatibility and missing large blobs. See
 | `tokio` | 1 | Async runtime |
 | `axum` | 0.8 | HTTP + WebSocket server |
 | `libp2p` | 0.56 | P2P transport and protocols (tcp, quic, pnet, noise, yamux, mdns, kad, identify, ping, rendezvous, relay, dcutr) |
-| `libp2p-stream` | 0.4.0-alpha | Custom stream protocol (`/enoxian/sync/1.0.0`) |
+| `libp2p-stream` | 0.4.0-alpha | Custom encrypted stream protocols (`/enoxian/sync/2.0.0` and peers) |
 | `tokio-util` | 0.7 | `FuturesAsyncReadCompatExt` — bridges libp2p Stream to tokio AsyncRead/Write |
 | `yrs` | 0.26 | Yjs CRDT (Y.Doc, Y.Text, Y.Map, Y.Array) |
 | `notify` | 8 | Cross-platform file watcher |

@@ -153,7 +153,7 @@ The PSK layer is applied first via `pnet::PnetConfig` using `with_other_transpor
 | `identify` | protocol `/enoxian/1.0.0` | Exchange public keys and listen addresses on connect |
 | `ping` | default | Keepalive; detect dead connections |
 | `rendezvous` (client) | — | Register with a rendezvous server for WAN introduction |
-| `stream` (`libp2p-stream`) | — | Custom stream protocol `/enoxian/sync/1.0.0` for y-sync |
+| `stream` (`libp2p-stream`) | — | Custom MLS-encrypted stream protocol `/enoxian/sync/2.0.0` for y-sync |
 
 ### Event loop
 
@@ -186,7 +186,7 @@ while let Some((peer_id, stream)) = incoming.next().await {
 
 Only the dialing side opens the sync stream (responder accepts) — this prevents a double-sync when both sides dial simultaneously.
 
-### Y-sync protocol (`/enoxian/sync/1.0.0`)
+### Y-sync protocol (`/enoxian/sync/2.0.0`)
 
 Live bidirectional file sync between daemons uses the y-sync protocol over a `libp2p-stream` `Stream`. Framing: `[4-byte path len][path UTF-8][4-byte data len][y-sync bytes]`.
 

@@ -148,7 +148,7 @@ alongside M17 content encryption (and the agent chat-inbox, see
 ### M15 — Event Log And Blob Sync
 
 **Status:** Complete. The proposal anti-entropy/blob slice is complete:
-`/enoxian/proposals/1.0.0` now reconciles on-disk proposal stores on each peer
+`/enoxian/proposals/2.0.0` now reconciles encrypted on-disk proposal stores on each peer
 connection and transfers only missing or status-diverged proposal bundles
 (`src/network/proposal_sync.rs`). Proposal status conflicts converge via the
 explicit `(status_rank, updated_at)` rule in `src/proposal/model.rs`, and
@@ -158,7 +158,7 @@ large proposal files can become reviewable and revertible away from the origin
 device.
 
 The broader event-log layer is implemented in `src/workspace_event.rs` and the
-persistent `/enoxian/events/1.0.0` stream in `src/network/event_sync.rs`. See
+persistent encrypted `/enoxian/events/2.0.0` stream in `src/network/event_sync.rs`. See
 [event-log.md](event-log.md). Events carry causal parents and Lamport clocks;
 materialization derives the current snapshot, proposal decisions, merges,
 forks, and conflict paths. Proposal-related events carry proposal bundles and
@@ -207,13 +207,10 @@ the structured diff is surfaced in the proposal detail API (`FileDiff.diff`).
 
 ### M17 — Layer 4 Content Encryption
 
-**Status:** Planned — design-pending, deliberately not rushed. This is the
-highest-stakes cryptographic work in the project: a subtle bug silently breaks
-the security guarantees everything else assumes. It must be designed and
-reviewed carefully, not fast-drafted, and lands after M15 (it encrypts the event
-log / blobs that M15 introduces). Note: control-doc chat is currently persisted
-**plaintext** at rest (M14.5) pending this milestone — see
-[../concepts/security.md](../concepts/security.md) → Data At Rest.
+**Status:** Complete. The wire design and bootstrap boundary are documented in
+[content-encryption.md](content-encryption.md). M17 is message-layer encryption;
+native workspace files and local CRDT/control stores intentionally remain
+plaintext at rest (see [../concepts/security.md](../concepts/security.md)).
 
 Encrypt CRDT updates, event log entries, proposal metadata, and blob chunks with
 MLS-derived content keys. This provides cryptographic future secrecy after
@@ -221,12 +218,12 @@ member removal while keeping transport connectivity decoupled from membership.
 
 **Tasks:**
 
-- [ ] Define encrypted frame format.
-- [ ] Derive content keys from MLS epoch state.
-- [ ] Encrypt/decrypt P2P sync payloads.
-- [ ] Encrypt proposal events and blobs.
-- [ ] Handle epoch changes and offline members.
-- [ ] Document residual metadata leakage.
+- [x] Define encrypted frame format. (`network/content_crypto.rs`)
+- [x] Derive content keys from MLS epoch state. (`mls/group.rs`, HKDF purpose separation)
+- [x] Encrypt/decrypt P2P sync payloads. (`/enoxian/sync/2.0.0`)
+- [x] Encrypt proposal events and blobs. (`/enoxian/proposals/2.0.0`, `/enoxian/events/2.0.0`)
+- [x] Handle epoch changes and offline members. (recent-secret window + persistent MLS bootstrap)
+- [x] Document residual metadata leakage. (`concepts/security.md`)
 
 ### M18 — Packaging And Distribution
 
