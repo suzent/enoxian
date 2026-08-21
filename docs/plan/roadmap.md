@@ -227,10 +227,13 @@ member removal while keeping transport connectivity decoupled from membership.
 
 ### M18 — Packaging And Distribution
 
-**Status:** Complete (pending live validation). CI, cross-platform release
-binaries, a bootstrap Docker image, install scripts, and a Homebrew formula are all
-in place. The current release workflow validates gates before publishing and can
+**Status:** Complete and live-validated. CI, cross-platform release binaries, a
+bootstrap Docker image, install scripts, and a Homebrew formula are all in
+place. The current release workflow validates gates before publishing and can
 update a separately configured Homebrew tap after all assets are available.
+Main-branch CI for M17 commit `6458997` passed the dependency audit, Rust
+quality, Linux/macOS/Windows tests, frontend audit/build, and POSIX/PowerShell
+installer syntax gates.
 
 **Tasks:**
 
