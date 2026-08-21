@@ -20,7 +20,6 @@ use enoxian::proposal::diff::SnapshotDiff;
 use enoxian::proposal::journal::SnapshotJournal;
 use enoxian::proposal::merge::{three_way, MergeOutcome};
 use enoxian::proposal::model::{Confidence, Proposal, ProposalSource, ProposalStatus};
-use enoxian::proposal::policy::{AcceptAction, AcceptancePolicy, TriggerOrigin};
 use enoxian::proposal::snapshot::{FileEntry, Snapshot};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -95,14 +94,14 @@ fn ambient_pipeline_end_to_end() {
     assert_eq!(diff.removed, vec!["deleted.txt"]);
     assert_eq!(diff.modified, vec!["edited.txt"]);
 
-    // 4. The diff becomes an unattributed ambient proposal.
+    // 4. The engine records the already-live diff as accepted ambient history.
     let proposal = Proposal::ambient(
         "circle-test".into(),
         s0.id.clone(),
         s1.id.clone(),
         diff.changed_paths(),
     );
-    assert_eq!(proposal.status, ProposalStatus::Pending);
+    assert_eq!(proposal.status, ProposalStatus::Accepted);
     assert_eq!(proposal.source, ProposalSource::Ambient);
     assert_eq!(proposal.confidence, Confidence::Unknown);
     assert_eq!(
@@ -110,21 +109,10 @@ fn ambient_pipeline_end_to_end() {
         vec!["added.txt", "deleted.txt", "edited.txt"]
     );
 
-    // 5. Policy: unattributed work stays pending even with default settings.
-    let policy = AcceptancePolicy::default();
-    assert_eq!(
-        policy.decide(TriggerOrigin::Unattributed),
-        AcceptAction::PendingReview
-    );
-    assert_eq!(
-        policy.decide(TriggerOrigin::LocalUser),
-        AcceptAction::AutoAccept
-    );
-
-    // 6. Merge: canonical state unchanged since S0 -> clean.
+    // 5. Merge: canonical state unchanged since S0 -> clean.
     assert_eq!(three_way(&s0, &s0, &s1), MergeOutcome::Clean);
 
-    // 7. Merge: canonical state concurrently changed the same file -> conflict.
+    // 6. Merge: canonical state concurrently changed the same file -> conflict.
     let mut concurrent = s0.files.clone();
     let concurrent_data = b"someone else edited concurrently";
     concurrent.insert(
@@ -142,7 +130,7 @@ fn ambient_pipeline_end_to_end() {
         }
     );
 
-    // 8. Revert: restore the edited file from its S0 blob. This is the undo
+    // 7. Revert: restore the edited file from its S0 blob. This is the undo
     //    path that auto-accept depends on.
     let before_hash = &s0.files["edited.txt"].hash;
     let before_content = blobs.get(before_hash).unwrap();
@@ -152,7 +140,7 @@ fn ambient_pipeline_end_to_end() {
         b"original content"
     );
 
-    // 9. Snapshot manifests round-trip through persistence.
+    // 8. Snapshot manifests round-trip through persistence.
     let manifest_dir = store_dir.path().join("snapshots");
     s0.save(&manifest_dir).unwrap();
     s1.save(&manifest_dir).unwrap();

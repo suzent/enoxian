@@ -10,8 +10,9 @@
 //!   Gives a real prompt-turn lifecycle and, when the agent uses client fs
 //!   methods, mediated per-write access.
 //!
-//! Either way the run happens inside a `LocalChangeSession`, so the proposal
-//! the engine emits can be attributed to the agent rather than left ambient.
+//! Either way the run happens inside a `LocalChangeSession`. Session metadata
+//! is retained for future attribution work; today the ambient engine records
+//! direct filesystem writes as accepted, revertible history.
 
 use super::acp::{agent_message_text, AcpSession, ClientHooks, PermissionDecision};
 use super::config::{AgentCommand, Driver};
@@ -49,8 +50,8 @@ pub struct LaunchOutcome {
 }
 
 /// Permission hook that defers every ACP permission request to a fixed policy
-/// decision. The daemon-level acceptance policy still governs whether the
-/// resulting proposal auto-accepts; this only gates the agent's in-turn actions.
+/// decision. This gates the agent's in-turn actions; filesystem changes it
+/// makes are recorded afterward as accepted, revertible proposal history.
 /// Segments the streamed assistant output into discrete messages. ACP streams
 /// one assistant message as many `agent_message_chunk`s; a *different* kind of
 /// update (a tool call, a user-message echo, a resumed-history user turn) marks
@@ -209,10 +210,8 @@ async fn run_acp(
     resume: Option<&str>,
 ) -> Result<AcpRun> {
     // Always allow the agent to act *within the workspace* — that is its job,
-    // and enoxian captures whatever it writes as a proposal. Deny-at-tool-call
-    // would just make a mentioned agent unable to do anything. The local-vs-
-    // remote safety distinction lives one layer up, in the acceptance policy
-    // (auto-accept vs pending-review of the resulting proposal), not here.
+    // and enoxian captures whatever it writes as accepted proposal history.
+    // Deny-at-tool-call would just make a mentioned agent unable to do anything.
     let reply = Arc::new(Mutex::new(ReplyBuf::default()));
     // Start with capture OFF so the history replayed during session/load is not
     // mistaken for the current reply. Turned on just before we prompt.

@@ -210,12 +210,12 @@ enoxian, which is the whole point of the fallback.
 
 A run produces up to two independent results:
 
-1. **A proposal** for any files the agent changed. It is attributed to the agent
-   (`managed_process` confidence, since enoxian owned the process). Review it in
-   the frontend **CHANGES** tab or with `enox proposal list` / `show` /
-   `accept` / `reject` / `revert`. Whether it auto-accepts or waits for review is
-   set by the acceptance policy (local-initiated runs auto-accept by default;
-   remote-member-initiated runs wait for review).
+1. **Accepted proposal history** for any files the agent changed. Agent writes
+   already land in the live workspace, so enoxian records the resulting diff as
+   accepted rather than presenting a misleading approval gate. Inspect it in the
+   frontend **CHANGES** tab or with `enox proposal list` / `show`, and undo it at
+   any time with `enox proposal revert`. The pending status remains supported for
+   historical records and future isolated/staged workflows.
 
 2. **A chat reply** — for acp agents, the agent's streamed text is posted back
    into the circle chat under the agent's name, so `@claude …` reads like a

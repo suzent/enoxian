@@ -1,8 +1,9 @@
 //! Proposal acceptance policy.
 //!
-//! Local triggers default to auto-accept with full history and revert
+//! Live-workspace triggers default to auto-accept with full history and revert
 //! (git-like: commits land, the log is always there, revert is always
-//! available). Remote-member triggers default to pending review.
+//! available). Pending review remains an explicit opt-in for a future mode that
+//! can actually isolate changes until a decision is made.
 //!
 //! Auto-accept is only safe once the undo path is solid: the blob store,
 //! snapshot diff, and revert command must exist before auto-accept is
@@ -41,7 +42,7 @@ pub struct AcceptancePolicy {
     #[serde(default = "default_true")]
     pub auto_accept_local: bool,
     /// Auto-accept proposals triggered by remote circle members.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub auto_accept_remote: bool,
 }
 
@@ -53,7 +54,7 @@ impl Default for AcceptancePolicy {
     fn default() -> Self {
         Self {
             auto_accept_local: true,
-            auto_accept_remote: false,
+            auto_accept_remote: true,
         }
     }
 }
@@ -63,7 +64,9 @@ impl AcceptancePolicy {
         match origin {
             TriggerOrigin::LocalUser if self.auto_accept_local => AcceptAction::AutoAccept,
             TriggerOrigin::RemoteMember if self.auto_accept_remote => AcceptAction::AutoAccept,
-            // Unattributed ambient work is kept, never auto-merged.
+            // Unattributed filesystem work is already live. Keep it as
+            // accepted, revertible history rather than a fictional gate.
+            TriggerOrigin::Unattributed => AcceptAction::AutoAccept,
             _ => AcceptAction::PendingReview,
         }
     }
@@ -86,28 +89,28 @@ mod tests {
         );
         assert_eq!(
             policy.decide(TriggerOrigin::RemoteMember),
-            AcceptAction::PendingReview
+            AcceptAction::AutoAccept
         );
         assert_eq!(
             policy.decide(TriggerOrigin::Unattributed),
-            AcceptAction::PendingReview
+            AcceptAction::AutoAccept
         );
     }
 
     #[test]
-    fn remote_auto_accept_is_opt_in() {
+    fn remote_pending_review_is_opt_in() {
         let policy = AcceptancePolicy {
             auto_accept_local: true,
-            auto_accept_remote: true,
+            auto_accept_remote: false,
         };
         assert_eq!(
             policy.decide(TriggerOrigin::RemoteMember),
-            AcceptAction::AutoAccept
+            AcceptAction::PendingReview
         );
-        // Unattributed stays pending even with permissive settings.
+        // Unattributed changes are already live and stay accepted.
         assert_eq!(
             policy.decide(TriggerOrigin::Unattributed),
-            AcceptAction::PendingReview
+            AcceptAction::AutoAccept
         );
     }
 
@@ -115,6 +118,6 @@ mod tests {
     fn parses_from_toml_with_defaults() {
         let policy: AcceptancePolicy = toml::from_str("").unwrap();
         assert!(policy.auto_accept_local);
-        assert!(!policy.auto_accept_remote);
+        assert!(policy.auto_accept_remote);
     }
 }

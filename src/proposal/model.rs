@@ -73,9 +73,10 @@ pub struct Proposal {
 }
 
 impl Proposal {
-    /// An unattributed ambient proposal. Unknown local edits are normal in an
-    /// agent-agnostic system; they must not be discarded or auto-merged just
-    /// because attribution is missing.
+    /// An unattributed ambient proposal. Ambient edits already happened in the
+    /// live workspace, so their proposal is accepted history by default. The
+    /// before/after snapshots retain review and revert without implying that
+    /// acceptance gates the filesystem write.
     pub fn ambient(
         circle_id: String,
         base_snapshot: String,
@@ -88,7 +89,7 @@ impl Proposal {
             base_snapshot,
             result_snapshot,
             changed_paths,
-            status: ProposalStatus::Pending,
+            status: ProposalStatus::Accepted,
             source: ProposalSource::Ambient,
             actor_id: None,
             actor_hint: None,

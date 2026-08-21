@@ -451,14 +451,19 @@ Blocking on manual review breaks the flow for intentionally triggered agents,
 and most runs do not need it. The safety property comes from the audit trail
 and revert path, not from a pre-merge gate.
 
-The exception is cross-device triggers. Acceptance defaults by trigger origin:
+Because these changes land directly in the live workspace, acceptance no longer
+varies by trigger origin:
 
 ```text
-local agent triggered by local user    -> auto-accept
-local agent triggered by remote member -> pending review (configurable)
-remote agent on remote device          -> their daemon decides; only status
-                                          replies come back
+local agent triggered by local user    -> accepted history
+local agent triggered by remote member -> accepted history
+unattributed local filesystem change   -> accepted history
+remote agent on remote device          -> its daemon records accepted history
 ```
+
+Pending remains a compatibility status and a possible future policy for an
+isolated workspace that can genuinely withhold changes until review. It is not
+used as a gate for edits that are already canonical.
 
 Auto-accept is only safe once the undo path is solid. The blob store,
 snapshot diff, and revert command must land before auto-accept is enabled by

@@ -11,9 +11,8 @@
 //!   launch it through the local execution layer (argv or ACP).
 //!
 //! The allowlist (`agents.toml`) is the gate: a mention of an agent this device
-//! does not configure is ignored. Whether the proposal the run produces
-//! auto-accepts is decided later by the acceptance policy, keyed on whether the
-//! mention was posted locally or by a remote member.
+//! does not configure is ignored. Files produced by an allowed run are already
+//! live in the workspace and are recorded as accepted, revertible history.
 
 use super::config::{AgentConfig, Reaction};
 use super::driver::{self, Initiator};

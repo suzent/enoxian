@@ -10,7 +10,7 @@
 //!   -> file events mark paths dirty
 //!   -> no events for IDLE_WINDOW
 //!   -> dirty paths re-read from disk into snapshot S1
-//!   -> diff S0 -> S1 becomes an ambient proposal
+//!   -> diff S0 -> S1 becomes accepted proposal history
 //!   -> S1 becomes the new baseline
 //! ```
 //!
@@ -47,7 +47,9 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
         .unwrap_or_default();
 
     // Establish the baseline. A pre-existing baseline whose content differs
-    // from the current workspace means offline edits — propose them.
+    // from the current workspace means offline edits — record them as accepted
+    // history. The edits are already live on disk, so "pending" would not gate
+    // anything; the proposal preserves attribution, diff, and revert instead.
     let disk = snapshot_workspace(&state, &store)?;
     let mut baseline = match store
         .baseline_id()
@@ -67,7 +69,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     diff.changed_paths(),
                     &device_label,
                     ProposalSource::Ambient,
-                    ProposalStatus::Pending,
+                    ProposalStatus::Accepted,
                 )?;
                 store.set_baseline(&disk.id)?;
                 disk
@@ -140,7 +142,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     // Unknown interactive writes were dropped; a rescan will
-                    // surface them as pending proposals — noisy but never lossy.
+                    // preserve them as accepted history — noisy but never lossy.
                     tracing::warn!("[proposal] interactive stream lagged by {n}");
                     rescan = true;
                     dirty.insert(String::new());
@@ -225,7 +227,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 if !agent_paths.is_empty() {
                     create_proposal(
                         &state, &store, &baseline, &result, agent_paths, &device_label,
-                        ProposalSource::Ambient, ProposalStatus::Pending,
+                        ProposalSource::Ambient, ProposalStatus::Accepted,
                     )?;
                 }
                 if folded > 0 {
@@ -240,8 +242,8 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
 }
 
 /// The decision for one idle window: which paths fold silently, which become
-/// interactive proposals (grouped by author), and which become pending agent
-/// proposals. Pure given the diffs and state — see `classify_window`.
+/// interactive proposals (grouped by author), and which become accepted ambient
+/// history. Pure given the diffs and state — see `classify_window`.
 struct WindowPlan {
     folded: usize,
     interactive_by_author: BTreeMap<Option<String>, Vec<String>>,
@@ -258,7 +260,7 @@ struct WindowPlan {
 ///      (`expected`) folds silently — a reject/revert landing where it said it
 ///      would, not a new proposal.
 ///   3. Otherwise: interactive paths become auto-accepted proposals grouped by
-///      author; agent paths become pending proposals.
+///      author; ambient paths become accepted proposal history.
 ///
 /// Interactive paths are classified from `interactive_diff` (against the held
 /// burst baseline) so an add-then-revert whose net is empty never appears here.
@@ -519,9 +521,9 @@ mod tests {
         assert_eq!(plan.agent_paths.len(), 0);
     }
 
-    // Agent (non-interactive) paths become pending proposals via the agent diff.
+    // Agent/non-interactive paths become accepted history via the ambient diff.
     #[test]
-    fn agent_path_becomes_pending() {
+    fn agent_path_is_classified_as_ambient_history() {
         let baseline = snap(&[("gen.txt", "g0")]);
         let result = snap(&[("gen.txt", "g1")]);
         let adiff = SnapshotDiff::between(&baseline, &result);

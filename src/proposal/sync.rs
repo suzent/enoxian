@@ -269,12 +269,15 @@ mod tests {
         let src = ProposalStore::open(src_dir.path()).unwrap();
         let base = snap_with(&src, "f", b"a");
         let result = snap_with(&src, "f", b"b");
-        let pending = Proposal::ambient(
+        let mut pending = Proposal::ambient(
             "c".into(),
             base.id.clone(),
             result.id.clone(),
             vec!["f".into()],
         );
+        // Exercise the compatibility path for a historical or future staged
+        // proposal; new live-workspace proposals default to accepted history.
+        pending.status = ProposalStatus::Pending;
 
         // Local store has already ACCEPTED this proposal.
         let dst_dir = tempfile::tempdir().unwrap();
