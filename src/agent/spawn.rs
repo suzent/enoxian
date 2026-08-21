@@ -7,9 +7,9 @@
 //! shell can. A user typing `npx` in a shell works because the shell does that
 //! resolution; our daemon does not.
 //!
-//! This helper routes batch-style programs through `cmd /c` on Windows so
-//! `["npx", "@zed-industries/claude-code-acp"]` runs the same way it would from
-//! a terminal. On non-Windows it is a plain passthrough.
+//! This helper routes batch-style programs through `cmd /c` on Windows. It also
+//! connects the Claude ACP bridge to the user's real Claude Code CLI so the
+//! bridge reuses Claude Code authentication and configuration.
 
 use tokio::process::Command;
 
@@ -35,14 +35,56 @@ pub fn command(program: &str, args: &[String]) -> Command {
         c.args(args);
     }
     scrub_env(&mut c);
+    configure_underlying_cli(program, &mut c);
     c
+}
+
+/// `claude-agent-acp` is a transport bridge, not a replacement runtime. Point
+/// it at the user's installed Claude Code executable so it reuses the native
+/// CLI, subscription login, settings, MCP configuration, and project skills.
+fn configure_underlying_cli(program: &str, command: &mut Command) {
+    if !is_claude_adapter(program) {
+        return;
+    }
+    let Some(cli) = super::probe::resolve("claude") else {
+        return;
+    };
+
+    // Windows batch shims cannot be passed to CreateProcess by the Agent SDK.
+    // In that case leave the variable unset and let the bridge resolve the real
+    // executable through the inherited PATH, matching Buzz's compatibility
+    // behavior.
+    #[cfg(windows)]
+    if matches!(
+        cli.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("cmd" | "bat")
+    ) {
+        return;
+    }
+
+    command.env("CLAUDE_CODE_EXECUTABLE", cli);
+}
+
+fn is_claude_adapter(program: &str) -> bool {
+    let normalized = program.replace('\\', "/");
+    let file = normalized.rsplit('/').next().unwrap_or(&normalized);
+    let lower = file.to_ascii_lowercase();
+    let stem = lower
+        .strip_suffix(".cmd")
+        .or_else(|| lower.strip_suffix(".exe"))
+        .or_else(|| lower.strip_suffix(".bat"))
+        .unwrap_or(&lower);
+    matches!(stem, "claude-agent-acp" | "claude-code-acp")
 }
 
 /// Remove environment variables that make a spawned agent think it is nested
 /// inside its own session and refuse to start.
 ///
 /// Concretely: if the enoxian daemon is itself launched from inside a Claude
-/// Code session, `CLAUDECODE=1` is inherited, and `claude-code-acp` aborts
+/// Code session, `CLAUDECODE=1` is inherited, and the Claude ACP bridge aborts
 /// `session/new` with "Claude Code cannot be launched inside another Claude
 /// Code session." Clearing these guard vars lets the ACP agent run regardless
 /// of where the daemon was started.
@@ -113,5 +155,19 @@ mod tests {
         assert!(needs_cmd_wrapper("thing.bat"));
         assert!(!needs_cmd_wrapper("codex.exe"));
         assert!(!needs_cmd_wrapper("C:\\tools\\agent.exe"));
+    }
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::is_claude_adapter;
+
+    #[test]
+    fn recognizes_current_and_legacy_claude_bridges() {
+        assert!(is_claude_adapter("claude-agent-acp"));
+        assert!(is_claude_adapter("/managed/bin/claude-agent-acp"));
+        assert!(is_claude_adapter(r"C:\managed\claude-code-acp.cmd"));
+        assert!(is_claude_adapter(r"C:\managed\CLAUDE-AGENT-ACP.CMD"));
+        assert!(!is_claude_adapter("codex-acp"));
     }
 }

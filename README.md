@@ -164,7 +164,9 @@ enox proposal reject <proposal-id>
 Configure a local AI agent with a pinned managed adapter:
 
 ```sh
-enox agent install claude-code-acp
+# Requires the official Claude Code CLI, `claude auth login`, and system
+# Node.js 22+ with npm.
+enox agent install claude
 enox agent reaction push
 enox say "@claude add tests for the invite parser"
 ```

@@ -165,6 +165,7 @@ if [ "$ENABLE_SERVICE" = "1" ]; then
 else
   info "optional: run 'enox service install' to start automatically when you sign in"
 fi
+info "agents: adapters require system Node.js 22+ with npm"
 case ":$PATH:" in
   *":$BIN_DIR:"*) info "next: run 'enox init --name my-project'" ;;
   *)

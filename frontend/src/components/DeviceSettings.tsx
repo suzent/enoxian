@@ -23,6 +23,7 @@ export default function DeviceSettings({ onClose }: Props) {
   const [connectivity, setConnectivity] = useState<ConnectivitySettings | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [installingPlugin, setInstallingPlugin] = useState<string | null>(null)
 
   // Add-agent form state.
   const [showAdd, setShowAdd] = useState(false)
@@ -87,6 +88,15 @@ export default function DeviceSettings({ onClose }: Props) {
       getConnectivitySettings(activeCircleId).then(setConnectivity).catch(() => {})
     } finally {
       setBusy(false)
+    }
+  }
+
+  const installPlugin = async (plugin: AgentPlugin) => {
+    setInstallingPlugin(plugin.id)
+    try {
+      await run(() => installAgentPlugin(plugin.id))
+    } finally {
+      setInstallingPlugin(null)
     }
   }
 
@@ -165,13 +175,23 @@ export default function DeviceSettings({ onClose }: Props) {
                   </div>
                   <div className="divide-y divide-obsidian/20">
                     {plugins.map(plugin => {
-                      const ready = plugin.state === 'ready' && plugin.configured
+                      const runtimeMissing = plugin.runtime_installed === false
+                      const nodeMissing = !plugin.node_runtime_installed
+                      const prerequisitesMissing = runtimeMissing || nodeMissing
+                      const ready = plugin.state === 'ready' && plugin.configured && !prerequisitesMissing
+                      const installing = installingPlugin === plugin.id || plugin.state === 'installing'
                       const action = plugin.state === 'broken'
                         ? 'REPAIR'
                         : plugin.state === 'ready'
                           ? 'USE MANAGED'
-                          : plugin.state === 'installing' ? 'INSTALLING' : 'INSTALL'
-                      const status = ready
+                          : installing ? 'PREPARING…' : 'INSTALL'
+                      const status = runtimeMissing
+                        ? `${plugin.runtime_program || 'Product'} CLI missing`
+                        : nodeMissing
+                          ? plugin.node_runtime_version
+                            ? `Node.js ${plugin.node_runtime_version} is too old · requires 22+ with npm`
+                            : 'Node.js 22+ with npm required'
+                        : ready
                         ? 'Ready'
                         : plugin.legacy_configured
                           ? 'Runtime download · migrate'
@@ -179,37 +199,67 @@ export default function DeviceSettings({ onClose }: Props) {
                             ? 'Installed · disabled'
                             : plugin.state === 'broken' ? 'Needs repair' : 'Not installed'
                       return (
-                      <div key={plugin.id} className="flex items-center justify-between gap-3 py-2 font-mono">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-[11px] font-bold">@{plugin.agent}</span>
-                            <span className="text-[8px] text-slate">v{plugin.version}</span>
+                      <div key={plugin.id} className="py-2 font-mono">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[11px] font-bold">@{plugin.agent}</span>
+                              <span className="text-[8px] text-slate">v{plugin.version}</span>
+                            </div>
+                            <div className={`text-[9px] mt-0.5 ${ready ? 'text-obsidian' : 'text-slate'}`}>
+                              {installing ? 'Preparing runtime and pinned adapter…' : status}
+                            </div>
                           </div>
-                          <div className={`text-[9px] mt-0.5 ${ready ? 'text-obsidian' : 'text-slate'}`}>
-                            {status}
+                          <div className="flex items-center justify-between gap-2">
+                            {ready ? (
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 bg-obsidian text-alabaster">READY</span>
+                            ) : prerequisitesMissing ? (
+                              <button
+                                onClick={() => { setError(null); refresh() }}
+                                disabled={busy}
+                                className="enox-btn text-[9px] px-2 py-1 min-h-0 disabled:opacity-50"
+                                title="Install the missing prerequisite, restart Enoxian, then check again"
+                              >CHECK AGAIN</button>
+                            ) : (
+                              <button
+                                onClick={() => installPlugin(plugin)}
+                                disabled={busy || installing}
+                                className="enox-btn text-[9px] px-2 py-1 min-h-0 disabled:opacity-50"
+                                title={`Install ${plugin.package}@${plugin.version}`}
+                              >{action}</button>
+                            )}
+                            {(plugin.configured || plugin.legacy_configured) && (
+                              <button
+                                onClick={() => run(() => removeAgent(plugin.agent))}
+                                disabled={busy}
+                                className="text-[12px] text-slate hover:text-obsidian px-1 disabled:opacity-50"
+                                title={`Disable @${plugin.agent}`}
+                                aria-label={`Disable @${plugin.agent}`}
+                              >×</button>
+                            )}
                           </div>
                         </div>
-                        <div className="flex items-center justify-between gap-2">
-                          {ready ? (
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 bg-obsidian text-alabaster">READY</span>
-                          ) : (
-                            <button
-                              onClick={() => run(() => installAgentPlugin(plugin.id))}
-                              disabled={busy || plugin.state === 'installing'}
-                              className="enox-btn text-[9px] px-2 py-1 min-h-0 disabled:opacity-50"
-                              title={`Install ${plugin.package}@${plugin.version}`}
-                            >{action}</button>
-                          )}
-                          {(plugin.configured || plugin.legacy_configured) && (
-                            <button
-                              onClick={() => run(() => removeAgent(plugin.agent))}
-                              disabled={busy}
-                              className="text-[12px] text-slate hover:text-obsidian px-1 disabled:opacity-50"
-                              title={`Disable @${plugin.agent}`}
-                              aria-label={`Disable @${plugin.agent}`}
-                            >×</button>
-                          )}
-                        </div>
+
+                        {runtimeMissing && (
+                          <div className="mt-2 border-l-2 border-obsidian/40 pl-2 text-[9px] text-slate leading-relaxed">
+                            Install the official {plugin.runtime_program || 'product'} CLI and authenticate it
+                            {plugin.runtime_login_command ? <> with <code>{plugin.runtime_login_command}</code></> : ''}.
+                          </div>
+                        )}
+
+                        {nodeMissing && (
+                          <div className="mt-2 border-l-2 border-obsidian/40 pl-2 text-[9px] text-slate leading-relaxed">
+                            Install system Node.js 22+ with npm from{' '}
+                            <a href="https://nodejs.org/en/download" target="_blank" rel="noreferrer" className="underline text-obsidian">nodejs.org</a>,
+                            {' '}restart the Enoxian service, then check again. Enoxian does not install or manage Node.js.
+                          </div>
+                        )}
+
+                        {installing && (
+                          <div className="mt-2 h-1 overflow-hidden bg-obsidian/10" role="progressbar" aria-label={`Installing @${plugin.agent}`}>
+                            <div className="h-full w-2/3 bg-obsidian animate-pulse" />
+                          </div>
+                        )}
                       </div>
                     )})}
                   </div>

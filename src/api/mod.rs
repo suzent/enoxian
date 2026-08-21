@@ -99,6 +99,10 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
             "/circles/{circle_id}/api/chat/stream",
             get(chat::chat_stream),
         )
+        .route(
+            "/circles/{circle_id}/api/chat/activity",
+            get(chat::get_activity).post(chat::post_activity),
+        )
         // M4 lifecycle
         .route("/circles/{circle_id}/stop", post(lifecycle::stop_circle))
         .route("/circles/{circle_id}/start", post(lifecycle::start_circle))

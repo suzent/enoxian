@@ -1,4 +1,4 @@
-import type { Circle, Status, Presence, ChatMessage, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin, ConnectivitySettings } from './types'
+import type { Circle, Status, Presence, ChatMessage, ChatActivity, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin, ConnectivitySettings } from './types'
 
 const api = (circleId: string) => `/circles/${circleId}/api`
 
@@ -76,6 +76,10 @@ export const getChat = (id: string, since?: number) =>
   get<ChatMessage[]>(`${api(id)}/chat${since ? `?since=${since}` : ''}`)
 export const postChat = (id: string, text: string, agentId: string) =>
   post(`${api(id)}/chat`, { text, agent_id: agentId })
+export const getChatActivity = (id: string) =>
+  get<ChatActivity[]>(`${api(id)}/chat/activity`)
+export const setChatTyping = (id: string, actorId: string, typing: boolean) =>
+  post<{ok: boolean}>(`${api(id)}/chat/activity`, { actor_id: actorId, typing })
 export const getTasks = (id: string) => get<Task[]>(`${api(id)}/tasks`)
 export const createTask = (id: string, title: string, description: string, agentId: string) =>
   post(`${api(id)}/tasks`, { title, description, created_by: agentId })

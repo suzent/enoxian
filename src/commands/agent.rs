@@ -43,8 +43,34 @@ pub fn plugins() -> Result<()> {
         crate::agent::plugin::adapters_dir()?.display()
     );
     for plugin in crate::agent::plugin::views() {
+        let runtime = match plugin.runtime_installed {
+            Some(true) => format!(
+                "  cli={}",
+                plugin.runtime_program.as_deref().unwrap_or("ready")
+            ),
+            Some(false) => format!(
+                "  CLI-MISSING({})",
+                plugin.runtime_program.as_deref().unwrap_or("runtime")
+            ),
+            None => String::new(),
+        };
+        let node = if plugin.node_runtime_installed {
+            format!(
+                "  node={}",
+                plugin.node_runtime_version.as_deref().unwrap_or("ready")
+            )
+        } else {
+            format!(
+                "  NODE-MISSING{}",
+                plugin
+                    .node_runtime_version
+                    .as_deref()
+                    .map(|version| format!("({version}; need 22+ with npm)"))
+                    .unwrap_or_else(|| "(need 22+ with npm)".to_string())
+            )
+        };
         println!(
-            "  {}  @{}  v{}  [{:?}]{}{}",
+            "  {}  @{}  v{}  [{:?}]{}{}{}{}",
             plugin.id,
             plugin.agent,
             plugin.version,
@@ -59,6 +85,8 @@ pub fn plugins() -> Result<()> {
             } else {
                 ""
             },
+            runtime,
+            node,
         );
     }
     Ok(())
@@ -66,9 +94,15 @@ pub fn plugins() -> Result<()> {
 
 /// `enox agent install <plugin>` — the explicit networked install phase.
 pub async fn install(plugin: String) -> Result<()> {
-    println!("→ installing managed adapter '{plugin}'");
+    println!("→ checking prerequisites for adapter '{plugin}'");
     let command = crate::agent::plugin::install(&plugin).await?;
     println!("✓ installed and configured: {}", command.command.join(" "));
+    if matches!(
+        plugin.as_str(),
+        "claude" | "claude-agent-acp" | "claude-code-acp"
+    ) {
+        println!("  using the authenticated Claude Code CLI through CLAUDE_CODE_EXECUTABLE");
+    }
     println!("  mention the configured agent in chat; no package download occurs at runtime.");
     Ok(())
 }

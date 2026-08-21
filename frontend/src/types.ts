@@ -124,6 +124,21 @@ export interface AgentPlugin {
   configured: boolean
   legacy_configured: boolean
   executable: string
+  node_runtime_installed: boolean
+  node_runtime_version: string | null
+  runtime_program: string | null
+  runtime_installed: boolean | null
+  runtime_login_command: string | null
+}
+
+export interface ChatActivity {
+  activity_id: string
+  actor_id: string
+  peer_id: string
+  kind: 'typing' | 'seen' | 'working'
+  message_id: string | null
+  updated_at: number
+  expires_at: number
 }
 
 export interface AgentConfigView {

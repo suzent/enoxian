@@ -168,13 +168,13 @@ pub enum AgentAction {
     Plugins,
     /// Install or repair a pinned managed adapter and configure its @handle.
     Install {
-        /// Plugin id, e.g. `codex-acp` or `claude-code-acp`.
+        /// Plugin id, e.g. `codex-acp` or `claude`.
         plugin: String,
     },
     /// Add or replace an agent in agents.toml.
     ///
     /// Example:
-    ///   enox agent add claude --driver acp -- npx @zed-industries/claude-code-acp
+    ///   enox agent add my-acp --driver acp -- /path/to/my-acp-adapter
     Add {
         /// Name to mention (e.g. "claude").
         name: String,

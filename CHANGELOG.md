@@ -37,6 +37,21 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- Chat now shows short-lived typing and working indicators for people and
+  agents, so participants can tell when a request has been seen and is being
+  processed without waiting for the final response.
+
+### Fixed
+
+- Claude Code agent installation now uses the maintained `claude-agent-acp`
+  bridge, requires the real Claude Code CLI and its authenticated session, and
+  preserves native Claude settings by passing the resolved CLI executable to
+  the bridge. Adapter installation now preflights system Node.js 22+ and npm
+  with actionable CLI and Device Settings guidance. Existing
+  `claude-code-acp` configurations remain migratable.
+
 ## [0.3.7] — 2026-08-19
 
 ### Fixed

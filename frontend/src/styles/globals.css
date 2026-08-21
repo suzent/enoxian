@@ -719,6 +719,55 @@ select {
   background: var(--bg-alabaster);
 }
 
+.chat-activity {
+  flex: 1 0 100%;
+  min-height: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+  color: var(--fg-slate);
+  font-family: var(--font-mono);
+  font-size: var(--ui-tiny);
+  line-height: 1.2;
+}
+
+.chat-activity__item {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.chat-activity__item i {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.chat-activity__item--typing i,
+.chat-activity__item--working i {
+  animation: chat-activity-pulse 1.1s ease-in-out infinite;
+}
+
+.chat-activity__item--working {
+  color: var(--fg-obsidian);
+  font-weight: 700;
+}
+
+@keyframes chat-activity-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.8); }
+  50% { opacity: 0.9; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-activity__item i { animation: none; }
+}
+
 .chat-composer__input {
   flex: 1 1 180px;
   min-width: 160px;

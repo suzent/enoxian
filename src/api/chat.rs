@@ -1,4 +1,6 @@
-use crate::control::{ChatMessage, CircleEvent, CHAT_KEY};
+use crate::control::{
+    ChatActivity, ChatActivityKind, ChatMessage, CircleEvent, CHAT_ACTIVITY_KEY, CHAT_KEY,
+};
 use crate::daemon::DaemonState;
 use axum::{
     extract::{Path, Query, State},
@@ -12,7 +14,10 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
-use yrs::{Any, Array, ArrayRef, Out, Transact};
+use yrs::{Any, Array, ArrayRef, Map, MapRef, Out, Transact};
+
+const TYPING_TTL_SECS: i64 = 6;
+pub(crate) const AGENT_ACTIVITY_TTL_SECS: i64 = 45;
 
 #[derive(Deserialize)]
 pub struct ChatQuery {
@@ -84,6 +89,135 @@ pub async fn post_chat(
         )
             .into_response(),
     }
+}
+
+#[derive(Deserialize)]
+pub struct PostActivityRequest {
+    pub actor_id: String,
+    pub typing: bool,
+}
+
+/// Return only live activity. The CRDT map may retain an expired value per
+/// producer so that a disconnected peer cannot leave a permanent indicator.
+pub async fn get_activity(
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
+) -> impl IntoResponse {
+    let Some(state) = daemon.get(&circle_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "circle not found"})),
+        )
+            .into_response();
+    };
+    Json(live_activities(&state, chrono::Utc::now().timestamp())).into_response()
+}
+
+/// Browser-originated activity is deliberately limited to `typing`; agent
+/// lifecycle states are written internally only after a mention is accepted.
+pub async fn post_activity(
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
+    Json(req): Json<PostActivityRequest>,
+) -> impl IntoResponse {
+    let Some(state) = daemon.get(&circle_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "circle not found"})),
+        )
+            .into_response();
+    };
+    let actor_id = req.actor_id.trim();
+    if actor_id.is_empty() || actor_id.len() > 200 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid actor_id"})),
+        )
+            .into_response();
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    let expires_at = if req.typing {
+        now + TYPING_TTL_SECS
+    } else {
+        now - 1
+    };
+    let activity = ChatActivity {
+        activity_id: format!("typing:{actor_id}"),
+        actor_id: actor_id.to_string(),
+        peer_id: state.peer_id.clone(),
+        kind: ChatActivityKind::Typing,
+        message_id: None,
+        updated_at: now,
+        expires_at,
+    };
+    match put_activity(&state, activity) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "serialize failed"})),
+        )
+            .into_response(),
+    }
+}
+
+pub(crate) fn put_activity(
+    state: &crate::state::AppState,
+    activity: ChatActivity,
+) -> Result<(), serde_json::Error> {
+    let raw = serde_json::to_string(&activity)?;
+    let map: MapRef = state.control.get_or_insert_map(CHAT_ACTIVITY_KEY);
+    prune_expired_activities(state, &map, chrono::Utc::now().timestamp());
+    {
+        let mut txn = state.control.transact_mut();
+        map.insert(
+            &mut txn,
+            activity.activity_id.as_str(),
+            Any::String(raw.as_str().into()),
+        );
+    }
+    let _ = state
+        .events
+        .send(CircleEvent::ChatActivityChanged { activity });
+    Ok(())
+}
+
+fn prune_expired_activities(state: &crate::state::AppState, map: &MapRef, now: i64) {
+    let expired = {
+        let txn = state.control.transact();
+        map.iter(&txn)
+            .filter_map(|(key, value)| match value {
+                Out::Any(Any::String(raw)) => serde_json::from_str::<ChatActivity>(&raw)
+                    .ok()
+                    .filter(|activity| !activity_is_live(activity, now))
+                    .map(|_| key.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    if expired.is_empty() {
+        return;
+    }
+    let mut txn = state.control.transact_mut();
+    for key in expired {
+        map.remove(&mut txn, key.as_str());
+    }
+}
+
+fn live_activities(state: &crate::state::AppState, now: i64) -> Vec<ChatActivity> {
+    let map: MapRef = state.control.get_or_insert_map(CHAT_ACTIVITY_KEY);
+    let txn = state.control.transact();
+    map.iter(&txn)
+        .filter_map(|(_, value)| match value {
+            Out::Any(Any::String(raw)) => serde_json::from_str::<ChatActivity>(&raw).ok(),
+            _ => None,
+        })
+        .filter(|activity| activity_is_live(activity, now))
+        .collect()
+}
+
+fn activity_is_live(activity: &ChatActivity, now: i64) -> bool {
+    activity.expires_at > now
 }
 
 /// Post a chat message into the circle's control CRDT.
@@ -158,6 +292,7 @@ pub async fn chat_stream(
                 ev,
                 CircleEvent::MessagePosted { .. }
                     | CircleEvent::AgentMentioned { .. }
+                    | CircleEvent::ChatActivityChanged { .. }
                     | CircleEvent::MemberAdded { .. }
                     | CircleEvent::MemberRemoved { .. }
                     | CircleEvent::PresenceChanged { .. }
@@ -170,4 +305,39 @@ pub async fn chat_stream(
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn activity(expires_at: i64) -> ChatActivity {
+        ChatActivity {
+            activity_id: "typing:alice".to_string(),
+            actor_id: "alice".to_string(),
+            peer_id: "peer-alice".to_string(),
+            kind: ChatActivityKind::Typing,
+            message_id: None,
+            updated_at: 10,
+            expires_at,
+        }
+    }
+
+    #[test]
+    fn activity_expires_at_lease_boundary() {
+        assert!(activity_is_live(&activity(11), 10));
+        assert!(!activity_is_live(&activity(10), 10));
+        assert!(!activity_is_live(&activity(9), 10));
+    }
+
+    #[test]
+    fn activity_event_has_stable_wire_shape() {
+        let event = CircleEvent::ChatActivityChanged {
+            activity: activity(16),
+        };
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["type"], "chat_activity_changed");
+        assert_eq!(value["activity"]["kind"], "typing");
+        assert_eq!(value["activity"]["actor_id"], "alice");
+    }
 }

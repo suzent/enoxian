@@ -155,6 +155,7 @@ try {
     } else {
         Write-Host "enoxian installer: optional: run 'enox service install' to start automatically when you sign in"
     }
+    Write-Host "enoxian installer: agents: adapters require system Node.js 22+ with npm"
     Write-Host "enoxian installer: next: open a new terminal and run 'enox init --name my-project'"
 } catch {
     if ($changed -and -not $committed) {

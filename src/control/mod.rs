@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 pub const LOCK_LOG_KEY: &str = "lock_log";
 pub const TASKS_KEY: &str = "tasks";
 pub const PRESENCE_KEY: &str = "presence";
+/// Ephemeral chat activity (typing and agent run state). Replicated through
+/// the control CRDT, but deliberately omitted from the on-disk snapshot.
+pub const CHAT_ACTIVITY_KEY: &str = "chat_activity";
 pub const MEMBER_LIST_KEY: &str = "member_list";
 pub const CHAT_KEY: &str = "chat";
 
@@ -180,6 +183,29 @@ pub struct ChatMessage {
     pub ts: i64, // Unix timestamp seconds
 }
 
+/// A short-lived, non-transcript signal shown alongside chat. `activity_id`
+/// identifies one producer/run, while `expires_at` makes stale indicators
+/// disappear even when a peer disconnects before it can clear them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatActivity {
+    pub activity_id: String,
+    pub actor_id: String,
+    #[serde(default)]
+    pub peer_id: String,
+    pub kind: ChatActivityKind,
+    pub message_id: Option<String>,
+    pub updated_at: i64,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatActivityKind {
+    Typing,
+    Seen,
+    Working,
+}
+
 // ── Events ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -226,6 +252,10 @@ pub enum CircleEvent {
     AgentMentioned {
         agent_id: String,
         message: ChatMessage,
+    },
+    /// Ephemeral typing / agent lifecycle state. This is never a chat message.
+    ChatActivityChanged {
+        activity: ChatActivity,
     },
     /// The proposal engine captured a workspace change (M14).
     ProposalCreated {
