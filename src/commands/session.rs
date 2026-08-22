@@ -3,8 +3,7 @@
 //! A claimed session declares that workspace changes until `finish` belong to
 //! `actor`. It never grants authority — the filesystem mutation still creates
 //! the proposal — it only raises attribution to user-declared confidence. One
-//! open claimed session per workspace (concurrent actors are an open question;
-//! see agent-workspaces.md → Claimed Session Mode).
+//! open claimed session per workspace keeps attribution unambiguous.
 
 use crate::proposal::session::{LocalChangeSession, SessionMode};
 use crate::proposal::store::ProposalStore;

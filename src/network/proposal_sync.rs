@@ -2,7 +2,7 @@
 //!
 //! Proposals are durable, ever-growing review history. Replicating them through
 //! the in-memory, fully-replicated control doc made it grow without bound (see
-//! `docs/plan/proposal-pull-protocol.md`). Instead, on each peer connection both
+//! `docs/reference/p2p-protocols.md`). Instead, on each peer connection both
 //! sides run a one-shot anti-entropy exchange against their on-disk proposal
 //! stores and transfer only what the other lacks:
 //!

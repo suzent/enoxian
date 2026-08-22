@@ -210,7 +210,7 @@ For a fuller walkthrough, start with
 
 ## Current Status
 
-The current package version is **0.3.0**.
+The current package version is **0.3.8**.
 
 | Area | Status |
 |------|--------|
@@ -224,9 +224,8 @@ The current package version is **0.3.0**.
 | Cross-platform packaging and install scripts | Complete |
 | At-rest encryption for persisted workspace/control data | Planned |
 
-See [CHANGELOG.md](CHANGELOG.md) and
-[docs/plan/roadmap.md](docs/plan/roadmap.md) for release notes and upcoming
-work.
+See [CHANGELOG.md](CHANGELOG.md) for release notes and the
+[documentation index](docs/index.md) for current behavior.
 
 ---
 

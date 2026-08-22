@@ -1,6 +1,6 @@
 /// Device and user identity for enoxian.
 ///
-/// Architecture (see docs/plan/identity.md):
+/// Architecture (see docs/concepts/security.md):
 ///
 ///   User      — optional root key; links many devices; signs device attestations.
 ///   Device    — one stable Ed25519 key per install, stored in ~/.enoxian/identity.toml.

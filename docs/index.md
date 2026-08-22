@@ -22,6 +22,7 @@ exact CLI/API behavior.
 | [reference/api.md](reference/api.md) | Local REST/SSE/WebSocket API exposed by Enoxian |
 | [reference/daemon.md](reference/daemon.md) | Daemon/service startup, config files, routes, and environment variables |
 | [reference/protocol.md](reference/protocol.md) | Yjs sync WebSocket and event-stream protocol details |
+| [reference/p2p-protocols.md](reference/p2p-protocols.md) | Versioned peer wire formats, encryption, and limits |
 | [reference/rendezvous-setup.md](reference/rendezvous-setup.md) | Deploying and using a bootstrap rendezvous/relay server |
 
 ## Concepts
@@ -29,22 +30,13 @@ exact CLI/API behavior.
 | File | Description |
 |------|-------------|
 | [concepts/overview.md](concepts/overview.md) | High-level tour of enoxian |
-| [concepts/concepts.md](concepts/concepts.md) | Core ideas: Circle, Agent, Document, Control Doc |
-| [concepts/architecture.md](concepts/architecture.md) | System diagram, components, data model, directory layout |
-| [concepts/internals.md](concepts/internals.md) | Lock arbitration, file sync, P2P layer |
-| [concepts/security.md](concepts/security.md) | Trust model, PSK, MLS membership |
+| [concepts/concepts.md](concepts/concepts.md) | Circle, identity, CRDT, proposal, event, and coordination vocabulary |
+| [concepts/architecture.md](concepts/architecture.md) | Runtime components, state surfaces, and data flow |
+| [concepts/internals.md](concepts/internals.md) | Watcher, persistence, peer-session, and agent mechanics |
+| [concepts/proposals.md](concepts/proposals.md) | File capture, accepted history, pending compatibility, diff, merge, and revert |
+| [concepts/storage.md](concepts/storage.md) | Workspace and circle persistence, retention, and at-rest limitations |
+| [concepts/security.md](concepts/security.md) | Trust model, identity, PSK, Noise, and MLS content protection |
 
-## Planning
-
-Planning documents are design notes, not the source of truth for current
-behavior.
-
-| File | Description |
-|------|-------------|
-| [plan/roadmap.md](plan/roadmap.md) | Current roadmap and next milestones |
-| [plan/agent-workspaces.md](plan/agent-workspaces.md) | Local workspace proposal layer for ambient and triggered agents |
-| [plan/control-persistence.md](plan/control-persistence.md) | Persisting chat/tasks/members so an all-offline restart doesn't lose them |
-| [plan/agent-memory.md](plan/agent-memory.md) | Stateful agents, chat-based recovery, and the future chat-inbox feature |
-| [plan/identity.md](plan/identity.md) | Device identity, stable PSK, and MLS membership |
-| [plan/event-log.md](plan/event-log.md) | M15 causal workspace event log, materialization, and live peer sync |
-| [plan/content-encryption.md](plan/content-encryption.md) | M17 encrypted frame format, MLS keys, bootstrap, and epoch handling |
+The documentation describes current behavior. Completed design plans and old
+roadmaps are retained in Git history rather than kept as a second, stale source
+of truth.

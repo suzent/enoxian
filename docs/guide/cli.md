@@ -520,10 +520,10 @@ enox [--circle <NAME>] member remove-by-owner <OWNER>
 
 ## Proposals
 
-Workspace changes captured by the ambient engine become reviewable proposals.
-Proposals replicate across all devices in the circle, so every device shows the
-same review history. Ids may be given as an unambiguous prefix (the 8-char form
-printed by `proposal list` works).
+Workspace changes captured by the ambient engine become accepted, reviewable
+history. They are not held pending. Proposals replicate across all devices in
+the circle, so every device shows the same history. Ids may be given as an
+unambiguous prefix (the 8-char form printed by `proposal list` works).
 
 ### `proposal list`
 
@@ -548,7 +548,7 @@ enox [--circle <NAME>] proposal show <ID>
 
 ### `proposal accept`
 
-Accept a pending proposal (keep the changes).
+Accept a legacy or explicitly staged pending proposal (keep the changes).
 
 ```bash
 enox [--circle <NAME>] proposal accept <ID>
@@ -558,9 +558,9 @@ enox [--circle <NAME>] proposal accept <ID>
 
 ### `proposal reject`
 
-Reject a pending proposal — restores the affected files to their pre-change
-state via reverse-apply (later edits to the same files are preserved by a
-line-level merge; genuine overlaps abort).
+Reject a legacy or explicitly staged pending proposal. This restores the
+affected files to their pre-change state via reverse-apply (later edits to the
+same files are preserved by a line-level merge; genuine overlaps abort).
 
 ```bash
 enox [--circle <NAME>] proposal reject <ID>

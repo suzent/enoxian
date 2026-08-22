@@ -39,8 +39,8 @@ Two things are deliberately separate:
 - **Who runs it** — only the target device's local daemon, under its own
   policy. A remote member can never force execution on your machine.
 
-See [plan/agent-workspaces.md](../plan/agent-workspaces.md) for the design rationale
-behind this split.
+See [Proposals and file history](../concepts/proposals.md) for how native agent
+writes become accepted, revertible history.
 
 ---
 
@@ -97,7 +97,7 @@ You can edit this file three ways:
 > Editing via CLI or frontend rewrites the file and does not preserve comments;
 > the values are kept exactly.
 
-See [examples/agents.toml](examples/agents.toml) for a fuller annotated example.
+See [examples/agents.toml](../examples/agents.toml) for a fuller annotated example.
 
 ### Managing agents from the CLI
 
@@ -299,7 +299,7 @@ full world context, since it runs standalone without the live circle state.)
 
 ## Reference
 
-- Config example: [examples/agents.toml](examples/agents.toml)
-- Design rationale: [plan/agent-workspaces.md](../plan/agent-workspaces.md)
+- Config example: [examples/agents.toml](../examples/agents.toml)
+- File history model: [proposals.md](../concepts/proposals.md)
 - Proposal review: [cli.md](cli.md) (`enox proposal …`)
 - Security model: [security.md](../concepts/security.md)

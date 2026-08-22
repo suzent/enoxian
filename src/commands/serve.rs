@@ -15,7 +15,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     // ── Device identity: first-run setup ─────────────────────────────────────
     // On first launch, prompt for a device label. Subsequent starts auto-load
     // the saved identity silently. The identity is used to derive stable
-    // per-circle keypairs (see docs/plan/identity.md).
+    // per-circle keypairs (see docs/concepts/security.md).
     let device = ensure_identity()?;
     info!(
         "Device identity: {} ({})",

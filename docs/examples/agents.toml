@@ -3,7 +3,7 @@
 # Copy to ~/.enoxian/agents.toml to enable it. This file is NEVER synced across
 # the circle — it only controls how THIS device reacts to chat @mentions. A
 # remote member can mention an agent, but only your local config decides whether
-# (and how) to run it. See docs/plan/agent-workspaces.md → Two-Layer Split.
+# (and how) to run it. See docs/concepts/proposals.md for the file-history model.
 
 # How this device reacts to @mentions:
 #   "pull"  (default) — do nothing automatically; an agent is expected to read

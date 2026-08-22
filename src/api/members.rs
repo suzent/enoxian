@@ -222,7 +222,7 @@ pub async fn remove_member(
     // The MLS epoch advances for remaining members, but we no longer derive or
     // rotate a transport PSK from it — the transport key is a stable per-circle
     // gate and eviction is the mls_removed tombstone written below. See
-    // docs/plan/identity.md.
+    // docs/concepts/security.md.
     if let Some(out) = mls_out {
         // Broadcast the Remove commit to remaining members via the CRDT.
         let entry = MlsCommitEntry {
@@ -291,7 +291,7 @@ pub async fn remove_member(
     // No transport-PSK rotation: the mls_removed tombstone written above is the
     // eviction boundary (sync.rs rejects tombstoned peers before any data). The
     // transport PSK stays stable so legitimate members never get locked out by
-    // an epoch they missed. See docs/plan/identity.md.
+    // an epoch they missed. See docs/concepts/security.md.
 
     Json(json!({"status": "removed", "peer_id": req.peer_id})).into_response()
 }

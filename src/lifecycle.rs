@@ -485,7 +485,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     // ── Commit watcher ────────────────────────────────────────────────────────
     // All peers: watch mls_commits for new entries and apply them to keep MLS
     // group state in sync with epoch advances (membership tracking; the
-    // transport PSK is NOT rotated — see docs/plan/identity.md).
+    // transport PSK is NOT rotated — see docs/concepts/security.md).
     //
     // Commits are fed through a serial channel to prevent concurrent MLS
     // operations from racing — multiple commits arriving in a single P2P sync
@@ -1449,7 +1449,7 @@ pub(crate) async fn consume_welcome(welcome_hex: String, mls: SharedMlsState, st
     // Join the MLS group and persist it. We deliberately do NOT derive an epoch
     // PSK or rotate the transport key here: the transport PSK is a stable
     // per-circle network gate, and eviction is enforced by the mls_removed
-    // sync-gate (see docs/plan/identity.md). MLS membership is still tracked for
+    // sync-gate (see docs/concepts/security.md). MLS membership is still tracked for
     // the sync gate and content-layer encryption.
     let mut mls_locked = mls.lock().await;
     // Skip if we already joined (race: observer fires twice).
@@ -1496,7 +1496,7 @@ pub(crate) async fn apply_commit_entry(
     // tracked for the sync gate and content encryption). We do NOT derive
     // an epoch PSK or rotate the transport key — the transport PSK is a stable
     // per-circle gate and eviction is the mls_removed sync-gate. See
-    // docs/plan/identity.md.
+    // docs/concepts/security.md.
     let mut mls_locked = mls.lock().await;
     // Take raw pointer to identity before the mutable group borrow.
     let identity_ptr = &mls_locked.identity as *const MlsIdentity;
@@ -1532,7 +1532,7 @@ pub(crate) async fn apply_commit_entry(
 ///
 /// NOTE: no longer wired to MLS epoch changes — the transport PSK is a stable
 /// per-circle gate and eviction is the mls_removed sync-gate (see
-/// docs/plan/identity.md). Retained for a possible future *explicit* circle-key
+/// docs/concepts/security.md). Retained for a possible future *explicit* circle-key
 /// rotation (e.g. a manual `enox rotate-key` admin action); currently unused.
 #[allow(dead_code)]
 pub async fn rotate_psk_and_restart(circle_id: &str, new_psk: [u8; 32], daemon: DaemonState) {

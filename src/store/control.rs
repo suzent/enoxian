@@ -4,7 +4,7 @@
 //! in-memory only: an all-offline restart loses it, since nothing wrote it to
 //! disk and no peer remains to re-sync from. This persists the **durable**
 //! subset so a cold-started circle keeps its history. See
-//! `docs/plan/control-persistence.md`.
+//! `docs/concepts/storage.md`.
 //!
 //! Selective durability (Tier A):
 //!

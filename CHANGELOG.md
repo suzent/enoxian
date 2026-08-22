@@ -219,10 +219,9 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [0.1.4]
 
-Baseline release prior to the agent-execution and packaging work above. See the
-git history and `docs/plan/archived/milestones.md` for the M1–M14 feature set
-(P2P sync, presence/tasks/locks/chat, members + MLS membership, WAN bootstrap,
-and the local workspace proposal layer).
+Baseline release prior to the agent-execution and packaging work above. The
+M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
+membership, WAN bootstrap, and the local workspace proposal layer.
 
 [Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.8...HEAD
 [0.3.7]: https://github.com/suzent/enoxian/compare/v0.3.6...v0.3.7

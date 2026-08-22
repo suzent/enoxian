@@ -1,8 +1,9 @@
 # Security Model
 
-This document describes the current security model. Older notes that mention
-deriving the transport PSK from each MLS epoch are obsolete; the authoritative
-identity rationale lives in [plan/identity.md](../plan/identity.md).
+This document describes the current security model. The implementation combines
+stable device identity, a circle transport gate, authenticated peer sessions,
+and MLS-derived content keys. The transport PSK is stable; it is not derived
+again for every MLS epoch.
 
 ## Trust Boundaries
 
@@ -13,7 +14,7 @@ enoxian separates transport, identity, membership, and content:
 | Transport | Stable per-circle PSK via `libp2p::pnet` | The peer holds the circle network secret | Implemented |
 | Identity | Noise + per-circle Ed25519 key derived from the device key | The peer owns this device identity | Implemented |
 | Membership | Signed member list + `mls_removed` tombstone sync gate | The peer has not been explicitly evicted | Implemented |
-| Content | MLS exporter + HKDF + ChaCha20-Poly1305 | The peer holds the active MLS epoch secret and the frame was not modified | Implemented (M17) |
+| Content | MLS exporter + HKDF + ChaCha20-Poly1305 | The peer holds the active MLS epoch secret and the frame was not modified | Implemented |
 
 The public bootstrap server is outside the circle trust boundary. It provides
 rendezvous and circuit relay only; it does not join any circle and does not hold
@@ -168,8 +169,8 @@ MLS-derived content layer. Authorized current members decrypt content locally.
 
 ## Residual Metadata Leakage
 
-M17 encrypts payloads, not traffic shape. A relay or network observer can still
-learn peer IDs used for routing, IP/address information available to the
+Content encryption protects payloads, not traffic shape. A relay or network
+observer can still learn peer IDs used for routing, IP/address information available to the
 transport, connection timing and duration, protocol selection, frame sizes,
 frame counts, and traffic volume. The bootstrap stream additionally exposes
 membership delivery records to a peer that still knows the circle PSK. MLS
@@ -183,11 +184,10 @@ The managed daemon also exposes a local HTTP/WebSocket API for the CLI and web U
 is a control plane, not the WAN relay. It can read and mutate circle state, so it
 must be treated as privileged local infrastructure.
 
-Current hardening target:
-
-- Default the HTTP/WS listener to loopback.
-- Restrict CORS.
-- Add local API authentication for browser and CLI clients.
+The HTTP/WebSocket listener binds to loopback by default. Every API request
+requires the bearer token stored at `~/.enoxian/api.token`, and CORS permits only
+local origins. Explicit LAN binding widens the attack surface and should be used
+only on a trusted network.
 
 ## Admin Key
 
@@ -202,9 +202,8 @@ operations. Admin key rotation and multi-admin recovery are not yet implemented.
 ## LAN Exposure
 
 mDNS announces peer IDs and listen addresses on the local network. It does not
-expose circle content or the PSK. On networks where peer discovery metadata is
-sensitive, use explicit peer/rendezvous addresses and disable mDNS once the
-planned flag exists.
+expose circle content or the PSK. Peer IDs and addresses should nevertheless be
+treated as metadata visible to other devices on the LAN.
 
 ## Data At Rest
 
@@ -213,10 +212,10 @@ Circle content is stored **unencrypted** on each device:
 - Workspace files live in the workspace directory as plain files.
 - CRDT state (per-file docs) is persisted under `.enox_crdt/`.
 - Coordination state — chat (last 30 days), tasks, and the member list — is
-  persisted to `<circle_dir>/control.json` so it survives an all-offline restart
-  (M14.5). Chat is written **plaintext**.
+  persisted to `<circle_dir>/control.json` so it survives an all-offline restart.
+  Chat is written **plaintext**.
 
-M17 is message-layer encryption and deliberately does not alter native file IO
+Message-layer encryption deliberately does not alter native file IO
 or local persistence. Anyone with filesystem access to a member's device can
 still read that circle's content. Treat local disk as trusted and use host
 full-disk encryption where this is a concern.

@@ -8,8 +8,7 @@
 //! The `push` reaction is the one sensitive setting (it lets a chat mention run
 //! a local process). Editing agents is ordinary launcher config; the frontend
 //! keeps a confirm step in front of switching to `push`, but the API itself
-//! just applies what it is asked. See docs/plan/agent-workspaces.md →
-//! Two-Layer Split.
+//! just applies what it is asked. See docs/concepts/proposals.md.
 
 use axum::{
     extract::{Path, State},

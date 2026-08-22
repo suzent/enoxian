@@ -441,7 +441,8 @@ Return proposal metadata plus per-file diffs.
 
 ### `POST /circles/<id>/api/proposals/<proposal_id>/accept`
 
-Accept a pending proposal.
+Accept a legacy or explicitly staged pending proposal. Normal live-workspace
+changes are recorded as accepted history immediately.
 
 **Response `200`:**
 ```json
@@ -452,7 +453,8 @@ Accept a pending proposal.
 
 ### `POST /circles/<id>/api/proposals/<proposal_id>/reject`
 
-Reject a pending proposal and reverse-apply its changes.
+Reject a legacy or explicitly staged pending proposal and reverse-apply its
+changes. Normal live-workspace changes use the revert endpoint instead.
 
 ---
 

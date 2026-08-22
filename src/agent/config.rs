@@ -4,8 +4,7 @@
 //! This config is **never synced across the circle**. A remote member can
 //! mention an agent, but only this device's local config decides whether — and
 //! how — to react. That keeps execution authority local: a chat mention is
-//! intent, not a command (see `docs/plan/agent-workspaces.md` → Two-Layer
-//! Split).
+//! intent, not a command (see `docs/concepts/proposals.md`).
 //!
 //! Lives at `~/.enoxian/agents.toml`:
 //!

@@ -1,428 +1,76 @@
-# enoxian — Intuitive Overview
-
-> A P2P workspace where AI agents and humans share files, tasks, and cryptographic membership.
-
----
-
-## The Core Idea
-
-Multiple agents — a human, Claude Code, a Suzent AI, another human on another machine — all work inside the **same directory** in real time. Files sync automatically. Tasks are shared. Who has which file open is visible. And when someone leaves the group, they are cryptographically locked out, not just removed from a list.
-
-The unit of collaboration is called a **Circle**.
+# How enoxian Works
 
-```
-  Alice's laptop          Bob's desktop           Alice's suzent agent
-  ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
-  │ Enoxian     │◄───────►│ Enoxian     │◄───────►│ Enoxian     │
-  │  ~/project/ │  P2P    │  ~/project/ │  P2P    │  ~/project/ │
-  │             │  mesh   │             │  mesh   │             │
-  │  enox CLI   │         │  enox CLI   │         │  API calls  │
-  └─────────────┘         └─────────────┘         └─────────────┘
-        ▲                        ▲                        ▲
-        │ HTTP                   │ HTTP                   │ HTTP
-        ▼                        ▼                        ▼
-  ┌──────────┐             ┌──────────┐             ┌──────────┐
-  │  human   │             │  human   │             │  suzent  │
-  │  alice   │             │  bob     │             │  agent   │
-  └──────────┘             └──────────┘             └──────────┘
-```
+enoxian gives people and coding agents a shared, local-first workspace. Everyone works through ordinary files while a local daemon synchronizes edits, coordinates tasks and locks, and preserves an attributable history.
 
-Every participant runs one Enoxian daemon for all enabled Circles. The daemon is the P2P node, file syncer, and HTTP server. The `enox` CLI and AI agents talk to it over localhost HTTP.
-
----
+## Circles
 
-## Two Binaries
-
-```
-enox daemon run   long-running foreground mode
-         ├── P2P swarm (libp2p)    — connects to other daemons
-         ├── File watcher (notify) — disk ↔ CRDT sync
-         └── HTTP server (axum)    — serves enox CLI + AI agents
-
-enox    short-lived CLI
-         └── reqwest HTTP calls    → Enoxian on localhost:36521
-```
-
-A human types `enox status`. The CLI calls `GET /circles/{id}/api/status` on the local daemon and prints the result. That's the entire interface. AI agents do the same thing via HTTP calls.
-
----
+A **Circle** is the collaboration boundary. It combines:
 
-## Identity: Three Layers
-
-Every participant has three identifiers that mean different things:
-
-```
-owner        "alice"
-             │  the human — groups all of alice's machines together
-             │  set with --owner at join time, signed into membership
-             │
-             ├── peer_id   "12D3KooW..."
-             │             the machine/daemon — unique libp2p keypair
-             │             one per daemon instance, persists across restarts
-             │             this is what the MLS group tracks
-             │
-             │   agent_id  "alice"          ← human CLI on this machine
-             │   agent_id  "alice-suzent"   ← suzent agent on same machine
-             │   agent_id  "claude-code"    ← claude on same machine
-             │
-             │   (multiple agents share one peer_id — they all connect
-             │    to the same daemon via localhost HTTP)
-             │
-             └── peer_id   "QmXyz..."
-                           alice's second machine (desktop)
-                           same owner, different peer_id
-```
-
-**Why three layers?**
-
-- `owner` is for humans to identify who owns a machine
-- `peer_id` is for the network and cryptography to track a specific daemon
-- `agent_id` is for attribution — who wrote this file, who sent this message, who holds this lock
-
-Chat and presence use `agent_id`. MLS group membership uses `peer_id`. The member list links them together via `owner`.
-
----
-
-## A Circle's Lifetime
-
-### Step 1 — Create
-
-```
-admin$ enox init --name "my-project" --owner alice
-
-  Generates:
-    circle_id   = random UUID
-    PSK         = 32 random bytes  (the network password)
-    peer keypair = Ed25519          (alice's machine identity)
-    admin keypair = Ed25519          (signs member operations)
-    MLS group   = single-member group (alice is leaf 0)
-
-  Saves to ~/.enoxian/circles/<id>/
-    config.toml   (circle_id, PSK, keypair, join_policy, owner)
-    admin.key     (admin private key — creator only, never shared)
-    mls/identity.json
-    mls/group.json
-```
-
-### Step 2 — Invite
-
-```
-admin$ enox invite "my-project" --ttl 7d
-
-  Returns: enoxian://ABC123...
-
-  Encoded inside the URI:
-    circle_id, circle_name
-    PSK bytes
-    admin public key
-    relay/rendezvous addresses
-    expiry timestamp
-```
-
-### Step 3 — Enter (Bob's machine)
-
-```
-bob$ enox enter enoxian://ABC123... --owner bob
-
-  Bob's machine:
-    generates its own peer keypair
-    generates its own MLS identity + key package
-    saves config (circle_id, PSK, keypair, owner=bob)
-
-  Bob's daemon on first start:
-    publishes key package    → mls_key_packages[bob_peer_id]
-    signs owner claim        → mls_owner_claims[bob_peer_id]
-                               sign(bob_peer_key, "owner:bob")
-    writes pending entry     → mls_pending[bob_peer_id]
-    connects to network via PSK
-```
-
-### Step 4 — Approve (admin's daemon)
-
-```
-  join_policy = "auto"   → admin daemon sees new mls_pending entry,
-                           auto-approves immediately
-
-  join_policy = "manual" → admin sees it in enox member pending,
-                           runs enox member approve <peer_id>
-
-  Either way, approve does:
-    1. reads key package from mls_key_packages[bob_peer_id]
-    2. runs MLS add_member()
-         → commit bytes    (everyone else applies this)
-         → welcome bytes   (only bob consumes this)
-         → ratchet tree
-    3. stores welcome    → mls_welcomes[bob_peer_id]
-    4. stores commit     → mls_commits[]
-    5. signs MemberEntry → member_list[bob_peer_id]
-         signature covers "add:{peer_id}:{role}:owner:{owner}"
-    6. removes from mls_pending
-    7. saves MLS group state to disk
-```
-
-### Step 5 — Bob Joins the MLS Group
-
-```
-  Bob's daemon sees mls_welcomes[bob_peer_id]:
-    calls MlsGroupManager::join_from_welcome()
-    now has the same MLS membership state as everyone else
-    stores the group state for future commits and content encryption
-```
-
-### Step 6 — Remove (tombstone gate blocks future sync)
-
-```
-admin$ enox member remove <bob_peer_id>
-
-  1. MLS remove_member(bob_leaf_index)
-       → new epoch, new membership state
-  2. admin writes mls_removed[bob_peer_id]
-  3. all remaining members apply the Commit
-  4. future sync sessions check mls_removed before CRDT exchange
-  5. Bob's daemon is rejected by tombstone-aware peers before reading new data
-```
-
-The key point: **the transport PSK is stable**. It is a coarse network gate, not
-the revocation mechanism. Removing a member advances MLS membership state and
-writes a CRDT tombstone; the sync gate rejects that peer before any file, chat,
-task, or awareness data is exchanged.
-
----
-
-## The MLS Security Layer
-
-MLS (RFC 9420) is a group key agreement protocol. Think of it as a cryptographic ratchet where every membership change advances the state.
-
-```
-  Epoch 0: [alice]
-  │  alice creates the group
-  │
-  ├─ add bob ──────────────────────────────────────────── Epoch 1: [alice, bob]
-  │  alice runs add_members(bob_key_package)
-  │  → commit (everyone applies)
-  │  → welcome (only bob consumes to join)
-  │
-  ├─ add carol ────────────────────────────────────────── Epoch 2: [alice, bob, carol]
-  │  membership state advances again
-  │
-  └─ remove bob ───────────────────────────────────────── Epoch 3: [alice, carol]
-     bob is removed from MLS membership
-     mls_removed[bob_peer_id] is written
-     bob is locked out at the sync gate
-```
-
-The MLS epoch key is reserved for the future content-encryption layer. It is not
-derived into the libp2p transport PSK.
-
----
-
-## The Network Layer
-
-Peers connect to each other over libp2p with a layered transport:
-
-```
-  ┌──────────────────────────────────────────────────────────────────┐
-  │                     Circle Network                               │
-  │                                                                  │
-  │   alice-laptop ◄──── TCP + PSK + Noise + Yamux ────► bob-desktop │
-  │                                                                  │
-  │   PSK = epoch_psk() derived from MLS group                       │
-  │   Noise = authenticated encryption (peer identity)               │
-  │   Yamux = multiplexed streams                                    │
-  └──────────────────────────────────────────────────────────────────┘
-         │                              │
-         │ (can't reach directly?)      │
-         ▼                              ▼
-  ┌──────────────────────────────────────────────────────┐
-  │                   Bootstrap Server                   │
-  │           enox bootstrap serve (public VPS)          │
-  │                                                      │
-  │   QUIC only (no PSK) — not a circle member           │
-  │   Rendezvous: peers register & discover each other   │
-  │   Relay: proxies connections for NAT-blocked peers   │
-  └──────────────────────────────────────────────────────┘
-```
-
-Discovery order: mDNS (same LAN, instant) → rendezvous (WAN, via bootstrap server) → relay (NAT traversal fallback via bootstrap server).
-
----
-
-## The Data Layer
-
-Inside a circle, all state lives in **Yjs CRDTs** — conflict-free data structures that merge correctly no matter what order updates arrive.
-
-```
-  ┌─────────────────────────────────────────────────────┐
-  │                    AppState                         │
-  │                                                     │
-  │  File docs (one per file in workspace)              │
-  │  ┌─────────────────────────────────────────────┐    │
-  │  │  "src/main.rs"  →  Y.Text  ←──────────┐     │    │
-  │  │  "README.md"    →  Y.Text  ←──────────┐     │    │
-  │  │  "notes.txt"    →  Y.Text  ←──────────┐     │    │
-  │  └─────────────────────────────────────────────┘    │
-  │           ▲                              │          │
-  │    file   │ watcher                      │ flush    │
-  │    edits  │ (notify)                     │ to       │
-  │           │                              ▼ disk     │
-  │                                                     │     
-  │  Control doc (circle-wide coordination)             │     
-  │  ┌─────────────────────────────────────────────┐    │     
-  │  │  tasks         →  Y.Map  (task_id → Task)   │    │    
-  │  │  presence      →  Y.Map  (agent_id → info)  │    │     
-  │  │  lock_log      →  Y.Array (append-only)     │    │     
-  │  │  member_list   →  Y.Map  (peer_id → entry)  │    │     
-  │  │  chat          →  Y.Array (messages)        │    │     
-  │  │  mls_key_packages → Y.Map                   │    │     
-  │  │  mls_welcomes     → Y.Map                   │    │     
-  │  │  mls_commits      → Y.Array                 │    │     
-  │  │  mls_pending      → Y.Map                   │    │    
-  │  │  mls_owner_claims → Y.Map                   │    │     
-  │  └─────────────────────────────────────────────┘    │     
-  └─────────────────────────────────────────────────────┘     
-                        │                                  
-                   P2P sync                               
-                   (libp2p-stream                          
-                    y-sync protocol)                       
-                        │                                  
-                        ▼                                  
-                  other daemons                            
-```
-
-Because the control doc is a CRDT, two daemons can both write to it simultaneously (e.g. both try to create a task) and the merge is deterministic and correct.
-
----
-
-## A File Edit, End to End
-
-```
-  1. Alice edits src/main.rs in her editor
-         │
-         ▼
-  2. notify (file watcher) fires a Modify event
-         │
-         ▼
-  3. Daemon reads the file, diffs against Y.Text
-     applies the diff as a Yjs transaction
-         │
-         ├──────────────────────────────────────────────────►  4. Y.Text observer fires
-         │                                                            broadcasts raw update bytes
-         │                                                            to all_updates channel
-         │                                                                   │
-         │                                                                   ▼
-         │                                                       5. P2P sync task picks it up
-         │                                                          sends to all connected peers
-         │
-         ▼
-  6. Each peer's daemon receives the update bytes
-     applies to its local Y.Text
-     Y.Text observer fires → flush_to_disk
-     writes src/main.rs to Bob's workspace
-```
-
-Bob's editor sees the file change. Total latency: typically under 100ms on LAN.
-
----
-
-## The Control Doc, End to End
-
-Same CRDT mechanism applies to all coordination:
-
-```
-  enox say "shipping today @bob"
-      │
-      ▼
-  POST /circles/{id}/api/chat
-      │
-      ▼
-  appends ChatMessage to chat Y.Array
-      │
-      ├──► P2P sync → bob's daemon → bob's daemon fires AgentMentioned SSE event
-      │                              bob's agent wakes up
-      │
-      └──► local SSE stream → alice's `enox watch` terminal shows the message
-```
-
-Same pattern for tasks, locks, presence — everything flows through the CRDT and everyone converges.
-
----
-
-## Member List and Trust
-
-The member list is the source of truth for who is in the circle. Each entry is admin-signed:
-
-```
-  MemberEntry {
-      peer_id:    "12D3KooW..."   ← machine identity (MLS leaf)
-      owner:      "alice"         ← human owner (admin-signed, first-come-first-serve)
-      agent_id:   "alice"         ← agent label (for attribution)
-      role:       admin | member
-      signature:  hex(admin_sign("add:{peer_id}:{role}:owner:{owner}"))
-  }
-```
-
-The admin's signature covers the `owner` field. Once `owner: alice` is bound to `peer_id: 12D3...`, no other peer can claim `owner: alice` (the approve endpoint enforces uniqueness and rejects a second claim with 409).
-
-The owner claim itself is also self-signed by the peer:
-```
-  OwnerClaim {
-      owner: "alice"
-      sig:   hex(peer_sign("owner:alice"))
-  }
-```
-This proves the holder of that peer's private key asserts the name — preventing the admin from accidentally assigning the wrong name to a peer.
-
----
-
-## Directory Layout
-
-```
-~/.enoxian/
-└── circles/
-    └── <circle-id>/
-        ├── config.toml       circle_id, PSK, keypair, join_policy, owner
-        ├── admin.key         Ed25519 hex (creator only — never shared)
-        └── mls/
-            ├── identity.json MLS signing keypair + credential
-            └── group.json    MLS group state (serialised OpenMLS storage)
-
-~/enoxian/                   default workspace root
-└── my-project/               one directory per circle
-    ├── src/
-    │   └── main.rs           synced files live here
-    └── notes.txt
-```
-
-The workspace (`~/enoxian/my-project/`) and the credentials (`~/.enoxian/circles/<id>/`) are intentionally separate — workspace files are easy to find and edit directly; credentials are in a dotfile dir and never appear in the workspace.
-
----
-
-## Quick Reference
-
-```
-enox init --name "proj" --owner alice     create circle, you are admin
-enox invite "proj"                         generate invite link
-enox enter enoxian://...  --owner bob    join from invite
-enox start                                 start daemon (all known circles)
-
-enox status                               circle overview
-enox who                                  who is online
-enox member list                          all members (owner / agent / role)
-enox member pending                       waiting for approval
-enox member approve <peer_id>             approve + MLS add
-enox member reject  <peer_id>             deny
-enox member remove  <peer_id>             remove + MLS commit + tombstone
-enox member remove-by-owner alice         remove all of alice's machines at once
-
-enox tasks                                task board
-enox task-create "write tests"            create task
-enox claim <task_id>                      claim it
-enox done  <task_id>                      mark done
-
-enox bind    src/main.rs                  acquire advisory lock
-enox release src/main.rs                  release lock
-
-enox say "hello @bob"                     post chat message
-enox chat -f                              follow live chat
-enox watch                                stream all circle events
-```
+- a workspace directory;
+- a stable circle identity and membership policy;
+- a shared synchronization key and peer-discovery configuration;
+- synchronized files and control state;
+- local metadata used to reconnect after a restart.
+
+Each device has its own cryptographic identity. A device joins through an invitation, proves knowledge of the circle secret, and is admitted according to the circle's membership policy.
+
+## Native File Editing
+
+Editors, agents, and scripts read and write files directly. The daemon watches the workspace and converts changes into per-file Yjs updates. Remote updates are materialized back into normal files.
+
+This boundary is important: enoxian coordinates intent and synchronization, but does not require tools to use a special read/write API.
+
+## Convergence and History
+
+Every synchronized path has a live CRDT document. Concurrent edits converge without treating one machine as the central source of truth.
+
+Alongside live state, enoxian records immutable proposal snapshots and causal events. These provide:
+
+- authorship and origin metadata;
+- before/after diffs;
+- merge and revert operations;
+- a durable explanation of how the current file came to exist.
+
+Ordinary local and remote file changes are accepted immediately. They are not placed in a pending queue. The pending proposal state remains in the data model and API for compatibility and possible isolated-workspace workflows, not as the normal agent-era editing path.
+
+See [Proposals and file history](proposals.md).
+
+## Coordination
+
+The shared control plane includes:
+
+- tasks and claims;
+- member records and join requests;
+- advisory file locks;
+- retained chat messages;
+- MLS group state and content-key epochs.
+
+Presence, active-file hints, and short-lived activity are awareness signals rather than durable project records.
+
+The CLI exposes these coordination operations. Agents still use their native file tools for the actual work.
+
+## Connectivity
+
+Peers prefer direct authenticated connections and can use a rendezvous relay when direct routing is unavailable. Peer streams are multiplexed by purpose: workspace synchronization, control synchronization, proposal history, event history, and awareness.
+
+Content frames are encrypted with keys derived from the circle's MLS group state, including when traffic crosses a relay. See [P2P protocols](../reference/p2p-protocols.md) and [Security](security.md).
+
+## Local-First Operation
+
+The local workspace remains usable without a network connection. Changes accumulate locally and synchronize when peers reconnect. Circle configuration, file CRDT state, proposal history, event history, and durable control state survive daemon restarts.
+
+The main limitation is at-rest protection: enoxian's internal state files are currently plaintext and depend on host filesystem security. Transport and synchronized content are encrypted in transit.
+
+## Agent Sessions
+
+Agent sessions add structured metadata around native agent processes: configuration, session identity, workspace association, progress, and durable memory. They do not replace the file watcher or give agents a separate filesystem. A managed or external agent and a human editor therefore participate in the same synchronization and history model.
+
+See [Agent integration](../guide/agents.md).
+
+## Where to Go Next
+
+- [Core concepts](concepts.md) defines the vocabulary.
+- [Architecture](architecture.md) describes the runtime components and flows.
+- [Storage and persistence](storage.md) describes durable state.
+- [CLI reference](../guide/cli.md) lists commands.
+- [Daemon API](../reference/api.md) documents integration endpoints.

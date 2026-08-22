@@ -191,7 +191,7 @@ Membership is enforced separately by the admin-signed member list and `mls_remov
 |----------|--------|
 | Single string to share | ✅ |
 | Expires automatically | ✅ (client-enforced) |
-| Opaque — PSK not visible in plain text | ✅ (base64url encoded) |
+| Circle secret encrypted inside the URI | ❌ (base64url encoding is not encryption) |
 | Works offline / without a server | ✅ |
 | WAN connectivity via relay | ✅ (circuit relay + DCUtR) |
 | WAN connectivity via bootstrap rendezvous | ✅ (`enox bootstrap serve` — both behind NAT) |
@@ -199,7 +199,7 @@ Membership is enforced separately by the admin-signed member list and `mls_remov
 | Bootstrap server learns nothing about content | ✅ (only knows peer IDs and circle UUIDs) |
 | Connectivity auto-embedded by daemon | ✅ (`enox invite` queries daemon, no manual flags needed) |
 | Member removal blocks future sync | ✅ (`mls_removed` tombstone sync gate) |
-| Content-layer cryptographic revocation | ❌ (planned MLS content encryption) |
+| Content-layer cryptographic revocation | ✅ (MLS epoch advances on removal) |
 | Server-enforced expiry | ❌ (client-enforced by `enox enter`) |
 | One-time use | ❌ (reusable for the TTL window) |
 

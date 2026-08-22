@@ -84,8 +84,8 @@ impl LocalChangeSession {
 
     /// Path of the single "current claimed session" record for a circle dir.
     /// One open claimed session per workspace keeps attribution unambiguous;
-    /// concurrent actors are an open design question (see agent-workspaces.md →
-    /// Claimed Session Mode).
+    /// concurrent actors are intentionally rejected to keep attribution
+    /// unambiguous.
     pub fn claimed_path(circle_dir: &std::path::Path) -> std::path::PathBuf {
         circle_dir.join("claimed_session.json")
     }

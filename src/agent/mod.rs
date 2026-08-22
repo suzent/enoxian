@@ -1,7 +1,7 @@
 //! Local agent execution: the layer that runs agents on *this* device.
 //!
-//! A chat mention is intent, not a command (see `docs/plan/agent-workspaces.md`
-//! → Two-Layer Split). This module owns the local side of that boundary:
+//! A chat mention is intent, not a command (see `docs/concepts/proposals.md`).
+//! This module owns the local side of that boundary:
 //!
 //! - [`config`] — the daemon-local allowlist, per-agent driver, and this
 //!   device's push/pull reaction policy. Never synced.

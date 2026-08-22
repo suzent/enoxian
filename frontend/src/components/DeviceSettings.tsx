@@ -13,7 +13,7 @@ interface Props {
  * (~/.enoxian/agents.toml) over the loopback API. Edits this machine's own
  * config only; never synced. Switching to `push` (which lets a chat mention run
  * a local process) is gated behind a confirm; adding/removing agents is
- * ordinary launcher config. See docs/plan/agent-workspaces.md → Two-Layer Split.
+ * ordinary launcher config. See docs/concepts/proposals.md.
  */
 export default function DeviceSettings({ onClose }: Props) {
   const { activeCircleId, circles } = useApp()

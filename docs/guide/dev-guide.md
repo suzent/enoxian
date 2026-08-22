@@ -155,7 +155,8 @@ health check fails. Inspect `enox update --status` and the service logs before
 retrying.
 
 **Circles not discovered across machines**
-Both machines must be on the same LAN for mDNS to work. For WAN, use an anchor node (M11).
+Both machines must be on the same LAN for mDNS to work. For WAN, use a Circle
+invite with its embedded rendezvous/relay address.
 
 **`cargo install` is slow**
 First install compiles everything from scratch (~2–3 minutes). After that, incremental rebuilds only recompile changed files (~5–15 seconds).

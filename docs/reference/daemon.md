@@ -30,8 +30,8 @@ Options:
 4. Start a single HTTP/WS server on `--port` serving all circles
 
 The circle PSK is a stable per-circle network credential. Member removal is
-enforced by the replicated member/tombstone state; content-layer cryptographic
-revocation is still future work.
+enforced by replicated member/tombstone state and advances the MLS epoch so
+removed members cannot derive new content-encryption keys.
 
 ---
 

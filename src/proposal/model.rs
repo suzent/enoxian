@@ -1,4 +1,4 @@
-//! Proposal data model. See `docs/plan/agent-workspaces.md`.
+//! Proposal data model. See `docs/concepts/proposals.md`.
 
 use serde::{Deserialize, Serialize};
 
