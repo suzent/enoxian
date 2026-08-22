@@ -37,6 +37,28 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-22
+
+### Added
+
+- Workspace changes now produce a causally ordered, peer-synchronized event
+  history with deterministic materialization of proposal decisions, merges,
+  conflicts, and the current frontier.
+
+### Changed
+
+- Normal human, agent, script, and remote workspace edits now land immediately
+  as accepted, revertible proposal history instead of appearing behind a
+  misleading pending-review gate. Pending proposals remain supported only for
+  legacy records and explicitly isolated workflows.
+
+### Security
+
+- CRDT, proposal, and workspace-event payloads now use authenticated
+  ChaCha20-Poly1305 frames with purpose-specific keys derived from the active MLS
+  epoch. Membership bootstrap and commit replay let retained offline members
+  recover current keys while removed members cannot derive future epoch keys.
+
 ## [0.3.8] — 2026-08-21
 
 ### Added
@@ -223,7 +245,7 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.3.8...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.4.0...HEAD
 [0.3.7]: https://github.com/suzent/enoxian/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/suzent/enoxian/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/suzent/enoxian/compare/v0.3.4...v0.3.5
@@ -236,3 +258,4 @@ membership, WAN bootstrap, and the local workspace proposal layer.
 [0.2.0]: https://github.com/suzent/enoxian/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/suzent/enoxian/releases/tag/v0.1.4
 [0.3.8]: https://github.com/suzent/enoxian/compare/v0.3.7...v0.3.8
+[0.4.0]: https://github.com/suzent/enoxian/compare/v0.3.8...v0.4.0
