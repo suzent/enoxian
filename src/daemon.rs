@@ -50,6 +50,14 @@ impl DaemonState {
         self.circles.remove(circle_id).is_some()
     }
 
+    /// Signal every daemon-owned task and connection to shut down.
+    pub fn shutdown(&self) {
+        self.shutdown_token.cancel();
+        for token in self.tokens.iter() {
+            token.value().cancel();
+        }
+    }
+
     pub fn get(&self, circle_id: &str) -> Option<AppState> {
         self.circles.get(circle_id).map(|r| r.clone())
     }
@@ -60,5 +68,24 @@ impl DaemonState {
 
     pub fn is_active(&self, circle_id: &str) -> bool {
         self.circles.contains_key(circle_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shutdown_cancels_daemon_and_circle_tokens() {
+        let daemon = DaemonState::new();
+        let circle_token = CancellationToken::new();
+        daemon
+            .tokens
+            .insert("circle".to_string(), circle_token.clone());
+
+        daemon.shutdown();
+
+        assert!(daemon.shutdown_token.is_cancelled());
+        assert!(circle_token.is_cancelled());
     }
 }

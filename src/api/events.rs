@@ -26,6 +26,7 @@ pub async fn sse_handler(
         }
     };
     let rx = state.events.subscribe();
+    let shutdown = daemon.shutdown_token.clone();
     let stream = BroadcastStream::new(rx).filter_map(|result| {
         result.ok().and_then(|ev| {
             serde_json::to_string(&ev)
@@ -33,6 +34,7 @@ pub async fn sse_handler(
                 .map(|data| Ok::<_, std::convert::Infallible>(Event::default().data(data)))
         })
     });
+    let stream = futures::StreamExt::take_until(stream, shutdown.cancelled_owned());
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()

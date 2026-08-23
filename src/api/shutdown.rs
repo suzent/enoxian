@@ -4,6 +4,6 @@ use serde_json::json;
 
 pub async fn shutdown(State(daemon): State<DaemonState>) -> impl IntoResponse {
     tracing::info!("shutdown requested via API");
-    daemon.shutdown_token.cancel();
+    daemon.shutdown();
     Json(json!({ "status": "stopping" }))
 }

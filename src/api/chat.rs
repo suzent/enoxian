@@ -282,6 +282,7 @@ pub async fn chat_stream(
         }
     };
     let rx = state.events.subscribe();
+    let shutdown = daemon.shutdown_token.clone();
     let stream = BroadcastStream::new(rx).filter_map(|result| {
         result.ok().and_then(|ev| {
             // Chat messages/mentions drive the transcript; roster events let the
@@ -302,6 +303,7 @@ pub async fn chat_stream(
             .map(|data| Ok::<_, std::convert::Infallible>(Event::default().data(data)))
         })
     });
+    let stream = futures::StreamExt::take_until(stream, shutdown.cancelled_owned());
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()

@@ -12,6 +12,7 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
+use tokio_util::sync::CancellationToken;
 use yrs::sync::protocol::{Message, SyncMessage};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
@@ -39,11 +40,17 @@ pub async fn ws_yjs_handler(
         }
     };
     let path = params.path.clone();
-    ws.on_upgrade(move |socket| handle_socket(socket, state, path))
+    let shutdown = daemon.shutdown_token.clone();
+    ws.on_upgrade(move |socket| handle_socket(socket, state, path, shutdown))
         .into_response()
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState, doc_path: String) {
+async fn handle_socket(
+    socket: WebSocket,
+    state: AppState,
+    doc_path: String,
+    shutdown: CancellationToken,
+) {
     presence::set_current_file(&state, Some(doc_path.clone()));
 
     let doc = state.get_or_create_doc(&doc_path);
@@ -72,6 +79,8 @@ async fn handle_socket(socket: WebSocket, state: AppState, doc_path: String) {
     // ── Main loop ────────────────────────────────────────────────────────────
     loop {
         tokio::select! {
+            _ = shutdown.cancelled() => break,
+
             Ok(raw_update) = update_rx.recv() => {
                 let msg = Message::Sync(SyncMessage::Update(raw_update));
                 let mut enc = EncoderV1::new();

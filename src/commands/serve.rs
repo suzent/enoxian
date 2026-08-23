@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 #[cfg(not(debug_assertions))]
@@ -10,6 +12,8 @@ struct FrontendAssets;
 use crate::{
     api, cli::ServeArgs, config, daemon::DaemonState, identity::DeviceIdentity, lifecycle,
 };
+
+const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(5);
 
 pub async fn run(args: ServeArgs) -> Result<()> {
     // ── Device identity: first-run setup ─────────────────────────────────────
@@ -176,14 +180,47 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         .with_context(|| format!("failed to bind HTTP server on {http_addr}"))?;
     info!("HTTP/WS listening on {http_addr}");
 
-    let shutdown = daemon.shutdown_token.clone();
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move { shutdown.cancelled().await })
-        .await
-        .context("axum server error")?;
+    serve_with_shutdown(
+        listener,
+        app,
+        daemon.shutdown_token.clone(),
+        SHUTDOWN_GRACE_PERIOD,
+    )
+    .await?;
 
     info!("Enoxian stopped");
     Ok(())
+}
+
+async fn serve_with_shutdown(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    shutdown: CancellationToken,
+    grace_period: Duration,
+) -> Result<()> {
+    let server_shutdown = shutdown.clone();
+    let server = std::future::IntoFuture::into_future(
+        axum::serve(listener, app).with_graceful_shutdown(async move {
+            server_shutdown.cancelled().await;
+        }),
+    );
+    tokio::pin!(server);
+
+    tokio::select! {
+        result = &mut server => result.context("axum server error"),
+        _ = shutdown.cancelled() => {
+            match tokio::time::timeout(grace_period, &mut server).await {
+                Ok(result) => result.context("axum server error"),
+                Err(_) => {
+                    warn!(
+                        "graceful shutdown exceeded {}s; closing remaining connections",
+                        grace_period.as_secs_f64()
+                    );
+                    Ok(())
+                }
+            }
+        }
+    }
 }
 
 fn inject_frontend_token(index_html: &str, token: &str) -> String {
@@ -289,12 +326,54 @@ fn hostname_label() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Notify;
 
     #[test]
     fn frontend_token_is_injected_before_head_closes() {
         let html = "<html><head><title>Enoxian</title></head><body></body></html>";
         let injected = inject_frontend_token(html, "abc123");
         assert!(injected.contains("<script>window.__ENOX_TOKEN__=\"abc123\";</script></head>"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_drops_connections_after_the_grace_period() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let request_started = Arc::new(Notify::new());
+        let app = axum::Router::new().route(
+            "/hold",
+            axum::routing::get({
+                let request_started = request_started.clone();
+                move || {
+                    let request_started = request_started.clone();
+                    async move {
+                        request_started.notify_one();
+                        std::future::pending::<&'static str>().await
+                    }
+                }
+            }),
+        );
+        let shutdown = CancellationToken::new();
+        let server = tokio::spawn(serve_with_shutdown(
+            listener,
+            app,
+            shutdown.clone(),
+            Duration::from_millis(25),
+        ));
+        let request = tokio::spawn(reqwest::get(format!("http://{address}/hold")));
+
+        tokio::time::timeout(Duration::from_secs(1), request_started.notified())
+            .await
+            .expect("request did not reach the server");
+        shutdown.cancel();
+
+        let result = tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .expect("server exceeded its shutdown deadline")
+            .expect("server task panicked");
+        assert!(result.is_ok());
+        request.abort();
     }
 
     #[cfg(not(debug_assertions))]
