@@ -18,6 +18,7 @@ fi
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CARGO_TOML="$REPO_DIR/Cargo.toml"
 CHANGELOG="$REPO_DIR/CHANGELOG.md"
+README="$REPO_DIR/README.md"
 
 [[ "$(git -C "$REPO_DIR" branch --show-current)" == "main" ]] || {
     echo "Error: release preparation must start from main"
@@ -81,13 +82,17 @@ rm -f "$CHANGELOG.bak"
 sed -i.bak -E "s/^(version\s*=\s*)\"[^\"]*\"/\1\"$NEW\"/" "$CARGO_TOML"
 rm -f "$CARGO_TOML.bak"
 
+# Keep the user-facing package version synchronized.
+sed -i.bak -E "s/^The current package version is \*\*[^*]+\*\*\.$/The current package version is **$NEW**./" "$README"
+rm -f "$README.bak"
+
 # ── cargo check to update Cargo.lock ─────────────────────────────────────────
 echo "▶ Updating Cargo.lock..."
 (cd "$REPO_DIR" && cargo check --quiet 2>/dev/null)
 
 # ── Commit only; CI must pass before the tag is created ───────────────────────
 echo "▶ Creating release preparation commit..."
-git -C "$REPO_DIR" add "$CARGO_TOML" "$REPO_DIR/Cargo.lock" "$CHANGELOG"
+git -C "$REPO_DIR" add "$CARGO_TOML" "$REPO_DIR/Cargo.lock" "$CHANGELOG" "$README"
 git -C "$REPO_DIR" commit -m "chore: bump version to $NEW"
 
 echo ""

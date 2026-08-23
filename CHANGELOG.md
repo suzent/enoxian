@@ -19,10 +19,9 @@ file, see below):
 3. **Skip pure-internal churn** — refactors, test-only changes, docs typos, CI
    tweaks that users never see. If a user can't observe it, it doesn't belong.
 4. **Security-relevant changes always go under `Security`,** even small ones.
-5. **At release time, cut a version section:** rename `[Unreleased]` you were
-   filling to `## [x.y.z] — YYYY-MM-DD`, add a fresh empty `## [Unreleased]`
-   above it, and update the compare links at the bottom. (`scripts/bump.sh` does
-   not do this yet — it is a manual step.)
+5. **At release time, cut a version section:** `scripts/bump.sh` and
+   `scripts/bump.ps1` add a dated version heading below a fresh empty
+   `[Unreleased]` section and update the compare links.
 6. **Versioning:** breaking change → major; new feature → minor; fix only →
    patch (pre-1.0, minor also absorbs features that aren't clearly breaking).
 
@@ -36,6 +35,16 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 
 ## [Unreleased]
+
+### Fixed
+
+- Daemon shutdown now cancels circle tasks and long-lived WebSocket/SSE streams,
+  enforces a bounded graceful-drain period, and times out unresponsive stop
+  requests instead of leaving the API port wedged.
+- Stable installers and development updates now bound calls into an older
+  binary, terminate orphaned daemon processes when needed, and preserve an
+  existing managed service across upgrades, allowing affected 0.4.0 installs to
+  update without manual process cleanup.
 
 ## [0.4.0] — 2026-08-22
 

@@ -22,11 +22,11 @@ pub async fn run(action: ServiceAction, client: &reqwest::Client, daemon_root: &
         ServiceAction::Start => start(),
         ServiceAction::Stop => {
             let _ = crate::commands::stop::run(client, daemon_root).await;
-            stop()
+            stop_managed()
         }
         ServiceAction::Restart => {
             let _ = crate::commands::stop::run(client, daemon_root).await;
-            stop()?;
+            stop_managed()?;
             start()
         }
         ServiceAction::Logs => logs(),
@@ -110,7 +110,7 @@ fn install(port: u16, bind_lan: bool, bind: Option<IpAddr>, force: bool) -> Resu
         );
     }
     if definition.exists() && !stale_definition {
-        stop()?;
+        stop_managed()?;
     }
     if let Some(parent) = definition.parent() {
         fs::create_dir_all(parent)
@@ -270,7 +270,7 @@ fn xml_unescape(value: &str) -> String {
         .replace("&amp;", "&")
 }
 
-fn stop() -> Result<()> {
+pub(crate) fn stop_managed() -> Result<()> {
     if !is_installed() {
         return Ok(());
     }
@@ -300,7 +300,7 @@ fn stop() -> Result<()> {
 }
 
 fn uninstall() -> Result<()> {
-    stop()?;
+    stop_managed()?;
     let definition = service_definition();
 
     #[cfg(target_os = "linux")]
