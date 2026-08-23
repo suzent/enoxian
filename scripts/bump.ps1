@@ -14,6 +14,7 @@ $ErrorActionPreference = "Stop"
 $RepoDir = Split-Path $PSScriptRoot -Parent
 $CargoToml = Join-Path $RepoDir "Cargo.toml"
 $Changelog = Join-Path $RepoDir "CHANGELOG.md"
+$Readme = Join-Path $RepoDir "README.md"
 
 if ((git -C $RepoDir branch --show-current) -ne 'main') {
     throw 'Release preparation must start from main'
@@ -71,6 +72,16 @@ Set-Content $Changelog $changelogContent -NoNewline
 $updated = $content -replace '(?m)(^version\s*=\s*)"[^"]*"', "`${1}`"$new`""
 Set-Content $CargoToml $updated -NoNewline
 
+# Keep the user-facing package version synchronized.
+$readmeContent = Get-Content $Readme -Raw
+$readmeContent = [regex]::Replace(
+    $readmeContent,
+    '(?m)^The current package version is \*\*[^*]+\*\*\.',
+    "The current package version is **$new**.",
+    1
+)
+Set-Content $Readme $readmeContent -NoNewline
+
 # ── cargo check to update Cargo.lock ─────────────────────────────────────────
 Write-Host "▶ Updating Cargo.lock..."
 Push-Location $RepoDir
@@ -79,7 +90,7 @@ Pop-Location
 
 # ── Commit only; CI must pass before the tag is created ───────────────────────
 Write-Host "▶ Creating release preparation commit..."
-git add $CargoToml (Join-Path $RepoDir "Cargo.lock") $Changelog
+git add $CargoToml (Join-Path $RepoDir "Cargo.lock") $Changelog $Readme
 git commit -m "chore: bump version to $new"
 
 Write-Host ""

@@ -22,11 +22,11 @@ pub async fn run(action: ServiceAction, client: &reqwest::Client, daemon_root: &
         ServiceAction::Start => start(),
         ServiceAction::Stop => {
             let _ = crate::commands::stop::run(client, daemon_root).await;
-            stop()
+            stop_managed()
         }
         ServiceAction::Restart => {
             let _ = crate::commands::stop::run(client, daemon_root).await;
-            stop()?;
+            stop_managed()?;
             start()
         }
         ServiceAction::Logs => logs(),
@@ -110,7 +110,7 @@ fn install(port: u16, bind_lan: bool, bind: Option<IpAddr>, force: bool) -> Resu
         );
     }
     if definition.exists() && !stale_definition {
-        stop()?;
+        stop_managed()?;
     }
     if let Some(parent) = definition.parent() {
         fs::create_dir_all(parent)
@@ -270,7 +270,7 @@ fn xml_unescape(value: &str) -> String {
         .replace("&amp;", "&")
 }
 
-fn stop() -> Result<()> {
+pub fn stop_managed() -> Result<()> {
     if !is_installed() {
         return Ok(());
     }
@@ -300,7 +300,7 @@ fn stop() -> Result<()> {
 }
 
 fn uninstall() -> Result<()> {
-    stop()?;
+    stop_managed()?;
     let definition = service_definition();
 
     #[cfg(target_os = "linux")]
@@ -435,9 +435,7 @@ fn daemon_args(port: u16, bind_lan: bool, bind: Option<IpAddr>) -> Vec<String> {
 }
 
 fn state_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".enoxian")
+    crate::config::enoxian_dir().unwrap_or_else(|_| PathBuf::from(".enoxian"))
 }
 
 fn service_definition() -> PathBuf {

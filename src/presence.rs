@@ -2,7 +2,7 @@ use chrono::Utc;
 use libp2p::PeerId;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use yrs::{Any, Map, Out, Transact};
+use yrs::{Any, Map, Out, ReadTxn, Transact, WriteTxn};
 
 use crate::control::{AgentStatus, Presence, PRESENCE_KEY};
 use crate::state::AppState;
@@ -111,28 +111,9 @@ fn is_legacy_presence_id(agent_id: &str, suffix: &str) -> bool {
         || hostname_candidates().iter().any(|host| prefix == host)
 }
 
-fn remove_legacy_presence_keys(state: &AppState, agent_id: &str) {
-    let suffix = peer_suffix(agent_id);
-    let map = state.control.get_or_insert_map(PRESENCE_KEY);
-    let stale_keys: Vec<String> = {
-        let txn = state.control.transact();
-        map.iter(&txn)
-            .map(|(key, _)| key.to_string())
-            .filter(|key| key != agent_id && is_legacy_presence_id(key, suffix))
-            .collect()
-    };
-    if stale_keys.is_empty() {
-        return;
-    }
-    let mut txn = state.control.transact_mut();
-    for key in stale_keys {
-        map.remove(&mut txn, key.as_str());
-    }
-}
-
 fn read_presence(state: &AppState, agent_id: &str) -> Option<Presence> {
-    let map = state.control.get_or_insert_map(PRESENCE_KEY);
-    let txn = state.control.transact();
+    let txn = state.control.try_transact().ok()?;
+    let map = txn.get_map(PRESENCE_KEY)?;
     match map.get(&txn, agent_id) {
         Some(Out::Any(Any::String(s))) => serde_json::from_str::<Presence>(&s).ok(),
         _ => None,
@@ -155,9 +136,23 @@ fn write_presence_with_file(
     let Ok(json) = serde_json::to_string(&presence) else {
         return;
     };
-    remove_legacy_presence_keys(state, agent_id);
-    let map = state.control.get_or_insert_map(PRESENCE_KEY);
-    let mut txn = state.control.transact_mut();
+    let mut txn = match state.control.try_transact_mut() {
+        Ok(txn) => txn,
+        Err(_) => {
+            tracing::debug!("[presence] circle state busy; deferring presence refresh");
+            return;
+        }
+    };
+    let map = txn.get_or_insert_map(PRESENCE_KEY);
+    let suffix = peer_suffix(agent_id);
+    let stale_keys = map
+        .iter(&txn)
+        .map(|(key, _)| key.to_string())
+        .filter(|key| key != agent_id && is_legacy_presence_id(key, suffix))
+        .collect::<Vec<_>>();
+    for key in stale_keys {
+        map.remove(&mut txn, key.as_str());
+    }
     map.insert(&mut txn, agent_id, json.as_str());
 }
 

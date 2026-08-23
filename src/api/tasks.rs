@@ -8,7 +8,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use yrs::{Any, Map, MapRef, Out, Transact};
+use yrs::{Any, Map, Out, ReadTxn, Transact, WriteTxn};
 
 #[derive(Deserialize)]
 pub struct TasksQuery {
@@ -30,9 +30,13 @@ pub async fn get_tasks(
                 .into_response()
         }
     };
-    let doc = &state.control;
-    let tasks_map: MapRef = doc.get_or_insert_map(TASKS_KEY);
-    let txn = doc.transact();
+    let txn = match state.control.try_transact() {
+        Ok(txn) => txn,
+        Err(_) => return super::circle_busy(),
+    };
+    let Some(tasks_map) = txn.get_map(TASKS_KEY) else {
+        return Json(Vec::<Task>::new()).into_response();
+    };
 
     let mut result: Vec<Task> = Vec::new();
     for (_key, val) in tasks_map.iter(&txn) {
@@ -97,9 +101,11 @@ pub async fn create_task(
     let task_id = task.task_id.clone();
 
     {
-        let doc = &state.control;
-        let tasks_map: MapRef = doc.get_or_insert_map(TASKS_KEY);
-        let mut txn = doc.transact_mut();
+        let mut txn = match state.control.try_transact_mut() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        let tasks_map = txn.get_or_insert_map(TASKS_KEY);
         tasks_map.insert(
             &mut txn,
             task.task_id.as_str(),
@@ -115,4 +121,47 @@ pub async fn create_task(
         Json(json!({ "task_id": task_id, "status": "created" })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{config::JoinPolicy, mls, state::AppState};
+    use std::path::PathBuf;
+    use yrs::Transact;
+
+    fn test_state() -> AppState {
+        AppState::new(
+            "circle".into(),
+            "Circle".into(),
+            PathBuf::new(),
+            PathBuf::new(),
+            String::new(),
+            "agent".into(),
+            1,
+            "peer".into(),
+            JoinPolicy::Manual,
+            "owner".into(),
+            mls::new_mls_state(mls::MlsIdentity::generate("peer").unwrap(), None),
+        )
+    }
+
+    #[tokio::test]
+    async fn busy_control_document_returns_retryable_503() {
+        let daemon = DaemonState::new();
+        let state = test_state();
+        daemon.insert("circle".into(), state.clone());
+        let _write_guard = state.control.transact_mut();
+
+        let response = get_tasks(
+            State(daemon),
+            Path("circle".into()),
+            Query(TasksQuery { status: None }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[axum::http::header::RETRY_AFTER], "1");
+    }
 }

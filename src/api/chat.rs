@@ -14,7 +14,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
-use yrs::{Any, Array, ArrayRef, Map, MapRef, Out, Transact};
+use yrs::{Any, Array, Map, Out, ReadTxn, Transact, WriteTxn};
 
 const TYPING_TTL_SECS: i64 = 6;
 pub(crate) const AGENT_ACTIVITY_TTL_SECS: i64 = 45;
@@ -39,8 +39,13 @@ pub async fn get_chat(
                 .into_response()
         }
     };
-    let arr: ArrayRef = state.control.get_or_insert_array(CHAT_KEY);
-    let txn = state.control.transact();
+    let txn = match state.control.try_transact() {
+        Ok(txn) => txn,
+        Err(_) => return super::circle_busy(),
+    };
+    let Some(arr) = txn.get_array(CHAT_KEY) else {
+        return Json(Vec::<ChatMessage>::new()).into_response();
+    };
     let mut seen = std::collections::HashSet::new();
     let messages: Vec<ChatMessage> = arr
         .iter(&txn)
@@ -83,9 +88,10 @@ pub async fn post_chat(
     // A user/UI post fires mention triggers.
     match post_message(&state, sender, req.text, true) {
         Ok(id) => (StatusCode::CREATED, Json(json!({ "id": id }))).into_response(),
-        Err(_) => (
+        Err(error) if error.to_string().contains("state busy") => super::circle_busy(),
+        Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "serialize failed"})),
+            Json(json!({"error": error.to_string()})),
         )
             .into_response(),
     }
@@ -110,7 +116,10 @@ pub async fn get_activity(
         )
             .into_response();
     };
-    Json(live_activities(&state, chrono::Utc::now().timestamp())).into_response()
+    match live_activities(&state, chrono::Utc::now().timestamp()) {
+        Some(activity) => Json(activity).into_response(),
+        None => super::circle_busy(),
+    }
 }
 
 /// Browser-originated activity is deliberately limited to `typing`; agent
@@ -153,9 +162,10 @@ pub async fn post_activity(
     };
     match put_activity(&state, activity) {
         Ok(()) => Json(json!({"ok": true})).into_response(),
-        Err(_) => (
+        Err(error) if error.to_string().contains("state busy") => super::circle_busy(),
+        Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "serialize failed"})),
+            Json(json!({"error": error.to_string()})),
         )
             .into_response(),
     }
@@ -164,56 +174,52 @@ pub async fn post_activity(
 pub(crate) fn put_activity(
     state: &crate::state::AppState,
     activity: ChatActivity,
-) -> Result<(), serde_json::Error> {
+) -> anyhow::Result<()> {
     let raw = serde_json::to_string(&activity)?;
-    let map: MapRef = state.control.get_or_insert_map(CHAT_ACTIVITY_KEY);
-    prune_expired_activities(state, &map, chrono::Utc::now().timestamp());
-    {
-        let mut txn = state.control.transact_mut();
-        map.insert(
-            &mut txn,
-            activity.activity_id.as_str(),
-            Any::String(raw.as_str().into()),
-        );
+    let mut txn = state
+        .control
+        .try_transact_mut()
+        .map_err(|_| anyhow::anyhow!("circle state busy"))?;
+    let map = txn.get_or_insert_map(CHAT_ACTIVITY_KEY);
+    let expired = map
+        .iter(&txn)
+        .filter_map(|(key, value)| match value {
+            Out::Any(Any::String(raw)) => serde_json::from_str::<ChatActivity>(&raw)
+                .ok()
+                .filter(|item| !activity_is_live(item, chrono::Utc::now().timestamp()))
+                .map(|_| key.to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for key in expired {
+        map.remove(&mut txn, key.as_str());
     }
+    map.insert(
+        &mut txn,
+        activity.activity_id.as_str(),
+        Any::String(raw.as_str().into()),
+    );
+    drop(txn);
     let _ = state
         .events
         .send(CircleEvent::ChatActivityChanged { activity });
     Ok(())
 }
 
-fn prune_expired_activities(state: &crate::state::AppState, map: &MapRef, now: i64) {
-    let expired = {
-        let txn = state.control.transact();
+fn live_activities(state: &crate::state::AppState, now: i64) -> Option<Vec<ChatActivity>> {
+    let txn = state.control.try_transact().ok()?;
+    let Some(map) = txn.get_map(CHAT_ACTIVITY_KEY) else {
+        return Some(Vec::new());
+    };
+    Some(
         map.iter(&txn)
-            .filter_map(|(key, value)| match value {
-                Out::Any(Any::String(raw)) => serde_json::from_str::<ChatActivity>(&raw)
-                    .ok()
-                    .filter(|activity| !activity_is_live(activity, now))
-                    .map(|_| key.to_string()),
+            .filter_map(|(_, value)| match value {
+                Out::Any(Any::String(raw)) => serde_json::from_str::<ChatActivity>(&raw).ok(),
                 _ => None,
             })
-            .collect::<Vec<_>>()
-    };
-    if expired.is_empty() {
-        return;
-    }
-    let mut txn = state.control.transact_mut();
-    for key in expired {
-        map.remove(&mut txn, key.as_str());
-    }
-}
-
-fn live_activities(state: &crate::state::AppState, now: i64) -> Vec<ChatActivity> {
-    let map: MapRef = state.control.get_or_insert_map(CHAT_ACTIVITY_KEY);
-    let txn = state.control.transact();
-    map.iter(&txn)
-        .filter_map(|(_, value)| match value {
-            Out::Any(Any::String(raw)) => serde_json::from_str::<ChatActivity>(&raw).ok(),
-            _ => None,
-        })
-        .filter(|activity| activity_is_live(activity, now))
-        .collect()
+            .filter(|activity| activity_is_live(activity, now))
+            .collect(),
+    )
 }
 
 fn activity_is_live(activity: &ChatActivity, now: i64) -> bool {
@@ -235,7 +241,7 @@ pub fn post_message(
     sender: String,
     text: String,
     fire_mentions: bool,
-) -> Result<String, serde_json::Error> {
+) -> anyhow::Result<String> {
     let mentions = crate::agent::mention::extract(&text);
     let msg = ChatMessage {
         id: uuid::Uuid::new_v4().to_string(),
@@ -247,8 +253,11 @@ pub fn post_message(
 
     let json_str = serde_json::to_string(&msg)?;
     {
-        let arr: ArrayRef = state.control.get_or_insert_array(CHAT_KEY);
-        let mut txn = state.control.transact_mut();
+        let mut txn = state
+            .control
+            .try_transact_mut()
+            .map_err(|_| anyhow::anyhow!("circle state busy"))?;
+        let arr = txn.get_or_insert_array(CHAT_KEY);
         arr.push_back(&mut txn, Any::String(json_str.as_str().into()));
     }
 

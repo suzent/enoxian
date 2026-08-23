@@ -233,8 +233,16 @@ jobs:
           asset="$(grep -oE '/assets/[^"]+\.js' "$RUNNER_TEMP/enoxian-index.html" | head -1)"
           test -n "$asset"
           curl -fsS "http://127.0.0.1:$port$asset" >/dev/null
-          kill "$daemon_pid"
-          wait "$daemon_pid" || true
+          ENOXIAN_API="http://127.0.0.1:$port" "$bin/enox" stop
+          for _ in $(seq 1 40); do
+            kill -0 "$daemon_pid" 2>/dev/null || break
+            sleep 0.25
+          done
+          ! kill -0 "$daemon_pid" 2>/dev/null || {
+            echo "daemon did not exit after enox stop" >&2
+            exit 1
+          }
+          wait "$daemon_pid"
           trap - EXIT
 
       - name: Smoke test Windows binary
@@ -252,9 +260,11 @@ jobs:
 
           $previousHome = $env:ENOXIAN_HOME
           $previousLabel = $env:ENOXIAN_DEVICE_LABEL
+          $previousApi = $env:ENOXIAN_API
           $env:ENOXIAN_HOME = Join-Path $env:RUNNER_TEMP 'enoxian-home'
           $env:ENOXIAN_DEVICE_LABEL = 'release-smoke'
           $port = 37651
+          $env:ENOXIAN_API = "http://127.0.0.1:$port"
           $stdout = Join-Path $env:RUNNER_TEMP 'enoxian-ui.log'
           $stderr = Join-Path $env:RUNNER_TEMP 'enoxian-ui.err.log'
           $daemon = Start-Process -FilePath "$bin/enox.exe" -ArgumentList @('daemon', 'run', '--port', $port) -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
@@ -281,12 +291,21 @@ jobs:
             if ($assetResponse.StatusCode -ne 200) {
               throw 'embedded WebUI JavaScript asset is unavailable'
             }
+            & "$bin/enox.exe" stop
+            if ($LASTEXITCODE -ne 0) { throw 'enox stop failed' }
+            if (-not $daemon.WaitForExit(10000)) {
+              throw 'daemon did not exit after enox stop'
+            }
+            if ($daemon.ExitCode -ne 0) {
+              throw "daemon exited with status $($daemon.ExitCode)"
+            }
           } finally {
             if ($daemon -and -not $daemon.HasExited) {
               Stop-Process -Id $daemon.Id -Force
             }
             $env:ENOXIAN_HOME = $previousHome
             $env:ENOXIAN_DEVICE_LABEL = $previousLabel
+            $env:ENOXIAN_API = $previousApi
           }
 
       - name: Package Unix
@@ -414,6 +433,26 @@ jobs:
           "$bin_dir/enox" service status
           test ! -e "$bin_dir/enoxd"
 
+          export ENOXIAN_HOME="$RUNNER_TEMP/enoxian-update-home"
+          export ENOXIAN_DEVICE_LABEL="installer-update-smoke"
+          export ENOXIAN_API="http://127.0.0.1:37652"
+          "$bin_dir/enox" daemon run --port 37652 \
+            >"$RUNNER_TEMP/enoxian-update.log" 2>&1 &
+          daemon_pid=$!
+          trap 'kill "$daemon_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 40); do
+            curl -fsS "http://127.0.0.1:37652/app" >/dev/null && break
+            sleep 0.25
+          done
+          curl -fsS "http://127.0.0.1:37652/app" >/dev/null
+          sh "$RUNNER_TEMP/install.sh" --version "$TAG" --bin-dir "$bin_dir"
+          ! kill -0 "$daemon_pid" 2>/dev/null || {
+            echo "installer left the previous daemon running" >&2
+            exit 1
+          }
+          "$bin_dir/enox" --version | grep -F "$VERSION"
+          trap - EXIT
+
       - name: Exercise published installer on Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -429,6 +468,38 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (Test-Path (Join-Path $binDir 'enoxd.exe')) {
             throw 'legacy enoxd.exe should not be installed'
+          }
+
+          $env:ENOXIAN_HOME = Join-Path $env:RUNNER_TEMP 'enoxian-update-home'
+          $env:ENOXIAN_DEVICE_LABEL = 'installer-update-smoke'
+          $env:ENOXIAN_API = 'http://127.0.0.1:37652'
+          $stdout = Join-Path $env:RUNNER_TEMP 'enoxian-update.log'
+          $stderr = Join-Path $env:RUNNER_TEMP 'enoxian-update.err.log'
+          $daemon = Start-Process -FilePath (Join-Path $binDir 'enox.exe') `
+            -ArgumentList @('daemon', 'run', '--port', 37652) -PassThru `
+            -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 40; $attempt++) {
+              try {
+                $response = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:37652/app'
+                if ($response.StatusCode -eq 200) { $ready = $true; break }
+              } catch {
+                Start-Sleep -Milliseconds 250
+              }
+            }
+            if (-not $ready) { throw 'daemon did not start for installer update smoke test' }
+            & $installer -Version $env:TAG -BinDir $binDir -NoPathUpdate
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if (-not $daemon.WaitForExit(10000)) {
+              throw 'installer left the previous daemon running'
+            }
+            (& (Join-Path $binDir 'enox.exe') --version) |
+              Select-String -SimpleMatch $env:VERSION
+          } finally {
+            if ($daemon -and -not $daemon.HasExited) {
+              Stop-Process -Id $daemon.Id -Force
+            }
           }
 
   homebrew:

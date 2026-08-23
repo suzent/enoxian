@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use yrs::{GetString, Text, Transact};
+use yrs::{GetString, Text, Transact, WriteTxn};
 
 /// Pre-load all existing files in the workspace into the CRDT.
 /// Must run before the watcher starts so that any file present before daemon
@@ -40,25 +40,28 @@ pub async fn preload_workspace(state: &AppState, workspace: &PathBuf) {
                 // Restore saved CRDT state first — preserves operation IDs from previous session
                 // so merging with peers after restart is idempotent (no content duplication).
                 let restored = crate::store::crdt::restore(&state.workspace, &rel, &doc).await;
-                let text = doc.get_or_insert_text(rel.as_str());
-                let current = {
-                    let txn = doc.transact();
-                    text.get_string(&txn)
+                let changed = {
+                    let mut txn = match doc.try_transact_mut() {
+                        Ok(txn) => txn,
+                        Err(_) => continue,
+                    };
+                    let text = txn.get_or_insert_text(rel.as_str());
+                    let current = text.get_string(&txn);
+                    if current == contents {
+                        false
+                    } else {
+                        // File was edited while daemon was offline — apply the diff.
+                        // This creates new ops, but only happens for genuine offline edits.
+                        let len = text.len(&txn);
+                        if len > 0 {
+                            text.remove_range(&mut txn, 0, len);
+                        }
+                        if !contents.is_empty() {
+                            text.insert(&mut txn, 0, &contents);
+                        }
+                        true
+                    }
                 };
-                let mut changed = false;
-                if current != contents {
-                    // File was edited while daemon was offline — apply the diff.
-                    // This creates new ops, but only happens for genuine offline edits.
-                    let mut txn = doc.transact_mut();
-                    let len = text.len(&txn);
-                    if len > 0 {
-                        text.remove_range(&mut txn, 0, len);
-                    }
-                    if !contents.is_empty() {
-                        text.insert(&mut txn, 0, &contents);
-                    }
-                    changed = true;
-                }
                 if changed || !restored {
                     // Persist the bootstrapped/offline-edited state immediately.
                     // Without this, a restart can re-seed identical file text with
@@ -212,8 +215,11 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
         // The observer fires on TransactionMut drop → broadcasts to doc_updates + all_updates.
         let doc = state.get_or_create_doc(&rel);
         let changed = {
-            let text = doc.get_or_insert_text(rel.as_str());
-            let mut txn = doc.transact_mut();
+            let mut txn = match doc.try_transact_mut() {
+                Ok(txn) => txn,
+                Err(_) => continue,
+            };
+            let text = txn.get_or_insert_text(rel.as_str());
             let current = text.get_string(&txn);
             if current != contents {
                 let len = text.len(&txn);

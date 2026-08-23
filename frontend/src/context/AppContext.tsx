@@ -11,6 +11,7 @@ const loadPersistedCircleId = (): string | null => {
 interface AppContextValue {
   circles: Circle[]
   circlesLoaded: boolean
+  circlesError: string | null
   activeCircleId: string | null
   setActiveCircleId: (id: string | null) => void
   status: Status | null
@@ -20,6 +21,7 @@ interface AppContextValue {
 const AppContext = createContext<AppContextValue>({
   circles: [],
   circlesLoaded: false,
+  circlesError: null,
   activeCircleId: null,
   setActiveCircleId: () => {},
   status: null,
@@ -29,10 +31,12 @@ const AppContext = createContext<AppContextValue>({
 export function AppProvider({ children }: { children: ReactNode }) {
   const [circles, setCircles] = useState<Circle[]>([])
   const [circlesLoaded, setCirclesLoaded] = useState(false)
+  const [circlesError, setCirclesError] = useState<string | null>(null)
   const [activeCircleId, setActiveCircleIdState] = useState<string | null>(loadPersistedCircleId)
   const [status, setStatus] = useState<Status | null>(null)
 
   const reloadCircles = useCallback(async () => {
+    setCirclesError(null)
     try {
       const cs = await getCircles()
       setCircles(cs)
@@ -44,7 +48,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       } else if (!activeCircleId && cs.length > 0) {
         setActiveCircleIdState(cs[0].circle_id)
       }
-    } catch {}
+    } catch (error) {
+      setCirclesError(error instanceof Error ? error.message : 'Could not load circles.')
+    } finally {
+      setCirclesLoaded(true)
+    }
   }, [activeCircleId])
 
   useEffect(() => {
@@ -92,7 +100,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [activeCircleId])
 
   return (
-    <AppContext.Provider value={{ circles, circlesLoaded, activeCircleId, setActiveCircleId, status, reloadCircles }}>
+    <AppContext.Provider value={{ circles, circlesLoaded, circlesError, activeCircleId, setActiveCircleId, status, reloadCircles }}>
       {children}
     </AppContext.Provider>
   )

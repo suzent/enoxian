@@ -40,7 +40,7 @@
 
 use crate::control::{ChatMessage, MemberEntry, CHAT_KEY, MEMBER_LIST_KEY};
 use crate::state::AppState;
-use yrs::{Any, Array, ArrayRef, Map, Out, Transact};
+use yrs::{Any, Array, Map, Out, ReadTxn, Transact};
 
 /// How many recent chat lines to include as conversational context.
 const RECENT_CHAT_LINES: usize = 12;
@@ -138,8 +138,12 @@ fn standing_brief(state: &AppState, agent_id: &str) -> String {
 
 /// Member display labels (owner + device) for the roster line.
 fn member_labels(state: &AppState) -> Vec<String> {
-    let map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
-    let txn = state.control.transact();
+    let Ok(txn) = state.control.try_transact() else {
+        return Vec::new();
+    };
+    let Some(map) = txn.get_map(MEMBER_LIST_KEY) else {
+        return Vec::new();
+    };
     let mut labels = Vec::new();
     for (_key, val) in map.iter(&txn) {
         if let Out::Any(Any::String(s)) = val {
@@ -162,8 +166,12 @@ fn member_labels(state: &AppState) -> Vec<String> {
 
 /// The last few chat messages, oldest-first, as `sender: text` lines.
 fn recent_chat(state: &AppState) -> String {
-    let arr: ArrayRef = state.control.get_or_insert_array(CHAT_KEY);
-    let txn = state.control.transact();
+    let Ok(txn) = state.control.try_transact() else {
+        return String::new();
+    };
+    let Some(arr) = txn.get_array(CHAT_KEY) else {
+        return String::new();
+    };
     let mut seen = std::collections::HashSet::new();
     let all: Vec<ChatMessage> = arr
         .iter(&txn)

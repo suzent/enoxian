@@ -19,10 +19,9 @@ file, see below):
 3. **Skip pure-internal churn** — refactors, test-only changes, docs typos, CI
    tweaks that users never see. If a user can't observe it, it doesn't belong.
 4. **Security-relevant changes always go under `Security`,** even small ones.
-5. **At release time, cut a version section:** rename `[Unreleased]` you were
-   filling to `## [x.y.z] — YYYY-MM-DD`, add a fresh empty `## [Unreleased]`
-   above it, and update the compare links at the bottom. (`scripts/bump.sh` does
-   not do this yet — it is a manual step.)
+5. **At release time, cut a version section:** `scripts/bump.sh` and
+   `scripts/bump.ps1` add a dated version heading below a fresh empty
+   `[Unreleased]` section and update the compare links.
 6. **Versioning:** breaking change → major; new feature → minor; fix only →
    patch (pre-1.0, minor also absorbs features that aren't clearly breaking).
 
@@ -36,6 +35,25 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 
 ## [Unreleased]
+
+## [0.4.1] — 2026-08-23
+
+### Fixed
+
+- Circle sync and WebUI requests no longer block daemon worker threads while a
+  CRDT document is busy. Contended requests return a retryable response, and the
+  WebUI now times out with a visible **Try again** action instead of loading
+  forever.
+- Daemon shutdown now cancels circle tasks and long-lived WebSocket/SSE streams,
+  enforces a bounded graceful-drain period, and times out unresponsive stop
+  requests instead of leaving the API port wedged. The control API also starts
+  before circle workspace loading, so slow startup cannot block stop or update
+  commands. `enox stop` also stops the managed service when one is installed,
+  rather than allowing its supervisor to bring the daemon back.
+- Stable installers and development updates now bound calls into an older
+  binary, terminate orphaned daemon processes when needed, and preserve an
+  existing managed service across upgrades, allowing affected 0.4.0 installs to
+  update without manual process cleanup.
 
 ## [0.4.0] — 2026-08-22
 
@@ -245,7 +263,7 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.4.1...HEAD
 [0.3.7]: https://github.com/suzent/enoxian/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/suzent/enoxian/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/suzent/enoxian/compare/v0.3.4...v0.3.5
@@ -259,3 +277,4 @@ membership, WAN bootstrap, and the local workspace proposal layer.
 [0.1.4]: https://github.com/suzent/enoxian/releases/tag/v0.1.4
 [0.3.8]: https://github.com/suzent/enoxian/compare/v0.3.7...v0.3.8
 [0.4.0]: https://github.com/suzent/enoxian/compare/v0.3.8...v0.4.0
+[0.4.1]: https://github.com/suzent/enoxian/compare/v0.4.0...v0.4.1

@@ -8,10 +8,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const CHANNEL_DEV: &str = "dev";
 const CHANNEL_STABLE: &str = "stable";
+const CHILD_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const HEALTH_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub async fn run(
     dev: bool,
@@ -212,14 +214,15 @@ fn verify_binary(path: &Path) -> Result<()> {
 }
 
 fn stop_current(service: bool) -> Result<()> {
+    if service {
+        return crate::commands::service::stop_managed();
+    }
+
     let exe = std::env::current_exe().context("failed to locate the current enox executable")?;
     let mut command = Command::new(exe);
-    if service {
-        command.args(["service", "stop"]);
-    } else {
-        command.arg("stop");
-    }
-    let status = command.status().context("failed to stop Enoxian")?;
+    command.arg("stop");
+    let status = command_status_with_timeout(&mut command, CHILD_COMMAND_TIMEOUT)
+        .context("failed to stop Enoxian")?;
     if !status.success() {
         bail!("failed to stop Enoxian; the current installation was not changed");
     }
@@ -245,18 +248,26 @@ fn start_target(target: &Path, service: bool) -> Result<()> {
 
 fn wait_for_health(target: &Path) -> Result<()> {
     println!("▶ Waiting for API health...");
-    for _ in 0..40 {
-        let healthy = Command::new(target)
+    let deadline = Instant::now() + HEALTH_TIMEOUT;
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let attempt_timeout = remaining.min(Duration::from_secs(1));
+        let mut command = Command::new(target);
+        command
             .args(["circles", "--json"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+            .stderr(Stdio::null());
+        let healthy = command_status_with_timeout(&mut command, attempt_timeout)
             .map(|status| status.success())
             .unwrap_or(false);
         if healthy {
             return Ok(());
         }
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(500)),
+        );
     }
     bail!("Enoxian API did not become healthy within 20 seconds")
 }
@@ -297,14 +308,14 @@ fn stop_path(target: &Path, service: bool) {
     if !target.is_file() {
         return;
     }
-    let mut command = Command::new(target);
     if service {
-        command.args(["service", "stop"]);
-    } else {
-        command.arg("stop");
+        let _ = crate::commands::service::stop_managed();
+        return;
     }
+    let mut command = Command::new(target);
+    command.arg("stop");
     command.stdout(Stdio::null()).stderr(Stdio::null());
-    let _ = command.status();
+    let _ = command_status_with_timeout(&mut command, CHILD_COMMAND_TIMEOUT);
 }
 
 fn backup_path(target: &Path) -> Result<PathBuf> {
@@ -358,13 +369,36 @@ fn command_output(path: &Path, args: &[&str]) -> Option<String> {
 }
 
 fn command_succeeds(path: &Path, args: &[&str]) -> bool {
-    Command::new(path)
+    let mut command = Command::new(path);
+    command
         .args(args)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::null());
+    command_status_with_timeout(&mut command, CHILD_COMMAND_TIMEOUT)
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+fn command_status_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus> {
+    let mut child = command.spawn().context("failed to start child process")?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .context("failed to wait for child process")?
+        {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("child process exceeded {} seconds", timeout.as_secs_f64());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[cfg(windows)]

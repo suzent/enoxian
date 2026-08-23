@@ -70,6 +70,21 @@ function Wait-EnoxianBinaryUnlocked([string]$Path, [int]$TimeoutMilliseconds = 1
     throw "enoxian installer: timed out waiting for the running service to release $Path"
 }
 
+function Invoke-EnoxianStopWithTimeout([string]$Path, [int]$TimeoutMilliseconds = 5000) {
+    $stop = Start-Process -FilePath $Path -ArgumentList @('service', 'stop') `
+        -PassThru -WindowStyle Hidden
+    if (-not $stop.WaitForExit($TimeoutMilliseconds)) {
+        Stop-Process -Id $stop.Id -Force -ErrorAction SilentlyContinue
+        $stop.WaitForExit()
+    }
+}
+
+function Stop-EnoxianDaemonProcesses {
+    Get-CimInstance Win32_Process -Filter "Name = 'enox.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match '(?i)(^|\s)"?daemon"?\s+"?run"?(\s|$)' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+
 $Tmp = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ("enoxian-" + [guid]::NewGuid()))
 $changed = $false
 $committed = $false
@@ -77,16 +92,11 @@ $serviceRestarted = $false
 $existing = @{}
 try {
     if (Test-Path $installedEnox -PathType Leaf) {
-        & $installedEnox service stop *> $null
-        if ($LASTEXITCODE -ne 0) {
-            & $installedEnox stop *> $null
-            if ($LASTEXITCODE -ne 0) {
-                throw 'enoxian installer: failed to stop the existing Enoxian process'
-            }
-        }
+        Invoke-EnoxianStopWithTimeout $installedEnox
         if ($serviceWasInstalled) {
             & schtasks.exe /End /TN Enoxian *> $null
         }
+        Stop-EnoxianDaemonProcesses
         Wait-EnoxianBinaryUnlocked $installedEnox
     }
 
@@ -124,7 +134,12 @@ try {
     if ($existing['enox.exe']) { Copy-Item $destination (Join-Path $backupDir 'enox.exe') }
     $stagedDestination = Join-Path $BinDir '.enox.exe.new'
     Copy-Item (Join-Path $Tmp 'enox.exe') $stagedDestination -Force
-    Move-Item $stagedDestination $destination -Force
+    if ($existing['enox.exe']) {
+        $replaceBackup = Join-Path $backupDir 'enox.exe.replace-backup'
+        [IO.File]::Replace($stagedDestination, $destination, $replaceBackup)
+    } else {
+        Move-Item $stagedDestination $destination
+    }
     $changed = $true
 
     & (Join-Path $BinDir 'enox.exe') --version *> $null

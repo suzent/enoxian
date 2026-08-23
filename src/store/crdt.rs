@@ -13,7 +13,13 @@ pub fn state_path(workspace: &Path, rel_path: &str) -> PathBuf {
 
 /// Encode and write the full CRDT state for a doc.
 pub async fn save(workspace: &Path, rel_path: &str, doc: &Arc<Doc>) {
-    let bytes = doc.transact().encode_diff_v1(&StateVector::default());
+    let bytes = match doc.try_transact() {
+        Ok(txn) => txn.encode_diff_v1(&StateVector::default()),
+        Err(_) => {
+            tracing::debug!("[crdt] state busy; deferring save for {rel_path}");
+            return;
+        }
+    };
     let path = state_path(workspace, rel_path);
     if let Some(parent) = path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
@@ -33,9 +39,10 @@ pub async fn restore(workspace: &Path, rel_path: &str, doc: &Arc<Doc>) -> bool {
         Ok(u) => u,
         Err(_) => return false,
     };
-    doc.transact_mut_with("restore")
-        .apply_update(update)
-        .is_ok()
+    match doc.try_transact_mut_with("restore") {
+        Ok(mut txn) => txn.apply_update(update).is_ok(),
+        Err(_) => false,
+    }
 }
 
 pub async fn delete(workspace: &Path, rel_path: &str) {

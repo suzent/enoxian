@@ -37,7 +37,7 @@
 use crate::control::{CHAT_KEY, MEMBER_LIST_KEY, MLS_REMOVED_KEY, TASKS_KEY};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use yrs::{Any, Array, Map, Out, Transact};
+use yrs::{Any, Array, Map, Out, ReadTxn, Transact, WriteTxn};
 
 /// Chat older than this many days is dropped at save time.
 const CHAT_RETENTION_DAYS: i64 = 30;
@@ -84,18 +84,15 @@ struct IdOnly {
 /// shutdown.
 pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
     let cutoff = chrono::Utc::now().timestamp() - CHAT_RETENTION_DAYS * 86_400;
-    // Resolve the shared refs BEFORE opening a read transaction. `get_or_insert_*`
-    // may need to create the type (a write), which would deadlock if a read
-    // transaction is already held.
-    let chat_arr = control.get_or_insert_array(CHAT_KEY);
-    let tasks_map = control.get_or_insert_map(TASKS_KEY);
-    let members_map = control.get_or_insert_map(MEMBER_LIST_KEY);
-    let removed_map = control.get_or_insert_map(MLS_REMOVED_KEY);
     let snap = {
-        let txn = control.transact();
+        let txn = control
+            .try_transact()
+            .map_err(|_| anyhow::anyhow!("circle state busy; persistence deferred"))?;
 
-        let mut chat: Vec<String> = chat_arr
-            .iter(&txn)
+        let mut chat: Vec<String> = txn
+            .get_array(CHAT_KEY)
+            .into_iter()
+            .flat_map(|chat| chat.iter(&txn))
             .filter_map(|v| match v {
                 Out::Any(Any::String(s)) => Some(s.to_string()),
                 _ => None,
@@ -110,9 +107,18 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
         deduplicate_messages(&mut chat);
         retain_latest_messages(&mut chat);
 
-        let tasks = map_strings(&tasks_map, &txn);
-        let members = map_strings(&members_map, &txn);
-        let removed = map_strings(&removed_map, &txn);
+        let tasks = txn
+            .get_map(TASKS_KEY)
+            .map(|map| map_strings(&map, &txn))
+            .unwrap_or_default();
+        let members = txn
+            .get_map(MEMBER_LIST_KEY)
+            .map(|map| map_strings(&map, &txn))
+            .unwrap_or_default();
+        let removed = txn
+            .get_map(MLS_REMOVED_KEY)
+            .map(|map| map_strings(&map, &txn))
+            .unwrap_or_default();
 
         ControlSnapshot {
             chat,
@@ -152,16 +158,13 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
         );
     }
 
-    // Resolve all refs before opening the transaction (get_or_insert_* may write
-    // to create the type, which deadlocks under a held transaction).
-    let tasks = control.get_or_insert_map(TASKS_KEY);
-    let members = control.get_or_insert_map(MEMBER_LIST_KEY);
-    let removed = control.get_or_insert_map(MLS_REMOVED_KEY);
-    let chat = control.get_or_insert_array(CHAT_KEY);
-
     // One write transaction for everything, avoiding any read/write interleave.
     {
         let mut txn = control.transact_mut();
+        let tasks = txn.get_or_insert_map(TASKS_KEY);
+        let members = txn.get_or_insert_map(MEMBER_LIST_KEY);
+        let removed = txn.get_or_insert_map(MLS_REMOVED_KEY);
+        let chat = txn.get_or_insert_array(CHAT_KEY);
         for (k, v) in &snap.tasks {
             tasks.insert(&mut txn, k.as_str(), v.as_str());
         }

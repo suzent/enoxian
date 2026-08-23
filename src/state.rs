@@ -350,10 +350,20 @@ impl AppState {
         }
     }
 
+    pub fn try_is_peer_removed(&self, peer_id: &str) -> Option<bool> {
+        use yrs::ReadTxn;
+        let txn = self.control.try_transact().ok()?;
+        let Some(removed) = txn.get_map(MLS_REMOVED_KEY) else {
+            return Some(false);
+        };
+        Some(matches!(
+            removed.get(&txn, peer_id),
+            Some(Out::Any(Any::String(_)))
+        ))
+    }
+
     pub fn is_peer_removed(&self, peer_id: &str) -> bool {
-        let removed = self.control.get_or_insert_map(MLS_REMOVED_KEY);
-        let txn = self.control.transact();
-        matches!(removed.get(&txn, peer_id), Some(Out::Any(Any::String(_))))
+        self.try_is_peer_removed(peer_id).unwrap_or(false)
     }
 
     pub fn is_self_removed(&self) -> bool {

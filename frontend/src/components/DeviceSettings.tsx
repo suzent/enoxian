@@ -32,6 +32,9 @@ export default function DeviceSettings({ onClose }: Props) {
   const [command, setCommand] = useState('')
 
   const refresh = useCallback(() => {
+    setError(null)
+    setCfg(null)
+    setPlugins(null)
     getAgentConfig().then(setCfg).catch(e => setError(e.message))
     getAgentPlugins().then(r => setPlugins(r.plugins)).catch(() => setPlugins([]))
   }, [])
@@ -141,7 +144,14 @@ export default function DeviceSettings({ onClose }: Props) {
             </button>
           </div>
           <div className="ritual-panel__body settings-panel-body flex flex-col gap-4">
-          {error && <div className="file-error">{error}</div>}
+          {error && (
+            <div className="file-error">
+              <div>{error}</div>
+              <button type="button" className="enox-btn mt-2 text-[9px] px-2 py-1 min-h-0" onClick={refresh}>
+                TRY AGAIN
+              </button>
+            </div>
+          )}
           {activeTab === 'agents' && !cfg && !error && <div className="text-slate font-mono text-[11px]">Loading…</div>}
 
           {activeTab === 'agents' && cfg && (

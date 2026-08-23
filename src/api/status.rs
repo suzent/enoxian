@@ -59,13 +59,17 @@ pub async fn get_status(
 
     let (device_label, user_handle) =
         crate::identity::read_identity_display().unwrap_or_else(|| (String::new(), None));
+    let removed = match state.try_is_peer_removed(&state.peer_id) {
+        Some(removed) => removed,
+        None => return super::circle_busy(),
+    };
 
     Json(json!({
         "circle_id":    state.circle_id,
         "circle_name":  state.circle_name,
         "workspace":    state.workspace.to_string_lossy(),
         "agent_id":     state.agent_id,
-        "removed":      state.is_self_removed(),
+        "removed":      removed,
         "device_label": device_label,
         "user_handle":  user_handle,
         "docs":         state.docs.len(),

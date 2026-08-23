@@ -7,7 +7,7 @@ use axum::{
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::json;
-use yrs::{Any, Array, Map, MapRef, Out, Transact};
+use yrs::{Any, Array, Map, Out, ReadTxn, Transact, WriteTxn};
 
 use crate::control::{
     CircleEvent, MemberEntry, MemberRole, MlsCommitEntry, PendingEntry, MEMBER_LIST_KEY,
@@ -29,8 +29,13 @@ pub async fn list_members(
                 .into_response()
         }
     };
-    let map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
-    let txn = state.control.transact();
+    let txn = match state.control.try_transact() {
+        Ok(txn) => txn,
+        Err(_) => return super::circle_busy(),
+    };
+    let Some(map) = txn.get_map(MEMBER_LIST_KEY) else {
+        return Json(Vec::<MemberEntry>::new()).into_response();
+    };
     let mut members: Vec<MemberEntry> = Vec::new();
     for (_, val) in map.iter(&txn) {
         if let Out::Any(Any::String(s)) = val {
@@ -122,8 +127,11 @@ pub async fn add_member(
     };
 
     {
-        let map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
-        let mut txn = state.control.transact_mut();
+        let mut txn = match state.control.try_transact_mut() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        let map = txn.get_or_insert_map(MEMBER_LIST_KEY);
         map.insert(&mut txn, req.peer_id.as_str(), json_str.as_str());
     }
 
@@ -232,8 +240,11 @@ pub async fn remove_member(
             ratchet_tree_hex: String::new(), // not needed for Remove commits
         };
         if let Ok(json_str) = serde_json::to_string(&entry) {
-            let commits_arr = state.control.get_or_insert_array(MLS_COMMITS_KEY);
-            let mut txn = state.control.transact_mut();
+            let mut txn = match state.control.try_transact_mut() {
+                Ok(txn) => txn,
+                Err(_) => return super::circle_busy(),
+            };
+            let commits_arr = txn.get_or_insert_array(MLS_COMMITS_KEY);
             commits_arr.push_back(&mut txn, json_str.as_str());
         }
 
@@ -246,17 +257,21 @@ pub async fn remove_member(
 
     // Read the agent_id before removing the member entry (needed for presence update).
     let evicted_agent_id: Option<String> = {
-        let member_map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
-        let txn = state.control.transact();
-        member_map.get(&txn, req.peer_id.as_str()).and_then(|v| {
-            if let Out::Any(Any::String(s)) = v {
-                serde_json::from_str::<MemberEntry>(&s)
-                    .ok()
-                    .map(|e| e.agent_id)
-            } else {
-                None
-            }
-        })
+        let txn = match state.control.try_transact() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        txn.get_map(MEMBER_LIST_KEY)
+            .and_then(|member_map| member_map.get(&txn, req.peer_id.as_str()))
+            .and_then(|v| {
+                if let Out::Any(Any::String(s)) = v {
+                    serde_json::from_str::<MemberEntry>(&s)
+                        .ok()
+                        .map(|e| e.agent_id)
+                } else {
+                    None
+                }
+            })
     };
 
     // Remove from CRDT member list, clean up auxiliary keys, and write tombstone.
@@ -265,13 +280,16 @@ pub async fn remove_member(
     // before PSK rotation completes.  All changes go in one transaction so peers
     // receiving the CRDT update see a consistent state.
     {
-        let member_map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
-        let kp_map: MapRef = state.control.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
-        let welcome_map: MapRef = state.control.get_or_insert_map(MLS_WELCOMES_KEY);
-        let pending_map: MapRef = state.control.get_or_insert_map(MLS_PENDING_KEY);
-        let removed_map: MapRef = state.control.get_or_insert_map(MLS_REMOVED_KEY);
         let removed_at = Utc::now().to_rfc3339();
-        let mut txn = state.control.transact_mut();
+        let mut txn = match state.control.try_transact_mut() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        let member_map = txn.get_or_insert_map(MEMBER_LIST_KEY);
+        let kp_map = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+        let welcome_map = txn.get_or_insert_map(MLS_WELCOMES_KEY);
+        let pending_map = txn.get_or_insert_map(MLS_PENDING_KEY);
+        let removed_map = txn.get_or_insert_map(MLS_REMOVED_KEY);
         member_map.remove(&mut txn, req.peer_id.as_str());
         kp_map.remove(&mut txn, req.peer_id.as_str());
         welcome_map.remove(&mut txn, req.peer_id.as_str());
@@ -319,9 +337,12 @@ pub async fn promote_member(
     };
 
     let existing_owner = {
-        let map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
-        let txn = state.control.transact();
-        map.get(&txn, req.peer_id.as_str())
+        let txn = match state.control.try_transact() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        txn.get_map(MEMBER_LIST_KEY)
+            .and_then(|map| map.get(&txn, req.peer_id.as_str()))
             .and_then(|v| {
                 if let Out::Any(Any::String(s)) = v {
                     serde_json::from_str::<MemberEntry>(&s)
@@ -352,10 +373,13 @@ pub async fn promote_member(
             .into_response();
     }
 
-    let map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
     let (prev_owner, prev_agent_id, prev_device_label, prev_agents) = {
-        let txn = state.control.transact();
-        map.get(&txn, req.peer_id.as_str())
+        let txn = match state.control.try_transact() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        txn.get_map(MEMBER_LIST_KEY)
+            .and_then(|map| map.get(&txn, req.peer_id.as_str()))
             .and_then(|v| {
                 if let Out::Any(Any::String(s)) = v {
                     serde_json::from_str::<MemberEntry>(&s)
@@ -386,7 +410,11 @@ pub async fn promote_member(
     };
 
     {
-        let mut txn = state.control.transact_mut();
+        let mut txn = match state.control.try_transact_mut() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        let map = txn.get_or_insert_map(MEMBER_LIST_KEY);
         map.insert(&mut txn, req.peer_id.as_str(), json_str.as_str());
     }
 
@@ -407,8 +435,13 @@ pub async fn list_pending(
                 .into_response()
         }
     };
-    let map: MapRef = state.control.get_or_insert_map(MLS_PENDING_KEY);
-    let txn = state.control.transact();
+    let txn = match state.control.try_transact() {
+        Ok(txn) => txn,
+        Err(_) => return super::circle_busy(),
+    };
+    let Some(map) = txn.get_map(MLS_PENDING_KEY) else {
+        return Json(Vec::<PendingEntry>::new()).into_response();
+    };
     let mut entries: Vec<PendingEntry> = Vec::new();
     for (_, val) in map.iter(&txn) {
         if let Out::Any(Any::String(s)) = val {
@@ -474,9 +507,14 @@ pub async fn approve_member(
 
     // Load key package
     let kp_hex = {
-        let kp_map: MapRef = state.control.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
-        let txn = state.control.transact();
-        match kp_map.get(&txn, req.peer_id.as_str()) {
+        let txn = match state.control.try_transact() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        match txn
+            .get_map(MLS_KEY_PACKAGES_KEY)
+            .and_then(|kp_map| kp_map.get(&txn, req.peer_id.as_str()))
+        {
             Some(Out::Any(Any::String(s))) => s.to_string(),
             _ => {
                 return (
@@ -530,13 +568,15 @@ pub async fn approve_member(
     let ratchet_hex = hex::encode(&ratchet_tree_bytes);
 
     {
-        let welcomes_map: MapRef = state.control.get_or_insert_map(MLS_WELCOMES_KEY);
-        let mut txn = state.control.transact_mut();
+        let mut txn = match state.control.try_transact_mut() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        let welcomes_map = txn.get_or_insert_map(MLS_WELCOMES_KEY);
         welcomes_map.insert(&mut txn, req.peer_id.as_str(), welcome_hex.as_str());
     }
 
     {
-        let commits_arr = state.control.get_or_insert_array(MLS_COMMITS_KEY);
         let epoch = {
             let mls_locked = state.mls.lock().await;
             mls_locked.group.as_ref().map(|g| g.epoch()).unwrap_or(0)
@@ -548,17 +588,23 @@ pub async fn approve_member(
             ratchet_tree_hex: ratchet_hex,
         };
         if let Ok(json_str) = serde_json::to_string(&entry) {
-            let mut txn = state.control.transact_mut();
+            let mut txn = match state.control.try_transact_mut() {
+                Ok(txn) => txn,
+                Err(_) => return super::circle_busy(),
+            };
+            let commits_arr = txn.get_or_insert_array(MLS_COMMITS_KEY);
             commits_arr.push_back(&mut txn, json_str.as_str());
         }
     }
 
     // Add to member list, remove from pending — carry device_label and agents from pending entry
     let (agent_id, device_label, agents) = {
-        let pending_map: MapRef = state.control.get_or_insert_map(MLS_PENDING_KEY);
-        let txn = state.control.transact();
-        pending_map
-            .get(&txn, req.peer_id.as_str())
+        let txn = match state.control.try_transact() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        txn.get_map(MLS_PENDING_KEY)
+            .and_then(|pending_map| pending_map.get(&txn, req.peer_id.as_str()))
             .and_then(|v| {
                 if let Out::Any(Any::String(s)) = v {
                     serde_json::from_str::<PendingEntry>(&s)
@@ -590,9 +636,12 @@ pub async fn approve_member(
     };
 
     {
-        let member_map: MapRef = state.control.get_or_insert_map(MEMBER_LIST_KEY);
-        let pending_map: MapRef = state.control.get_or_insert_map(MLS_PENDING_KEY);
-        let mut txn = state.control.transact_mut();
+        let mut txn = match state.control.try_transact_mut() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        let member_map = txn.get_or_insert_map(MEMBER_LIST_KEY);
+        let pending_map = txn.get_or_insert_map(MLS_PENDING_KEY);
         member_map.insert(&mut txn, req.peer_id.as_str(), json_str.as_str());
         pending_map.remove(&mut txn, req.peer_id.as_str());
     }
@@ -653,8 +702,11 @@ pub async fn reject_member(
     }
 
     {
-        let pending_map: MapRef = state.control.get_or_insert_map(MLS_PENDING_KEY);
-        let mut txn = state.control.transact_mut();
+        let mut txn = match state.control.try_transact_mut() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        let pending_map = txn.get_or_insert_map(MLS_PENDING_KEY);
         pending_map.remove(&mut txn, req.peer_id.as_str());
     }
 

@@ -61,9 +61,24 @@ async fn main() -> anyhow::Result<()> {
         AgentCommands::Circles => enoxian::commands::circles::run(&client, &root, cli.json).await,
         AgentCommands::Open => enoxian::commands::open::run(&root),
         AgentCommands::Start { port } => enoxian::commands::start::run(port).await,
-        AgentCommands::Stop => enoxian::commands::stop::run(&client, &root).await,
+        AgentCommands::Stop => {
+            if enoxian::commands::service::is_installed() {
+                let _ = enoxian::commands::stop::run(&client, &root).await;
+                enoxian::commands::service::stop_managed()
+            } else {
+                enoxian::commands::stop::run(&client, &root).await
+            }
+        }
         AgentCommands::Daemon(args) => match args.action {
-            DaemonAction::Run(args) => enoxian::commands::serve::run(args).await,
+            DaemonAction::Run(args) => match enoxian::commands::serve::run(args).await {
+                Ok(()) => {
+                    // Graceful cleanup has completed. Exit directly instead of
+                    // waiting indefinitely for third-party blocking runtime
+                    // work (for example DNS/filesystem workers) to unwind.
+                    std::process::exit(0)
+                }
+                Err(error) => Err(error),
+            },
         },
         AgentCommands::Bootstrap(args) => match args.action {
             BootstrapAction::Serve(args) => {

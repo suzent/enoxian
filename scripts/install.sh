@@ -81,6 +81,15 @@ tmp="$(mktemp -d 2>/dev/null || mktemp -d -t enoxian)"
 committed=0
 changed=0
 had_enox=0
+service_was_installed=0
+service_stopped=0
+service_restarted=0
+
+if [ "$os_tag" = "linux" ] && [ -n "${HOME:-}" ] && [ -f "$HOME/.config/systemd/user/enoxian.service" ]; then
+  service_was_installed=1
+elif [ "$os_tag" = "macos" ] && [ -n "${HOME:-}" ] && [ -f "$HOME/Library/LaunchAgents/com.enoxian.service.plist" ]; then
+  service_was_installed=1
+fi
 
 cleanup() {
   code=$?
@@ -88,6 +97,9 @@ cleanup() {
   if [ "$changed" -eq 1 ] && [ "$committed" -eq 0 ]; then
     info "installation failed; restoring the previous installation"
     if [ "$had_enox" -eq 1 ]; then cp "$tmp/backup/enox" "$BIN_DIR/enox"; else rm -f "$BIN_DIR/enox"; fi
+  fi
+  if [ "$code" -ne 0 ] && [ "$service_stopped" -eq 1 ] && [ "$service_restarted" -eq 0 ] && [ -x "$BIN_DIR/enox" ]; then
+    "$BIN_DIR/enox" service start >/dev/null 2>&1 || true
   fi
   rm -rf "$tmp"
   exit "$code"
@@ -110,6 +122,58 @@ download() {
   else
     err "curl or wget is required"
   fi
+}
+
+stop_with_timeout() {
+  "$1" stop >/dev/null 2>&1 &
+  stop_pid=$!
+  attempts=0
+  while kill -0 "$stop_pid" 2>/dev/null; do
+    if [ "$attempts" -ge 50 ]; then
+      kill "$stop_pid" 2>/dev/null || true
+      wait "$stop_pid" 2>/dev/null || true
+      return
+    fi
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  wait "$stop_pid" 2>/dev/null || true
+}
+
+stop_managed_service() {
+  [ "$service_was_installed" -eq 1 ] || return
+  if [ "$os_tag" = "linux" ]; then
+    systemctl --user stop enoxian.service >/dev/null 2>&1 || true
+  else
+    launchctl bootout "gui/$(id -u)/com.enoxian.service" >/dev/null 2>&1 || true
+  fi
+  service_stopped=1
+}
+
+daemon_pids() {
+  executable="$BIN_DIR/enox"
+  ps -ax -o pid= -o command= 2>/dev/null | awk -v plain="$executable daemon run" -v quoted="\"$executable\" daemon run" '
+    {
+      pid=$1
+      sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", $0)
+      if (index($0, plain) == 1 || index($0, quoted) == 1) print pid
+    }
+  '
+}
+
+stop_daemon_processes() {
+  pids="$(daemon_pids)"
+  [ -n "$pids" ] || return
+  kill $pids 2>/dev/null || true
+  attempts=0
+  while [ "$attempts" -lt 50 ]; do
+    remaining="$(daemon_pids)"
+    [ -z "$remaining" ] && return
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  remaining="$(daemon_pids)"
+  [ -z "$remaining" ] || kill -9 $remaining 2>/dev/null || true
 }
 
 info "detected ${os_tag}/${arch_tag}"
@@ -144,8 +208,10 @@ mkdir -p "$BIN_DIR" || err "cannot create $BIN_DIR; choose a writable directory 
 [ -w "$BIN_DIR" ] || err "$BIN_DIR is not writable; choose another directory with --bin-dir"
 mkdir "$tmp/backup"
 if [ -x "$BIN_DIR/enox" ]; then
-  "$BIN_DIR/enox" stop >/dev/null 2>&1 || true
+  stop_with_timeout "$BIN_DIR/enox"
 fi
+stop_managed_service
+stop_daemon_processes
 if [ -f "$BIN_DIR/enox" ]; then cp "$BIN_DIR/enox" "$tmp/backup/enox"; had_enox=1; fi
 
 cp "$tmp/enox" "$BIN_DIR/.enox.new.$$"
@@ -162,6 +228,11 @@ info "installed $staged_version"
 info "binary: $BIN_DIR/enox"
 if [ "$ENABLE_SERVICE" = "1" ]; then
   "$BIN_DIR/enox" service install --force || err "enox installed, but login service setup failed"
+  service_restarted=1
+elif [ "$service_was_installed" -eq 1 ]; then
+  "$BIN_DIR/enox" service start || err "enox installed, but the existing login service failed to restart"
+  service_restarted=1
+  info "existing login service preserved and restarted"
 else
   info "optional: run 'enox service install' to start automatically when you sign in"
 fi
