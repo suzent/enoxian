@@ -83,7 +83,7 @@ sed -i.bak -E "s/^(version\s*=\s*)\"[^\"]*\"/\1\"$NEW\"/" "$CARGO_TOML"
 rm -f "$CARGO_TOML.bak"
 
 # Keep the user-facing package version synchronized.
-sed -i.bak -E "s/^The current package version is \*\*[^*]+\*\*\.$/The current package version is **$NEW**./" "$README"
+sed -i.bak -E "s/^The current package version is \*\*[^*]+\*\*\./The current package version is **$NEW**./" "$README"
 rm -f "$README.bak"
 
 # ── cargo check to update Cargo.lock ─────────────────────────────────────────

@@ -76,7 +76,7 @@ Set-Content $CargoToml $updated -NoNewline
 $readmeContent = Get-Content $Readme -Raw
 $readmeContent = [regex]::Replace(
     $readmeContent,
-    '(?m)^The current package version is \*\*[^*]+\*\*\.$',
+    '(?m)^The current package version is \*\*[^*]+\*\*\.',
     "The current package version is **$new**.",
     1
 )

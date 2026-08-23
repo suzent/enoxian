@@ -134,7 +134,12 @@ try {
     if ($existing['enox.exe']) { Copy-Item $destination (Join-Path $backupDir 'enox.exe') }
     $stagedDestination = Join-Path $BinDir '.enox.exe.new'
     Copy-Item (Join-Path $Tmp 'enox.exe') $stagedDestination -Force
-    Move-Item $stagedDestination $destination -Force
+    if ($existing['enox.exe']) {
+        $replaceBackup = Join-Path $backupDir 'enox.exe.replace-backup'
+        [IO.File]::Replace($stagedDestination, $destination, $replaceBackup)
+    } else {
+        Move-Item $stagedDestination $destination
+    }
     $changed = $true
 
     & (Join-Path $BinDir 'enox.exe') --version *> $null

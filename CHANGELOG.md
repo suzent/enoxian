@@ -36,11 +36,15 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-08-23
+
 ### Fixed
 
 - Daemon shutdown now cancels circle tasks and long-lived WebSocket/SSE streams,
   enforces a bounded graceful-drain period, and times out unresponsive stop
-  requests instead of leaving the API port wedged.
+  requests instead of leaving the API port wedged. The control API also starts
+  before circle workspace loading, so slow startup cannot block stop or update
+  commands.
 - Stable installers and development updates now bound calls into an older
   binary, terminate orphaned daemon processes when needed, and preserve an
   existing managed service across upgrades, allowing affected 0.4.0 installs to
@@ -254,7 +258,7 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.4.1...HEAD
 [0.3.7]: https://github.com/suzent/enoxian/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/suzent/enoxian/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/suzent/enoxian/compare/v0.3.4...v0.3.5
@@ -268,3 +272,4 @@ membership, WAN bootstrap, and the local workspace proposal layer.
 [0.1.4]: https://github.com/suzent/enoxian/releases/tag/v0.1.4
 [0.3.8]: https://github.com/suzent/enoxian/compare/v0.3.7...v0.3.8
 [0.4.0]: https://github.com/suzent/enoxian/compare/v0.3.8...v0.4.0
+[0.4.1]: https://github.com/suzent/enoxian/compare/v0.4.0...v0.4.1

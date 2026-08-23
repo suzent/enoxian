@@ -29,7 +29,11 @@ pub async fn run(args: ServeArgs) -> Result<()> {
 
     let all_configs = config::load_all().unwrap_or_default();
 
-    let active: Vec<_> = all_configs.iter().filter(|c| !c.disabled).collect();
+    let active: Vec<_> = all_configs
+        .iter()
+        .filter(|c| !c.disabled)
+        .cloned()
+        .collect();
     info!(
         "Starting Enoxian — {} circle(s) found ({} active)",
         all_configs.len(),
@@ -40,34 +44,6 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     }
 
     let daemon = DaemonState::new();
-
-    for config in active {
-        if let Err(e) = lifecycle::spawn_circle(config.clone(), daemon.clone()).await {
-            warn!("Failed to start circle '{}': {e}", config.circle_name);
-        }
-    }
-
-    // Hot-reload: periodically check for new circles added while daemon is running.
-    {
-        let d = daemon.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-            loop {
-                interval.tick().await;
-                let Ok(cfgs) = config::load_all() else {
-                    continue;
-                };
-                for cfg in cfgs {
-                    if !cfg.disabled && !d.is_active(&cfg.circle_id) {
-                        info!("[hot-reload] starting circle '{}'", cfg.circle_name);
-                        if let Err(e) = lifecycle::spawn_circle(cfg, d.clone()).await {
-                            warn!("[hot-reload] failed: {e}");
-                        }
-                    }
-                }
-            }
-        });
-    }
 
     // Local API auth token — generated on first start, presented by the CLI and
     // the frontend. The API is a privileged control plane; the token stops a
@@ -179,6 +155,46 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         .await
         .with_context(|| format!("failed to bind HTTP server on {http_addr}"))?;
     info!("HTTP/WS listening on {http_addr}");
+
+    // Circle startup preloads the workspace and may take a while for large
+    // trees. Keep that work off the server startup path so the control API
+    // (especially /shutdown) is reachable as soon as the port is bound.
+    {
+        let d = daemon.clone();
+        tokio::spawn(async move {
+            for circle_config in active {
+                if let Err(e) = lifecycle::spawn_circle(circle_config.clone(), d.clone()).await {
+                    warn!(
+                        "Failed to start circle '{}': {e}",
+                        circle_config.circle_name
+                    );
+                }
+            }
+
+            // Hot-reload: periodically check for new circles added while the
+            // daemon is running. Starting it after the initial pass avoids
+            // racing that pass and creating a circle twice.
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                tokio::select! {
+                    _ = d.shutdown_token.cancelled() => break,
+                    _ = interval.tick() => {
+                        let Ok(cfgs) = config::load_all() else {
+                            continue;
+                        };
+                        for cfg in cfgs {
+                            if !cfg.disabled && !d.is_active(&cfg.circle_id) {
+                                info!("[hot-reload] starting circle '{}'", cfg.circle_name);
+                                if let Err(e) = lifecycle::spawn_circle(cfg, d.clone()).await {
+                                    warn!("[hot-reload] failed: {e}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     serve_with_shutdown(
         listener,
