@@ -6,6 +6,7 @@ const api = (circleId: string) => `/circles/${circleId}/api`
 // window.__ENOX_TOKEN__. Every API call presents it; WebSocket/EventSource
 // (which cannot set headers) append it as ?token=.
 const TOKEN: string = (window as unknown as { __ENOX_TOKEN__?: string }).__ENOX_TOKEN__ ?? ''
+const REQUEST_TIMEOUT_MS = 10_000
 
 function authHeaders(extra?: Record<string, string>): Record<string, string> {
   return TOKEN ? { Authorization: `Bearer ${TOKEN}`, ...extra } : { ...extra }
@@ -17,8 +18,20 @@ export function withToken(url: string): string {
   return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN)
 }
 
-async function get<T>(url: string): Promise<T> {
-  const res = await fetch(url, { headers: authHeaders() })
+async function request<T>(url: string, init: RequestInit): Promise<T> {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  let res: Response
+  try {
+    res = await fetch(url, { ...init, signal: controller.signal })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Enoxian is taking too long to respond. Try again in a moment.')
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeout)
+  }
   if (!res.ok) {
     let msg = `${res.status} ${url}`
     try {
@@ -30,21 +43,16 @@ async function get<T>(url: string): Promise<T> {
   return res.json()
 }
 
+async function get<T>(url: string): Promise<T> {
+  return request<T>(url, { headers: authHeaders() })
+}
+
 async function post<T>(url: string, body: unknown): Promise<T> {
-  const res = await fetch(url, {
+  return request<T>(url, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
   })
-  if (!res.ok) {
-    let msg = `${res.status} ${url}`
-    try {
-      const data = await res.json()
-      if (data.error) msg = data.error
-    } catch {}
-    throw new Error(msg)
-  }
-  return res.json()
 }
 
 

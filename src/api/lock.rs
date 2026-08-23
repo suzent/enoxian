@@ -13,7 +13,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use yrs::{Any, ArrayRef, Map, MapRef, Out, Transact};
+use yrs::{Any, Map, Out, ReadTxn, Transact, WriteTxn};
 
 // ── File locking ──────────────────────────────────────────────────────────
 
@@ -38,19 +38,24 @@ pub async fn bind_path(
                 .into_response()
         }
     };
-    let agent_id = req.agent_id.unwrap_or_else(|| "anonymous".to_string());
+    let agent_id = req
+        .agent_id
+        .clone()
+        .unwrap_or_else(|| "anonymous".to_string());
 
     let conflict = {
-        let doc = &state.control;
-        let lock_log: ArrayRef = doc.get_or_insert_array(LOCK_LOG_KEY);
-        let txn = doc.transact();
-        if is_locked_by_other(&lock_log, &txn, &req.path, &agent_id) {
-            let holders = compute_lock_state(&lock_log, &txn);
-            let holder = holders.get(&req.path).cloned().unwrap_or_default();
-            Some(holder)
-        } else {
-            None
-        }
+        let txn = match state.control.try_transact() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        txn.get_array(LOCK_LOG_KEY).and_then(|lock_log| {
+            if is_locked_by_other(&lock_log, &txn, &req.path, &agent_id) {
+                let holders = compute_lock_state(&lock_log, &txn);
+                Some(holders.get(&req.path).cloned().unwrap_or_default())
+            } else {
+                None
+            }
+        })
     };
 
     if let Some(holder) = conflict {
@@ -61,9 +66,15 @@ pub async fn bind_path(
             .into_response();
     }
 
+    write_bind(&state, req, agent_id).await
+}
+
+async fn write_bind(
+    state: &AppState,
+    req: PathRequest,
+    agent_id: String,
+) -> axum::response::Response {
     {
-        let doc = &state.control;
-        let lock_log: ArrayRef = doc.get_or_insert_array(LOCK_LOG_KEY);
         let entry = LockEntry {
             entry_id: uuid::Uuid::new_v4().to_string(),
             agent_id: agent_id.clone(),
@@ -71,7 +82,11 @@ pub async fn bind_path(
             action: LockAction::Acquire,
             ts: chrono::Utc::now(),
         };
-        let mut txn = doc.transact_mut();
+        let mut txn = match state.control.try_transact_mut() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        let lock_log = txn.get_or_insert_array(LOCK_LOG_KEY);
         let _ = append_lock_entry(&lock_log, &mut txn, &entry);
     }
 
@@ -109,8 +124,6 @@ pub async fn release_path(
     let agent_id = req.agent_id.unwrap_or_else(|| "anonymous".to_string());
 
     {
-        let doc = &state.control;
-        let lock_log: ArrayRef = doc.get_or_insert_array(LOCK_LOG_KEY);
         let entry = LockEntry {
             entry_id: uuid::Uuid::new_v4().to_string(),
             agent_id: agent_id.clone(),
@@ -118,7 +131,11 @@ pub async fn release_path(
             action: LockAction::Release,
             ts: chrono::Utc::now(),
         };
-        let mut txn = doc.transact_mut();
+        let mut txn = match state.control.try_transact_mut() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        let lock_log = txn.get_or_insert_array(LOCK_LOG_KEY);
         let _ = append_lock_entry(&lock_log, &mut txn, &entry);
     }
 
@@ -229,11 +246,14 @@ async fn update_task_status(
     new_status: TaskStatus,
     claimed_by: Option<String>,
 ) -> anyhow::Result<()> {
-    let doc = &state.control;
-    let tasks_map: MapRef = doc.get_or_insert_map(TASKS_KEY);
-
     let json_str = {
-        let txn = doc.transact();
+        let txn = state
+            .control
+            .try_transact()
+            .map_err(|_| anyhow::anyhow!("circle state busy; retry shortly"))?;
+        let tasks_map = txn
+            .get_map(TASKS_KEY)
+            .ok_or_else(|| anyhow::anyhow!("task not found"))?;
         match tasks_map.get(&txn, task_id) {
             Some(Out::Any(Any::String(s))) => s.to_string(),
             _ => return Err(anyhow::anyhow!("task not found")),
@@ -248,7 +268,11 @@ async fn update_task_status(
     }
 
     let updated_json = serde_json::to_string(&task)?;
-    let mut txn = doc.transact_mut();
+    let mut txn = state
+        .control
+        .try_transact_mut()
+        .map_err(|_| anyhow::anyhow!("circle state busy; retry shortly"))?;
+    let tasks_map = txn.get_or_insert_map(TASKS_KEY);
     tasks_map.insert(&mut txn, task_id, Any::String(updated_json.as_str().into()));
     Ok(())
 }

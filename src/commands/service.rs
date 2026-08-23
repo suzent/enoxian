@@ -270,7 +270,7 @@ fn xml_unescape(value: &str) -> String {
         .replace("&amp;", "&")
 }
 
-pub(crate) fn stop_managed() -> Result<()> {
+pub fn stop_managed() -> Result<()> {
     if !is_installed() {
         return Ok(());
     }
@@ -435,9 +435,7 @@ fn daemon_args(port: u16, bind_lan: bool, bind: Option<IpAddr>) -> Vec<String> {
 }
 
 fn state_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".enoxian")
+    crate::config::enoxian_dir().unwrap_or_else(|_| PathBuf::from(".enoxian"))
 }
 
 fn service_definition() -> PathBuf {

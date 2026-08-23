@@ -40,11 +40,16 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ### Fixed
 
+- Circle sync and WebUI requests no longer block daemon worker threads while a
+  CRDT document is busy. Contended requests return a retryable response, and the
+  WebUI now times out with a visible **Try again** action instead of loading
+  forever.
 - Daemon shutdown now cancels circle tasks and long-lived WebSocket/SSE streams,
   enforces a bounded graceful-drain period, and times out unresponsive stop
   requests instead of leaving the API port wedged. The control API also starts
   before circle workspace loading, so slow startup cannot block stop or update
-  commands.
+  commands. `enox stop` also stops the managed service when one is installed,
+  rather than allowing its supervisor to bring the daemon back.
 - Stable installers and development updates now bound calls into an older
   binary, terminate orphaned daemon processes when needed, and preserve an
   existing managed service across upgrades, allowing affected 0.4.0 installs to

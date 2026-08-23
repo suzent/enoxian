@@ -8,7 +8,7 @@ use axum::{
 };
 use serde::Serialize;
 use serde_json::json;
-use yrs::{Any, Map, MapRef, Out, Transact};
+use yrs::{Any, Map, Out, ReadTxn, Transact};
 
 #[derive(Serialize)]
 struct PresenceView {
@@ -31,9 +31,13 @@ pub async fn get_who(
                 .into_response()
         }
     };
-    let doc = &state.control;
-    let presence_map: MapRef = doc.get_or_insert_map(PRESENCE_KEY);
-    let txn = doc.transact();
+    let txn = match state.control.try_transact() {
+        Ok(txn) => txn,
+        Err(_) => return super::circle_busy(),
+    };
+    let Some(presence_map) = txn.get_map(PRESENCE_KEY) else {
+        return Json(Vec::<PresenceView>::new()).into_response();
+    };
 
     let mut result = Vec::new();
     for (_key, val) in presence_map.iter(&txn) {

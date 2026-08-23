@@ -19,10 +19,23 @@ use crate::daemon::DaemonState;
 use crate::sync_yjs::ws_handler::ws_yjs_handler;
 use axum::{
     extract::State,
+    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
 use serde_json::json;
+
+pub(crate) fn circle_busy() -> axum::response::Response {
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        [(axum::http::header::RETRY_AFTER, "1")],
+        Json(json!({
+            "error": "Circle state is busy syncing. Try again shortly.",
+            "code": "circle_busy"
+        })),
+    )
+        .into_response()
+}
 
 async fn list_circles(State(_daemon): State<DaemonState>) -> Json<serde_json::Value> {
     let configs = crate::config::load_all().unwrap_or_default();

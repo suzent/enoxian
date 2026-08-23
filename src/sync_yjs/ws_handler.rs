@@ -58,7 +58,10 @@ async fn handle_socket(
 
     // ── Handshake: send SyncStep1 (our state vector) ────────────────────────
     {
-        let sv = doc.transact().state_vector();
+        let sv = match doc.try_transact() {
+            Ok(txn) => txn.state_vector(),
+            Err(_) => return,
+        };
         let msg = Message::Sync(SyncMessage::SyncStep1(sv));
         let mut enc = EncoderV1::new();
         msg.encode(&mut enc);
@@ -148,7 +151,10 @@ async fn handle_incoming(
 
     match msg {
         Message::Sync(SyncMessage::SyncStep1(sv)) => {
-            let diff = doc.transact().encode_diff_v1(&sv);
+            let diff = match doc.try_transact() {
+                Ok(txn) => txn.encode_diff_v1(&sv),
+                Err(_) => return,
+            };
             let reply = Message::Sync(SyncMessage::SyncStep2(diff));
             let mut enc = EncoderV1::new();
             reply.encode(&mut enc);
@@ -158,7 +164,13 @@ async fn handle_incoming(
         Message::Sync(SyncMessage::SyncStep2(raw)) | Message::Sync(SyncMessage::Update(raw)) => {
             match Update::decode_v1(&raw) {
                 Ok(update) => {
-                    let mut txn = doc.transact_mut();
+                    let mut txn = match doc.try_transact_mut() {
+                        Ok(txn) => txn,
+                        Err(_) => {
+                            tracing::debug!("ws_yjs state busy for {doc_path}; client will resync");
+                            return;
+                        }
+                    };
                     if let Err(e) = txn.apply_update(update) {
                         tracing::warn!("apply_update error for {doc_path}: {e}");
                     }

@@ -9,7 +9,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use std::path::{Component, PathBuf};
-use yrs::{Text, Transact};
+use yrs::{Text, Transact, WriteTxn};
 
 pub async fn list_files(
     State(daemon): State<DaemonState>,
@@ -145,8 +145,11 @@ pub async fn create_file(
     }
 
     let doc = state.get_or_create_doc(&rel);
-    let text = doc.get_or_insert_text(rel.as_str());
-    let mut txn = doc.transact_mut();
+    let mut txn = match doc.try_transact_mut() {
+        Ok(txn) => txn,
+        Err(_) => return super::circle_busy(),
+    };
+    let text = txn.get_or_insert_text(rel.as_str());
     if !content.is_empty() {
         text.insert(&mut txn, 0, &content);
     }
@@ -233,8 +236,11 @@ pub async fn rename_file(
 
     if let Ok(content) = tokio::fs::read_to_string(&to_full).await {
         let doc = state.get_or_create_doc(&to);
-        let text = doc.get_or_insert_text(to.as_str());
-        let mut txn = doc.transact_mut();
+        let mut txn = match doc.try_transact_mut() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        let text = txn.get_or_insert_text(to.as_str());
         if !content.is_empty() {
             text.insert(&mut txn, 0, &content);
         }

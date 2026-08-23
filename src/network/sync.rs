@@ -270,8 +270,8 @@ fn device_label_for_peer(state: &AppState, peer_id: &PeerId) -> Option<String> {
     use crate::control::{MemberEntry, MEMBER_LIST_KEY};
     use yrs::Map;
     let peer_str = peer_id.to_string();
-    let map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
-    let txn = state.control.transact();
+    let txn = state.control.try_transact().ok()?;
+    let map = txn.get_map(MEMBER_LIST_KEY)?;
     match map.get(&txn, &peer_str) {
         Some(Out::Any(Any::String(s))) => serde_json::from_str::<MemberEntry>(&s)
             .ok()
@@ -280,7 +280,7 @@ fn device_label_for_peer(state: &AppState, peer_id: &PeerId) -> Option<String> {
     }
 }
 
-fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId) {
+fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId) -> bool {
     let doc = if path == "__control__" {
         state.control.clone()
     } else {
@@ -291,9 +291,16 @@ fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId) {
         Ok(update) => {
             // Use "p2p" origin so the observer skips forwarding this back to all_updates,
             // preventing the update from echoing to the peer that just sent it.
-            if let Err(e) = doc.transact_mut_with("p2p").apply_update(update) {
+            let mut txn = match doc.try_transact_mut_with("p2p") {
+                Ok(txn) => txn,
+                Err(_) => {
+                    warn!("[sync] state busy; deferring update for {path} to the next sync");
+                    return false;
+                }
+            };
+            if let Err(e) = txn.apply_update(update) {
                 warn!("[sync] apply_update for {path}: {e}");
-                return;
+                return false;
             }
             if path != "__control__" {
                 let author = device_label_for_peer(state, &peer_id);
@@ -303,8 +310,12 @@ fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId) {
                     crate::store::fs::flush_to_disk(&state, &path, author).await;
                 });
             }
+            true
         }
-        Err(e) => warn!("[sync] decode_v1 for {path}: {e}"),
+        Err(e) => {
+            warn!("[sync] decode_v1 for {path}: {e}");
+            false
+        }
     }
 }
 
@@ -330,15 +341,15 @@ async fn apply_delete(state: &AppState, path: &str) {
 /// Encode the full CRDT state of a doc as an Update message.
 /// Sending this is equivalent to "here is everything I have" — safe to apply
 /// at any time because CRDT merges are idempotent.
-fn full_state_update(state: &AppState, path: &str) -> Vec<u8> {
+fn full_state_update(state: &AppState, path: &str) -> Option<Vec<u8>> {
     let doc = if path == "__control__" {
         state.control.clone()
     } else {
         state.get_or_create_doc(path)
     };
     let empty_sv = StateVector::default();
-    let full_diff = doc.transact().encode_diff_v1(&empty_sv);
-    encode_sync(Message::Sync(SyncMessage::Update(full_diff)))
+    let full_diff = doc.try_transact().ok()?.encode_diff_v1(&empty_sv);
+    Some(encode_sync(Message::Sync(SyncMessage::Update(full_diff))))
 }
 
 fn all_doc_paths(state: &AppState) -> Vec<String> {
@@ -380,17 +391,27 @@ async fn write_conflict_copy(state: &AppState, rel_path: &str, content: &str) {
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 fn sync_revoked(state: &AppState, peer_id: &PeerId) -> bool {
-    state.is_self_removed() || state.is_peer_removed(&peer_id.to_string())
+    state.try_is_peer_removed(&state.peer_id).unwrap_or(true)
+        || state
+            .try_is_peer_removed(&peer_id.to_string())
+            .unwrap_or(true)
 }
 
 fn mark_self_removed(state: &AppState) {
     use crate::control::{CircleEvent, MEMBER_LIST_KEY};
 
-    let removed = state.control.get_or_insert_map(MLS_REMOVED_KEY);
-    let members = state.control.get_or_insert_map(MEMBER_LIST_KEY);
     let removed_at = chrono::Utc::now().to_rfc3339();
     {
-        let mut txn = state.control.transact_mut();
+        let mut txn = match state.control.try_transact_mut() {
+            Ok(txn) => txn,
+            Err(_) => {
+                warn!("[sync] state busy while recording local revocation");
+                return;
+            }
+        };
+        use yrs::WriteTxn;
+        let removed = txn.get_or_insert_map(MLS_REMOVED_KEY);
+        let members = txn.get_or_insert_map(MEMBER_LIST_KEY);
         removed.insert(&mut txn, state.peer_id.as_str(), removed_at.as_str());
         members.remove(&mut txn, state.peer_id.as_str());
     }
@@ -511,18 +532,20 @@ async fn sync_inner(
     // handshake so that the initiator (which applies SyncStep2 before receiving
     // the responder's SyncStep1) still has access to the pre-merge state.
 
-    let pre_merge: HashMap<String, (Vec<u8>, String)> = state
-        .docs
-        .iter()
-        .map(|entry| {
-            let path = entry.key().clone();
-            let doc = entry.value();
-            let sv = doc.transact().state_vector().encode_v1();
-            let text = doc.get_or_insert_text(&*path);
-            let content = text.get_string(&doc.transact());
-            (path, (sv, content))
-        })
-        .collect();
+    let mut pre_merge: HashMap<String, (Vec<u8>, String)> = HashMap::new();
+    for entry in state.docs.iter() {
+        let path = entry.key().clone();
+        let txn = entry
+            .value()
+            .try_transact()
+            .map_err(|_| anyhow::anyhow!("circle state busy during sync snapshot"))?;
+        let sv = txn.state_vector().encode_v1();
+        let content = txn
+            .get_text(path.as_str())
+            .map(|text| text.get_string(&txn))
+            .unwrap_or_default();
+        pre_merge.insert(path, (sv, content));
+    }
 
     // ── Handshake ─────────────────────────────────────────────────────────────
 
@@ -535,7 +558,10 @@ async fn sync_inner(
             } else {
                 state.get_or_create_doc(path)
             };
-            let sv = doc.transact().state_vector();
+            let sv = doc
+                .try_transact()
+                .map_err(|_| anyhow::anyhow!("circle state busy during sync handshake"))?
+                .state_vector();
             write_frame(
                 &mut tx,
                 state,
@@ -549,7 +575,9 @@ async fn sync_inner(
         for _ in 0..my_paths.len() {
             let (path, data) = read_frame(&mut rx, state).await?;
             if let IncomingEvent::Apply { raw_update, .. } = parse_frame(path.clone(), &data) {
-                apply_update(state, &path, &raw_update, peer_id);
+                if !apply_update(state, &path, &raw_update, peer_id) {
+                    return Err(anyhow::anyhow!("circle state busy; reconnecting sync"));
+                }
             }
         }
 
@@ -577,7 +605,10 @@ async fn sync_inner(
                 } else {
                     state.get_or_create_doc(&path)
                 };
-                let diff = doc.transact().encode_diff_v1(&sv);
+                let diff = doc
+                    .try_transact()
+                    .map_err(|_| anyhow::anyhow!("circle state busy during sync handshake"))?
+                    .encode_diff_v1(&sv);
                 write_frame(
                     &mut tx,
                     state,
@@ -610,7 +641,10 @@ async fn sync_inner(
                 } else {
                     state.get_or_create_doc(&path)
                 };
-                let diff = doc.transact().encode_diff_v1(&sv);
+                let diff = doc
+                    .try_transact()
+                    .map_err(|_| anyhow::anyhow!("circle state busy during sync handshake"))?
+                    .encode_diff_v1(&sv);
                 write_frame(
                     &mut tx,
                     state,
@@ -629,7 +663,10 @@ async fn sync_inner(
             } else {
                 state.get_or_create_doc(path)
             };
-            let sv = doc.transact().state_vector();
+            let sv = doc
+                .try_transact()
+                .map_err(|_| anyhow::anyhow!("circle state busy during sync handshake"))?
+                .state_vector();
             write_frame(
                 &mut tx,
                 state,
@@ -643,7 +680,9 @@ async fn sync_inner(
         for _ in 0..my_paths.len() {
             let (path, data) = read_frame(&mut rx, state).await?;
             if let IncomingEvent::Apply { raw_update, .. } = parse_frame(path.clone(), &data) {
-                apply_update(state, &path, &raw_update, peer_id);
+                if !apply_update(state, &path, &raw_update, peer_id) {
+                    return Err(anyhow::anyhow!("circle state busy; reconnecting sync"));
+                }
             }
         }
     }
@@ -681,8 +720,9 @@ async fn sync_inner(
             }
             return Err(anyhow::anyhow!("peer removed during sync catch-up"));
         }
-        let msg = full_state_update(state, &path);
-        write_frame(&mut tx, state, &path, &msg).await?;
+        if let Some(msg) = full_state_update(state, &path) {
+            write_frame(&mut tx, state, &path, &msg).await?;
+        }
     }
     flush_pending_awareness(&mut tx, state, &mut all_awareness_rx, peer_id).await?;
 
@@ -755,13 +795,18 @@ async fn sync_inner(
                 }
                 match event {
                     IncomingEvent::Apply { path, raw_update } => {
-                        apply_update(state, &path, &raw_update, peer_id);
+                        if !apply_update(state, &path, &raw_update, peer_id) {
+                            return Err(anyhow::anyhow!("circle state busy; reconnecting sync"));
+                        }
                     }
                     IncomingEvent::ResyncRequest { path, sv } => {
                         // Peer lagged — send them our full state for this doc
                         let sv = StateVector::decode_v1(&sv)?;
                         let doc = if path == "__control__" { state.control.clone() } else { state.get_or_create_doc(&path) };
-                        let diff = doc.transact().encode_diff_v1(&sv);
+                        let diff = doc
+                            .try_transact()
+                            .map_err(|_| anyhow::anyhow!("circle state busy during resync"))?
+                            .encode_diff_v1(&sv);
                         let step2 = encode_sync(Message::Sync(SyncMessage::SyncStep2(diff)));
                         write_frame(&mut tx, state, &path, &step2).await?;
                     }
@@ -800,8 +845,9 @@ async fn sync_inner(
                         // are idempotent so re-sending existing state is safe.
                         warn!("[sync] lagged {n} updates to {peer_id} — sending full state");
                         for path in all_doc_paths(state) {
-                            let msg = full_state_update(state, &path);
-                            write_frame(&mut tx, state, &path, &msg).await?;
+                            if let Some(msg) = full_state_update(state, &path) {
+                                write_frame(&mut tx, state, &path, &msg).await?;
+                            }
                         }
                     }
                     Err(RecvError::Closed) => break,

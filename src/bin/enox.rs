@@ -61,7 +61,14 @@ async fn main() -> anyhow::Result<()> {
         AgentCommands::Circles => enoxian::commands::circles::run(&client, &root, cli.json).await,
         AgentCommands::Open => enoxian::commands::open::run(&root),
         AgentCommands::Start { port } => enoxian::commands::start::run(port).await,
-        AgentCommands::Stop => enoxian::commands::stop::run(&client, &root).await,
+        AgentCommands::Stop => {
+            if enoxian::commands::service::is_installed() {
+                let _ = enoxian::commands::stop::run(&client, &root).await;
+                enoxian::commands::service::stop_managed()
+            } else {
+                enoxian::commands::stop::run(&client, &root).await
+            }
+        }
         AgentCommands::Daemon(args) => match args.action {
             DaemonAction::Run(args) => match enoxian::commands::serve::run(args).await {
                 Ok(()) => {

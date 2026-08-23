@@ -371,9 +371,11 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         let s = state_for_self_evict.clone();
                         let peer_str = self_peer_str.clone();
                         tokio::spawn(async move {
-                            use yrs::{Map, Transact};
-                            let pm = s.control.get_or_insert_map(MLS_PENDING_KEY);
-                            let mut txn = s.control.transact_mut();
+                            use yrs::{Map, Transact, WriteTxn};
+                            let Ok(mut txn) = s.control.try_transact_mut() else {
+                                return;
+                            };
+                            let pm = txn.get_or_insert_map(MLS_PENDING_KEY);
                             pm.remove(&mut txn, peer_str.as_str());
                         });
                     }
@@ -408,9 +410,11 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             let s = state_for_approval.clone();
                             let peer_str = self_peer_str.clone();
                             tokio::spawn(async move {
-                                use yrs::{Map, Transact as _};
-                                let pm = s.control.get_or_insert_map(MLS_PENDING_KEY);
-                                let mut txn = s.control.transact_mut();
+                                use yrs::{Map, Transact as _, WriteTxn};
+                                let Ok(mut txn) = s.control.try_transact_mut() else {
+                                    return;
+                                };
+                                let pm = txn.get_or_insert_map(MLS_PENDING_KEY);
                                 pm.remove(&mut txn, peer_str.as_str());
                                 tracing::info!("[member] removed pending entry after P2P approval");
                             });
@@ -1129,11 +1133,11 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         // them offline in the shared presence CRDT so all peers see it
                         // right away — no need to wait for the heartbeat to time out.
                         if num_established == 0 {
-                            use yrs::{Map, Out, Any, Transact};
-                            let member_map = state_for_swarm.control.get_or_insert_map(MEMBER_LIST_KEY);
-                            let txn = state_for_swarm.control.transact();
-                            let agent_id_for_peer = member_map
-                                .get(&txn, peer_id.to_string().as_str())
+                            use yrs::{Map, Out, Any, ReadTxn, Transact};
+                            let Ok(txn) = state_for_swarm.control.try_transact() else { continue };
+                            let agent_id_for_peer = txn
+                                .get_map(MEMBER_LIST_KEY)
+                                .and_then(|member_map| member_map.get(&txn, peer_id.to_string().as_str()))
                                 .and_then(|v| if let Out::Any(Any::String(s)) = v {
                                     serde_json::from_str::<MemberEntry>(&s).ok().map(|m| m.agent_id)
                                 } else { None });
@@ -1311,12 +1315,16 @@ fn spawn_control_persist(
 }
 
 async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::SharedMlsState) {
-    use yrs::{Any, Map, Out, Transact};
+    use yrs::{Any, Map, Out, ReadTxn, Transact, WriteTxn};
 
     let kp_hex = {
-        let kp_map = state.control.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
-        let txn = state.control.transact();
-        match kp_map.get(&txn, peer_id_str.as_str()) {
+        let Ok(txn) = state.control.try_transact() else {
+            return;
+        };
+        match txn
+            .get_map(MLS_KEY_PACKAGES_KEY)
+            .and_then(|kp_map| kp_map.get(&txn, peer_id_str.as_str()))
+        {
             Some(Out::Any(Any::String(s))) => s.to_string(),
             _ => return,
         }
@@ -1345,19 +1353,21 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
             // (e.g. the daemon restarted and re-wrote a pending entry to the CRDT
             // before the sync caught up). Remove the stale pending entry so the UI
             // stops showing them as awaiting approval.
-            let member_map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
-            let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
             let already_member = {
-                use yrs::Transact;
-                let txn = state.control.transact();
+                let Ok(txn) = state.control.try_transact() else {
+                    return;
+                };
                 matches!(
-                    member_map.get(&txn, peer_id_str.as_str()),
+                    txn.get_map(MEMBER_LIST_KEY)
+                        .and_then(|member_map| member_map.get(&txn, peer_id_str.as_str())),
                     Some(yrs::Out::Any(yrs::Any::String(_)))
                 )
             };
             if already_member {
-                use yrs::Transact;
-                let mut txn = state.control.transact_mut();
+                let Ok(mut txn) = state.control.try_transact_mut() else {
+                    return;
+                };
+                let pending_map = txn.get_or_insert_map(MLS_PENDING_KEY);
                 pending_map.remove(&mut txn, peer_id_str.as_str());
                 info!("[member] removed stale pending entry for {peer_id_str} (already a member)");
             }
@@ -1370,15 +1380,17 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
     let ratchet_hex = hex::encode(&ratchet_tree_bytes);
 
     {
-        let welcomes_map = state.control.get_or_insert_map(MLS_WELCOMES_KEY);
-        let mut txn = state.control.transact_mut();
+        let Ok(mut txn) = state.control.try_transact_mut() else {
+            return;
+        };
+        let welcomes_map = txn.get_or_insert_map(MLS_WELCOMES_KEY);
         welcomes_map.insert(&mut txn, peer_id_str.as_str(), welcome_hex.as_str());
     }
 
     {
-        let commits_arr = state.control.get_or_insert_array(MLS_COMMITS_KEY);
         let mls_locked = mls.lock().await;
         let epoch = mls_locked.group.as_ref().map(|g| g.epoch()).unwrap_or(0);
+        drop(mls_locked);
         let entry = MlsCommitEntry {
             epoch,
             data_hex: commit_hex,
@@ -1386,23 +1398,28 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
             ratchet_tree_hex: ratchet_hex,
         };
         if let Ok(json_str) = serde_json::to_string(&entry) {
-            let mut txn = state.control.transact_mut();
+            let Ok(mut txn) = state.control.try_transact_mut() else {
+                return;
+            };
+            let commits_arr = txn.get_or_insert_array(MLS_COMMITS_KEY);
             commits_arr.push_back(&mut txn, json_str.as_str());
         }
     }
 
     {
-        let member_map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
-        let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
         let pending_entry: Option<PendingEntry> = {
-            let txn = state.control.transact();
-            pending_map.get(&txn, peer_id_str.as_str()).and_then(|v| {
-                if let Out::Any(Any::String(s)) = v {
-                    serde_json::from_str(&s).ok()
-                } else {
-                    None
-                }
-            })
+            let Ok(txn) = state.control.try_transact() else {
+                return;
+            };
+            txn.get_map(MLS_PENDING_KEY)
+                .and_then(|pending_map| pending_map.get(&txn, peer_id_str.as_str()))
+                .and_then(|v| {
+                    if let Out::Any(Any::String(s)) = v {
+                        serde_json::from_str(&s).ok()
+                    } else {
+                        None
+                    }
+                })
         };
         let (owner, agent_id, device_label, agents) = pending_entry
             .map(|p| (p.owner, p.agent_id, p.device_label, p.agents))
@@ -1419,7 +1436,11 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
             signature: msg,
         };
         if let Ok(json_str) = serde_json::to_string(&entry) {
-            let mut txn = state.control.transact_mut();
+            let Ok(mut txn) = state.control.try_transact_mut() else {
+                return;
+            };
+            let member_map = txn.get_or_insert_map(MEMBER_LIST_KEY);
+            let pending_map = txn.get_or_insert_map(MLS_PENDING_KEY);
             member_map.insert(&mut txn, peer_id_str.as_str(), json_str.as_str());
             pending_map.remove(&mut txn, peer_id_str.as_str());
         }
@@ -1577,7 +1598,7 @@ pub async fn rotate_psk_and_restart(circle_id: &str, new_psk: [u8; 32], daemon: 
 /// no-op for any circle where we don't yet have a member entry (still pending),
 /// and for entries already in sync.
 pub fn readvertise_local_agents(daemon: &DaemonState) {
-    use yrs::{Any, Map, Out, Transact};
+    use yrs::{Any, Map, Out, ReadTxn, Transact, WriteTxn};
 
     let current_agents = crate::identity::read_local_agents();
     let current_label = crate::identity::read_identity_display()
@@ -1585,12 +1606,16 @@ pub fn readvertise_local_agents(daemon: &DaemonState) {
         .unwrap_or_default();
 
     for state in daemon.list() {
-        let map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
         let self_key = state.peer_id.clone();
 
         let existing: Option<MemberEntry> = {
-            let txn = state.control.transact();
-            match map.get(&txn, self_key.as_str()) {
+            let Ok(txn) = state.control.try_transact() else {
+                continue;
+            };
+            match txn
+                .get_map(MEMBER_LIST_KEY)
+                .and_then(|map| map.get(&txn, self_key.as_str()))
+            {
                 Some(Out::Any(Any::String(s))) => serde_json::from_str(&s).ok(),
                 _ => None,
             }
@@ -1602,7 +1627,10 @@ pub fn readvertise_local_agents(daemon: &DaemonState) {
                 entry.device_label = current_label.clone();
                 if let Ok(json_str) = serde_json::to_string(&entry) {
                     {
-                        let mut txn = state.control.transact_mut();
+                        let Ok(mut txn) = state.control.try_transact_mut() else {
+                            continue;
+                        };
+                        let map = txn.get_or_insert_map(MEMBER_LIST_KEY);
                         map.insert(&mut txn, self_key.as_str(), json_str.as_str());
                     }
                     // Nudge subscribers (incl. this device's own chat stream) to

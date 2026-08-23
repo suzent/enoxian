@@ -40,7 +40,7 @@ function loadLayoutPreferences(): LayoutPreferences {
 }
 
 function Layout() {
-  const { activeCircleId, circles, circlesLoaded, status, reloadCircles } = useApp()
+  const { activeCircleId, circles, circlesLoaded, circlesError, status, reloadCircles } = useApp()
 
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [ritual, setRitual] = useState<{ mode: RitualMode; label?: string } | null>(null)
@@ -134,7 +134,19 @@ function Layout() {
     <>
       <RitualTransition ritual={ritual} onComplete={() => setRitual(null)} />
 
-      {showLanding && <LandingPage onEntered={handleEntered} />}
+      {circlesLoaded && circlesError && circles.length === 0 && (
+        <main className="fixed inset-0 z-20 grid place-items-center bg-alabaster p-6">
+          <div className="sys-window max-w-md p-6 text-center font-mono">
+            <strong className="block text-sm">ENOXIAN IS NOT RESPONDING</strong>
+            <p className="my-3 text-[11px] text-slate">{circlesError}</p>
+            <button type="button" className="enox-btn px-3 py-2 text-[10px]" onClick={reloadCircles}>
+              TRY AGAIN
+            </button>
+          </div>
+        </main>
+      )}
+
+      {showLanding && !circlesError && <LandingPage onEntered={handleEntered} />}
 
       {revealing && (
         <div className="app-reveal-overlay" onAnimationEnd={() => setRevealing(false)} />

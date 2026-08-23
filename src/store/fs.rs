@@ -1,7 +1,7 @@
 use crate::state::AppState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use yrs::{GetString, Transact};
+use yrs::{GetString, ReadTxn, Transact};
 
 /// Flush a Y.Text document back to disk.
 /// Sets the shared per-path self_write_flag before writing so the file watcher
@@ -14,9 +14,16 @@ pub async fn flush_to_disk(state: &AppState, rel_path: &str, author: Option<Stri
     };
 
     let contents = {
-        let text = doc.get_or_insert_text(rel_path);
-        let txn = doc.transact();
-        text.get_string(&txn)
+        let txn = match doc.try_transact() {
+            Ok(txn) => txn,
+            Err(_) => {
+                tracing::debug!("[fs] state busy; deferring flush for {rel_path}");
+                return;
+            }
+        };
+        txn.get_text(rel_path)
+            .map(|text| text.get_string(&txn))
+            .unwrap_or_default()
     };
 
     let full_path = state
