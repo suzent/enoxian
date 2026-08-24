@@ -137,6 +137,76 @@ fn is_executable_file(path: &std::path::Path) -> bool {
     }
 }
 
+/// Fold the login shell's `PATH` into this process's environment, once, at
+/// daemon startup.
+///
+/// Managed services (macOS `launchd`, Linux `systemd --user`) start a bare
+/// `PATH` and never source shell rc files, so anything a version manager
+/// (nvm, pyenv-style tools, Homebrew on some setups, etc.) only adds to
+/// `PATH` from `.zshrc`/`.bash_profile` is invisible here even though it
+/// works in every terminal. Without this, [`resolve`]/[`is_installed`] and
+/// anything spawned via [`crate::agent::spawn::command`] silently disagree
+/// with what the user sees in a shell.
+///
+/// Best-effort and bounded: if the login shell can't be probed within a few
+/// seconds (or this is Windows, where the interactive logon token already
+/// carries the full user environment), the process `PATH` is left as-is.
+#[cfg(unix)]
+pub fn adopt_login_shell_path() {
+    let Some(login_path) = login_shell_path() else {
+        return;
+    };
+    let current = std::env::var("PATH").unwrap_or_default();
+    let merged = merge_path_lists(&login_path, &current);
+    if !merged.is_empty() {
+        std::env::set_var("PATH", merged);
+    }
+}
+
+#[cfg(not(unix))]
+pub fn adopt_login_shell_path() {}
+
+/// Union of two `:`-separated `PATH` lists, de-duplicated, `a`'s entries
+/// first — the login shell's resolution should win over the sparse default
+/// a managed service started with.
+#[cfg(unix)]
+fn merge_path_lists(a: &str, b: &str) -> String {
+    let mut seen = std::collections::HashSet::new();
+    a.split(':')
+        .chain(b.split(':'))
+        .filter(|dir| !dir.is_empty() && seen.insert(*dir))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// The `PATH` a fresh login shell would see, by actually asking it — the
+/// only reliable way to account for whatever a user's rc files do (nvm,
+/// asdf, custom exports, ...). Run on a background thread with a bounded
+/// wait: an rc file that hangs (or a `$SHELL` that isn't really a shell)
+/// must not stall daemon startup.
+#[cfg(unix)]
+fn login_shell_path() -> Option<String> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = std::process::Command::new(&shell)
+            .args(["-ilc", "printf %s \"$PATH\""])
+            .stdin(std::process::Stdio::null())
+            .output();
+        let _ = tx.send(result);
+    });
+
+    let output = rx.recv_timeout(Duration::from_secs(3)).ok()?.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!path.is_empty()).then_some(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +226,25 @@ mod tests {
         for c in CATALOG {
             assert!(!c.program().is_empty(), "{} has no program", c.name);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn merge_path_lists_prefers_login_shell_entries_and_dedupes() {
+        let merged = merge_path_lists(
+            "/Users/a/.nvm/versions/node/v22.0.0/bin:/usr/bin:/bin",
+            "/usr/bin:/bin:/usr/sbin:/sbin",
+        );
+        assert_eq!(
+            merged,
+            "/Users/a/.nvm/versions/node/v22.0.0/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn merge_path_lists_ignores_empty_segments() {
+        assert_eq!(merge_path_lists("/a::/b", "::/c:"), "/a:/b:/c");
     }
 
     #[test]

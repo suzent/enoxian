@@ -36,7 +36,7 @@ if ! grep -qE '^version\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"' "$CARGO_TOML"; then
 fi
 
 CURRENT=$(grep -E '^version\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"' "$CARGO_TOML" | head -1 \
-    | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+    | sed -E 's/version[[:space:]]*=[[:space:]]*"([^"]+)"/\1/')
 
 MAJOR=$(echo "$CURRENT" | cut -d. -f1)
 MINOR=$(echo "$CURRENT" | cut -d. -f2)
@@ -79,7 +79,7 @@ printf '[%s]: https://github.com/suzent/enoxian/compare/v%s...v%s\n' "$NEW" "$CU
 rm -f "$CHANGELOG.bak"
 
 # ── Update Cargo.toml ─────────────────────────────────────────────────────────
-sed -i.bak -E "s/^(version\s*=\s*)\"[^\"]*\"/\1\"$NEW\"/" "$CARGO_TOML"
+sed -i.bak -E "s/^(version[[:space:]]*=[[:space:]]*)\"[^\"]*\"/\1\"$NEW\"/" "$CARGO_TOML"
 rm -f "$CARGO_TOML.bak"
 
 # Keep the user-facing package version synchronized.
