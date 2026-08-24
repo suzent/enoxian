@@ -36,6 +36,8 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-08-24
+
 ### Fixed
 
 - The managed login service (launchd on macOS, `systemd --user` on Linux)
@@ -274,7 +276,7 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.4.2...HEAD
 [0.3.7]: https://github.com/suzent/enoxian/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/suzent/enoxian/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/suzent/enoxian/compare/v0.3.4...v0.3.5
@@ -289,3 +291,4 @@ membership, WAN bootstrap, and the local workspace proposal layer.
 [0.3.8]: https://github.com/suzent/enoxian/compare/v0.3.7...v0.3.8
 [0.4.0]: https://github.com/suzent/enoxian/compare/v0.3.8...v0.4.0
 [0.4.1]: https://github.com/suzent/enoxian/compare/v0.4.0...v0.4.1
+[0.4.2]: https://github.com/suzent/enoxian/compare/v0.4.1...v0.4.2
