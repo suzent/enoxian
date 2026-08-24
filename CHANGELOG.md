@@ -53,6 +53,10 @@ appended automatically. Keep the section for a version accurate before tagging.
   autocomplete offered such an agent as runnable, and the failure only appeared
   after someone addressed it. Installing the missing CLI restores the agent on
   the next daemon start.
+- An open Circle now picks up membership changes made on another device —
+  including the agents a device advertises — instead of showing the roster as it
+  was when the Circle was opened. Peers going offline and coming back update
+  live too. Previously both needed a page reload.
 
 ## [0.4.2] — 2026-08-24
 
