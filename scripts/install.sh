@@ -141,7 +141,7 @@ stop_with_timeout() {
 }
 
 stop_managed_service() {
-  [ "$service_was_installed" -eq 1 ] || return
+  [ "$service_was_installed" -eq 1 ] || return 0
   if [ "$os_tag" = "linux" ]; then
     systemctl --user stop enoxian.service >/dev/null 2>&1 || true
   else
@@ -163,7 +163,7 @@ daemon_pids() {
 
 stop_daemon_processes() {
   pids="$(daemon_pids)"
-  [ -n "$pids" ] || return
+  [ -n "$pids" ] || return 0
   kill $pids 2>/dev/null || true
   attempts=0
   while [ "$attempts" -lt 50 ]; do

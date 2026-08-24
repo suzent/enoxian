@@ -45,7 +45,12 @@ if (-not $BinDir) { $BinDir = Join-Path $env:LOCALAPPDATA 'enoxian\bin' }
 $BinDir = [IO.Path]::GetFullPath($BinDir)
 
 $installedEnox = Join-Path $BinDir 'enox.exe'
-$serviceDefinition = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.enoxian\service\managed-task.txt'
+$stateDir = if ($env:ENOXIAN_HOME) {
+    [IO.Path]::GetFullPath($env:ENOXIAN_HOME)
+} else {
+    Join-Path ([Environment]::GetFolderPath('UserProfile')) '.enoxian'
+}
+$serviceDefinition = Join-Path $stateDir 'service\managed-task.txt'
 $serviceWasInstalled = Test-Path $serviceDefinition -PathType Leaf
 if (Get-Process -Name enoxd -ErrorAction SilentlyContinue) {
     throw "enoxian installer: legacy enoxd is still running. Run 'enox stop', then retry."
@@ -136,11 +141,20 @@ try {
     Copy-Item (Join-Path $Tmp 'enox.exe') $stagedDestination -Force
     if ($existing['enox.exe']) {
         $replaceBackup = Join-Path $backupDir 'enox.exe.replace-backup'
-        [IO.File]::Replace($stagedDestination, $destination, $replaceBackup)
+        # File.Replace can fail for executables on Windows even after the
+        # process exits (for example while an image-section handle is being
+        # released). Rename the old binary out of the way first, then move the
+        # staged binary into place. The catch block below still has the copied
+        # backup available if the second move fails.
+        Wait-EnoxianBinaryUnlocked $destination
+        Move-Item $destination $replaceBackup
+        $changed = $true
+        Move-Item $stagedDestination $destination
+        Remove-Item $replaceBackup -Force -ErrorAction SilentlyContinue
     } else {
         Move-Item $stagedDestination $destination
+        $changed = $true
     }
-    $changed = $true
 
     & (Join-Path $BinDir 'enox.exe') --version *> $null
     if ($LASTEXITCODE -ne 0) { throw 'enoxian installer: installed enox failed its post-install check' }
