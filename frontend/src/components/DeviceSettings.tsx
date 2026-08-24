@@ -257,6 +257,13 @@ export default function DeviceSettings({ onClose }: Props) {
                           </div>
                         )}
 
+                        {ready && plugin.runtime_program && (
+                          <div className="mt-2 border-l-2 border-obsidian/40 pl-2 text-[9px] text-slate leading-relaxed">
+                            Runs your installed <code>{plugin.runtime_program}</code> CLI. Enoxian manages only the
+                            adapter, so that CLI's login and settings stay yours.
+                          </div>
+                        )}
+
                         {nodeMissing && (
                           <div className="mt-2 border-l-2 border-obsidian/40 pl-2 text-[9px] text-slate leading-relaxed">
                             Install system Node.js 22+ with npm from{' '}

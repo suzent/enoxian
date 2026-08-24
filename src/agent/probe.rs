@@ -54,6 +54,73 @@ impl Candidate {
     }
 }
 
+/// An adapter that bridges to a product CLI the user installs and
+/// authenticates themselves, instead of shipping its own copy of that product.
+///
+/// Enoxian manages only the pinned bridge; the CLI underneath stays the
+/// user's — their login, settings, MCP servers, and project configuration.
+/// That has two consequences this table exists to keep consistent: a bridge is
+/// not usable when its CLI is absent, and a bridge must be handed the exact
+/// executable we resolved rather than left to find its own (a bundled copy, or
+/// a different `PATH` entry than the one the settings page reported on).
+pub struct BridgedCli {
+    /// Program looked up on `PATH` to decide whether the bridge is usable.
+    pub program: &'static str,
+    /// Where to get it, shown when it is missing.
+    pub install_url: &'static str,
+    /// Command that authenticates it, shown when it is missing.
+    pub login_command: &'static str,
+    /// Variable the bridge reads to run one explicit executable.
+    pub executable_env: &'static str,
+    /// Subcommand that proves the CLI is signed in, for CLIs that have one and
+    /// exit non-zero without it. `None` means presence is all we can check.
+    pub auth_status_args: Option<&'static [&'static str]>,
+}
+
+/// The bridged CLI a managed adapter needs, keyed by the adapter's executable
+/// name so plugin health and process spawning cannot disagree. Unknown
+/// adapters (including third-party manifests) bridge to nothing and are judged
+/// on their own executable alone.
+pub fn bridged_cli(adapter: &str) -> Option<&'static BridgedCli> {
+    const CLAUDE: BridgedCli = BridgedCli {
+        program: "claude",
+        install_url: "https://code.claude.com/docs/en/getting-started",
+        login_command: "claude auth login",
+        executable_env: "CLAUDE_CODE_EXECUTABLE",
+        auth_status_args: Some(&["auth", "status"]),
+    };
+    const CODEX: BridgedCli = BridgedCli {
+        program: "codex",
+        install_url: "https://developers.openai.com/codex/cli",
+        login_command: "codex login",
+        executable_env: "CODEX_PATH",
+        // The Codex CLI has no status subcommand we can rely on across the
+        // versions users have installed, so presence is the honest check.
+        auth_status_args: None,
+    };
+
+    match adapter_stem(adapter).as_str() {
+        "claude-agent-acp" | "claude-code-acp" => Some(&CLAUDE),
+        "codex-acp" => Some(&CODEX),
+        _ => None,
+    }
+}
+
+/// The comparable name of an adapter executable: basename, lowercased, without
+/// a Windows executable extension, so a managed absolute path and a bare name
+/// resolve to the same adapter.
+fn adapter_stem(program: &str) -> String {
+    let normalized = program.replace('\\', "/");
+    let file = normalized.rsplit('/').next().unwrap_or(&normalized);
+    let lower = file.to_ascii_lowercase();
+    lower
+        .strip_suffix(".cmd")
+        .or_else(|| lower.strip_suffix(".exe"))
+        .or_else(|| lower.strip_suffix(".bat"))
+        .unwrap_or(&lower)
+        .to_string()
+}
+
 /// Whether `program` is resolvable as an executable on this machine.
 ///
 /// - Absolute/relative paths are checked directly (with `PATHEXT` expansion on

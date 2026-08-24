@@ -36,6 +36,14 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+### Changed
+
+- `@codex` now runs the Codex CLI you installed and signed in to, the same way
+  `@claude` already used your Claude Code CLI, instead of a copy bundled inside
+  the adapter. Device Settings reports **codex CLI missing** with install and
+  login guidance when that CLI is absent, rather than showing the adapter as
+  ready, and each ready adapter now states which CLI it runs.
+
 ### Fixed
 
 - Agent replies in chat are attributed to the device that actually ran the

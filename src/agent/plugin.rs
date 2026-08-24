@@ -93,7 +93,7 @@ fn builtins() -> Vec<CatalogEntry> {
                 driver: Driver::Acp,
                 package: "@agentclientprotocol/codex-acp".into(),
                 binary: "codex-acp".into(),
-                about: "OpenAI Codex over ACP, installed once and launched offline.".into(),
+                about: "OpenAI Codex CLI through a pinned ACP transport bridge.".into(),
             },
             source: "builtin".into(),
         },
@@ -194,10 +194,6 @@ pub fn find(id: &str) -> Option<CatalogEntry> {
         .find(|entry| entry.manifest.id == canonical)
 }
 
-fn is_claude(manifest: &PluginManifest) -> bool {
-    manifest.id == CLAUDE_PLUGIN_ID
-}
-
 fn validate_manifest(m: &PluginManifest) -> Result<()> {
     for (label, value) in [("id", &m.id), ("agent", &m.agent), ("binary", &m.binary)] {
         if value.is_empty()
@@ -270,6 +266,7 @@ pub fn views() -> Vec<PluginView> {
             let executable = executable_at(&base, &manifest);
             let expected = vec![executable.to_string_lossy().into_owned()];
             let configured_cmd = cfg.resolve(&manifest.agent);
+            let bridge = super::probe::bridged_cli(&manifest.binary);
             PluginView {
                 id: manifest.id.clone(),
                 agent: manifest.agent.clone(),
@@ -288,11 +285,9 @@ pub fn views() -> Vec<PluginView> {
                 executable: executable.to_string_lossy().into_owned(),
                 node_runtime_installed,
                 node_runtime_version: node_runtime_version.clone(),
-                runtime_program: is_claude(&manifest).then(|| "claude".to_string()),
-                runtime_installed: is_claude(&manifest)
-                    .then(|| super::probe::is_installed("claude")),
-                runtime_login_command: is_claude(&manifest)
-                    .then(|| "claude auth login".to_string()),
+                runtime_program: bridge.map(|bridge| bridge.program.to_string()),
+                runtime_installed: bridge.map(|bridge| super::probe::is_installed(bridge.program)),
+                runtime_login_command: bridge.map(|bridge| bridge.login_command.to_string()),
             }
         })
         .collect()
@@ -334,8 +329,8 @@ pub async fn install(id: &str) -> Result<AgentCommand> {
     let entry = find(id).with_context(|| format!("unknown agent plugin '{id}'"))?;
     let manifest = entry.manifest;
     validate_manifest(&manifest)?;
-    if is_claude(&manifest) {
-        verify_claude_runtime().await?;
+    if let Some(bridge) = super::probe::bridged_cli(&manifest.binary) {
+        verify_bridged_runtime(bridge).await?;
     }
     let npm = require_system_npm().await?;
     let base = adapters_dir()?;
@@ -421,22 +416,34 @@ pub async fn install(id: &str) -> Result<AgentCommand> {
     Ok(command)
 }
 
-async fn verify_claude_runtime() -> Result<()> {
-    let claude = super::probe::resolve("claude").context(
-        "Claude Code CLI is required but was not found on PATH. Install it from https://code.claude.com/docs/en/getting-started, then run `claude auth login`",
-    )?;
+/// A bridge cannot work without the CLI it bridges to, so refuse to install one
+/// whose CLI is absent — or, where the CLI can report it, signed out. Failing
+/// here keeps the actionable message on the install action, instead of letting
+/// it surface later as an opaque session error on a chat mention.
+async fn verify_bridged_runtime(bridge: &super::probe::BridgedCli) -> Result<()> {
+    let cli = super::probe::resolve(bridge.program).with_context(|| {
+        format!(
+            "the {} CLI is required but was not found on PATH. Install it from {}, then run `{}`",
+            bridge.program, bridge.install_url, bridge.login_command
+        )
+    })?;
 
-    let auth_args = vec!["auth".to_string(), "status".to_string()];
-    let auth = super::spawn::command(&claude.to_string_lossy(), &auth_args)
+    let Some(auth_args) = bridge.auth_status_args else {
+        return Ok(());
+    };
+    let auth_args: Vec<String> = auth_args.iter().map(|arg| (*arg).to_string()).collect();
+    let auth = super::spawn::command(&cli.to_string_lossy(), &auth_args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .await
-        .context("failed to check Claude Code authentication")?;
+        .with_context(|| format!("failed to check {} authentication", bridge.program))?;
     if !auth.status.success() {
         bail!(
-            "Claude Code CLI is installed but not authenticated. Run `claude auth login`, then retry `enox agent install claude`"
+            "the {} CLI is installed but not authenticated. Run `{}`, then retry the install",
+            bridge.program,
+            bridge.login_command
         );
     }
     Ok(())
@@ -507,6 +514,19 @@ mod tests {
                 "@agentclientprotocol/claude-agent-acp"
             );
             assert_eq!(entry.manifest.binary, "claude-agent-acp");
+        }
+    }
+
+    #[test]
+    fn every_builtin_bridges_to_a_product_cli_the_user_installs() {
+        // Both built-ins are transports over a CLI the user owns, so each must
+        // resolve a bridged CLI — that is what makes the settings page report
+        // the prerequisite instead of claiming a self-contained runtime.
+        for entry in builtins() {
+            let bridge = super::super::probe::bridged_cli(&entry.manifest.binary)
+                .unwrap_or_else(|| panic!("{} should bridge to a CLI", entry.manifest.id));
+            assert!(!bridge.program.is_empty());
+            assert!(!bridge.executable_env.is_empty());
         }
     }
 
