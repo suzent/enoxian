@@ -44,6 +44,12 @@ appended automatically. Keep the section for a version accurate before tagging.
   login guidance when that CLI is absent, rather than showing the adapter as
   ready, and each ready adapter now states which CLI it runs.
 
+### Fixed
+
+- Agent replies in chat are attributed to the device that actually ran the
+  agent. When two devices configured the same agent name, a reply could be
+  shown under the wrong device.
+
 ## [0.4.2] — 2026-08-24
 
 ### Fixed

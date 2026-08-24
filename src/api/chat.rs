@@ -249,6 +249,7 @@ pub fn post_message(
         text,
         mentions: mentions.clone(),
         ts: chrono::Utc::now().timestamp(),
+        peer_id: state.peer_id.clone(),
     };
 
     let json_str = serde_json::to_string(&msg)?;
@@ -321,6 +322,57 @@ pub async fn chat_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{config::JoinPolicy, mls, state::AppState};
+    use std::path::PathBuf;
+
+    fn test_state(peer_id: &str) -> AppState {
+        AppState::new(
+            "circle".into(),
+            "Circle".into(),
+            PathBuf::new(),
+            PathBuf::new(),
+            String::new(),
+            "agent".into(),
+            1,
+            peer_id.into(),
+            JoinPolicy::Manual,
+            "owner".into(),
+            mls::new_mls_state(mls::MlsIdentity::generate(peer_id).unwrap(), None),
+        )
+    }
+
+    // An agent reply posts under the bare agent name, which several devices may
+    // configure. Without the posting peer stamped on the message, a reader can
+    // only guess which device ran it — and guessing by name misattributes the
+    // run to whichever member is listed first.
+    #[test]
+    fn posted_message_records_the_posting_peer() {
+        let state = test_state("peer-macbook");
+        post_message(&state, "codex".to_string(), "done".to_string(), false).unwrap();
+
+        let txn = state.control.transact();
+        let arr = txn.get_array(CHAT_KEY).unwrap();
+        let stored: Vec<ChatMessage> = arr
+            .iter(&txn)
+            .filter_map(|item| match item {
+                Out::Any(Any::String(s)) => serde_json::from_str::<ChatMessage>(&s).ok(),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].agent_id, "codex");
+        assert_eq!(stored[0].peer_id, "peer-macbook");
+    }
+
+    // Messages written before `peer_id` existed must still load; readers fall
+    // back to name matching for those.
+    #[test]
+    fn message_without_peer_id_still_deserializes() {
+        let legacy = r#"{"id":"m1","agent_id":"codex","text":"hi","mentions":[],"ts":10}"#;
+        let msg: ChatMessage = serde_json::from_str(legacy).unwrap();
+        assert_eq!(msg.peer_id, "");
+    }
 
     fn activity(expires_at: i64) -> ChatActivity {
         ChatActivity {

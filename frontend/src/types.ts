@@ -58,6 +58,9 @@ export interface ChatMessage {
   text: string
   mentions: string[]
   ts: number
+  /** Peer that posted the message. Disambiguates agent replies, whose agent_id
+   *  is a bare name several devices may share. Empty from older peers. */
+  peer_id?: string
 }
 
 export interface Proposal {
