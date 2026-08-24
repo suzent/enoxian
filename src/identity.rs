@@ -297,6 +297,11 @@ pub fn read_identity_display() -> Option<(String, Option<String>)> {
 /// allowlist of what a mention can actually launch here). Merging means a
 /// device automatically advertises what it can run, without duplicating the
 /// list by hand. Deduplicated, order-stable (identity first, then config).
+///
+/// Configured-but-unusable agents are left out. A bridge adapter is only as
+/// installed as the CLI it bridges to, so advertising one whose CLI is missing
+/// would offer peers an agent that cannot start — the mention popup marks it
+/// runnable, and the run fails only after someone addresses it.
 pub fn read_local_agents() -> Vec<String> {
     let mut agents: Vec<String> = identity_path()
         .ok()
@@ -305,8 +310,12 @@ pub fn read_local_agents() -> Vec<String> {
         .map(|f| f.agents)
         .unwrap_or_default();
 
-    // Merge in the configured runnable agents (agents.toml keys).
-    for name in crate::agent::config::AgentConfig::load().agents.keys() {
+    // Merge in the configured agents (agents.toml keys) that can actually run.
+    for (name, command) in crate::agent::config::AgentConfig::load().agents.iter() {
+        let adapter = command.command.first().map(String::as_str).unwrap_or("");
+        if !crate::agent::probe::bridge_ready(adapter) {
+            continue;
+        }
         if !agents.iter().any(|a| a == name) {
             agents.push(name.clone());
         }

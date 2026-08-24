@@ -106,6 +106,19 @@ pub fn bridged_cli(adapter: &str) -> Option<&'static BridgedCli> {
     }
 }
 
+/// Whether an adapter can actually run right now: a bridge needs the CLI it
+/// bridges to, so it is only usable once that CLI is installed.
+///
+/// An adapter that bridges to nothing (a third-party manifest, or a plain argv
+/// agent) has no such prerequisite and is judged on its own executable alone,
+/// so it stays usable here.
+pub fn bridge_ready(adapter: &str) -> bool {
+    match bridged_cli(adapter) {
+        Some(bridge) => is_installed(bridge.program),
+        None => true,
+    }
+}
+
 /// The comparable name of an adapter executable: basename, lowercased, without
 /// a Windows executable extension, so a managed absolute path and a bare name
 /// resolve to the same adapter.
@@ -293,6 +306,38 @@ mod tests {
         for c in CATALOG {
             assert!(!c.program().is_empty(), "{} has no program", c.name);
         }
+    }
+
+    // A bridge is exactly as usable as the CLI underneath it. Asserting the
+    // equivalence rather than a fixed verdict keeps this true on a machine that
+    // has the CLI and one that does not.
+    #[test]
+    fn bridge_readiness_tracks_the_bridged_cli() {
+        for adapter in ["claude-agent-acp", "claude-code-acp", "codex-acp"] {
+            let bridge = bridged_cli(adapter).expect("built-in adapter bridges to a CLI");
+            assert_eq!(
+                bridge_ready(adapter),
+                is_installed(bridge.program),
+                "{adapter} readiness should follow {}",
+                bridge.program
+            );
+        }
+    }
+
+    // An adapter that bridges to nothing has no external prerequisite, so it
+    // must not be filtered out as unusable.
+    #[test]
+    fn adapter_without_a_bridge_has_no_prerequisite() {
+        assert!(bridge_ready("some-third-party-acp"));
+        assert!(bridge_ready(""));
+    }
+
+    // The advertisement path passes the configured command's first element,
+    // which is a full managed path, not a bare adapter name.
+    #[test]
+    fn readiness_accepts_a_full_adapter_path() {
+        let path = "/Users/x/.enoxian/adapters/codex-acp/1.1.14/node_modules/.bin/codex-acp";
+        assert_eq!(bridge_ready(path), is_installed("codex"));
     }
 
     #[cfg(unix)]
