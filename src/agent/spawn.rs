@@ -8,8 +8,8 @@
 //! resolution; our daemon does not.
 //!
 //! This helper routes batch-style programs through `cmd /c` on Windows. It also
-//! connects the Claude ACP bridge to the user's real Claude Code CLI so the
-//! bridge reuses Claude Code authentication and configuration.
+//! connects each managed ACP bridge to the user's real product CLI so the
+//! bridge reuses that CLI's authentication and configuration.
 
 use tokio::process::Command;
 
@@ -39,14 +39,15 @@ pub fn command(program: &str, args: &[String]) -> Command {
     c
 }
 
-/// `claude-agent-acp` is a transport bridge, not a replacement runtime. Point
-/// it at the user's installed Claude Code executable so it reuses the native
-/// CLI, subscription login, settings, MCP configuration, and project skills.
+/// A managed adapter is a transport bridge, not a replacement runtime. Point it
+/// at the user's installed product CLI so it reuses that CLI's login,
+/// settings, MCP configuration, and project skills instead of falling back to a
+/// bundled copy. See [`super::probe::bridged_cli`] for the adapter table.
 fn configure_underlying_cli(program: &str, command: &mut Command) {
-    if !is_claude_adapter(program) {
+    let Some(bridge) = super::probe::bridged_cli(program) else {
         return;
-    }
-    let Some(cli) = super::probe::resolve("claude") else {
+    };
+    let Some(cli) = super::probe::resolve(bridge.program) else {
         return;
     };
 
@@ -65,19 +66,7 @@ fn configure_underlying_cli(program: &str, command: &mut Command) {
         return;
     }
 
-    command.env("CLAUDE_CODE_EXECUTABLE", cli);
-}
-
-fn is_claude_adapter(program: &str) -> bool {
-    let normalized = program.replace('\\', "/");
-    let file = normalized.rsplit('/').next().unwrap_or(&normalized);
-    let lower = file.to_ascii_lowercase();
-    let stem = lower
-        .strip_suffix(".cmd")
-        .or_else(|| lower.strip_suffix(".exe"))
-        .or_else(|| lower.strip_suffix(".bat"))
-        .unwrap_or(&lower);
-    matches!(stem, "claude-agent-acp" | "claude-code-acp")
+    command.env(bridge.executable_env, cli);
 }
 
 /// Remove environment variables that make a spawned agent think it is nested
@@ -160,14 +149,41 @@ mod tests {
 
 #[cfg(test)]
 mod portable_tests {
-    use super::is_claude_adapter;
+    use crate::agent::probe::bridged_cli;
 
     #[test]
-    fn recognizes_current_and_legacy_claude_bridges() {
-        assert!(is_claude_adapter("claude-agent-acp"));
-        assert!(is_claude_adapter("/managed/bin/claude-agent-acp"));
-        assert!(is_claude_adapter(r"C:\managed\claude-code-acp.cmd"));
-        assert!(is_claude_adapter(r"C:\managed\CLAUDE-AGENT-ACP.CMD"));
-        assert!(!is_claude_adapter("codex-acp"));
+    fn each_managed_bridge_targets_its_own_cli_and_variable() {
+        let claude = bridged_cli("claude-agent-acp").expect("claude bridges to a CLI");
+        assert_eq!(claude.program, "claude");
+        assert_eq!(claude.executable_env, "CLAUDE_CODE_EXECUTABLE");
+
+        let codex = bridged_cli("codex-acp").expect("codex bridges to a CLI");
+        assert_eq!(codex.program, "codex");
+        assert_eq!(codex.executable_env, "CODEX_PATH");
+    }
+
+    #[test]
+    fn recognizes_managed_paths_legacy_names_and_windows_shims() {
+        for program in [
+            "/managed/bin/claude-agent-acp",
+            r"C:\managed\claude-code-acp.cmd",
+            r"C:\managed\CLAUDE-AGENT-ACP.CMD",
+        ] {
+            assert_eq!(
+                bridged_cli(program).map(|bridge| bridge.program),
+                Some("claude"),
+                "{program} should bridge to the Claude CLI"
+            );
+        }
+        assert_eq!(
+            bridged_cli(r"C:\managed\CODEX-ACP.EXE").map(|bridge| bridge.program),
+            Some("codex")
+        );
+    }
+
+    #[test]
+    fn unknown_adapters_bridge_to_nothing() {
+        assert!(bridged_cli("some-third-party-acp").is_none());
+        assert!(bridged_cli("").is_none());
     }
 }
