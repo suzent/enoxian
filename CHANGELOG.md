@@ -49,6 +49,10 @@ appended automatically. Keep the section for a version accurate before tagging.
 - Agent replies in chat are attributed to the device that actually ran the
   agent. When two devices configured the same agent name, a reply could be
   shown under the wrong device.
+- A device no longer advertises an agent whose CLI is not installed. Mention
+  autocomplete offered such an agent as runnable, and the failure only appeared
+  after someone addressed it. Installing the missing CLI restores the agent on
+  the next daemon start.
 
 ## [0.4.2] — 2026-08-24
 
