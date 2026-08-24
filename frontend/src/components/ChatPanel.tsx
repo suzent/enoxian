@@ -259,14 +259,19 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     ? peerLabel(myMember.owner, myMember.agent_id)
     : shortenAgentId(status?.agent_id ?? '')
 
-  const getSenderLabel = useCallback((agentId: string): SenderLabel => {
+  const getSenderLabel = useCallback((agentId: string, peerId?: string): SenderLabel => {
     // Direct member lookup by device agent_id
     let member = members.find(m => m.agent_id === agentId)
     let agentName: string | null = null
 
-    // If not found as a primary device, check registered agent lists (e.g. "claude-code")
+    // Not a device's own id, so it is an agent name (e.g. "codex"). Prefer the
+    // posting peer: several devices may configure the same agent, and matching
+    // on the name alone picks whichever member happens to be listed first —
+    // attributing a run to the wrong device. Fall back to the name only for
+    // messages from peers that predate the peer_id field.
     if (!member) {
-      const host = members.find(m => m.agents.includes(agentId))
+      const host = (peerId && members.find(m => m.peer_id === peerId))
+        || members.find(m => m.agents.includes(agentId))
       if (host) { member = host; agentName = agentId }
     }
 
@@ -380,7 +385,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     .sort((a, b) => a.updated_at - b.updated_at)
 
   const describeActivity = (activity: ChatActivity) => {
-    const label = getSenderLabel(activity.actor_id)
+    const label = getSenderLabel(activity.actor_id, activity.peer_id)
     const host = activity.peer_id ? members.find(member => member.peer_id === activity.peer_id) : undefined
     const actor = label.agent
       ? `${label.agent}${host?.device_label ? ` · ${host.device_label}` : ''}`
@@ -440,12 +445,17 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
           </div>
         )}
         {messages.map((msg, i) => {
-          const label = getSenderLabel(msg.agent_id)
+          const label = getSenderLabel(msg.agent_id, msg.peer_id)
           const isThisDevice = msg.agent_id === status?.agent_id
           const isMine = label.user === 'you'
           const prev = messages[i - 1]
           const startsNewDay = !prev || calendarDay(prev.ts) !== calendarDay(msg.ts)
-          const showSender = !prev || prev.agent_id !== msg.agent_id || msg.ts - prev.ts > 300
+          // Same agent name from two devices is two speakers, so the peer is
+          // part of the grouping key.
+          const showSender = !prev
+            || prev.agent_id !== msg.agent_id
+            || prev.peer_id !== msg.peer_id
+            || msg.ts - prev.ts > 300
           return (
             <Fragment key={msg.id}>
               {startsNewDay && (

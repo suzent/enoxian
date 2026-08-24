@@ -181,6 +181,13 @@ pub struct ChatMessage {
     pub text: String,
     pub mentions: Vec<String>,
     pub ts: i64, // Unix timestamp seconds
+    /// Peer that posted this message. `agent_id` alone is ambiguous for agent
+    /// replies — it is the bare agent name (e.g. "codex"), which several
+    /// devices may configure, so a reader cannot tell which device actually
+    /// ran it. This pins the origin. Empty for messages from peers predating
+    /// the field (readers fall back to name matching).
+    #[serde(default)]
+    pub peer_id: String,
 }
 
 /// A short-lived, non-transcript signal shown alongside chat. `activity_id`
