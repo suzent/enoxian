@@ -36,6 +36,17 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+### Fixed
+
+- The managed login service (launchd on macOS, `systemd --user` on Linux)
+  starts with a bare `PATH` and never sourced shell rc files, so Node.js and
+  agent CLIs installed via a version manager like nvm (rather than a
+  system-wide location) were invisible to the daemon even though they worked
+  in any terminal — agent adapters wrongly reported "Node.js 22+ required" or
+  the CLI as missing. The daemon now resolves the same `PATH` a login shell
+  would and adopts it at startup, so adapter detection matches what's
+  actually installed.
+
 ## [0.4.1] — 2026-08-23
 
 ### Fixed
