@@ -39,6 +39,14 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- Suzent can be driven as an agent with no adapter plugin and no Node.js: it
+  speaks ACP itself, so `enox agent add suzent --driver acp -- suzent acp` is
+  the whole setup and `@suzent` then works like `@claude`. The turn runs on your
+  own Suzent install, with its memory, skills, and model configuration, in the
+  circle workspace.
+
 ### Security
 
 - Release archives now carry signed, transparency-logged build provenance tying
