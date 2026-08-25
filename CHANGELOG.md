@@ -36,6 +36,12 @@ appended automatically. Keep the section for a version accurate before tagging.
 
 ## [Unreleased]
 
+### Changed
+
+- The WebUI now provides responsive, collapsible workspace panels; consistent
+  file browsing, editing, and safe Markdown/HTML previews; clearer task and
+  device information; and smoother chat, file, and Circle transitions.
+
 ## [0.4.1] — 2026-08-23
 
 ### Fixed
