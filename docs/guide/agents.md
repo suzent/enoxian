@@ -174,6 +174,20 @@ Built-in managed adapter plugins:
   auth: `codex login`, or `CODEX_API_KEY`/`OPENAI_API_KEY` in the daemon's
   environment)
 
+Agents that ship ACP themselves need no adapter plugin at all — register the
+executable directly:
+
+- **Suzent** — `suzent acp`, no bridge and no Node.js. It is a translator over
+  a running Suzent backend (`suzent serve` or `suzent start` must be up), so the
+  turn executes with that install's own memory, skills, model configuration, and
+  permission rules, and the circle workspace becomes the session's working
+  directory. Approvals it needs arrive here as `session/request_permission`.
+  Register it with:
+
+  ```bash
+  enox agent add suzent --driver acp -- suzent acp
+  ```
+
 Plugin manifests are TOML files in `~/.enoxian/plugins/`. A manifest declares
 an id, exact package version, executable name, agent name, and driver. Packages
 are installed under `~/.enoxian/adapters/<id>/<version>/`. Version ranges are

@@ -44,6 +44,15 @@ pub const CATALOG: &[Candidate] = &[
         command: &["codex", "{{task}}"],
         about: "OpenAI Codex CLI, fire-and-forget with the task text as its prompt.",
     },
+    // Suzent speaks ACP itself, so `command[0]` is the product CLI rather than
+    // an adapter: there is no bridge to be ready, and presence of `suzent` on
+    // PATH is the whole prerequisite.
+    Candidate {
+        name: "suzent",
+        driver: "acp",
+        command: &["suzent", "acp"],
+        about: "Your local Suzent, speaking ACP directly — no adapter bridge, no Node.js.",
+    },
 ];
 
 /// The program (`command[0]`) a candidate is detected by.
@@ -306,6 +315,20 @@ mod tests {
         for c in CATALOG {
             assert!(!c.program().is_empty(), "{} has no program", c.name);
         }
+    }
+
+    // Suzent is detected by its own CLI, not by an adapter executable, so the
+    // program probed must be `suzent` itself and it must bridge to nothing.
+    #[test]
+    fn suzent_is_discovered_by_its_own_cli() {
+        let suzent = CATALOG
+            .iter()
+            .find(|c| c.name == "suzent")
+            .expect("suzent is a catalog candidate");
+        assert_eq!(suzent.program(), "suzent");
+        assert_eq!(suzent.driver, "acp");
+        assert!(bridged_cli(suzent.program()).is_none());
+        assert!(bridge_ready(suzent.program()));
     }
 
     // A bridge is exactly as usable as the CLI underneath it. Asserting the
