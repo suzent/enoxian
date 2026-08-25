@@ -298,10 +298,20 @@ pub fn read_identity_display() -> Option<(String, Option<String>)> {
 /// device automatically advertises what it can run, without duplicating the
 /// list by hand. Deduplicated, order-stable (identity first, then config).
 ///
-/// Configured-but-unusable agents are left out. A bridge adapter is only as
-/// installed as the CLI it bridges to, so advertising one whose CLI is missing
-/// would offer peers an agent that cannot start — the mention popup marks it
-/// runnable, and the run fails only after someone addresses it.
+/// Configured-but-unusable agents are left out, because the mention popup marks
+/// an advertised agent runnable and a run that cannot start fails only after
+/// someone addresses it. Two things make an entry unusable:
+///
+/// - its own `command[0]` does not resolve here. An agent that speaks ACP
+///   itself (`suzent acp`) names the product CLI directly rather than an
+///   adapter, so this is the only check that can catch it missing.
+/// - it is a bridge adapter whose product CLI is absent: the adapter is only as
+///   installed as the CLI underneath it.
+///
+/// A `runtime_download` command (`npx …`) stays advertised. Device Settings
+/// deliberately treats it as not-ready to nudge migration, but it can still
+/// start, and dropping it here would silently unadvertise working legacy
+/// configs.
 pub fn read_local_agents() -> Vec<String> {
     let mut agents: Vec<String> = identity_path()
         .ok()
@@ -312,8 +322,7 @@ pub fn read_local_agents() -> Vec<String> {
 
     // Merge in the configured agents (agents.toml keys) that can actually run.
     for (name, command) in crate::agent::config::AgentConfig::load().agents.iter() {
-        let adapter = command.command.first().map(String::as_str).unwrap_or("");
-        if !crate::agent::probe::bridge_ready(adapter) {
+        if !advertisable(&command.command) {
             continue;
         }
         if !agents.iter().any(|a| a == name) {
@@ -323,11 +332,61 @@ pub fn read_local_agents() -> Vec<String> {
     agents
 }
 
+/// Whether a configured launch command can actually start on this machine, and
+/// so may be advertised to peers as runnable. See [`read_local_agents`] for why
+/// each condition is here.
+fn advertisable(command: &[String]) -> bool {
+    let program = command.first().map(String::as_str).unwrap_or("");
+    crate::agent::plugin::command_status(command) != "missing"
+        && crate::agent::probe::bridge_ready(program)
+}
+
 /// These tests access private fields (`seed`, `IdentityFile`) and must live
 /// inline. All tests using only the public API live in `tests/identity.rs`.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cmd(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    // An entry with no command cannot launch, so peers must not be offered it.
+    #[test]
+    fn an_empty_command_is_not_advertisable() {
+        assert!(!advertisable(&cmd(&[])));
+    }
+
+    // The condition that catches a self-hosting ACP agent (`suzent acp`) whose
+    // product CLI is absent: command[0] is the CLI itself, not an adapter, so
+    // nothing else would notice it missing.
+    #[test]
+    fn a_missing_program_is_not_advertisable() {
+        assert!(!advertisable(&cmd(&[
+            "definitely-not-a-real-agent-xyz",
+            "acp"
+        ])));
+    }
+
+    // A program that resolves here is advertisable. The test binary is an
+    // absolute, executable path on every platform, unlike any PATH name.
+    #[test]
+    fn a_resolvable_program_is_advertisable() {
+        let exe = std::env::current_exe().expect("test binary has a path");
+        assert!(advertisable(&cmd(&[&exe.to_string_lossy(), "acp"])));
+    }
+
+    // Deliberate: Device Settings calls `npx …` not-ready to nudge migration,
+    // but it can still start, so unadvertising it would break working legacy
+    // configs rather than protect anyone.
+    #[test]
+    fn a_runtime_download_command_stays_advertisable() {
+        assert_eq!(
+            crate::agent::plugin::command_status(&cmd(&["npx", "some-acp-agent"])),
+            "runtime_download"
+        );
+        assert!(advertisable(&cmd(&["npx", "some-acp-agent"])));
+    }
 
     // TOML round-trip — needs `IdentityFile` (private) and `seed` (private).
     #[test]

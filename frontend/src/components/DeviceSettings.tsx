@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Bot, RadioTower } from 'lucide-react'
-import type { AgentConfigView, AgentPlugin, ConnectivitySettings } from '../types'
-import { getAgentConfig, getAgentPlugins, installAgentPlugin, setAgentReaction, addAgent, removeAgent, getConnectivitySettings, setForceRelay } from '../api'
+import type { AgentConfigView, AgentPlugin, ConnectivitySettings, DiscoveredAgent } from '../types'
+import { getAgentConfig, getAgentPlugins, discoverAgents, installAgentPlugin, setAgentReaction, addAgent, removeAgent, getConnectivitySettings, setForceRelay } from '../api'
 import { useApp } from '../context/AppContext'
 
 interface Props {
@@ -20,6 +20,7 @@ export default function DeviceSettings({ onClose }: Props) {
   const [activeTab, setActiveTab] = useState<'agents' | 'connectivity'>('agents')
   const [cfg, setCfg] = useState<AgentConfigView | null>(null)
   const [plugins, setPlugins] = useState<AgentPlugin[] | null>(null)
+  const [known, setKnown] = useState<DiscoveredAgent[]>([])
   const [connectivity, setConnectivity] = useState<ConnectivitySettings | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -37,6 +38,9 @@ export default function DeviceSettings({ onClose }: Props) {
     setPlugins(null)
     getAgentConfig().then(setCfg).catch(e => setError(e.message))
     getAgentPlugins().then(r => setPlugins(r.plugins)).catch(() => setPlugins([]))
+    // Descriptions for agents enoxian knows about, so a custom entry that is
+    // one of them reads like an adapter instead of a bare command line.
+    discoverAgents().then(r => setKnown(r.agents)).catch(() => setKnown([]))
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
@@ -319,15 +323,35 @@ export default function DeviceSettings({ onClose }: Props) {
                     </div>
                   )}
 
-                  {customAgents.map(agent => (
-                    <div key={agent.name} className="flex items-center justify-between gap-2 border-b border-obsidian/20 pb-2 text-[10px]">
+                  {customAgents.map(agent => {
+                    const about = known.find(k => k.name === agent.name)?.about
+                    // The backend already probes command[0]; a configured agent
+                    // whose program is gone would fail at launch, so say so here
+                    // rather than at mention time.
+                    const health = agent.status === 'ready'
+                      ? { label: 'READY', ready: true, detail: about }
+                      : agent.status === 'runtime_download'
+                        ? { label: 'DOWNLOADS', ready: false, detail: 'Runs a package manager on first use · migrate to a pinned adapter' }
+                        : { label: 'MISSING', ready: false, detail: `${agent.command[0] || 'Command'} not found on PATH` }
+                    return (
+                    <div key={agent.name} className="flex items-start justify-between gap-2 border-b border-obsidian/20 pb-2 text-[10px]">
                       <div className="min-w-0">
                         <div className="font-bold">@{agent.name} <span className="text-[8px] text-slate">{agent.driver.toUpperCase()}</span></div>
+                        {health.detail && (
+                          <div className={`text-[9px] mt-0.5 ${health.ready ? 'text-obsidian' : 'text-slate'}`}>{health.detail}</div>
+                        )}
                         <div className="text-[8px] text-slate truncate" title={agent.command.join(' ')}>{agent.command.join(' ')}</div>
                       </div>
-                      <button onClick={() => run(() => removeAgent(agent.name))} disabled={busy} className="text-slate hover:text-obsidian">×</button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span
+                          className={`text-[8px] font-bold px-1.5 py-0.5 ${health.ready ? 'bg-obsidian text-alabaster' : 'border border-obsidian/40 text-slate'}`}
+                          title={health.ready ? 'command[0] resolves on this machine' : 'This agent cannot start until its command resolves'}
+                        >{health.label}</span>
+                        <button onClick={() => run(() => removeAgent(agent.name))} disabled={busy} className="text-slate hover:text-obsidian">×</button>
+                      </div>
                     </div>
-                  ))}
+                    )
+                  })}
                   {customAgents.length === 0 && !showAdd && (
                     <div className="text-[9px] text-slate">No custom agents.</div>
                   )}
