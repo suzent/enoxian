@@ -45,8 +45,20 @@ refuses to publish a version whose section is missing or empty.
   speaks ACP itself, so `enox agent add suzent --driver acp -- suzent acp` is
   the whole setup and `@suzent` then works like `@claude`. The turn runs on your
   own Suzent install, with its memory, skills, and model configuration, in the
-  circle workspace. Device Settings detects an installed `suzent` and offers it
-  as a one-click add, the same as the other known agents.
+  circle workspace.
+- Custom agents in Device Settings now show whether they can actually start —
+  **READY**, **MISSING** with the command that could not be found, or
+  **DOWNLOADS** for a `npx …` command — plus a description for agents Enoxian
+  knows. Previously a custom entry showed only its command line, so a typo or an
+  uninstalled CLI looked identical to a working agent.
+
+### Fixed
+
+- A device no longer advertises an agent whose own command is missing. An agent
+  that speaks ACP itself names its product CLI directly rather than an adapter,
+  so nothing caught it being absent: peers were offered the agent, the mention
+  popup marked it runnable, and the failure surfaced only after someone
+  addressed it.
 
 ### Security
 
