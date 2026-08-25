@@ -1,0 +1,11 @@
+# The bootstrap image builds from Cargo.toml, Cargo.lock, build.rs, and src/.
+# Everything else — most of all target/, which can be gigabytes — only slows the
+# build context down.
+target/
+static/
+frontend/node_modules/
+frontend/dist/
+docs/
+tests/
+.git/
+.github/

@@ -1,4 +1,15 @@
 name: Release
+#
+# Triggered by a `v*` tag. `tag-release.yml` pushes that tag automatically when
+# a `chore/release-vX.Y.Z` pull request merges, and dispatches this workflow.
+#
+# The pipeline never exposes an unverified release to installer users: assets
+# are uploaded to a draft, the draft is published as a *prerelease* (so
+# `/releases/latest/download`, which both installers use by default, still
+# resolves to the previous good release), the published installers are then
+# exercised end to end, and only after that does `promote` mark the release
+# latest. A failed smoke test leaves a prerelease behind rather than a broken
+# `latest`.
 
 on:
   push:
@@ -26,9 +37,11 @@ jobs:
   verify:
     name: Verify release
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,12 +79,34 @@ jobs:
             exit 1
           }
 
+          # Any suffix on the version means a prerelease: it is published, but
+          # never marked latest, so `curl | sh` users are not moved onto it.
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            prerelease=false
+          else
+            prerelease=true
+            echo "::notice::$TAG is a prerelease; it will not be marked latest."
+          fi
+
+          # Fail here rather than after five platform builds have run.
           grep -Fq "## [$version]" CHANGELOG.md || {
             echo "CHANGELOG.md has no section for $version" >&2
             exit 1
           }
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          awk -v hdr="## [$version]" '
+            index($0, hdr) == 1 { grab=1; next }
+            grab && /^## / { exit }
+            grab { print }
+          ' CHANGELOG.md | grep -q '[^[:space:]]' || {
+            echo "CHANGELOG section for $version is empty" >&2
+            exit 1
+          }
+
+          {
+            echo "tag=$TAG"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, pinned 2026-08-16
@@ -86,6 +121,7 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked --all-targets
+          cargo test --locked --doc
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -98,7 +134,7 @@ jobs:
         working-directory: frontend
         run: |
           npm ci
-          npm audit
+          npm audit --omit=dev
           npm run build
 
       - name: Installer syntax gate
@@ -120,6 +156,7 @@ jobs:
     name: Audit release dependencies
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       checks: write
       contents: read
@@ -128,15 +165,32 @@ jobs:
         with:
           ref: ${{ needs.verify.outputs.tag }}
 
+      # `.cargo/audit.toml` is the single source of truth for accepted
+      # advisories; see the matching step in ci.yml.
+      - id: advisories
+        name: Read accepted advisories
+        run: |
+          set -euo pipefail
+          ignore="$(sed -nE 's/^[[:space:]]*"(RUSTSEC-[0-9]{4}-[0-9]{4})".*/\1/p' \
+            .cargo/audit.toml | paste -sd, -)"
+          echo "Accepted advisories: ${ignore:-<none>}"
+          echo "ignore=$ignore" >> "$GITHUB_OUTPUT"
+
       - uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432 # main: Node 24 (#48)
         with:
           token: ${{ github.token }}
-          ignore: RUSTSEC-2026-0118,RUSTSEC-2026-0119,RUSTSEC-2026-0124,RUSTSEC-2026-0207,RUSTSEC-2026-0208,RUSTSEC-2026-0209,RUSTSEC-2026-0211,RUSTSEC-2026-0212
+          ignore: ${{ steps.advisories.outputs.ignore }}
 
   build:
     name: Build ${{ matrix.target }}
     needs: [verify, audit]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # Required by actions/attest-build-provenance to sign the artifact.
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -149,10 +203,13 @@ jobs:
             target: aarch64-unknown-linux-musl
             asset: enoxian-linux-aarch64.tar.gz
             smoke: false
+          # macos-latest runners are arm64, so this is a native build and can
+          # run the full daemon smoke test — it is also the artifact most Mac
+          # users install.
           - os: macos-latest
             target: aarch64-apple-darwin
             asset: enoxian-macos-aarch64.tar.gz
-            smoke: false
+            smoke: true
           - os: macos-latest
             target: x86_64-apple-darwin
             asset: enoxian-macos-x86_64.tar.gz
@@ -188,15 +245,19 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
+      # Restore the cache before installing cargo-zigbuild so that the built
+      # binary lands in the cached ~/.cargo/bin instead of being recompiled
+      # from source on every release.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: ${{ matrix.target }}
+          cache-bin: true
+
       - name: Install Zig and cargo-zigbuild
         if: matrix.target == 'aarch64-unknown-linux-musl'
         run: |
           pip install ziglang
-          cargo install cargo-zigbuild --locked
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          key: ${{ matrix.target }}
+          command -v cargo-zigbuild >/dev/null || cargo install cargo-zigbuild --locked
 
       - name: Build Linux ARM64
         if: matrix.target == 'aarch64-unknown-linux-musl'
@@ -325,6 +386,14 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/enox.exe" dist/
           Compress-Archive -Path dist/enox.exe -DestinationPath "${{ matrix.asset }}"
 
+      # Signed, transparency-logged provenance for the exact archive that is
+      # published. Users verify with:
+      #   gh attestation verify enoxian-<platform>.tar.gz --repo suzent/enoxian
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ matrix.asset }}
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -334,9 +403,10 @@ jobs:
           retention-days: 7
 
   publish:
-    name: Publish complete release
+    name: Publish release assets
     needs: [verify, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
     env:
@@ -371,23 +441,62 @@ jobs:
             test -s "dist/$asset" || { echo "missing release support asset: $asset" >&2; exit 1; }
           done
 
-      - name: Compose curated release notes
+      # Curated CHANGELOG section first, then the auto-generated commit/PR list,
+      # then install instructions. CHANGELOG.md documents this layout.
+      - name: Compose release notes
         shell: bash
         env:
           VERSION: ${{ needs.verify.outputs.version }}
+          TAG: ${{ needs.verify.outputs.tag }}
         run: |
           set -euo pipefail
           awk -v hdr="## [$VERSION]" '
             index($0, hdr) == 1 { grab=1; next }
             grab && /^## / { exit }
             grab { print }
-          ' CHANGELOG.md > release-notes.md
-          test -s release-notes.md || {
+          ' CHANGELOG.md > curated.md
+          test -s curated.md || {
             echo "CHANGELOG section for $VERSION is empty" >&2
             exit 1
           }
 
-      - name: Create draft, upload all assets, then publish
+          generated="$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$TAG" --jq .body)"
+
+          # Written line by line rather than as a heredoc: a heredoc body would
+          # have to sit inside this YAML block scalar's indentation, and those
+          # leading spaces would turn the markdown into code blocks.
+          {
+            cat curated.md
+            printf '\n---\n\n'
+            printf '%s\n' "$generated"
+            printf '%s\n' \
+              '' \
+              '---' \
+              '' \
+              '## Install' \
+              '' \
+              '```sh' \
+              "curl --proto '=https' --tlsv1.2 -fsSL https://github.com/$GITHUB_REPOSITORY/releases/latest/download/install.sh | sh" \
+              '```' \
+              '' \
+              '```powershell' \
+              "irm https://github.com/$GITHUB_REPOSITORY/releases/latest/download/install.ps1 | iex" \
+              '```' \
+              '' \
+              'Both installers verify the downloaded archive against SHA256SUMS' \
+              'before installing. Every archive also carries signed build provenance:' \
+              '' \
+              '```sh' \
+              "gh attestation verify enoxian-macos-aarch64.tar.gz --repo $GITHUB_REPOSITORY" \
+              '```'
+          } > release-notes.md
+
+      # Assets are uploaded to a draft so a partial upload never becomes
+      # visible. The release then goes live as a prerelease: published, but not
+      # `latest`, so installer users stay on the previous release until the
+      # published installers have been exercised by install-smoke.
+      - name: Create draft, upload all assets, then publish as prerelease
         shell: bash
         env:
           TAG: ${{ needs.verify.outputs.tag }}
@@ -395,22 +504,24 @@ jobs:
           set -euo pipefail
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
-            test "$draft" = "true" || {
+            prerelease="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)"
+            if [ "$draft" != "true" ] && [ "$prerelease" != "true" ]; then
               echo "release $TAG already exists and is published; refusing to overwrite it" >&2
               exit 1
-            }
+            fi
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md
           else
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
               --title "$TAG" --notes-file release-notes.md
           fi
           gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease
 
   install-smoke:
     name: Install smoke (${{ matrix.os }})
     needs: [verify, publish]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -419,6 +530,9 @@ jobs:
       TAG: ${{ needs.verify.outputs.tag }}
       VERSION: ${{ needs.verify.outputs.version }}
     steps:
+      # `--version $TAG` resolves to /releases/download/$TAG/, which works for a
+      # prerelease. Nothing here touches /releases/latest/download, which is
+      # exactly what users would hit.
       - name: Exercise published installer on Unix
         if: runner.os != 'Windows'
         shell: bash
@@ -452,6 +566,22 @@ jobs:
           }
           "$bin_dir/enox" --version | grep -F "$VERSION"
           trap - EXIT
+
+      - name: Verify published provenance on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "${{ runner.os }}" in
+            Linux) asset=enoxian-linux-x86_64.tar.gz ;;
+            macOS) asset=enoxian-macos-aarch64.tar.gz ;;
+          esac
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$asset" \
+            -o "$RUNNER_TEMP/$asset"
+          gh attestation verify "$RUNNER_TEMP/$asset" --repo "$GITHUB_REPOSITORY"
 
       - name: Exercise published installer on Windows
         if: runner.os == 'Windows'
@@ -502,11 +632,37 @@ jobs:
             }
           }
 
+  promote:
+    name: Promote to latest
+    needs: [verify, publish, install-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Mark the release latest
+        shell: bash
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [ "$PRERELEASE" = "true" ]; then
+            echo "$TAG is a prerelease; leaving it published but not latest."
+            exit 0
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
+          echo "### Released $TAG" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
+
   homebrew:
     name: Update Homebrew tap
-    needs: [verify, publish]
-    if: ${{ vars.ENOXIAN_HOMEBREW_TAP != '' }}
+    needs: [verify, promote]
+    if: ${{ vars.ENOXIAN_HOMEBREW_TAP != '' && needs.verify.outputs.prerelease == 'false' }}
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout source formula
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

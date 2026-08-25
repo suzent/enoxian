@@ -1,5 +1,8 @@
-# Prepare a version bump commit. Tag only after the commit is merged to main
-# and all required CI checks are green.
+# Prepare a version bump commit on a `chore/release-vX.Y.Z` branch.
+#
+# Merging that branch is what cuts the release: .github/workflows/tag-release.yml
+# tags the merge commit and starts the release pipeline. Normally you do not run
+# this by hand — use the "Prepare release" workflow in the Actions tab.
 #
 # Usage:
 #   .\scripts\bump.ps1 patch   # 0.1.0 → 0.1.1
@@ -15,6 +18,16 @@ $RepoDir = Split-Path $PSScriptRoot -Parent
 $CargoToml = Join-Path $RepoDir "Cargo.toml"
 $Changelog = Join-Path $RepoDir "CHANGELOG.md"
 $Readme = Join-Path $RepoDir "README.md"
+$RepoUrl = "https://github.com/suzent/enoxian"
+
+# CHANGELOG.md, Cargo.toml, and README.md are LF in the repository (see
+# .gitattributes). Write LF explicitly so a bump prepared on Windows does not
+# produce a whole-file line-ending diff.
+function Set-LfContent {
+    param([string]$Path, [string]$Text)
+    $lf = $Text -replace "`r`n", "`n"
+    [System.IO.File]::WriteAllText($Path, $lf, (New-Object System.Text.UTF8Encoding $false))
+}
 
 if ((git -C $RepoDir branch --show-current) -ne 'main') {
     throw 'Release preparation must start from main'
@@ -24,9 +37,19 @@ if ($LASTEXITCODE -ne 0) { throw 'Tracked files have uncommitted changes' }
 git -C $RepoDir diff --cached --quiet
 if ($LASTEXITCODE -ne 0) { throw 'The index has uncommitted changes' }
 
+# A stale main silently drops CHANGELOG entries: anything merged after your last
+# pull stays under [Unreleased] and ships in the *next* release notes while its
+# code ships in this one.
+git -C $RepoDir remote get-url origin *> $null
+if ($LASTEXITCODE -eq 0) {
+    git -C $RepoDir fetch --quiet origin main
+    git -C $RepoDir merge-base --is-ancestor origin/main HEAD
+    if ($LASTEXITCODE -ne 0) { throw "main is behind origin/main — run 'git pull' first" }
+}
+
 # ── Read current version ──────────────────────────────────────────────────────
 $content = Get-Content $CargoToml -Raw
-if ($content -notmatch 'version\s*=\s*"(\d+)\.(\d+)\.(\d+)"') {
+if ($content -notmatch '(?m)^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"') {
     throw "Could not find version in Cargo.toml"
 }
 $major = [int]$Matches[1]
@@ -45,6 +68,18 @@ $new = switch ($Part) {
     }
 }
 
+# ── Refuse to cut an empty release ────────────────────────────────────────────
+# The release notes are this section. An empty one fails the release pipeline
+# after five platform builds; catching it here costs nothing.
+$changelogContent = Get-Content $Changelog -Raw
+$unreleased = [regex]::Match(
+    $changelogContent,
+    '(?ms)^## \[Unreleased\][^\n]*\n(.*?)(?=^## )'
+)
+if (-not $unreleased.Success -or -not ($unreleased.Groups[1].Value -match '\S')) {
+    throw 'The [Unreleased] section is empty — nothing to release'
+}
+
 Write-Host "▶ Bumping $current → $new"
 $branch = "chore/release-v$new"
 git -C $RepoDir switch -c $branch
@@ -52,25 +87,26 @@ if ($LASTEXITCODE -ne 0) { throw "Could not create $branch" }
 
 # Cut the Unreleased section and update compare links.
 $date = Get-Date -Format 'yyyy-MM-dd'
-$changelogContent = Get-Content $Changelog -Raw
-$releaseHeader = "## [Unreleased]`r`n`r`n## [$new] — $date"
+$releaseHeader = "## [Unreleased]`n`n## [$new] — $date"
 $changelogContent = [regex]::Replace(
     $changelogContent,
     '(?m)^## \[Unreleased\]\r?$',
     $releaseHeader,
     1
 )
+# Insert the new compare link directly below [Unreleased] so the reference list
+# stays newest-first, instead of appending it to the end of the file.
 $changelogContent = [regex]::Replace(
     $changelogContent,
     '(?m)^\[Unreleased\]: .+$',
-    "[Unreleased]: https://github.com/suzent/enoxian/compare/v$new...HEAD"
+    "[Unreleased]: $RepoUrl/compare/v$new...HEAD`n[$new]: $RepoUrl/compare/v$current...v$new",
+    1
 )
-$changelogContent = $changelogContent.TrimEnd() + "`r`n[$new]: https://github.com/suzent/enoxian/compare/v$current...v$new`r`n"
-Set-Content $Changelog $changelogContent -NoNewline
+Set-LfContent $Changelog $changelogContent
 
 # ── Update Cargo.toml ─────────────────────────────────────────────────────────
 $updated = $content -replace '(?m)(^version\s*=\s*)"[^"]*"', "`${1}`"$new`""
-Set-Content $CargoToml $updated -NoNewline
+Set-LfContent $CargoToml $updated
 
 # Keep the user-facing package version synchronized.
 $readmeContent = Get-Content $Readme -Raw
@@ -80,22 +116,26 @@ $readmeContent = [regex]::Replace(
     "The current package version is **$new**.",
     1
 )
-Set-Content $Readme $readmeContent -NoNewline
+Set-LfContent $Readme $readmeContent
 
-# ── cargo check to update Cargo.lock ─────────────────────────────────────────
+# ── Update Cargo.lock ─────────────────────────────────────────────────────────
+# Only the workspace member's own version changed, so refresh just that entry
+# rather than compiling the tree with `cargo check`.
 Write-Host "▶ Updating Cargo.lock..."
 Push-Location $RepoDir
-cargo check --quiet 2>$null
-Pop-Location
+try {
+    cargo update --workspace --offline --quiet 2>$null
+    if ($LASTEXITCODE -ne 0) { cargo update --workspace --quiet }
+} finally {
+    Pop-Location
+}
 
 # ── Commit only; CI must pass before the tag is created ───────────────────────
 Write-Host "▶ Creating release preparation commit..."
-git add $CargoToml (Join-Path $RepoDir "Cargo.lock") $Changelog $Readme
-git commit -m "chore: bump version to $new"
+git -C $RepoDir add $CargoToml (Join-Path $RepoDir "Cargo.lock") $Changelog $Readme
+git -C $RepoDir commit -m "chore: bump version to $new"
 
 Write-Host ""
 Write-Host "✦ Prepared v$new on $branch. Push it and open a PR:"
 Write-Host "    git push -u origin $branch"
-Write-Host "  After merge and required CI are green, tag main:"
-Write-Host "    git tag -s v$new -m 'enoxian v$new'"
-Write-Host "    git push origin v$new"
+Write-Host "  Merging that PR tags v$new and runs the release pipeline automatically."
