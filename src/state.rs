@@ -1,6 +1,6 @@
 use crate::control::{
-    ChatActivity, ChatMessage, CircleEvent, Task, TaskStatus, CHAT_ACTIVITY_KEY, CHAT_KEY,
-    MLS_REMOVED_KEY, TASKS_KEY,
+    ChatActivity, ChatMessage, CircleEvent, Presence, Task, TaskStatus, CHAT_ACTIVITY_KEY,
+    CHAT_KEY, MEMBER_LIST_KEY, MLS_REMOVED_KEY, PRESENCE_KEY, TASKS_KEY,
 };
 use dashmap::DashMap;
 use libp2p::{multiaddr::Protocol, swarm::ConnectionId, Multiaddr};
@@ -260,6 +260,85 @@ impl AppState {
         );
         std::mem::forget(tasks_sub);
 
+        // Observe the member list for P2P-delivered changes and fire SSE events.
+        // Local membership APIs emit their own events; without this, a change
+        // that arrived purely by CRDT sync was applied silently, so a peer's
+        // open UI kept the roster it fetched when the circle was opened. That
+        // hid a device's advertised agents — the list a device republishes when
+        // `agents.toml` changes — until the page was reloaded.
+        //
+        // `Updated` matters as much as `Inserted` here: a device that changes
+        // its advertised agents rewrites an entry that already exists, so the
+        // insert-only case never sees it.
+        let member_map = control.get_or_insert_map(MEMBER_LIST_KEY);
+        let events_for_members = events_tx.clone();
+        let members_sub = member_map.observe(
+            move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                if !is_p2p {
+                    return;
+                }
+                for (key, change) in event.keys(txn).iter() {
+                    let peer_id = key.to_string();
+                    let event = match change {
+                        yrs::types::EntryChange::Inserted(_)
+                        | yrs::types::EntryChange::Updated(_, _) => {
+                            CircleEvent::MemberAdded { peer_id }
+                        }
+                        yrs::types::EntryChange::Removed(_) => {
+                            CircleEvent::MemberRemoved { peer_id }
+                        }
+                    };
+                    let _ = events_for_members.send(event);
+                }
+            },
+        );
+        std::mem::forget(members_sub);
+
+        // Observe presence for P2P-delivered changes, so a peer going offline or
+        // coming back updates an open UI instead of waiting for a reload.
+        //
+        // Heartbeats rewrite an entry every 30s without changing anything a
+        // viewer can see, so this fires only when `status` actually transitions.
+        // Emitting per write would have every client refetch the roster on every
+        // peer's heartbeat forever. A `current_file` change is likewise not a
+        // status change and deliberately does not wake the roster.
+        let presence_map = control.get_or_insert_map(PRESENCE_KEY);
+        let events_for_presence = events_tx.clone();
+        let presence_sub = presence_map.observe(
+            move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                if !is_p2p {
+                    return;
+                }
+                let parse = |out: &Out| match out {
+                    Out::Any(Any::String(s)) => serde_json::from_str::<Presence>(s).ok(),
+                    _ => None,
+                };
+                for change in event.keys(txn).values() {
+                    let changed = match change {
+                        yrs::types::EntryChange::Inserted(new) => parse(new),
+                        yrs::types::EntryChange::Updated(old, new) => {
+                            match (parse(old), parse(new)) {
+                                // Same status — a heartbeat or a file-focus change.
+                                (Some(before), Some(after)) if before.status == after.status => {
+                                    None
+                                }
+                                (_, after) => after,
+                            }
+                        }
+                        yrs::types::EntryChange::Removed(_) => None,
+                    };
+                    if let Some(presence) = changed {
+                        let _ = events_for_presence.send(CircleEvent::PresenceChanged {
+                            agent_id: presence.agent_id,
+                        });
+                    }
+                }
+            },
+        );
+        std::mem::forget(presence_sub);
+
         // Proposals are not replicated through the control doc. They sync via
         // the dedicated pull protocol (`crate::network::proposal_sync`), which
         // reconciles the disk store directly on each peer connection — keeping
@@ -474,10 +553,183 @@ fn classify_connection_address(address: &Multiaddr) -> ConnectionKind {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_connection_address, ConnectionKind};
+    use super::{classify_connection_address, AppState, ConnectionKind};
+    use crate::control::{
+        AgentStatus, CircleEvent, MemberEntry, MemberRole, Presence, MEMBER_LIST_KEY, PRESENCE_KEY,
+    };
+    use crate::{config::JoinPolicy, mls};
+    use std::path::PathBuf;
+    use yrs::{Any, Map, Transact, WriteTxn};
 
     fn kind(address: &str) -> ConnectionKind {
         classify_connection_address(&address.parse().unwrap())
+    }
+
+    fn test_state() -> AppState {
+        AppState::new(
+            "circle".into(),
+            "Circle".into(),
+            PathBuf::new(),
+            PathBuf::new(),
+            String::new(),
+            "agent".into(),
+            1,
+            "peer-local".into(),
+            JoinPolicy::Manual,
+            "owner".into(),
+            mls::new_mls_state(mls::MlsIdentity::generate("peer-local").unwrap(), None),
+        )
+    }
+
+    /// Write into a control-doc map the way CRDT sync does — with the "p2p"
+    /// origin that marks an update as arriving from a peer.
+    fn p2p_write(state: &AppState, map_key: &str, key: &str, json: &str) {
+        let mut txn = state.control.try_transact_mut_with("p2p").unwrap();
+        let map = txn.get_or_insert_map(map_key);
+        map.insert(&mut txn, key, Any::String(json.into()));
+    }
+
+    fn member_json(peer_id: &str, agents: &[&str]) -> String {
+        serde_json::to_string(&MemberEntry {
+            peer_id: peer_id.to_string(),
+            owner: "suzy".into(),
+            agent_id: format!("suzy-{peer_id}"),
+            device_label: "macbook-pro".into(),
+            agents: agents.iter().map(|a| a.to_string()).collect(),
+            role: MemberRole::Member,
+            added_at: chrono::Utc::now(),
+            signature: String::new(),
+        })
+        .unwrap()
+    }
+
+    fn presence_json(agent_id: &str, status: AgentStatus) -> String {
+        serde_json::to_string(&Presence {
+            agent_id: agent_id.to_string(),
+            status,
+            last_seen: chrono::Utc::now(),
+            current_file: None,
+            peer_id: "peer-remote".into(),
+        })
+        .unwrap()
+    }
+
+    fn drain(rx: &mut tokio::sync::broadcast::Receiver<CircleEvent>) -> Vec<CircleEvent> {
+        let mut out = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            out.push(ev);
+        }
+        out
+    }
+
+    // A device that changes its advertised agents rewrites a member entry that
+    // already exists. Without an event for the update, a peer's open UI kept the
+    // roster it fetched when the circle was opened, hiding the new agent.
+    #[test]
+    fn remote_member_update_announces_the_roster_change() {
+        let state = test_state();
+        let mut rx = state.events.subscribe();
+
+        p2p_write(
+            &state,
+            MEMBER_LIST_KEY,
+            "peer-remote",
+            &member_json("peer-remote", &[]),
+        );
+        assert!(
+            drain(&mut rx).iter().any(
+                |ev| matches!(ev, CircleEvent::MemberAdded { peer_id } if peer_id == "peer-remote")
+            ),
+            "a new member entry should announce itself"
+        );
+
+        // The regression: same key, new value — an Updated, not an Inserted.
+        p2p_write(
+            &state,
+            MEMBER_LIST_KEY,
+            "peer-remote",
+            &member_json("peer-remote", &["claude"]),
+        );
+        assert!(
+            drain(&mut rx).iter().any(
+                |ev| matches!(ev, CircleEvent::MemberAdded { peer_id } if peer_id == "peer-remote")
+            ),
+            "an advertised-agents change should announce itself"
+        );
+    }
+
+    // A local write already fires its own event from the membership API, so
+    // echoing it here would double-report every local change.
+    #[test]
+    fn local_member_write_is_not_announced() {
+        let state = test_state();
+        let mut rx = state.events.subscribe();
+        {
+            let mut txn = state.control.transact_mut();
+            let map = txn.get_or_insert_map(MEMBER_LIST_KEY);
+            let json = member_json("peer-local", &["claude"]);
+            map.insert(&mut txn, "peer-local", Any::String(json.as_str().into()));
+        }
+        assert!(
+            !drain(&mut rx)
+                .iter()
+                .any(|ev| matches!(ev, CircleEvent::MemberAdded { .. })),
+            "local writes are announced by the API, not the observer"
+        );
+    }
+
+    // Presence is rewritten every 30s by heartbeat. Announcing each one would
+    // have every client refetch the roster on every peer's heartbeat forever.
+    #[test]
+    fn presence_announces_transitions_but_not_heartbeats() {
+        let state = test_state();
+        let mut rx = state.events.subscribe();
+
+        p2p_write(
+            &state,
+            PRESENCE_KEY,
+            "suzy-remote",
+            &presence_json("suzy-remote", AgentStatus::Online),
+        );
+        assert_eq!(
+            drain(&mut rx)
+                .iter()
+                .filter(|ev| matches!(ev, CircleEvent::PresenceChanged { .. }))
+                .count(),
+            1,
+            "first sight of a peer is a transition"
+        );
+
+        // Heartbeat: same status, fresh timestamp.
+        p2p_write(
+            &state,
+            PRESENCE_KEY,
+            "suzy-remote",
+            &presence_json("suzy-remote", AgentStatus::Online),
+        );
+        assert_eq!(
+            drain(&mut rx)
+                .iter()
+                .filter(|ev| matches!(ev, CircleEvent::PresenceChanged { .. }))
+                .count(),
+            0,
+            "a heartbeat that changes nothing visible must stay quiet"
+        );
+
+        p2p_write(
+            &state,
+            PRESENCE_KEY,
+            "suzy-remote",
+            &presence_json("suzy-remote", AgentStatus::Offline),
+        );
+        assert_eq!(
+            drain(&mut rx)
+                .iter()
+                .filter(|ev| matches!(ev, CircleEvent::PresenceChanged { .. }))
+                .count(),
+            1,
+            "going offline is a transition"
+        );
     }
 
     #[test]

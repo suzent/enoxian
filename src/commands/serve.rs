@@ -10,12 +10,19 @@ use tracing::{info, warn};
 struct FrontendAssets;
 
 use crate::{
-    api, cli::ServeArgs, config, daemon::DaemonState, identity::DeviceIdentity, lifecycle,
+    agent, api, cli::ServeArgs, config, daemon::DaemonState, identity::DeviceIdentity, lifecycle,
 };
 
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(5);
 
 pub async fn run(args: ServeArgs) -> Result<()> {
+    // Managed services (launchd, systemd --user) start with a bare PATH, so
+    // pull in what the user's login shell resolves before any agent-adapter
+    // probing or spawning happens. See `agent::probe::adopt_login_shell_path`.
+    tokio::task::spawn_blocking(agent::probe::adopt_login_shell_path)
+        .await
+        .ok();
+
     // ── Device identity: first-run setup ─────────────────────────────────────
     // On first launch, prompt for a device label. Subsequent starts auto-load
     // the saved identity silently. The identity is used to derive stable

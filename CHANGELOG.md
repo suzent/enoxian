@@ -19,18 +19,21 @@ file, see below):
 3. **Skip pure-internal churn** — refactors, test-only changes, docs typos, CI
    tweaks that users never see. If a user can't observe it, it doesn't belong.
 4. **Security-relevant changes always go under `Security`,** even small ones.
-5. **At release time, cut a version section:** `scripts/bump.sh` and
-   `scripts/bump.ps1` add a dated version heading below a fresh empty
-   `[Unreleased]` section and update the compare links.
+5. **At release time, cut a version section:** the "Prepare release" workflow
+   (Actions tab) runs `scripts/bump.sh`, which adds a dated version heading
+   below a fresh empty `[Unreleased]` section and updates the compare links. It
+   refuses to run when `[Unreleased]` is empty.
 6. **Versioning:** breaking change → major; new feature → minor; fix only →
    patch (pre-1.0, minor also absorbs features that aren't clearly breaking).
 
 ## How release notes are built
 
 On a tagged release, `.github/workflows/release.yml` uses the matching version
-section from THIS file as the top of the GitHub release notes, followed by the
-auto-generated commit/PR list. So: curated summary here, full commit list
-appended automatically. Keep the section for a version accurate before tagging.
+section from THIS file as the top of the GitHub release notes, followed by
+GitHub's auto-generated commit/PR list and the install instructions. So: curated
+summary here, full commit list appended automatically. Keep the section for a
+version accurate before merging the release pull request — the release pipeline
+refuses to publish a version whose section is missing or empty.
 -->
 
 
@@ -42,6 +45,71 @@ appended automatically. Keep the section for a version accurate before tagging.
   file browsing, editing, and safe Markdown/HTML previews; clearer task and
   device information; and smoother chat, file, and Circle transitions.
 
+## [0.4.3] — 2026-08-25
+
+### Added
+
+- Suzent can be driven as an agent with no adapter plugin and no Node.js: it
+  speaks ACP itself, so `enox agent add suzent --driver acp -- suzent acp` is
+  the whole setup and `@suzent` then works like `@claude`. The turn runs on your
+  own Suzent install, with its memory, skills, and model configuration, in the
+  circle workspace.
+- Custom agents in Device Settings now show whether they can actually start —
+  **READY**, **MISSING** with the command that could not be found, or
+  **DOWNLOADS** for a `npx …` command — plus a description for agents Enoxian
+  knows. Previously a custom entry showed only its command line, so a typo or an
+  uninstalled CLI looked identical to a working agent.
+
+### Fixed
+
+- A device no longer advertises an agent whose own command is missing. An agent
+  that speaks ACP itself names its product CLI directly rather than an adapter,
+  so nothing caught it being absent: peers were offered the agent, the mention
+  popup marked it runnable, and the failure surfaced only after someone
+  addressed it.
+
+### Security
+
+- Release archives now carry signed, transparency-logged build provenance tying
+  each archive to this repository, workflow, and commit. Verify a download with
+  `gh attestation verify enoxian-macos-aarch64.tar.gz --repo suzent/enoxian`.
+  The release pipeline verifies the published archives before a release is
+  marked latest.
+
+### Changed
+
+- `@codex` now runs the Codex CLI you installed and signed in to, the same way
+  `@claude` already used your Claude Code CLI, instead of a copy bundled inside
+  the adapter. Device Settings reports **codex CLI missing** with install and
+  login guidance when that CLI is absent, rather than showing the adapter as
+  ready, and each ready adapter now states which CLI it runs.
+
+### Fixed
+
+- Agent replies in chat are attributed to the device that actually ran the
+  agent. When two devices configured the same agent name, a reply could be
+  shown under the wrong device.
+- A device no longer advertises an agent whose CLI is not installed. Mention
+  autocomplete offered such an agent as runnable, and the failure only appeared
+  after someone addressed it. Installing the missing CLI restores the agent on
+  the next daemon start.
+- An open Circle now picks up membership changes made on another device —
+  including the agents a device advertises — instead of showing the roster as it
+  was when the Circle was opened. Peers going offline and coming back update
+  live too. Previously both needed a page reload.
+
+## [0.4.2] — 2026-08-24
+
+### Fixed
+
+- The managed login service (launchd on macOS, `systemd --user` on Linux)
+  starts with a bare `PATH` and never sourced shell rc files, so Node.js and
+  agent CLIs installed via a version manager like nvm (rather than a
+  system-wide location) were invisible to the daemon even though they worked
+  in any terminal — agent adapters wrongly reported "Node.js 22+ required" or
+  the CLI as missing. The daemon now resolves the same `PATH` a login shell
+  would and adopts it at startup, so adapter detection matches what's
+  actually installed.
 ## [0.4.1] — 2026-08-23
 
 ### Fixed
@@ -269,7 +337,12 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/suzent/enoxian/compare/v0.4.2...v0.4.3
+[0.4.2]: https://github.com/suzent/enoxian/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/suzent/enoxian/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/suzent/enoxian/compare/v0.3.8...v0.4.0
+[0.3.8]: https://github.com/suzent/enoxian/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/suzent/enoxian/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/suzent/enoxian/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/suzent/enoxian/compare/v0.3.4...v0.3.5
@@ -281,6 +354,3 @@ membership, WAN bootstrap, and the local workspace proposal layer.
 [0.2.1]: https://github.com/suzent/enoxian/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/suzent/enoxian/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/suzent/enoxian/releases/tag/v0.1.4
-[0.3.8]: https://github.com/suzent/enoxian/compare/v0.3.7...v0.3.8
-[0.4.0]: https://github.com/suzent/enoxian/compare/v0.3.8...v0.4.0
-[0.4.1]: https://github.com/suzent/enoxian/compare/v0.4.0...v0.4.1

@@ -1,19 +1,54 @@
 version: 2
 updates:
+  # Grouped so routine patch traffic arrives as one pull request per ecosystem
+  # per week instead of up to five. Major bumps stay separate — they need to be
+  # reviewed and changelogged on their own.
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+    ignore:
+      # openmls 0.8.x and hpke-rs pin tls_codec 0.4, and its traits cross the
+      # openmls API boundary — taking 0.5 here adds a second, incompatible
+      # version rather than upgrading anything. Patch updates still apply.
+      # Drop this once openmls ships against tls_codec 0.5.
+      - dependency-name: "tls_codec"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
 
   - package-ecosystem: npm
     directory: /frontend
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # The bootstrap image's base images.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    ignore:
+      # The Rust base image is pinned to RUST_VERSION in .github/workflows and
+      # rust-version in Cargo.toml. Moving it alone would build the container on
+      # a toolchain CI never tests — bump all three together, deliberately.
+      # debian:bookworm-slim updates still flow, which is the security-relevant
+      # half of this ecosystem.
+      - dependency-name: "rust"

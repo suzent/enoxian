@@ -44,6 +44,15 @@ pub const CATALOG: &[Candidate] = &[
         command: &["codex", "{{task}}"],
         about: "OpenAI Codex CLI, fire-and-forget with the task text as its prompt.",
     },
+    // Suzent speaks ACP itself, so `command[0]` is the product CLI rather than
+    // an adapter: there is no bridge to be ready, and presence of `suzent` on
+    // PATH is the whole prerequisite.
+    Candidate {
+        name: "suzent",
+        driver: "acp",
+        command: &["suzent", "acp"],
+        about: "Your local Suzent, speaking ACP directly — no adapter bridge, no Node.js.",
+    },
 ];
 
 /// The program (`command[0]`) a candidate is detected by.
@@ -52,6 +61,86 @@ impl Candidate {
         // A catalog entry always has at least the program itself.
         self.command.first().copied().unwrap_or("")
     }
+}
+
+/// An adapter that bridges to a product CLI the user installs and
+/// authenticates themselves, instead of shipping its own copy of that product.
+///
+/// Enoxian manages only the pinned bridge; the CLI underneath stays the
+/// user's — their login, settings, MCP servers, and project configuration.
+/// That has two consequences this table exists to keep consistent: a bridge is
+/// not usable when its CLI is absent, and a bridge must be handed the exact
+/// executable we resolved rather than left to find its own (a bundled copy, or
+/// a different `PATH` entry than the one the settings page reported on).
+pub struct BridgedCli {
+    /// Program looked up on `PATH` to decide whether the bridge is usable.
+    pub program: &'static str,
+    /// Where to get it, shown when it is missing.
+    pub install_url: &'static str,
+    /// Command that authenticates it, shown when it is missing.
+    pub login_command: &'static str,
+    /// Variable the bridge reads to run one explicit executable.
+    pub executable_env: &'static str,
+    /// Subcommand that proves the CLI is signed in, for CLIs that have one and
+    /// exit non-zero without it. `None` means presence is all we can check.
+    pub auth_status_args: Option<&'static [&'static str]>,
+}
+
+/// The bridged CLI a managed adapter needs, keyed by the adapter's executable
+/// name so plugin health and process spawning cannot disagree. Unknown
+/// adapters (including third-party manifests) bridge to nothing and are judged
+/// on their own executable alone.
+pub fn bridged_cli(adapter: &str) -> Option<&'static BridgedCli> {
+    const CLAUDE: BridgedCli = BridgedCli {
+        program: "claude",
+        install_url: "https://code.claude.com/docs/en/getting-started",
+        login_command: "claude auth login",
+        executable_env: "CLAUDE_CODE_EXECUTABLE",
+        auth_status_args: Some(&["auth", "status"]),
+    };
+    const CODEX: BridgedCli = BridgedCli {
+        program: "codex",
+        install_url: "https://developers.openai.com/codex/cli",
+        login_command: "codex login",
+        executable_env: "CODEX_PATH",
+        // The Codex CLI has no status subcommand we can rely on across the
+        // versions users have installed, so presence is the honest check.
+        auth_status_args: None,
+    };
+
+    match adapter_stem(adapter).as_str() {
+        "claude-agent-acp" | "claude-code-acp" => Some(&CLAUDE),
+        "codex-acp" => Some(&CODEX),
+        _ => None,
+    }
+}
+
+/// Whether an adapter can actually run right now: a bridge needs the CLI it
+/// bridges to, so it is only usable once that CLI is installed.
+///
+/// An adapter that bridges to nothing (a third-party manifest, or a plain argv
+/// agent) has no such prerequisite and is judged on its own executable alone,
+/// so it stays usable here.
+pub fn bridge_ready(adapter: &str) -> bool {
+    match bridged_cli(adapter) {
+        Some(bridge) => is_installed(bridge.program),
+        None => true,
+    }
+}
+
+/// The comparable name of an adapter executable: basename, lowercased, without
+/// a Windows executable extension, so a managed absolute path and a bare name
+/// resolve to the same adapter.
+fn adapter_stem(program: &str) -> String {
+    let normalized = program.replace('\\', "/");
+    let file = normalized.rsplit('/').next().unwrap_or(&normalized);
+    let lower = file.to_ascii_lowercase();
+    lower
+        .strip_suffix(".cmd")
+        .or_else(|| lower.strip_suffix(".exe"))
+        .or_else(|| lower.strip_suffix(".bat"))
+        .unwrap_or(&lower)
+        .to_string()
 }
 
 /// Whether `program` is resolvable as an executable on this machine.
@@ -137,6 +226,76 @@ fn is_executable_file(path: &std::path::Path) -> bool {
     }
 }
 
+/// Fold the login shell's `PATH` into this process's environment, once, at
+/// daemon startup.
+///
+/// Managed services (macOS `launchd`, Linux `systemd --user`) start a bare
+/// `PATH` and never source shell rc files, so anything a version manager
+/// (nvm, pyenv-style tools, Homebrew on some setups, etc.) only adds to
+/// `PATH` from `.zshrc`/`.bash_profile` is invisible here even though it
+/// works in every terminal. Without this, [`resolve`]/[`is_installed`] and
+/// anything spawned via [`crate::agent::spawn::command`] silently disagree
+/// with what the user sees in a shell.
+///
+/// Best-effort and bounded: if the login shell can't be probed within a few
+/// seconds (or this is Windows, where the interactive logon token already
+/// carries the full user environment), the process `PATH` is left as-is.
+#[cfg(unix)]
+pub fn adopt_login_shell_path() {
+    let Some(login_path) = login_shell_path() else {
+        return;
+    };
+    let current = std::env::var("PATH").unwrap_or_default();
+    let merged = merge_path_lists(&login_path, &current);
+    if !merged.is_empty() {
+        std::env::set_var("PATH", merged);
+    }
+}
+
+#[cfg(not(unix))]
+pub fn adopt_login_shell_path() {}
+
+/// Union of two `:`-separated `PATH` lists, de-duplicated, `a`'s entries
+/// first — the login shell's resolution should win over the sparse default
+/// a managed service started with.
+#[cfg(unix)]
+fn merge_path_lists(a: &str, b: &str) -> String {
+    let mut seen = std::collections::HashSet::new();
+    a.split(':')
+        .chain(b.split(':'))
+        .filter(|dir| !dir.is_empty() && seen.insert(*dir))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// The `PATH` a fresh login shell would see, by actually asking it — the
+/// only reliable way to account for whatever a user's rc files do (nvm,
+/// asdf, custom exports, ...). Run on a background thread with a bounded
+/// wait: an rc file that hangs (or a `$SHELL` that isn't really a shell)
+/// must not stall daemon startup.
+#[cfg(unix)]
+fn login_shell_path() -> Option<String> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = std::process::Command::new(&shell)
+            .args(["-ilc", "printf %s \"$PATH\""])
+            .stdin(std::process::Stdio::null())
+            .output();
+        let _ = tx.send(result);
+    });
+
+    let output = rx.recv_timeout(Duration::from_secs(3)).ok()?.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!path.is_empty()).then_some(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +315,71 @@ mod tests {
         for c in CATALOG {
             assert!(!c.program().is_empty(), "{} has no program", c.name);
         }
+    }
+
+    // Suzent is detected by its own CLI, not by an adapter executable, so the
+    // program probed must be `suzent` itself and it must bridge to nothing.
+    #[test]
+    fn suzent_is_discovered_by_its_own_cli() {
+        let suzent = CATALOG
+            .iter()
+            .find(|c| c.name == "suzent")
+            .expect("suzent is a catalog candidate");
+        assert_eq!(suzent.program(), "suzent");
+        assert_eq!(suzent.driver, "acp");
+        assert!(bridged_cli(suzent.program()).is_none());
+        assert!(bridge_ready(suzent.program()));
+    }
+
+    // A bridge is exactly as usable as the CLI underneath it. Asserting the
+    // equivalence rather than a fixed verdict keeps this true on a machine that
+    // has the CLI and one that does not.
+    #[test]
+    fn bridge_readiness_tracks_the_bridged_cli() {
+        for adapter in ["claude-agent-acp", "claude-code-acp", "codex-acp"] {
+            let bridge = bridged_cli(adapter).expect("built-in adapter bridges to a CLI");
+            assert_eq!(
+                bridge_ready(adapter),
+                is_installed(bridge.program),
+                "{adapter} readiness should follow {}",
+                bridge.program
+            );
+        }
+    }
+
+    // An adapter that bridges to nothing has no external prerequisite, so it
+    // must not be filtered out as unusable.
+    #[test]
+    fn adapter_without_a_bridge_has_no_prerequisite() {
+        assert!(bridge_ready("some-third-party-acp"));
+        assert!(bridge_ready(""));
+    }
+
+    // The advertisement path passes the configured command's first element,
+    // which is a full managed path, not a bare adapter name.
+    #[test]
+    fn readiness_accepts_a_full_adapter_path() {
+        let path = "/Users/x/.enoxian/adapters/codex-acp/1.1.14/node_modules/.bin/codex-acp";
+        assert_eq!(bridge_ready(path), is_installed("codex"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn merge_path_lists_prefers_login_shell_entries_and_dedupes() {
+        let merged = merge_path_lists(
+            "/Users/a/.nvm/versions/node/v22.0.0/bin:/usr/bin:/bin",
+            "/usr/bin:/bin:/usr/sbin:/sbin",
+        );
+        assert_eq!(
+            merged,
+            "/Users/a/.nvm/versions/node/v22.0.0/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn merge_path_lists_ignores_empty_segments() {
+        assert_eq!(merge_path_lists("/a::/b", "::/c:"), "/a:/b:/c");
     }
 
     #[test]
