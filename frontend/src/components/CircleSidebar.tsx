@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Settings } from 'lucide-react'
 import { useApp } from '../context/AppContext'
-import { initCircle, enterCircle, getIdentity } from '../api'
-import { triggerDockBurst } from '../lib/particleEffect'
+import { initCircle, enterCircle, getIdentity, type IdentityInfo } from '../api'
+import { shortenAgentId } from '../lib/displayName'
 import DeviceSettings from './DeviceSettings'
 import type { RitualMode } from './RitualTransition'
 
@@ -25,14 +25,18 @@ export default function CircleSidebar({ onRitual }: Props) {
   const [enterTarget, setEnterTarget] = useState('')
   const [enterOwner, setEnterOwner] = useState('')
   const [error, setError] = useState('')
+  const [identity, setIdentity] = useState<IdentityInfo | null>(null)
 
   useEffect(() => {
     let cancelled = false
     getIdentity()
       .then(identity => {
-        if (cancelled || !identity.user_handle) return
-        setInitOwner(owner => owner || identity.user_handle || '')
-        setEnterOwner(owner => owner || identity.user_handle || '')
+        if (cancelled) return
+        setIdentity(identity)
+        if (identity.user_handle) {
+          setInitOwner(owner => owner || identity.user_handle || '')
+          setEnterOwner(owner => owner || identity.user_handle || '')
+        }
       })
       .catch(() => {})
     return () => { cancelled = true }
@@ -41,8 +45,6 @@ export default function CircleSidebar({ onRitual }: Props) {
   const rowRefMap = useRef<Map<string, HTMLButtonElement>>(new Map())
   const highlightRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
-  const animatingRef = useRef(false)
-
   // Slide the highlight bar on active change. The glyph confirmation animation
   // is CSS-driven so the selected glyph always remains visible in its row.
   useEffect(() => {
@@ -58,55 +60,37 @@ export default function CircleSidebar({ onRitual }: Props) {
     hl.style.height = `${rowRect.height}px`
   }, [activeCircleId, circles])
 
-  const activeCircleIdRef = useRef(activeCircleId)
-  useEffect(() => { activeCircleIdRef.current = activeCircleId }, [activeCircleId])
-
   const switchCircle = useCallback((targetId: string) => {
-    if (animatingRef.current || targetId === activeCircleIdRef.current) return
-    animatingRef.current = true
-
+    if (targetId === activeCircleId) return
     const dockEl = document.querySelector('[data-circle-dock]') as HTMLElement | null
+    const messageList = document.querySelector('.workspace-view--chat.is-active .chat-message-list') as HTMLElement | null
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
-    if (!dockEl || reduceMotion) {
-      setActiveCircleId(targetId)
-      activeCircleIdRef.current = targetId
-      if (!reduceMotion) triggerDockBurst()
-      animatingRef.current = false
-      return
-    }
+    setActiveCircleId(targetId)
 
-    // Keep the central glyph transition brief; sidebar selection updates after
-    // the 100ms exit instead of being locked for the previous half-second.
-    const doSwitch = () => {
-      setActiveCircleId(targetId)
-      activeCircleIdRef.current = targetId
-      triggerDockBurst()
+    if (reduceMotion) return
+    dockEl?.getAnimations().forEach(animation => animation.cancel())
+    dockEl?.animate(
+      [
+        { opacity: 0.35, transform: 'scale(0.94)', filter: 'contrast(135%)' },
+        { opacity: 1, transform: 'scale(1)', filter: 'contrast(100%)' },
+      ],
+      { duration: 180, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' },
+    )
+    messageList?.getAnimations().forEach(animation => animation.cancel())
+    messageList?.animate(
+      [
+        { opacity: 0.48, clipPath: 'inset(0 0 3px 0)' },
+        { opacity: 1, clipPath: 'inset(0)' },
+      ],
+      { duration: 160, easing: 'ease-out' },
+    )
+  }, [activeCircleId, setActiveCircleId])
 
-      setTimeout(() => {
-        dockEl.style.transition = 'none'
-        dockEl.style.transform = 'scale(0.86)'
-        dockEl.style.opacity = '0'
-        requestAnimationFrame(() => {
-          dockEl.style.transition =
-            'transform 220ms cubic-bezier(0.22,1,0.36,1), opacity 150ms ease-out'
-          dockEl.style.transform = 'scale(1)'
-          dockEl.style.opacity = '1'
-          setTimeout(() => {
-            dockEl.style.transition = ''
-            dockEl.style.transform = ''
-            dockEl.style.opacity = ''
-            animatingRef.current = false
-          }, 230)
-        })
-      }, 30)
-    }
-
-    dockEl.style.transition = 'transform 100ms ease-in, opacity 90ms ease-in'
-    dockEl.style.transform = 'scale(0.82)'
-    dockEl.style.opacity = '0'
-    setTimeout(doSwitch, 100)
-  }, [setActiveCircleId])
+  const userLabel = identity?.user_handle?.trim()
+  const deviceLabel = identity?.device_label?.trim()
+  const localIdentityLabel = [userLabel, deviceLabel].filter(Boolean).join(' · ')
+    || (status?.agent_id ? shortenAgentId(status.agent_id) : 'DEVICE SETTINGS')
 
   // Modal handlers
   const handleInit = async (e: React.FormEvent) => {
@@ -193,12 +177,12 @@ export default function CircleSidebar({ onRitual }: Props) {
         <button
           className="circle-sidebar-settings"
           onClick={() => setSettingsOpen(true)}
-          title="Device and Circle settings"
+          title={identity ? `Settings for ${localIdentityLabel}` : 'Device and Circle settings'}
           aria-label="Open device settings"
         >
           <Settings size={16} strokeWidth={2.25} aria-hidden="true" />
           <span className="circle-sidebar-settings__identity">
-            <strong>{status?.agent_id ?? 'DEVICE SETTINGS'}</strong>
+            <strong>{localIdentityLabel}</strong>
             <small>{status ? 'LOCAL DEVICE · SETTINGS' : 'LOCAL DEVICE'}</small>
           </span>
           <span className="circle-sidebar-settings__arrow" aria-hidden="true">→</span>
@@ -230,7 +214,7 @@ export default function CircleSidebar({ onRitual }: Props) {
                     />
                   </label>
                   <div className="ritual-field">
-                    <span className="ritual-label">RITUAL POLICY</span>
+                    <span className="ritual-label">JOIN APPROVAL</span>
                     <div className="ritual-segment">
                       {(['auto', 'manual'] as const).map(p => (
                         <button key={p} type="button" onClick={() => setInitJoinPolicy(p)} className={initJoinPolicy === p ? 'active' : ''}>
@@ -254,7 +238,7 @@ export default function CircleSidebar({ onRitual }: Props) {
                 <div className="ritual-panel__body">
                   <div className="ritual-divider" />
                   <label className="ritual-field ritual-field--top">
-                    <span className="ritual-label">PACT URI</span>
+                    <span className="ritual-label">INVITE LINK</span>
                     <textarea
                       className="ritual-input ritual-input--textarea ritual-input--uri"
                       required
@@ -267,7 +251,7 @@ export default function CircleSidebar({ onRitual }: Props) {
                   </label>
                   {error && <div className="ritual-error">{error}</div>}
                   <div className="ritual-actions">
-                    <button type="submit" className="ritual-btn ritual-btn--primary">SEAL</button>
+                    <button type="submit" className="ritual-btn ritual-btn--primary">JOIN</button>
                     <button type="button" onClick={() => setModal(null)} className="ritual-btn ritual-btn--secondary">BACK</button>
                   </div>
                 </div>

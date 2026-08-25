@@ -2,8 +2,10 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Presence, Task, Member, PendingEntry, Proposal } from '../types'
 import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, createFile, renameFile, deleteFile, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember, enableCircle, disableCircle, leaveCircle, getProposals } from '../api'
 import ProposalsTab from './ProposalsTab'
+import { FileQuickView } from './EditorPanel'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
+import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
 
 interface Props {
   onFileSelect: (path: string | null) => void
@@ -12,7 +14,8 @@ interface Props {
   onActiveTabChange: (tab: RightPanelTab) => void
 }
 
-export type RightPanelTab = 'members' | 'tasks' | 'files' | 'changes'
+export type RightPanelTab = 'members' | 'tasks' | 'workspace'
+type WorkspaceView = 'files' | 'history'
 
 const TAB_ICONS = {
   members: (
@@ -32,18 +35,12 @@ const TAB_ICONS = {
       <line x1="12" y1="20" x2="21" y2="20" />
     </svg>
   ),
-  files: (
+  workspace: (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square">
       <path d="M6 2.5h8l4.5 4.5v14.5H6z" />
       <path d="M14 2.5V7h4.5" />
       <line x1="9" y1="12" x2="15.5" y2="12" />
       <line x1="9" y1="16" x2="15.5" y2="16" />
-    </svg>
-  ),
-  changes: (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square">
-      <circle cx="12" cy="12" r="9" />
-      <polyline points="12 7 12 12 15.5 15.5" />
     </svg>
   ),
 } as const
@@ -75,10 +72,14 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
   const [newTaskDesc, setNewTaskDesc] = useState('')
   const [creating, setCreating] = useState(false)
   const [taskActionError, setTaskActionError] = useState<string | null>(null)
+  const [showCompletedTasks, setShowCompletedTasks] = useState(false)
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('files')
   const [creatingFile, setCreatingFile] = useState(false)
   const [newFilePath, setNewFilePath] = useState('')
   const [fileMenuOpen, setFileMenuOpen] = useState<string | null>(null)
   const [fileActionError, setFileActionError] = useState<string | null>(null)
+  const [previewFile, setPreviewFile] = useState<string | null>(null)
+  const [openFolders, setOpenFolders] = useState<Set<string>>(() => new Set())
   const [inviteUri, setInviteUri] = useState<string | null>(null)
   const [inviteConnectivity, setInviteConnectivity] = useState<{peer_addr: string|null, relay_addr: string|null, rendezvous_addr: string|null} | null>(null)
   const [inviteCopied, setInviteCopied] = useState(false)
@@ -91,7 +92,22 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
 
   useEffect(() => {
     selectedFileRef.current = selectedFile
+    if (selectedFile) setPreviewFile(null)
   }, [selectedFile])
+
+  const openFileInCenter = useCallback((path: string | null) => {
+    setPreviewFile(null)
+    onFileSelect(path)
+  }, [onFileSelect])
+
+  const previewFileInSidebar = useCallback((path: string) => {
+    if (selectedFileRef.current) {
+      openFileInCenter(path)
+      return
+    }
+    onFileSelect(null)
+    setPreviewFile(path)
+  }, [onFileSelect, openFileInCenter])
 
   const refreshFiles = useCallback(() => {
     if (!activeCircleId) return Promise.resolve()
@@ -115,6 +131,10 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
     setMembers([])
     setPending([])
     setProposals([])
+    setPreviewFile(null)
+    setOpenFolders(new Set())
+    setShowCompletedTasks(false)
+    setWorkspaceView('files')
     if (!activeCircleId) return
 
     let cancelled = false
@@ -202,6 +222,7 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
         const data = JSON.parse(e.data)
         if (data.type === 'file_deleted' && typeof data.path === 'string') {
           setFiles(prev => prev.filter(path => path !== data.path && !path.startsWith(`${data.path}/`)))
+          setPreviewFile(current => current === data.path || current?.startsWith(`${data.path}/`) ? null : current)
           const selected = selectedFileRef.current
           if (selected === data.path || selected?.startsWith(`${data.path}/`)) {
             onFileSelect(null)
@@ -233,6 +254,10 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
   const refreshTasks = useCallback(() => {
     if (activeCircleId) getTasks(activeCircleId).then(setTasks).catch(() => {})
   }, [activeCircleId])
+
+  useEffect(() => {
+    if (previewFile && files.length > 0 && !files.includes(previewFile)) setPreviewFile(null)
+  }, [files, previewFile])
 
   const refreshProposalsNow = useCallback(() => {
     if (!activeCircleId) return
@@ -302,6 +327,18 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
 
   const userGroups = buildUserGroups(members, presence, status?.agent_id ?? '')
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
+  const activeTasks = tasks
+    .filter(task => task.status !== 'done')
+    .sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'claimed' ? -1 : 1
+      return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    })
+  const completedTasks = tasks
+    .filter(task => task.status === 'done')
+    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+  const actionableChanges = proposals.filter(proposal =>
+    proposal.status === 'pending' || proposal.status === 'conflicted',
+  )
 
   const claim = (taskId: string) => {
     if (!activeCircleId || !status) return
@@ -343,6 +380,7 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
       await renameFile(activeCircleId, renameModal.path, next)
       await refreshFiles()
       if (selectedFile === renameModal.path) onFileSelect(next)
+      if (previewFile === renameModal.path) setPreviewFile(next)
       setRenameModal(null)
     } catch (err: any) {
       setFileActionError(err.message)
@@ -363,6 +401,7 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
           await deleteFile(activeCircleId, path)
           await refreshFiles()
           if (selectedFile === path) onFileSelect(null)
+          if (previewFile === path) setPreviewFile(null)
         } catch (err: any) {
           setFileActionError(err.message)
         }
@@ -420,44 +459,52 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
     })
   }
 
+  const detailTabs: SegmentedTabOption<RightPanelTab>[] = (['members', 'tasks', 'workspace'] as const).map((tab, index) => {
+    const count = tab === 'members'
+      ? pending.length
+      : tab === 'tasks'
+        ? activeTasks.length
+        : actionableChanges.length
+
+    return {
+      value: tab,
+      className: `right-panel-tab relative flex-1 font-bold font-mono min-w-0 flex flex-col items-center justify-center${index < 2 ? ' border-r border-obsidian/35' : ''}`,
+      title: `${tab.toUpperCase()}${count > 0 ? ` — ${count} pending` : ''}`,
+      ariaLabel: `${tab}${count > 0 ? ` (${count} pending)` : ''}`,
+      content: (
+        <>
+          <span className="flex items-center" aria-hidden="true">{TAB_ICONS[tab]}</span>
+          <span className="right-panel-tab__label" aria-hidden="true">{tab}</span>
+          {count > 0 && (
+            <span className="right-panel-tab__count" aria-hidden="true">
+              {count > 99 ? '99+' : count}
+            </span>
+          )}
+        </>
+      ),
+    }
+  })
+
+  const workspaceTabs: SegmentedTabOption<WorkspaceView>[] = [
+    { value: 'files', content: 'FILES' },
+    {
+      value: 'history',
+      content: <><span>HISTORY</span>{actionableChanges.length > 0 && <span className="is-attention">{actionableChanges.length}</span>}</>,
+    },
+  ]
+
   return (
     <>
     <aside className="app-right-panel sys-window flex min-h-0 flex-col z-10 overflow-hidden">
 
       {/* ── Tab bar ─────────────────────────────────────────────────────── */}
-      <div className="right-panel-tabs flex shrink-0 border-b-2 border-obsidian" role="tablist" aria-label="Circle details">
-        {(['members', 'tasks', 'files', 'changes'] as const).map((tab, i) => {
-          const pendingProposals = proposals.filter(p => p.status === 'pending').length
-          const count = tab === 'members' ? pending.length : tab === 'changes' ? pendingProposals : 0
-          const isActive = activeTab === tab
-          return (
-            <button
-              key={tab}
-              onClick={() => onActiveTabChange(tab)}
-              className={`right-panel-tab relative flex-1 py-3 font-bold font-mono min-w-0 flex flex-col items-center justify-center gap-1 ${
-                i < 3 ? 'border-r-2 border-obsidian' : ''
-              } ${isActive ? 'bg-obsidian text-alabaster' : 'hover:bg-obsidian/8 text-obsidian/60 hover:text-obsidian'}`}
-              title={`${tab.toUpperCase()}${count > 0 ? ` — ${count} pending` : ''}`}
-              aria-label={`${tab}${count > 0 ? ` (${count} pending)` : ''}`}
-              role="tab"
-              aria-selected={isActive}
-            >
-              <span className="flex items-center" aria-hidden="true">{TAB_ICONS[tab]}</span>
-              <span className="right-panel-tab__label" aria-hidden="true">{tab}</span>
-              {count > 0 && (
-                <span
-                  className={`absolute top-1.5 right-1.5 text-[8px] font-bold leading-none px-1 py-0.5 border ${
-                    isActive ? 'border-alabaster/60 text-alabaster' : 'border-obsidian text-obsidian'
-                  }`}
-                  aria-hidden="true"
-                >
-                  {count > 99 ? '99+' : count}
-                </span>
-              )}
-            </button>
-          )
-        })}
-      </div>
+      <SegmentedTabs
+        className="right-panel-tabs flex shrink-0 border-b-2 border-obsidian"
+        ariaLabel="Circle details"
+        value={activeTab}
+        onChange={onActiveTabChange}
+        options={detailTabs}
+      />
 
       {/* ── MEMBERS tab ─────────────────────────────────────────────────── */}
       {activeTab === 'members' && (
@@ -626,17 +673,22 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
             </form>
           )}
           {taskActionError && <div className="panel-feedback panel-feedback--error" role="alert"><strong>ERROR</strong><span>{taskActionError}</span></div>}
-          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2 font-mono text-[11px]">
-            {tasks.length === 0 && <PanelEmpty title="NO ACTIVE TASKS" detail="Create a task to coordinate work." />}
-            {tasks.map(t => {
+          <div className="task-summary" aria-label="Task summary">
+            <span><strong>{activeTasks.length}</strong> ACTIVE</span>
+            <span><strong>{activeTasks.filter(task => task.status === 'claimed').length}</strong> CLAIMED</span>
+            <span><strong>{completedTasks.length}</strong> COMPLETED</span>
+          </div>
+          <div className="task-list flex-1 overflow-y-auto font-mono text-[11px]">
+            {activeTasks.length === 0 && <PanelEmpty title="NO ACTIVE TASKS" detail="Create a task to coordinate work." />}
+            {activeTasks.map(t => {
               const isMe = t.claimed_by === status?.agent_id
               return (
-                <div key={t.task_id} className="flex flex-col gap-1 pb-2 border-b border-dashed border-obsidian/20 last:border-0">
+                <div key={t.task_id} className="task-card">
                   <div className="flex justify-between items-start gap-2">
-                    <span className={`font-bold leading-tight ${t.status === 'done' ? 'line-through text-slate' : ''}`}>{t.title}</span>
+                    <span className="font-bold leading-tight">{t.title}</span>
                     <span className={`shrink-0 text-[9px] font-bold px-1 border ${t.status === 'open' ? 'border-obsidian' : t.status === 'claimed' ? 'border-obsidian bg-obsidian text-alabaster' : 'border-slate text-slate'}`}>{t.status.toUpperCase()}</span>
                   </div>
-                  {t.description && <div className="text-[9px] text-slate leading-tight">{t.description}</div>}
+                  {t.description && <div className="task-card__description">{t.description}</div>}
                   {t.claimed_by && t.status !== 'done' && <div className="text-[9px] text-slate">↳ {t.claimed_by}</div>}
                   <div className="flex gap-2 mt-1">
                     {t.status === 'open' && <button onClick={() => claim(t.task_id)} className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster">CLAIM</button>}
@@ -645,12 +697,54 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
                 </div>
               )
             })}
+            {completedTasks.length > 0 && (
+              <section className="task-completed">
+                <button
+                  type="button"
+                  className="task-completed__toggle"
+                  onClick={() => setShowCompletedTasks(value => !value)}
+                  aria-expanded={showCompletedTasks}
+                >
+                  <span>COMPLETED</span>
+                  <span>{completedTasks.length}</span>
+                  <span aria-hidden="true">{showCompletedTasks ? '−' : '+'}</span>
+                </button>
+                {showCompletedTasks && (
+                  <div className="task-completed__list">
+                    {completedTasks.map(task => (
+                      <div key={task.task_id} className="task-card task-card--completed">
+                        <span className="task-card__check" aria-hidden="true">✓</span>
+                        <span>{task.title}</span>
+                        <time dateTime={task.updated_at}>{age(task.updated_at)}</time>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
           </div>
         </div>
       )}
 
-      {/* ── FILES tab ───────────────────────────────────────────────────── */}
-      {activeTab === 'files' && (
+      {/* ── WORKSPACE tab ───────────────────────────────────────────────── */}
+      {activeTab === 'workspace' && (
+        previewFile ? (
+          <FileQuickView
+            filePath={previewFile}
+            onOpen={() => openFileInCenter(previewFile)}
+            onClose={() => setPreviewFile(null)}
+            full
+          />
+        ) : (
+        <div className="workspace-browser flex flex-col flex-1 min-h-0 overflow-hidden">
+          <SegmentedTabs
+            className="workspace-switch"
+            ariaLabel="Workspace views"
+            value={workspaceView}
+            onChange={setWorkspaceView}
+            options={workspaceTabs}
+          />
+          {workspaceView === 'files' && (
         <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
           <div className="section-header">
             <span>FILES</span>
@@ -665,6 +759,7 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
               aria-label={creatingFile ? 'Cancel new file' : 'Create file'}
             >{creatingFile ? '×' : '+'}</button>
           </div>
+          <div className="workspace-files-layout">
           <div className="file-list flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px]">
             {files.length === 0 && !creatingFile && <PanelEmpty title="NO FILES YET" detail="Use + to create the first shared file." />}
             {(files.length > 0 || creatingFile) && (
@@ -697,22 +792,30 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
                     {fileActionError && <div id="file-create-error" className="file-create-error" role="alert">{fileActionError}</div>}
                   </>
                 )}
-                <FileTree nodes={fileTree} onSelect={onFileSelect} onRename={handleRenameFile}
+                <FileTree nodes={fileTree} onSelect={previewFileInSidebar} onOpen={openFileInCenter} onRename={handleRenameFile}
                   onDelete={handleDeleteFile} openMenu={fileMenuOpen} onOpenMenu={setFileMenuOpen}
-                  selected={selectedFile} depth={0} />
+                  selected={previewFile} opened={selectedFile} openFolders={openFolders}
+                  onToggleFolder={path => setOpenFolders(current => {
+                    const next = new Set(current)
+                    next.has(path) ? next.delete(path) : next.add(path)
+                    return next
+                  })}
+                  depth={0} />
               </div>
             )}
           </div>
+          </div>
         </div>
-      )}
-
-      {/* ── CHANGES tab ─────────────────────────────────────────────────── */}
-      {activeTab === 'changes' && activeCircleId && (
-        <ProposalsTab
-          circleId={activeCircleId}
-          proposals={proposals}
-          onChanged={refreshProposalsNow}
-        />
+          )}
+          {workspaceView === 'history' && activeCircleId && (
+            <ProposalsTab
+              circleId={activeCircleId}
+              proposals={proposals}
+              onChanged={refreshProposalsNow}
+            />
+          )}
+        </div>
+        )
       )}
 
       {activeCircle && (
@@ -921,39 +1024,38 @@ function buildTree(paths: string[]): TreeNode[] {
   return root.children
 }
 
-function FileTree({ nodes, onSelect, onRename, onDelete, openMenu, onOpenMenu, selected, depth }: {
+function FileTree({ nodes, onSelect, onOpen, onRename, onDelete, openMenu, onOpenMenu, selected, opened, openFolders, onToggleFolder, depth }: {
   nodes: TreeNode[]
   onSelect: (path: string) => void
+  onOpen: (path: string) => void
   onRename: (path: string) => void
   onDelete: (path: string) => void
   openMenu: string | null
   onOpenMenu: (path: string | null) => void
   selected: string | null
+  opened: string | null
+  openFolders: Set<string>
+  onToggleFolder: (path: string) => void
   depth: number
 }) {
-  const [open, setOpen] = useState<Set<string>>(new Set())
-
   return (
     <>
       {nodes.map(n => (
         <div key={n.path}>
           <div
-            className={`file-row ${
-                          selected === n.path
-                            ? 'selected'
-                            : ''
-                        }`}
+            className={`file-row${selected === n.path ? ' selected' : ''}${opened === n.path ? ' is-open-center' : ''}`}
             style={{ paddingLeft: `${depth * 12}px` }}
           >
             <button
               className="file-name"
               onClick={() => {
-                if (n.isDir) setOpen(s => { const ns = new Set(s); ns.has(n.path) ? ns.delete(n.path) : ns.add(n.path); return ns })
+                if (n.isDir) onToggleFolder(n.path)
                 else { onOpenMenu(null); onSelect(n.path) }
               }}
+              onDoubleClick={() => { if (!n.isDir) onOpen(n.path) }}
               title={n.path}
             >
-              <FileIcon name={n.name} isDir={n.isDir} isOpen={open.has(n.path)} />
+              <FileIcon name={n.name} isDir={n.isDir} isOpen={openFolders.has(n.path)} />
               <span>{n.name}</span>
             </button>
             {!n.isDir && (
@@ -975,15 +1077,19 @@ function FileTree({ nodes, onSelect, onRename, onDelete, openMenu, onOpenMenu, s
               </span>
             )}
           </div>
-          {n.isDir && open.has(n.path) && (
+          {n.isDir && openFolders.has(n.path) && (
             <FileTree
               nodes={n.children}
               onSelect={onSelect}
+              onOpen={onOpen}
               onRename={onRename}
               onDelete={onDelete}
               openMenu={openMenu}
               onOpenMenu={onOpenMenu}
               selected={selected}
+              opened={opened}
+              openFolders={openFolders}
+              onToggleFolder={onToggleFolder}
               depth={depth + 1}
             />
           )}

@@ -3,6 +3,14 @@ import { Bot, RadioTower } from 'lucide-react'
 import type { AgentConfigView, AgentPlugin, ConnectivitySettings } from '../types'
 import { getAgentConfig, getAgentPlugins, installAgentPlugin, setAgentReaction, addAgent, removeAgent, getConnectivitySettings, setForceRelay } from '../api'
 import { useApp } from '../context/AppContext'
+import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
+
+type SettingsTab = 'agents' | 'connectivity'
+
+const SETTINGS_TABS: readonly SegmentedTabOption<SettingsTab>[] = [
+  { value: 'agents', content: <><Bot size={14} aria-hidden="true" />AGENTS</> },
+  { value: 'connectivity', content: <><RadioTower size={14} aria-hidden="true" />CONNECTIVITY</> },
+]
 
 interface Props {
   onClose: () => void
@@ -17,7 +25,7 @@ interface Props {
  */
 export default function DeviceSettings({ onClose }: Props) {
   const { activeCircleId, circles } = useApp()
-  const [activeTab, setActiveTab] = useState<'agents' | 'connectivity'>('agents')
+  const [activeTab, setActiveTab] = useState<SettingsTab>('agents')
   const [cfg, setCfg] = useState<AgentConfigView | null>(null)
   const [plugins, setPlugins] = useState<AgentPlugin[] | null>(null)
   const [connectivity, setConnectivity] = useState<ConnectivitySettings | null>(null)
@@ -121,28 +129,14 @@ export default function DeviceSettings({ onClose }: Props) {
         <button onClick={onClose} className="ritual-panel__close" aria-label="Close">×</button>
         <div className="ritual-panel__header">DEVICE SETTINGS</div>
         <div className="settings-layout">
-          <div className="settings-tabs" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'agents'}
-              className={activeTab === 'agents' ? 'is-active' : ''}
-              onClick={() => setActiveTab('agents')}
-            >
-              <Bot size={14} aria-hidden="true" />
-              AGENTS
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'connectivity'}
-              className={activeTab === 'connectivity' ? 'is-active' : ''}
-              onClick={() => setActiveTab('connectivity')}
-            >
-              <RadioTower size={14} aria-hidden="true" />
-              CONNECTIVITY
-            </button>
-          </div>
+          <SegmentedTabs
+            className="settings-tabs"
+            ariaLabel="Settings sections"
+            orientation="vertical"
+            value={activeTab}
+            onChange={setActiveTab}
+            options={SETTINGS_TABS}
+          />
           <div className="ritual-panel__body settings-panel-body flex flex-col gap-4">
           {error && (
             <div className="file-error">

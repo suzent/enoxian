@@ -22,6 +22,7 @@ interface Props {
 
 export default function CircleGlyph({ name, size = 72, className, title, voided = false }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null)
+  const replaceGlyphRef = useRef<((nextName: string, nextVoided: boolean) => void) | null>(null)
 
   useEffect(() => {
     const mount = mountRef.current
@@ -40,46 +41,102 @@ export default function CircleGlyph({ name, size = 72, className, title, voided 
 
     const camera = createCircleCamera()
 
-    const group = makeCircleGeometry(name)
-    applyCircleRotation(group, name)
-    group.scale.setScalar(1)
-    scene.add(group)
-
-    let ring: THREE.Mesh | null = null
-    if (voided) {
-      const { smooth } = makeDitherMaterials()
-      ring = new THREE.Mesh(new THREE.TorusGeometry(1.28, 0.045, 8, 96), smooth)
-      ring.rotation.x = 0.15
-      ring.rotation.z = 0.05
-      const slash = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 3.0, 8), smooth.clone())
-      slash.rotation.z = Math.PI / 4
-      scene.add(ring, slash)
-    }
-
     const dc = createDitheredComposer(renderer, scene, camera, size, size)
     dc.setExposure(CIRCLE_EXPOSURE)
 
+    let glyphState: {
+      root: THREE.Group
+      shape: THREE.Group
+      ring: THREE.Mesh | null
+      name: string
+    } | null = null
+
+    const disposeRoot = (root: THREE.Group) => {
+      scene.remove(root)
+      root.traverse(object => {
+        if (!(object instanceof THREE.Mesh)) return
+        object.geometry.dispose()
+        const materials = Array.isArray(object.material) ? object.material : [object.material]
+        materials.forEach(material => material.dispose())
+      })
+    }
+
+    replaceGlyphRef.current = (nextName, nextVoided) => {
+      if (glyphState) disposeRoot(glyphState.root)
+
+      const root = new THREE.Group()
+      const shape = makeCircleGeometry(nextName)
+      applyCircleRotation(shape, nextName)
+      root.add(shape)
+
+      let ring: THREE.Mesh | null = null
+      if (nextVoided) {
+        const { smooth } = makeDitherMaterials()
+        ring = new THREE.Mesh(new THREE.TorusGeometry(1.28, 0.045, 8, 96), smooth)
+        ring.rotation.x = 0.15
+        ring.rotation.z = 0.05
+        const slash = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 3.0, 8), smooth.clone())
+        slash.rotation.z = Math.PI / 4
+        root.add(ring, slash)
+      }
+
+      glyphState = { root, shape, ring, name: nextName }
+      scene.add(root)
+      dc.composer.render()
+    }
+
     let raf = 0
-    const tick = () => {
+    let visible = true
+    let lastFrame = 0
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const observer = typeof IntersectionObserver === 'undefined'
+      ? null
+      : new IntersectionObserver(entries => {
+          visible = entries[0]?.isIntersecting ?? true
+        })
+    observer?.observe(mount)
+
+    const tick = (now: number) => {
+      if (!visible || document.hidden) {
+        raf = requestAnimationFrame(tick)
+        return
+      }
+      if (now - lastFrame < 1000 / 30) {
+        raf = requestAnimationFrame(tick)
+        return
+      }
+      lastFrame = now
       raf = requestAnimationFrame(tick)
-      const now = performance.now()
-      applyCircleRotation(group, name, now)
-      if (ring) {
-        ring.rotation.z += 0.002
-        ring.scale.setScalar(1 + Math.sin(now * 0.00035) * 0.025)
+      if (glyphState) {
+        applyCircleRotation(glyphState.shape, glyphState.name, now)
+      }
+      if (glyphState?.ring) {
+        glyphState.ring.rotation.z += 0.002
+        glyphState.ring.scale.setScalar(1 + Math.sin(now * 0.00035) * 0.025)
       }
       dc.composer.render()
     }
-    tick()
+    if (reduceMotion) {
+      dc.composer.render()
+    } else {
+      raf = requestAnimationFrame(tick)
+    }
 
     return () => {
       cancelAnimationFrame(raf)
+      observer?.disconnect()
+      replaceGlyphRef.current = null
+      if (glyphState) disposeRoot(glyphState.root)
       dc.composer.dispose()
       renderer.forceContextLoss()
       renderer.dispose()
       renderer.domElement.remove()
     }
-  }, [name, size, voided])
+  }, [size])
+
+  useEffect(() => {
+    replaceGlyphRef.current?.(name, voided)
+  }, [name, voided, size])
 
   return (
     <div
