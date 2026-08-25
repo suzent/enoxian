@@ -45,7 +45,8 @@ refuses to publish a version whose section is missing or empty.
   speaks ACP itself, so `enox agent add suzent --driver acp -- suzent acp` is
   the whole setup and `@suzent` then works like `@claude`. The turn runs on your
   own Suzent install, with its memory, skills, and model configuration, in the
-  circle workspace.
+  circle workspace. Device Settings detects an installed `suzent` and offers it
+  as a one-click add, the same as the other known agents.
 
 ### Security
 
