@@ -5,12 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -20,31 +21,98 @@ env:
   NODE_VERSION: "22"
 
 jobs:
+  workflows:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Pinned by digest, like every action in this repository.
+      - name: actionlint
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color
+
+  changelog:
+    name: Changelog entry
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # CONTRIBUTING.md requires user-visible changes to land under
+      # `## [Unreleased]`. Release notes are cut from that section, so a missed
+      # entry silently ships an undocumented change. Apply the `no-changelog`
+      # label for internal-only work (refactors, tests, CI).
+      - name: Require a CHANGELOG entry
+        if: >-
+          github.event_name == 'pull_request'
+          && github.event.pull_request.user.login != 'dependabot[bot]'
+          && !contains(github.event.pull_request.labels.*.name, 'no-changelog')
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$BASE_REF"
+          base="$(git merge-base FETCH_HEAD HEAD)"
+          if git diff --name-only "$base" HEAD | grep -qx 'CHANGELOG.md'; then
+            echo "CHANGELOG.md updated."
+            exit 0
+          fi
+          echo "::error file=CHANGELOG.md::This pull request changes no CHANGELOG entry. Add one under '## [Unreleased]', or apply the 'no-changelog' label if users cannot observe the change."
+          exit 1
+
   dependency-audit:
     name: Dependency security audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       checks: write
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Keep this list aligned with .cargo/audit.toml. Each exception is
-      # feature-gated or blocked on an unreleased upstream stable version.
+      # `.cargo/audit.toml` is the single source of truth for accepted
+      # advisories; each entry there carries the reason it is accepted. Reading
+      # the list here keeps the workflow from drifting out of sync with it.
+      - id: advisories
+        name: Read accepted advisories
+        run: |
+          set -euo pipefail
+          ignore="$(sed -nE 's/^[[:space:]]*"(RUSTSEC-[0-9]{4}-[0-9]{4})".*/\1/p' \
+            .cargo/audit.toml | paste -sd, -)"
+          echo "Accepted advisories: ${ignore:-<none>}"
+          echo "ignore=$ignore" >> "$GITHUB_OUTPUT"
+
       - name: Audit Rust dependencies
         uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432 # main: Node 24 (#48)
         with:
           token: ${{ github.token }}
-          ignore: RUSTSEC-2026-0118,RUSTSEC-2026-0119,RUSTSEC-2026-0124,RUSTSEC-2026-0207,RUSTSEC-2026-0208,RUSTSEC-2026-0209,RUSTSEC-2026-0211,RUSTSEC-2026-0212
+          ignore: ${{ steps.advisories.outputs.ignore }}
 
   installers:
     name: Installer syntax
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Validate POSIX shell installer
         run: sh -n scripts/install.sh
+
+      # `.gitattributes` forces LF on shell scripts; a CRLF install.sh fails at
+      # the shebang on the user's machine, long after CI passed.
+      - name: Reject CRLF in shell scripts
+        run: |
+          set -euo pipefail
+          if grep -rlU $'\r' --include='*.sh' scripts/; then
+            echo "::error::Shell scripts must use LF line endings."
+            exit 1
+          fi
 
       - name: Validate PowerShell installer
         shell: pwsh
@@ -62,6 +130,7 @@ jobs:
   quality:
     name: Rust quality
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -79,9 +148,14 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
+      # `--all-targets` excludes doctests, so they need their own invocation.
+      - name: Doctests
+        run: cargo test --locked --doc
+
   test:
     name: Rust tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -104,6 +178,7 @@ jobs:
   frontend:
     name: Frontend production build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -118,10 +193,62 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Audit dependencies
+      # Runtime dependencies are embedded into the shipped binary, so a prod
+      # advisory blocks the build. Dev-only advisories are reported but do not
+      # gate a release the way an unfiltered `npm audit` did.
+      - name: Audit production dependencies
         working-directory: frontend
+        run: npm audit --omit=dev
+
+      - name: Audit development dependencies
+        working-directory: frontend
+        continue-on-error: true
         run: npm audit
 
       - name: Build
         working-directory: frontend
         run: npm run build
+
+  docker:
+    name: Bootstrap image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # A full release build is expensive, so only rebuild when something that
+      # feeds the image changed. Every push to main rebuilds unconditionally,
+      # which is what keeps the image from rotting unnoticed.
+      - id: changes
+        name: Decide whether to build
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags origin "$BASE_REF"
+          base="$(git merge-base FETCH_HEAD HEAD)"
+          if git diff --name-only "$base" HEAD \
+            | grep -qE '^(Dockerfile|Cargo\.(toml|lock)|build\.rs|src/)'; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "No image inputs changed; skipping the build."
+          fi
+
+      - name: Build image
+        if: steps.changes.outputs.build == 'true'
+        run: docker build --tag enoxian-bootstrap:ci .
+
+      - name: Verify entrypoint
+        if: steps.changes.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint enox enoxian-bootstrap:ci --version
+          docker run --rm --entrypoint enox enoxian-bootstrap:ci bootstrap serve --help

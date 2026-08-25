@@ -19,22 +19,33 @@ file, see below):
 3. **Skip pure-internal churn** — refactors, test-only changes, docs typos, CI
    tweaks that users never see. If a user can't observe it, it doesn't belong.
 4. **Security-relevant changes always go under `Security`,** even small ones.
-5. **At release time, cut a version section:** `scripts/bump.sh` and
-   `scripts/bump.ps1` add a dated version heading below a fresh empty
-   `[Unreleased]` section and update the compare links.
+5. **At release time, cut a version section:** the "Prepare release" workflow
+   (Actions tab) runs `scripts/bump.sh`, which adds a dated version heading
+   below a fresh empty `[Unreleased]` section and updates the compare links. It
+   refuses to run when `[Unreleased]` is empty.
 6. **Versioning:** breaking change → major; new feature → minor; fix only →
    patch (pre-1.0, minor also absorbs features that aren't clearly breaking).
 
 ## How release notes are built
 
 On a tagged release, `.github/workflows/release.yml` uses the matching version
-section from THIS file as the top of the GitHub release notes, followed by the
-auto-generated commit/PR list. So: curated summary here, full commit list
-appended automatically. Keep the section for a version accurate before tagging.
+section from THIS file as the top of the GitHub release notes, followed by
+GitHub's auto-generated commit/PR list and the install instructions. So: curated
+summary here, full commit list appended automatically. Keep the section for a
+version accurate before merging the release pull request — the release pipeline
+refuses to publish a version whose section is missing or empty.
 -->
 
 
 ## [Unreleased]
+
+### Security
+
+- Release archives now carry signed, transparency-logged build provenance tying
+  each archive to this repository, workflow, and commit. Verify a download with
+  `gh attestation verify enoxian-macos-aarch64.tar.gz --repo suzent/enoxian`.
+  The release pipeline verifies the published archives before a release is
+  marked latest.
 
 ### Changed
 
@@ -299,6 +310,10 @@ M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and ML
 membership, WAN bootstrap, and the local workspace proposal layer.
 
 [Unreleased]: https://github.com/suzent/enoxian/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/suzent/enoxian/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/suzent/enoxian/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/suzent/enoxian/compare/v0.3.8...v0.4.0
+[0.3.8]: https://github.com/suzent/enoxian/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/suzent/enoxian/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/suzent/enoxian/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/suzent/enoxian/compare/v0.3.4...v0.3.5
@@ -310,7 +325,3 @@ membership, WAN bootstrap, and the local workspace proposal layer.
 [0.2.1]: https://github.com/suzent/enoxian/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/suzent/enoxian/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/suzent/enoxian/releases/tag/v0.1.4
-[0.3.8]: https://github.com/suzent/enoxian/compare/v0.3.7...v0.3.8
-[0.4.0]: https://github.com/suzent/enoxian/compare/v0.3.8...v0.4.0
-[0.4.1]: https://github.com/suzent/enoxian/compare/v0.4.0...v0.4.1
-[0.4.2]: https://github.com/suzent/enoxian/compare/v0.4.1...v0.4.2

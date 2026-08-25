@@ -1,0 +1,104 @@
+name: Prepare release
+#
+# Step 1 of 2 in the release flow. Run this from the Actions tab; it bumps the
+# version, cuts the CHANGELOG section, and opens the release pull request.
+# Merging that pull request triggers `tag-release.yml`, which tags and releases.
+#
+# Full automation of the pull request needs a token that is not GITHUB_TOKEN:
+# pull requests opened by GITHUB_TOKEN deliberately do not trigger workflows, so
+# required CI checks would never report and the pull request could not merge.
+# Set the `ENOXIAN_RELEASE_TOKEN` secret (a fine-grained PAT with Contents and
+# Pull requests: write) to have this job open the pull request for you.
+# Without it the job pushes the branch and prints a one-click link instead.
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: "Version bump"
+        required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+      version:
+        description: "Exact version instead of a bump (for example 0.5.0)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare version bump
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      # The `secrets` context is not available in step-level `if:`, so surface
+      # the token's presence through `env`, which is.
+      RELEASE_TOKEN: ${{ secrets.ENOXIAN_RELEASE_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - id: bump
+        name: Run the bump script
+        env:
+          LEVEL: ${{ inputs.level }}
+          EXACT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          ./scripts/bump.sh "${EXACT:-$LEVEL}"
+          version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "branch=chore/release-v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Push the release branch
+        env:
+          BRANCH: ${{ steps.bump.outputs.branch }}
+        run: git push -u origin "$BRANCH"
+
+      - name: Open the release pull request
+        if: env.RELEASE_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.ENOXIAN_RELEASE_TOKEN }}
+          BRANCH: ${{ steps.bump.outputs.branch }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            'Prepared by the Prepare release workflow.' '' \
+            "Merging this pull request tags \`v$VERSION\` and runs the release pipeline." \
+            'Review the cut CHANGELOG section before merging — it becomes the release notes.' \
+            > pr-body.md
+          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
+            --title "chore: release v$VERSION" --body-file pr-body.md
+          echo "### Release pull request opened for v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Print the pull request link
+        if: env.RELEASE_TOKEN == ''
+        env:
+          BRANCH: ${{ steps.bump.outputs.branch }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          {
+            echo "### v$VERSION prepared on \`$BRANCH\`"
+            echo
+            echo "Open the pull request (no \`ENOXIAN_RELEASE_TOKEN\` secret is set, so"
+            echo "this job cannot open one that triggers CI):"
+            echo
+            echo "https://github.com/$GITHUB_REPOSITORY/compare/main...$BRANCH?expand=1"
+          } >> "$GITHUB_STEP_SUMMARY"
