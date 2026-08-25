@@ -39,6 +39,12 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Changed
+
+- The WebUI now provides responsive, collapsible workspace panels; consistent
+  file browsing, editing, and safe Markdown/HTML previews; clearer task and
+  device information; and smoother chat, file, and Circle transitions.
+
 ## [0.4.3] — 2026-08-25
 
 ### Added
@@ -104,7 +110,6 @@ refuses to publish a version whose section is missing or empty.
   the CLI as missing. The daemon now resolves the same `PATH` a login shell
   would and adopts it at startup, so adapter detection matches what's
   actually installed.
-
 ## [0.4.1] — 2026-08-23
 
 ### Fixed

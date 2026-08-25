@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { EditorState } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter } from '@codemirror/view'
 import { defaultKeymap, indentWithTab } from '@codemirror/commands'
@@ -15,10 +16,28 @@ import { YjsProvider, type YjsConnectionStatus } from '../lib/YjsProvider'
 import { agentColor, agentColorLight } from '../lib/agentColor'
 import { constrainCursorLabels } from '../lib/constrainCursorLabels'
 import { peerLabel, shortenAgentId } from '../lib/displayName'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+import { Maximize2, X } from 'lucide-react'
+import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
+
+type FileViewMode = 'source' | 'preview'
+
+const PREVIEW_FIRST_VIEWS: readonly SegmentedTabOption<FileViewMode>[] = [
+  { value: 'preview', content: 'PREVIEW' },
+  { value: 'source', content: 'SOURCE' },
+]
 
 interface Props {
   filePath: string | null
   onBack?: () => void
+}
+
+interface FileQuickViewProps {
+  filePath: string
+  onOpen: () => void
+  onClose: () => void
+  full?: boolean
 }
 
 function langExt(path: string) {
@@ -37,10 +56,10 @@ const enochTheme = EditorView.theme({
   '&': {
     backgroundColor: 'transparent',
     fontFamily: "'JetBrains Mono', monospace",
-    fontSize: '20px',
+    fontSize: '14px',
     color: '#111111',
   },
-  '.cm-content': { caretColor: '#111111', padding: '24px 32px', lineHeight: '1.75' },
+  '.cm-content': { caretColor: '#111111', padding: '20px 24px 40px', lineHeight: '1.65' },
   '.cm-cursor': { borderLeftColor: '#111111', borderLeftWidth: '2px' },
   '.cm-gutters': { backgroundColor: 'rgba(234,234,228,0.5)', borderRight: '1px dashed rgba(17,17,17,0.2)', color: '#555555' },
   '.cm-activeLineGutter': { backgroundColor: 'rgba(17,17,17,0.05)' },
@@ -97,6 +116,181 @@ function fileName(path: string) {
   return path.split('/').pop() || path
 }
 
+type PreviewKind = 'markdown' | 'html' | null
+
+function previewKind(path: string): PreviewKind {
+  const ext = path.split('.').pop()?.toLowerCase()
+  if (ext === 'md' || ext === 'markdown') return 'markdown'
+  if (ext === 'html' || ext === 'htm') return 'html'
+  return null
+}
+
+function renderMarkdown(source: string) {
+  const rendered = marked.parse(source, { async: false }) as string
+  const sanitized = DOMPurify.sanitize(rendered, {
+    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
+  })
+  const doc = new DOMParser().parseFromString(sanitized, 'text/html')
+
+  // Do not make a preview silently contact remote image hosts. A future asset
+  // route can resolve workspace-relative images without leaking repository reads.
+  doc.querySelectorAll('img').forEach(img => {
+    const placeholder = doc.createElement('figure')
+    placeholder.className = 'markdown-preview__image'
+    const label = doc.createElement('strong')
+    label.textContent = img.alt || 'IMAGE'
+    const sourceLabel = doc.createElement('figcaption')
+    sourceLabel.textContent = img.getAttribute('src') || ''
+    placeholder.append(label, sourceLabel)
+    img.replaceWith(placeholder)
+  })
+  doc.querySelectorAll('a').forEach(link => {
+    link.setAttribute('target', '_blank')
+    link.setAttribute('rel', 'noreferrer noopener')
+  })
+  return doc.body.innerHTML
+}
+
+function renderHtmlDocument(source: string) {
+  const doc = new DOMParser().parseFromString(source, 'text/html')
+  const policy = doc.createElement('meta')
+  policy.httpEquiv = 'Content-Security-Policy'
+  policy.content = "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; media-src data: blob:;"
+  doc.head.prepend(policy)
+  return `<!doctype html>\n${doc.documentElement.outerHTML}`
+}
+
+function connectionLabel(status: YjsConnectionStatus) {
+  if (status === 'synced') return 'LIVE'
+  if (status === 'connecting') return 'CONNECTING'
+  return 'OFFLINE'
+}
+
+interface FileSurfaceHeaderProps {
+  filePath: string
+  connectionStatus: YjsConnectionStatus
+  onBack?: () => void
+  closeLabel?: string
+}
+
+function FileSurfaceHeader({ filePath, connectionStatus, onBack, closeLabel = 'Close file' }: FileSurfaceHeaderProps) {
+  return (
+    <div className="file-surface-header">
+      <div className="file-surface-header__meta">
+        <strong title={filePath}>{fileName(filePath)}</strong>
+        {filePath !== fileName(filePath) && <span title={filePath}>{filePath}</span>}
+      </div>
+      <span className={`file-surface-header__status ${connectionStatus}`}>
+        {connectionLabel(connectionStatus)}
+      </span>
+      {onBack && (
+        <button type="button" className="file-surface-header__back" onClick={onBack} aria-label={closeLabel} title={closeLabel}>
+          <X size={15} aria-hidden="true" />
+        </button>
+      )}
+    </div>
+  )
+}
+
+interface FileSurfaceControlsProps {
+  kind: PreviewKind
+  value: FileViewMode
+  onChange: (value: FileViewMode) => void
+  ariaLabel: string
+  action?: ReactNode
+}
+
+function FileSurfaceControls({ kind, value, onChange, ariaLabel, action }: FileSurfaceControlsProps) {
+  return (
+    <div className="file-surface-controls">
+      {kind ? (
+        <SegmentedTabs
+          className="file-surface-modes"
+          ariaLabel={ariaLabel}
+          value={value}
+          onChange={onChange}
+          options={PREVIEW_FIRST_VIEWS}
+        />
+      ) : <span className="file-surface-type">SOURCE</span>}
+      {action}
+    </div>
+  )
+}
+
+export function FileQuickView({ filePath, onOpen, onClose, full = false }: FileQuickViewProps) {
+  const { activeCircleId } = useApp()
+  const [documentText, setDocumentText] = useState('')
+  const [connectionStatus, setConnectionStatus] = useState<YjsConnectionStatus>('connecting')
+  const kind = previewKind(filePath)
+  const [viewMode, setViewMode] = useState<FileViewMode>(kind ? 'preview' : 'source')
+  const markdownPreview = useMemo(
+    () => kind === 'markdown' ? renderMarkdown(documentText) : '',
+    [documentText, kind],
+  )
+  const htmlPreview = useMemo(
+    () => kind === 'html' ? renderHtmlDocument(documentText) : '',
+    [documentText, kind],
+  )
+
+  useEffect(() => {
+    setDocumentText('')
+    setViewMode(previewKind(filePath) ? 'preview' : 'source')
+  }, [filePath])
+
+  useEffect(() => {
+    if (!activeCircleId) return
+    setConnectionStatus('connecting')
+    const ydoc = new Y.Doc()
+    const ytext = ydoc.getText(filePath)
+    const updateText = () => setDocumentText(ytext.toString())
+    ytext.observe(updateText)
+    updateText()
+
+    const provider = new YjsProvider(
+      wsYjsUrl(activeCircleId, filePath),
+      ydoc,
+      () => setConnectionStatus('synced'),
+      setConnectionStatus,
+    )
+
+    return () => {
+      ytext.unobserve(updateText)
+      provider.destroy()
+      ydoc.destroy()
+    }
+  }, [activeCircleId, filePath])
+
+  return (
+    <section className={`file-quick-view${full ? ' file-quick-view--full' : ''}`} aria-label={`Preview of ${fileName(filePath)}`}>
+      <FileSurfaceHeader
+        filePath={filePath}
+        connectionStatus={connectionStatus}
+        onBack={onClose}
+        closeLabel={full ? 'Close sidebar file preview' : 'Close file preview'}
+      />
+      <FileSurfaceControls
+        kind={kind}
+        value={viewMode}
+        onChange={setViewMode}
+        ariaLabel="Sidebar file view"
+        action={<button type="button" className="file-surface-action" onClick={onOpen} title="Open in center editor">
+          <Maximize2 size={13} aria-hidden="true" />
+          <span>CENTER</span>
+        </button>}
+      />
+      <div className="file-quick-view__body">
+        {viewMode === 'source' && <pre className="file-quick-view__source">{documentText}</pre>}
+        {viewMode === 'preview' && kind === 'markdown' && (
+          <article className="markdown-preview markdown-preview--compact" dangerouslySetInnerHTML={{ __html: markdownPreview }} />
+        )}
+        {viewMode === 'preview' && kind === 'html' && (
+          <iframe title={`Sidebar preview of ${fileName(filePath)}`} sandbox="" srcDoc={htmlPreview} />
+        )}
+      </div>
+    </section>
+  )
+}
+
 export default function EditorPanel({ filePath, onBack }: Props) {
   const { activeCircleId, status } = useApp()
   const editorRef = useRef<HTMLDivElement>(null)
@@ -105,6 +299,22 @@ export default function EditorPanel({ filePath, onBack }: Props) {
   const ydocRef = useRef<Y.Doc | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<YjsConnectionStatus>('disconnected')
   const [displayName, setDisplayName] = useState<string>(() => status?.agent_id ?? 'unknown')
+  const [viewMode, setViewMode] = useState<FileViewMode>('source')
+  const [documentText, setDocumentText] = useState('')
+  const kind = filePath ? previewKind(filePath) : null
+  const markdownPreview = useMemo(
+    () => kind === 'markdown' ? renderMarkdown(documentText) : '',
+    [documentText, kind],
+  )
+  const htmlPreview = useMemo(
+    () => kind === 'html' ? renderHtmlDocument(documentText) : '',
+    [documentText, kind],
+  )
+
+  useEffect(() => {
+    setViewMode('source')
+    setDocumentText('')
+  }, [filePath])
 
   useEffect(() => {
     if (!activeCircleId || !status?.agent_id) return
@@ -130,6 +340,9 @@ export default function EditorPanel({ filePath, onBack }: Props) {
     const ydoc = new Y.Doc()
     ydocRef.current = ydoc
     const ytext = ydoc.getText(filePath)
+    const updatePreview = () => setDocumentText(ytext.toString())
+    ytext.observe(updatePreview)
+    updatePreview()
 
     const url = wsYjsUrl(activeCircleId, filePath)
     const provider = new YjsProvider(
@@ -164,6 +377,7 @@ export default function EditorPanel({ filePath, onBack }: Props) {
     viewRef.current = view
 
     return () => {
+      ytext.unobserve(updatePreview)
       view.destroy()
       provider.destroy()
       ydoc.destroy()
@@ -185,26 +399,32 @@ export default function EditorPanel({ filePath, onBack }: Props) {
   return (
     <main className="app-editor-panel flex min-h-0 flex-col z-10 bg-transparent overflow-hidden">
       <div className="editor-frame ide-frame w-full flex min-h-0 flex-col">
-        <div className="section-header editor-titlebar">
-          <span>Editor</span>
+        <FileSurfaceHeader
+          filePath={filePath}
+          connectionStatus={connectionStatus}
+          onBack={onBack}
+          closeLabel="Close editor and return to chat"
+        />
+        <FileSurfaceControls
+          kind={kind}
+          value={viewMode}
+          onChange={setViewMode}
+          ariaLabel="File view"
+        />
+        <div className={`ide-document min-h-0 flex-1${viewMode === 'preview' && kind ? ' is-previewing' : ''}`}>
+          <div ref={editorRef} className="ide-editor min-h-0 h-full overflow-auto bg-transparent" />
+          {viewMode === 'preview' && kind === 'markdown' && (
+            <div className="file-preview file-preview--markdown">
+              <article className="markdown-preview" dangerouslySetInnerHTML={{ __html: markdownPreview }} />
+            </div>
+          )}
+          {viewMode === 'preview' && kind === 'html' && (
+            <div className="file-preview file-preview--html">
+              <div className="html-preview-notice">SANDBOXED PREVIEW · SCRIPTS AND NETWORK DISABLED</div>
+              <iframe title={`Preview of ${fileName(filePath)}`} sandbox="" srcDoc={htmlPreview} />
+            </div>
+          )}
         </div>
-        <div className="ide-topbar">
-          <button onClick={onBack} className="ide-back" title="Back to circle chat">
-            BACK TO CHAT
-          </button>
-          <div className="ide-file-meta min-w-0">
-            <div className="ide-file-name truncate" title={filePath}>{fileName(filePath)}</div>
-            <div className="ide-file-path truncate" title={filePath}>{filePath}</div>
-          </div>
-          <span className={`ide-sync ${connectionStatus}`}>
-            {connectionStatus === 'synced' ? 'SYNCED' : connectionStatus === 'connecting' ? 'CONNECTING' : 'OFFLINE'}
-          </span>
-        </div>
-        <div className="ide-subbar">
-          <span>collaborative document</span>
-          <span>{status?.agent_id ?? 'unknown'}</span>
-        </div>
-        <div ref={editorRef} className="ide-editor min-h-0 flex-1 overflow-auto bg-transparent" />
       </div>
     </main>
   )

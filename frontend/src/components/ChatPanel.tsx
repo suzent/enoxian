@@ -143,6 +143,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   const { activeCircleId, circles, status } = useApp()
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [chatLoaded, setChatLoaded] = useState(false)
   const [members, setMembers] = useState<Member[]>([])
   const [presence, setPresence] = useState<Presence[]>([])
   const [activities, setActivities] = useState<Record<string, ChatActivity>>({})
@@ -156,7 +157,9 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   // Enter accept a suggestion instead of sending the message.
   const [mentionActive, setMentionActive] = useState(false)
   const inputRef = useRef<MentionInputHandle>(null)
+  const messageListRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const hydratingChatRef = useRef(false)
   const seenRef = useRef(new Set<string>())
   const latestTsRef = useRef<number | null>(null)
   const typingLastSentRef = useRef(0)
@@ -185,9 +188,11 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   useEffect(() => {
     if (!activeCircleId) return
     let cancelled = false
+    hydratingChatRef.current = true
     seenRef.current.clear()
     latestTsRef.current = null
     setMessages([])
+    setChatLoaded(false)
     setMembers([])
     setPresence([])
     setActivities({})
@@ -206,6 +211,16 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
       getChat(activeCircleId, since)
         .then(msgs => { if (cancelled) return; msgs.forEach(addMsg) })
         .catch(() => {})
+        .finally(() => {
+          if (cancelled) return
+          window.requestAnimationFrame(() => {
+            if (cancelled) return
+            const list = messageListRef.current
+            if (list) list.scrollTo({ top: list.scrollHeight, behavior: 'auto' })
+            hydratingChatRef.current = false
+            setChatLoaded(true)
+          })
+        })
     }
 
     const es = chatStream(activeCircleId)
@@ -250,6 +265,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   useEffect(() => () => stopTyping(), [stopTyping])
 
   useEffect(() => {
+    if (hydratingChatRef.current) return
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
@@ -378,8 +394,9 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   }
 
   const hasConversation = messages.length > 0
+  const compactDock = hasConversation || !chatLoaded
   const onlineCount = presence.filter(p => p.status === 'online').length
-  const glyphSize = hasConversation ? 64 : 88
+  const glyphSize = compactDock ? 64 : 88
   const liveActivities = Object.values(activities)
     .filter(activity => activity.expires_at > activityClock && activity.actor_id !== status?.agent_id)
     .sort((a, b) => a.updated_at - b.updated_at)
@@ -405,11 +422,11 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
 
       {variant === 'main' && activeCircle && (
         <div
-          className={`active-circle-dock${hasConversation ? ' active-circle-dock--compact' : ' active-circle-dock--empty'}${activeCircle.disabled ? ' active-circle-dock--void' : ''}${hideActiveCircleGlyph ? ' active-circle-dock--ritual' : ''}`}
+          className={`active-circle-dock${compactDock ? ' active-circle-dock--compact' : ' active-circle-dock--empty'}${activeCircle.disabled ? ' active-circle-dock--void' : ''}${hideActiveCircleGlyph ? ' active-circle-dock--ritual' : ''}`}
         >
           <div className="active-circle-dock__meta">
             <span>{activeCircle.circle_name}</span>
-            <strong>{activeCircle.disabled ? 'VOID CIRCLE' : 'ACTIVE CIRCLE'}</strong>
+            <strong>{activeCircle.disabled ? 'DISABLED' : 'ACTIVE CIRCLE'}</strong>
           </div>
           <div className="ripple-container" style={{ width: glyphSize, height: glyphSize }}>
             <div className="dock-ripple" id="dock-ripple-el" />
@@ -432,16 +449,16 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
 
       {variant === 'main' && activeCircle?.disabled && (
         <div className="chat-void-notice" role="status">
-          <span>VOID MODE</span>
+          <span>DISABLED</span>
           <strong>THIS CIRCLE IS DISABLED · ENABLE IT TO RESUME</strong>
         </div>
       )}
 
-      <div className="chat-message-list">
-        {messages.length === 0 && (
+      <div ref={messageListRef} className="chat-message-list">
+        {messages.length === 0 && chatLoaded && (
           <div className="chat-empty-state">
-            <span>THE CIRCLE IS QUIET</span>
-            <strong>Send the first signal.</strong>
+            <span>NO MESSAGES YET</span>
+            <strong>Send the first message.</strong>
           </div>
         )}
         {messages.map((msg, i) => {

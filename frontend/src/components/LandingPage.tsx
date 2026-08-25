@@ -274,7 +274,7 @@ export default function LandingPage({ onEntered }: Props) {
 
         <div style={{ padding: '10px 12px 0' }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#555', fontWeight: 700, letterSpacing: '0.12em', marginBottom: 12 }}>
-            AGENT-HUMAN PROTOCOL
+            LOCAL-FIRST COLLABORATION
           </div>
 
           {/* ── Identity section ──────────────────────────────────────────── */}
@@ -291,18 +291,18 @@ export default function LandingPage({ onEntered }: Props) {
             /* Input fields for first run or when editing */
             <>
               <div style={rowStyle}>
-                <span style={labelStyle}>SUMMONER</span>
+                <span style={labelStyle}>USER NAME</span>
                 <input
                   style={inputStyle}
                   type="text"
                   value={userName}
-                  placeholder="TRUE NAME"
+                  placeholder="NAME"
                   autoFocus={!userName}
                   onChange={e => setUserName(e.target.value)}
                 />
               </div>
               <div style={{ ...rowStyle, marginBottom: 10 }}>
-                <span style={labelStyle}>RELIQUARY</span>
+                <span style={labelStyle}>DEVICE</span>
                 <input
                   style={inputStyle}
                   type="text"
@@ -331,7 +331,7 @@ export default function LandingPage({ onEntered }: Props) {
 
           {linkSuccess && (
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#555', marginBottom: 8, fontWeight: 700 }}>
-              RELIQUARY LINKED &middot; IDENTITY LOADED
+              DEVICE LINKED &middot; IDENTITY LOADED
             </div>
           )}
 
@@ -350,17 +350,17 @@ export default function LandingPage({ onEntered }: Props) {
         {!hasUserKey && (
           <div style={{ borderTop: '1px solid #ddd', padding: '8px 12px' }}>
             <button style={btnGhost} onClick={() => setLinkExpanded(v => !v)}>
-              {linkExpanded ? '↑' : '↓'} LINK THIS RELIQUARY TO EXISTING USER
+              {linkExpanded ? '↑' : '↓'} LINK THIS DEVICE TO AN EXISTING USER
             </button>
 
             {linkExpanded && (
               <div style={{ marginTop: 8 }}>
                 <div style={dividerStyle} />
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#555', fontWeight: 700, marginBottom: 8, letterSpacing: '0.06em' }}>
-                  ENTER YOUR TRUE NAME + MNEMONIC FROM ANOTHER RELIQUARY
+                  ENTER YOUR NAME AND RECOVERY PHRASE FROM ANOTHER DEVICE
                 </div>
                 <div style={rowStyle}>
-                  <span style={labelStyle}>TRUE NAME</span>
+                  <span style={labelStyle}>USER NAME</span>
                   <input style={inputStyle} type="text" value={linkHandle} onChange={e => setLinkHandle(e.target.value)} />
                 </div>
                 <div style={{ ...rowStyle, alignItems: 'flex-start' }}>
@@ -373,7 +373,7 @@ export default function LandingPage({ onEntered }: Props) {
                   />
                 </div>
                 <button style={{ ...btnSecondary, marginTop: 4 }} onClick={handleLinkDevice} disabled={loading}>
-                  {loading ? '...' : 'LINK RELIQUARY'}
+                  {loading ? '...' : 'LINK DEVICE'}
                 </button>
               </div>
             )}
@@ -403,7 +403,7 @@ export default function LandingPage({ onEntered }: Props) {
             />
           </div>
           <div style={{ ...rowStyle, marginBottom: 12 }}>
-            <span style={labelStyle}>RITUAL POLICY</span>
+            <span style={labelStyle}>JOIN APPROVAL</span>
             <div style={{ display: 'flex', gap: 0 }}>
               <button
                 style={{
@@ -455,7 +455,7 @@ export default function LandingPage({ onEntered }: Props) {
         <div style={{ padding: '12px 12px 10px' }}>
           <div style={dividerStyle} />
           <div style={{ ...rowStyle, alignItems: 'flex-start', marginBottom: 12 }}>
-            <span style={{ ...labelStyle, paddingTop: 6 }}>PACT URI</span>
+            <span style={{ ...labelStyle, paddingTop: 6 }}>INVITE LINK</span>
             <textarea
               style={{
                 ...inputStyle,
@@ -480,7 +480,7 @@ export default function LandingPage({ onEntered }: Props) {
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
             <button style={btnPrimary} onClick={handleJoinCircle} disabled={loading}>
-              {loading ? '...' : 'SEAL'}
+              {loading ? '...' : 'JOIN'}
             </button>
             <button style={btnSecondary} onClick={handleBack} disabled={loading}>BACK</button>
           </div>
@@ -493,13 +493,13 @@ export default function LandingPage({ onEntered }: Props) {
     return (
       <>
         <div style={{ borderBottom: '2px solid #000', padding: '8px 12px' }}>
-          <div style={{ fontFamily: 'var(--font-title)', fontWeight: 900, fontSize: 14, letterSpacing: '0.1em' }}>INSCRIBE YOUR INCANTATION</div>
+          <div style={{ fontFamily: 'var(--font-title)', fontWeight: 900, fontSize: 14, letterSpacing: '0.1em' }}>SAVE YOUR RECOVERY PHRASE</div>
         </div>
         <div style={{ padding: '12px 12px 10px' }}>
           <div style={dividerStyle} />
           <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#555', fontWeight: 700, marginBottom: 10, lineHeight: 1.5 }}>
             WRITE THESE WORDS AND KEEP THEM SAFE.<br />
-            YOU NEED THEM TO LINK OTHER RELIQUARYS.
+            YOU NEED THESE WORDS TO LINK OTHER DEVICES.
           </p>
           <div style={{
             border: '1px solid #000',
@@ -517,7 +517,7 @@ export default function LandingPage({ onEntered }: Props) {
             {mnemonic || '(GENERATING...)'}
           </div>
           <button style={btnPrimary} onClick={handleMnemonicConfirmed}>
-            THE INCANTATION IS INSCRIBED
+            I HAVE SAVED IT
           </button>
         </div>
       </>

@@ -303,7 +303,7 @@ export default function RitualTransition({ ritual, onComplete }: Props) {
     <div className="ritual-overlay" aria-live="polite">
       <div ref={mountRef} className="ritual-canvas" />
       <div className="ritual-caption" style={{ zIndex: 10 }}>
-        <span>{ritual.mode === 'init' ? 'casting circle' : 'entering circle'}</span>
+        <span>{ritual.mode === 'init' ? 'creating circle' : 'joining circle'}</span>
         {ritual.label && <strong>{ritual.label}</strong>}
       </div>
     </div>
