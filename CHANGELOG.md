@@ -39,6 +39,18 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- Claimed tasks can now be returned to the open pool with `enox unclaim`, so
+  another collaborator can claim them.
+
+### Security
+
+- External and Enoxian-managed agents now use short-lived actor tokens bound to
+  the issuing device and Circle. Managed runs also bind native file writes to
+  their process session, preserving attribution without exposing a token to
+  write/edit tools or model context.
+
 ### Fixed
 
 - `enox update --dev` no longer fails to build when a pulled revision adds a

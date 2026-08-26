@@ -60,6 +60,7 @@ pub struct CreateTaskRequest {
     pub title: String,
     pub description: Option<String>,
     pub created_by: Option<String>,
+    pub actor_token: Option<String>,
 }
 
 pub async fn create_task(
@@ -77,13 +78,28 @@ pub async fn create_task(
                 .into_response()
         }
     };
+    let actor = match super::actor::resolve_actor(
+        &state,
+        req.actor_token.as_deref(),
+        req.created_by.clone(),
+        "unknown",
+    ) {
+        Ok(actor) => actor,
+        Err(error) => return error.into_response(),
+    };
     let task = Task {
         task_id: uuid::Uuid::new_v4().to_string(),
         title: req.title,
         description: req.description,
         status: TaskStatus::Open,
-        created_by: req.created_by.unwrap_or_else(|| "unknown".to_string()),
+        created_by: actor.agent_id,
+        created_by_peer_id: actor.peer_id,
         claimed_by: None,
+        claimed_by_peer_id: None,
+        unclaimed_by: None,
+        unclaimed_by_peer_id: None,
+        completed_by: None,
+        completed_by_peer_id: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };

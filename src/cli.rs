@@ -17,6 +17,10 @@ pub struct AgentCli {
     #[arg(long, global = true, env = "ENOXIAN_CIRCLE")]
     pub circle: Option<String>,
 
+    /// Short-lived actor token from `enox register`; may appear after the command
+    #[arg(long, global = true, env = "ENOXIAN_ACTOR_TOKEN")]
+    pub token: Option<String>,
+
     #[command(subcommand)]
     pub command: AgentCommands,
 }
@@ -35,6 +39,11 @@ pub enum AgentCommands {
     Status,
     /// Show agent presence
     Who,
+    /// Register an external agent label on this device and issue a 1-hour token
+    Register {
+        /// Agent label used for task, chat, and lock attribution
+        agent_id: String,
+    },
     /// List tasks
     Tasks {
         /// Filter by status (open | claimed | done)
@@ -51,6 +60,8 @@ pub enum AgentCommands {
     },
     /// Claim a task
     Claim { task_id: String },
+    /// Return a claimed task to the open pool
+    Unclaim { task_id: String },
     /// Mark a task as done
     Done { task_id: String },
     /// Acquire an explicit file lock
@@ -482,4 +493,38 @@ pub enum ServiceAction {
     Logs,
     /// Stop and remove the managed service
     Uninstall,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn actor_token_is_accepted_after_subcommand() {
+        let cli = AgentCli::try_parse_from(["enox", "claim", "task-1", "--token", "secret"])
+            .expect("global token should parse after the subcommand");
+        assert_eq!(cli.token.as_deref(), Some("secret"));
+        assert!(matches!(cli.command, AgentCommands::Claim { .. }));
+    }
+
+    #[test]
+    fn register_accepts_agent_label() {
+        let cli = AgentCli::try_parse_from(["enox", "register", "hermes"])
+            .expect("register command should parse");
+        assert!(matches!(
+            cli.command,
+            AgentCommands::Register { agent_id } if agent_id == "hermes"
+        ));
+    }
+
+    #[test]
+    fn unclaim_accepts_task_id_and_trailing_token() {
+        let cli = AgentCli::try_parse_from(["enox", "unclaim", "task-1", "--token", "secret"])
+            .expect("unclaim command should parse");
+        assert_eq!(cli.token.as_deref(), Some("secret"));
+        assert!(matches!(
+            cli.command,
+            AgentCommands::Unclaim { task_id } if task_id == "task-1"
+        ));
+    }
 }

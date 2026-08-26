@@ -41,18 +41,29 @@ pub async fn create(
     base: &str,
     title: String,
     description: Option<String>,
+    actor_token: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let mut body = serde_json::json!({ "title": title });
     if let Some(desc) = description {
         body["description"] = serde_json::Value::String(desc);
     }
+    if let Some(token) = actor_token {
+        body["actor_token"] = serde_json::Value::String(token.to_string());
+    }
     let resp = client
         .post(format!("{base}/tasks"))
         .json(&body)
         .send()
         .await?;
+    let status = resp.status();
     let val: Value = resp.json().await?;
+    if !status.is_success() {
+        anyhow::bail!(
+            "task creation failed: {}",
+            val["error"].as_str().unwrap_or("unknown error")
+        );
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&val)?);
     } else {

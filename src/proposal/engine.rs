@@ -20,6 +20,7 @@
 
 use super::diff::SnapshotDiff;
 use super::model::{Proposal, ProposalSource, ProposalStatus};
+use super::session::LocalChangeSession;
 use super::snapshot::{FileEntry, Snapshot};
 use super::store::ProposalStore;
 use crate::control::CircleEvent;
@@ -71,6 +72,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     &device_label,
                     ProposalSource::Ambient,
                     ProposalStatus::Accepted,
+                    None,
                 )?;
                 store.set_baseline(&disk.id)?;
                 disk
@@ -88,6 +90,10 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     let mut interactive_rx = state.interactive_writes.subscribe();
     let mut review_rx = state.review_writes.subscribe();
     let mut dirty: BTreeSet<String> = BTreeSet::new();
+    // Watcher events do not carry a process id. Their observation time lets us
+    // correlate each native file edit with the managed-process session that
+    // Enoxian persisted before spawning the agent.
+    let mut dirty_observed_at: BTreeMap<String, chrono::DateTime<chrono::Utc>> = BTreeMap::new();
     // Paths written by interactive surfaces (browser editor, P2P CRDT sync,
     // UI file operations). These are live edits the user already saw happen —
     // they become auto-accepted proposals (history + revert, no review).
@@ -120,6 +126,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
             _ = token.cancelled() => break,
             evt = events.recv() => match evt {
                 Ok(CircleEvent::FileUpdated { path }) | Ok(CircleEvent::FileDeleted { path }) => {
+                    dirty_observed_at.insert(path.clone(), chrono::Utc::now());
                     dirty.insert(path);
                 }
                 Ok(_) => {}
@@ -171,6 +178,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 };
                 rescan = false;
                 dirty.clear();
+                let observed_at = std::mem::take(&mut dirty_observed_at);
 
                 // Interactive paths written during the window that just closed
                 // are still "in flight" — defer them so a round-trip spanning
@@ -223,13 +231,44 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     create_proposal(
                         &state, &store, &ibas, &result, paths, label,
                         ProposalSource::Interactive, ProposalStatus::Accepted,
+                        None,
                     )?;
                 }
                 if !agent_paths.is_empty() {
-                    create_proposal(
-                        &state, &store, &baseline, &result, agent_paths, &device_label,
-                        ProposalSource::Ambient, ProposalStatus::Accepted,
-                    )?;
+                    let managed_session = LocalChangeSession::load_managed(&state.circle_dir);
+                    let mut managed_paths = Vec::new();
+                    let mut ambient_paths = Vec::new();
+                    for path in agent_paths {
+                        let is_managed = managed_session.as_ref().is_some_and(|session| {
+                            observed_at
+                                .get(&path)
+                                .is_some_and(|at| session.contains_activity_at(*at))
+                        });
+                        if is_managed {
+                            managed_paths.push(path);
+                        } else {
+                            ambient_paths.push(path);
+                        }
+                    }
+                    if !managed_paths.is_empty() {
+                        create_proposal(
+                            &state, &store, &baseline, &result, managed_paths, &device_label,
+                            ProposalSource::ManagedProcess, ProposalStatus::Accepted,
+                            managed_session.as_ref(),
+                        )?;
+                        if let Some(session) = managed_session.as_ref().filter(|s| !s.is_open()) {
+                            LocalChangeSession::clear_managed_if(
+                                &state.circle_dir,
+                                &session.session_id,
+                            )?;
+                        }
+                    }
+                    if !ambient_paths.is_empty() {
+                        create_proposal(
+                            &state, &store, &baseline, &result, ambient_paths, &device_label,
+                            ProposalSource::Ambient, ProposalStatus::Accepted, None,
+                        )?;
+                    }
                 }
                 if folded > 0 {
                     tracing::info!("[proposal] folded {folded} review-restored paths into baseline");
@@ -327,6 +366,7 @@ fn create_proposal(
     device_label: &str,
     source: ProposalSource,
     status: ProposalStatus,
+    session: Option<&LocalChangeSession>,
 ) -> anyhow::Result<()> {
     let mut proposal = Proposal::ambient(
         state.circle_id.clone(),
@@ -338,6 +378,9 @@ fn create_proposal(
     proposal.status = status;
     proposal.origin_peer_id = state.peer_id.clone();
     proposal.origin_device = device_label.to_string();
+    if let Some(session) = session {
+        apply_session_attribution(&mut proposal, session);
+    }
     store.save_proposal(&proposal)?;
     let snapshot_event = append_local_event(
         state,
@@ -376,6 +419,14 @@ fn create_proposal(
         proposal_id: proposal.id,
     });
     Ok(())
+}
+
+fn apply_session_attribution(proposal: &mut Proposal, session: &LocalChangeSession) {
+    proposal.actor_id = session.actor_id.clone();
+    proposal.actor_hint = session.actor_hint.clone();
+    proposal.confidence = session.confidence;
+    proposal.trigger_id = session.trigger_id.clone();
+    proposal.session_id = Some(session.session_id.clone());
 }
 
 /// Full workspace walk — used for the startup baseline and lag recovery.
@@ -478,6 +529,33 @@ mod tests {
 
     fn set(paths: &[&str]) -> BTreeSet<String> {
         paths.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn managed_session_supplies_verified_actor_metadata() {
+        let mut proposal = Proposal::ambient(
+            "circle".into(),
+            "before".into(),
+            "after".into(),
+            vec!["src/lib.rs".into()],
+        );
+        let mut session = LocalChangeSession::start(
+            "circle".into(),
+            "before".into(),
+            crate::proposal::session::SessionMode::ManagedProcess,
+        );
+        session.actor_id = Some("hermes".into());
+        apply_session_attribution(&mut proposal, &session);
+
+        assert_eq!(proposal.actor_id.as_deref(), Some("hermes"));
+        assert_eq!(
+            proposal.session_id.as_deref(),
+            Some(session.session_id.as_str())
+        );
+        assert_eq!(
+            proposal.confidence,
+            crate::proposal::model::Confidence::VerifiedProcess
+        );
     }
 
     // An interactive edit that has gone quiet emits one proposal for its author.

@@ -129,12 +129,16 @@ impl<H: ClientHooks> AcpSession<H> {
         workspace: &Path,
         hooks: H,
         resume: Option<&str>,
+        agent_id: &str,
+        circle_id: &str,
+        actor_token: Option<&str>,
     ) -> Result<Self> {
         let (program, args) = command
             .split_first()
             .ok_or_else(|| anyhow!("empty agent command"))?;
 
         let mut command = super::spawn::command(program, args);
+        super::spawn::apply_actor_env(&mut command, agent_id, circle_id, actor_token);
         command
             .current_dir(workspace)
             .stdin(Stdio::piped())

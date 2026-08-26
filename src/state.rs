@@ -54,6 +54,9 @@ pub struct AppState {
     pub session_id: u64,
     /// This node's libp2p peer ID.
     pub peer_id: String,
+    /// Short-lived local bearer tokens that let externally spawned agents
+    /// attribute actions to a label vouched for by this device.
+    pub actor_tokens: crate::actor_token::ActorTokenRegistry,
     /// Externally-confirmed TCP multiaddrs for this node (populated by Identify / ExternalAddrConfirmed).
     /// Used by `enox invite` to auto-embed a connectable peer address.
     pub p2p_external_addrs: Arc<RwLock<Vec<String>>>,
@@ -246,8 +249,9 @@ impl AppState {
                                         });
                                     }
                                     TaskStatus::Open => {
-                                        let _ = events_for_tasks.send(CircleEvent::TaskCreated {
+                                        let _ = events_for_tasks.send(CircleEvent::TaskUnclaimed {
                                             task_id: task.task_id,
+                                            agent_id: task.unclaimed_by.unwrap_or_default(),
                                         });
                                     }
                                 }
@@ -354,6 +358,7 @@ impl AppState {
             agent_id,
             session_id,
             peer_id,
+            actor_tokens: crate::actor_token::ActorTokenRegistry::default(),
             p2p_external_addrs: Arc::new(RwLock::new(Vec::new())),
             p2p_listen_addrs: Arc::new(RwLock::new(Vec::new())),
             peer_connections: Arc::new(RwLock::new(HashMap::new())),

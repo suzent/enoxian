@@ -170,7 +170,12 @@ pub fn reaction(mode: String) -> Result<()> {
     Ok(())
 }
 
-pub async fn run(circle: Option<&str>, agent: String, task: String) -> Result<()> {
+pub async fn run(
+    circle: Option<&str>,
+    agent: String,
+    task: String,
+    actor_token: &str,
+) -> Result<()> {
     let (circle_id, workspace) = resolve_circle_workspace(circle)?;
 
     let cfg = AgentConfig::load();
@@ -204,6 +209,8 @@ pub async fn run(circle: Option<&str>, agent: String, task: String) -> Result<()
         workspace: &workspace,
         base_snapshot: &base_snapshot,
         circle_id: &circle_id,
+        circle_dir: &circle_dir,
+        actor_token: Some(actor_token),
         initiator: Initiator::Local,
         resume: resume.as_deref(),
     })

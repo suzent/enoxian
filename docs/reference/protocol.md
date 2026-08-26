@@ -84,6 +84,7 @@ data: {"type":"task_created","task_id":"4873c16e-..."}\n\n
 |--------|-------------------|------------|
 | `task_created` | `task_id` | `POST /api/tasks` |
 | `task_claimed` | `task_id`, `agent_id` | `POST /api/claim` |
+| `task_unclaimed` | `task_id`, `agent_id` | `POST /api/unclaim` |
 | `task_done` | `task_id` | `POST /api/done` |
 | `lock_acquired` | `path`, `agent_id` | `POST /api/bind` |
 | `lock_released` | `path`, `agent_id` | `POST /api/release` |

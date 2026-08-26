@@ -1,3 +1,4 @@
+pub mod actor;
 pub mod agent_config;
 pub mod auth;
 pub mod chat;
@@ -61,10 +62,15 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
         )
         .route("/circles/{circle_id}/api/who", get(who::get_who))
         .route(
+            "/circles/{circle_id}/api/actors/register",
+            post(actor::register_actor),
+        )
+        .route(
             "/circles/{circle_id}/api/tasks",
             get(tasks::get_tasks).post(tasks::create_task),
         )
         .route("/circles/{circle_id}/api/claim", post(lock::claim_task))
+        .route("/circles/{circle_id}/api/unclaim", post(lock::unclaim_task))
         .route("/circles/{circle_id}/api/done", post(lock::done_task))
         .route("/circles/{circle_id}/api/bind", post(lock::bind_path))
         .route("/circles/{circle_id}/api/release", post(lock::release_path))

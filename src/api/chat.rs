@@ -66,6 +66,7 @@ pub async fn get_chat(
 pub struct PostChatRequest {
     pub text: String,
     pub agent_id: Option<String>,
+    pub actor_token: Option<String>,
 }
 
 pub async fn post_chat(
@@ -84,7 +85,16 @@ pub async fn post_chat(
         }
     };
 
-    let sender = req.agent_id.unwrap_or_else(|| "unknown".to_string());
+    let actor = match super::actor::resolve_actor(
+        &state,
+        req.actor_token.as_deref(),
+        req.agent_id,
+        "unknown",
+    ) {
+        Ok(actor) => actor,
+        Err(error) => return error.into_response(),
+    };
+    let sender = actor.agent_id;
     // A user/UI post fires mention triggers.
     match post_message(&state, sender, req.text, true) {
         Ok(id) => (StatusCode::CREATED, Json(json!({ "id": id }))).into_response(),

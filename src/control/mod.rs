@@ -68,6 +68,9 @@ pub struct MlsCommitEntry {
 pub struct LockEntry {
     pub entry_id: String,
     pub agent_id: String,
+    /// Device that vouched for `agent_id`. Empty for legacy entries.
+    #[serde(default)]
+    pub peer_id: String,
     pub path: String,
     pub action: LockAction,
     pub ts: DateTime<Utc>,
@@ -89,7 +92,20 @@ pub struct Task {
     pub description: Option<String>,
     pub status: TaskStatus,
     pub created_by: String,
+    /// Device that vouched for `created_by`. Empty for legacy tasks.
+    #[serde(default)]
+    pub created_by_peer_id: String,
     pub claimed_by: Option<String>,
+    #[serde(default)]
+    pub claimed_by_peer_id: Option<String>,
+    #[serde(default)]
+    pub unclaimed_by: Option<String>,
+    #[serde(default)]
+    pub unclaimed_by_peer_id: Option<String>,
+    #[serde(default)]
+    pub completed_by: Option<String>,
+    #[serde(default)]
+    pub completed_by_peer_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -236,6 +252,10 @@ pub enum CircleEvent {
         task_id: String,
     },
     TaskClaimed {
+        task_id: String,
+        agent_id: String,
+    },
+    TaskUnclaimed {
         task_id: String,
         agent_id: String,
     },

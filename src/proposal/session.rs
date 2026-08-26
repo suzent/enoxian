@@ -104,6 +104,49 @@ impl LocalChangeSession {
         serde_json::from_str(&text).ok()
     }
 
+    /// Path of the managed-process session record consumed by the proposal
+    /// engine. The record remains after process exit long enough for debounced
+    /// filesystem events to be attributed correctly.
+    pub fn managed_path(circle_dir: &std::path::Path) -> std::path::PathBuf {
+        circle_dir.join("managed_session.json")
+    }
+
+    pub fn save_managed(&self, circle_dir: &std::path::Path) -> anyhow::Result<()> {
+        std::fs::create_dir_all(circle_dir)?;
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(Self::managed_path(circle_dir), json)?;
+        Ok(())
+    }
+
+    pub fn load_managed(circle_dir: &std::path::Path) -> Option<Self> {
+        let text = std::fs::read_to_string(Self::managed_path(circle_dir)).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    pub fn clear_managed_if(circle_dir: &std::path::Path, session_id: &str) -> anyhow::Result<()> {
+        let Some(current) = Self::load_managed(circle_dir) else {
+            return Ok(());
+        };
+        if current.session_id == session_id {
+            let path = Self::managed_path(circle_dir);
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether filesystem activity at `observed_at` can belong to this run.
+    /// A short tail covers watcher delivery that races with child-process exit.
+    pub fn contains_activity_at(&self, observed_at: chrono::DateTime<chrono::Utc>) -> bool {
+        if observed_at < self.started_at {
+            return false;
+        }
+        self.finished_at
+            .map(|finished| observed_at <= finished + chrono::Duration::seconds(5))
+            .unwrap_or(true)
+    }
+
     /// Remove the claimed-session record (called on `session finish`).
     pub fn clear_claimed(circle_dir: &std::path::Path) -> anyhow::Result<()> {
         let path = Self::claimed_path(circle_dir);
@@ -151,5 +194,45 @@ mod tests {
             SessionMode::AmbientTriggered.default_confidence(),
             Confidence::Session
         );
+    }
+
+    #[test]
+    fn managed_session_bounds_file_activity() {
+        let mut session = LocalChangeSession::start(
+            "circle-1".into(),
+            "snap-0".into(),
+            SessionMode::ManagedProcess,
+        );
+        let before = session.started_at - chrono::Duration::milliseconds(1);
+        assert!(!session.contains_activity_at(before));
+        assert!(session.contains_activity_at(session.started_at));
+        session.finished_at = Some(session.started_at + chrono::Duration::seconds(2));
+        assert!(session
+            .contains_activity_at(session.finished_at.unwrap() + chrono::Duration::seconds(5)));
+        assert!(!session
+            .contains_activity_at(session.finished_at.unwrap() + chrono::Duration::seconds(6)));
+    }
+
+    #[test]
+    fn managed_session_round_trips_until_consumed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = LocalChangeSession::start(
+            "circle-1".into(),
+            "snap-0".into(),
+            SessionMode::ManagedProcess,
+        );
+        session.actor_id = Some("codex".into());
+        session.save_managed(dir.path()).unwrap();
+        assert_eq!(
+            LocalChangeSession::load_managed(dir.path())
+                .unwrap()
+                .actor_id
+                .as_deref(),
+            Some("codex")
+        );
+        LocalChangeSession::clear_managed_if(dir.path(), "another-session").unwrap();
+        assert!(LocalChangeSession::load_managed(dir.path()).is_some());
+        LocalChangeSession::clear_managed_if(dir.path(), &session.session_id).unwrap();
+        assert!(LocalChangeSession::load_managed(dir.path()).is_none());
     }
 }

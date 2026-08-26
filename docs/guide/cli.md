@@ -9,12 +9,45 @@ Options:
   --json              Output raw JSON instead of human-readable text
   --circle <NAME>     Target circle by name, name prefix, or UUID prefix
                       (overrides ENOXIAN_CIRCLE env var)
+  --token <TOKEN>     Short-lived actor token from `enox register`
+                      (global; may be placed after the command)
   -h, --help
 ```
 
 Circle resolution order: exact name → case-insensitive name prefix → UUID prefix → error if ambiguous. If only one circle exists, it is selected automatically and `--circle` is optional.
 
 The target daemon URL is configured via `ENOXIAN_API` (default: `http://127.0.0.1:36521`).
+
+### Agent identity
+
+Agents launched by `enox agent run` or a pushed mention are registered
+automatically. Enoxian records their native file writes under a managed change
+session and injects `ENOXIAN_ACTOR_TOKEN` into their process tree. A shell tool
+that invokes `enox` therefore receives the same authenticated task, chat, and
+lock attribution without putting a secret in the prompt or on every command.
+
+The CLI reads `ENOXIAN_ACTOR_TOKEN` automatically. Native write/edit tools do
+not need it because their attribution comes from the managed session.
+
+An agent started outside Enoxian's managed process can register a label with the
+local device and use the returned one-hour token on each mutating invocation:
+
+```bash
+TOKEN=$(enox register hermes --circle my-circle)
+enox claim <TASK-ID> --circle my-circle --token "$TOKEN"
+enox say "I am working on it" --circle my-circle --token "$TOKEN"
+```
+
+The token is bound to the Circle and the daemon's cryptographic peer ID. Copying
+it to another device does not make it valid there. It authenticates the device's
+vouch for the label, not a distinct process: agents on the same device can use
+one another's tokens. Tokens are held only in daemon memory, expire after one
+hour, and become invalid when the daemon restarts.
+
+`--token` is designed for agents whose shell state may not persist between tool
+calls. It is a bearer secret and can be visible in process listings or command
+logs, so keep its lifetime short and do not grant membership or admin authority
+based on it.
 
 ---
 
@@ -365,6 +398,17 @@ enox [--circle <NAME>] claim <TASK-ID>
 
 ---
 
+### `unclaim`
+
+Return one of your claimed tasks to the open pool so another collaborator can
+claim it. The actor label and device must match the original claim.
+
+```bash
+enox [--circle <NAME>] unclaim <TASK-ID>
+```
+
+---
+
 ### `done`
 
 Mark a task as done.
@@ -632,6 +676,11 @@ Launch a configured agent under a managed change session.
 ```bash
 enox [--circle <NAME>] agent run <AGENT> "<TASK>"
 ```
+
+The daemon issues the agent a short-lived actor token for coordination commands
+and persists the managed session for native file-write attribution. Only one
+managed agent session may be open in a Circle workspace at a time, keeping
+attribution unambiguous.
 
 ---
 

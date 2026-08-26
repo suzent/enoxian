@@ -199,6 +199,9 @@ async fn react(
     // agent already has history, so we send a lean per-turn header; on a fresh
     // session we include the standing brief about the enoxian environment.
     let prompt = super::context::build_prompt(state, agent_id, sender, task, resume.is_some());
+    let (actor_token, _) = state
+        .actor_tokens
+        .issue(&state.circle_id, &state.peer_id, agent_id);
 
     let launch = driver::launch(driver::LaunchRequest {
         agent_name: agent_id,
@@ -207,6 +210,8 @@ async fn react(
         workspace: &state.workspace,
         base_snapshot: &base_snapshot,
         circle_id: &state.circle_id,
+        circle_dir: &state.circle_dir,
+        actor_token: Some(&actor_token),
         initiator,
         resume: resume.as_deref(),
     });
