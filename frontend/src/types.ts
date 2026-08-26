@@ -118,8 +118,15 @@ export interface AgentSummary {
 export interface AgentPlugin {
   id: string
   agent: string
+  /** Empty for a native plugin, which pins no version. */
   version: string
   driver: 'acp' | 'argv'
+  /** 'npm' for a pinned adapter Enoxian installs, 'native' for a CLI that speaks ACP itself. */
+  kind: 'npm' | 'native'
+  /** False for a native plugin, which never uses Node. */
+  requires_node: boolean
+  /** Where to get the CLI when a native plugin is missing. */
+  install_url: string
   package: string
   about: string
   source: string

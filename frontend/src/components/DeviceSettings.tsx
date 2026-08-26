@@ -179,16 +179,27 @@ export default function DeviceSettings({ onClose }: Props) {
                 <section>
                   <div className="flex items-baseline justify-between border-b border-obsidian pb-1 mb-1">
                     <span className="font-mono text-[11px] font-bold">AGENT ADAPTERS</span>
-                    <span className="font-mono text-[8px] text-slate">LOCAL · PINNED</span>
+                    {/* Only npm adapters are pinned; a native plugin is whatever
+                        CLI the user installed, so do not claim otherwise. */}
+                    <span className="font-mono text-[8px] text-slate">
+                      {plugins.every(p => p.kind === 'npm') ? 'LOCAL · PINNED' : 'LOCAL'}
+                    </span>
                   </div>
                   <div className="divide-y divide-obsidian/20">
                     {plugins.map(plugin => {
+                      const native = plugin.kind === 'native'
                       const runtimeMissing = plugin.runtime_installed === false
-                      const nodeMissing = !plugin.node_runtime_installed
+                      // A native plugin never uses Node, so it must not be
+                      // gated on a runtime it does not have.
+                      const nodeMissing = plugin.requires_node && !plugin.node_runtime_installed
                       const prerequisitesMissing = runtimeMissing || nodeMissing
                       const ready = plugin.state === 'ready' && plugin.configured && !prerequisitesMissing
                       const installing = installingPlugin === plugin.id || plugin.state === 'installing'
-                      const action = plugin.state === 'broken'
+                      // Nothing is downloaded for a native plugin: enabling it
+                      // only writes the chat handle, so never say "install".
+                      const action = native
+                        ? 'ENABLE'
+                        : plugin.state === 'broken'
                         ? 'REPAIR'
                         : plugin.state === 'ready'
                           ? 'USE MANAGED'
@@ -204,7 +215,7 @@ export default function DeviceSettings({ onClose }: Props) {
                         : plugin.legacy_configured
                           ? 'Runtime download · migrate'
                           : plugin.state === 'ready'
-                            ? 'Installed · disabled'
+                            ? native ? 'Installed · not enabled' : 'Installed · disabled'
                             : plugin.state === 'broken' ? 'Needs repair' : 'Not installed'
                       return (
                       <div key={plugin.id} className="py-2 font-mono">
@@ -212,7 +223,7 @@ export default function DeviceSettings({ onClose }: Props) {
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
                               <span className="text-[11px] font-bold">@{plugin.agent}</span>
-                              <span className="text-[8px] text-slate">v{plugin.version}</span>
+                              <span className="text-[8px] text-slate">{plugin.version ? `v${plugin.version}` : 'NATIVE ACP'}</span>
                             </div>
                             <div className={`text-[9px] mt-0.5 ${ready ? 'text-obsidian' : 'text-slate'}`}>
                               {installing ? 'Preparing runtime and pinned adapter…' : status}
@@ -233,7 +244,9 @@ export default function DeviceSettings({ onClose }: Props) {
                                 onClick={() => installPlugin(plugin)}
                                 disabled={busy || installing}
                                 className="enox-btn text-[9px] px-2 py-1 min-h-0 disabled:opacity-50"
-                                title={`Install ${plugin.package}@${plugin.version}`}
+                                title={native
+                                  ? `Point @${plugin.agent} at your installed ${plugin.runtime_program || 'CLI'} — nothing is downloaded`
+                                  : `Install ${plugin.package}@${plugin.version}`}
                               >{action}</button>
                             )}
                             {(plugin.configured || plugin.legacy_configured) && (
@@ -250,15 +263,34 @@ export default function DeviceSettings({ onClose }: Props) {
 
                         {runtimeMissing && (
                           <div className="mt-2 border-l-2 border-obsidian/40 pl-2 text-[9px] text-slate leading-relaxed">
-                            Install the official {plugin.runtime_program || 'product'} CLI and authenticate it
-                            {plugin.runtime_login_command ? <> with <code>{plugin.runtime_login_command}</code></> : ''}.
+                            {native ? (
+                              <>
+                                Install <code>{plugin.runtime_program}</code>
+                                {plugin.install_url ? <> from <a href={plugin.install_url} target="_blank" rel="noreferrer" className="underline text-obsidian">{new URL(plugin.install_url).host}</a></> : ''}
+                                , then check again. Enoxian downloads nothing for this agent.
+                              </>
+                            ) : (
+                              <>
+                                Install the official {plugin.runtime_program || 'product'} CLI and authenticate it
+                                {plugin.runtime_login_command ? <> with <code>{plugin.runtime_login_command}</code></> : ''}.
+                              </>
+                            )}
                           </div>
                         )}
 
                         {ready && plugin.runtime_program && (
                           <div className="mt-2 border-l-2 border-obsidian/40 pl-2 text-[9px] text-slate leading-relaxed">
-                            Runs your installed <code>{plugin.runtime_program}</code> CLI. Enoxian manages only the
-                            adapter, so that CLI's login and settings stay yours.
+                            {native ? (
+                              <>
+                                Runs your installed <code>{plugin.runtime_program}</code> CLI, which speaks ACP itself —
+                                Enoxian pins nothing and downloads nothing. Its own memory, skills, and settings stay yours.
+                              </>
+                            ) : (
+                              <>
+                                Runs your installed <code>{plugin.runtime_program}</code> CLI. Enoxian manages only the
+                                adapter, so that CLI's login and settings stay yours.
+                              </>
+                            )}
                           </div>
                         )}
 

@@ -54,7 +54,11 @@ pub fn plugins() -> Result<()> {
             ),
             None => String::new(),
         };
-        let node = if plugin.node_runtime_installed {
+        // A native plugin never touches Node, so reporting on it would imply a
+        // prerequisite that does not exist.
+        let node = if !plugin.requires_node {
+            String::new()
+        } else if plugin.node_runtime_installed {
             format!(
                 "  node={}",
                 plugin.node_runtime_version.as_deref().unwrap_or("ready")
@@ -69,11 +73,17 @@ pub fn plugins() -> Result<()> {
                     .unwrap_or_else(|| "(need 22+ with npm)".to_string())
             )
         };
+        // Native plugins pin no version, so there is no "v" to print.
+        let version = if plugin.version.is_empty() {
+            format!("[{}]", plugin.kind)
+        } else {
+            format!("v{}", plugin.version)
+        };
         println!(
-            "  {}  @{}  v{}  [{:?}]{}{}{}{}",
+            "  {}  @{}  {}  [{:?}]{}{}{}{}",
             plugin.id,
             plugin.agent,
-            plugin.version,
+            version,
             plugin.state,
             if plugin.configured {
                 "  configured"
@@ -93,10 +103,25 @@ pub fn plugins() -> Result<()> {
 }
 
 /// `enox agent install <plugin>` — the explicit networked install phase.
+///
+/// For a native plugin nothing is networked at all: it only checks the CLI is
+/// present and writes the handle, so the output must not claim an install.
 pub async fn install(plugin: String) -> Result<()> {
-    println!("→ checking prerequisites for adapter '{plugin}'");
+    let native = crate::agent::plugin::find(&plugin)
+        .map(|entry| entry.manifest.kind == crate::agent::plugin::Kind::Native)
+        .unwrap_or(false);
+    if native {
+        println!("→ checking that the '{plugin}' CLI is installed");
+    } else {
+        println!("→ checking prerequisites for adapter '{plugin}'");
+    }
     let command = crate::agent::plugin::install(&plugin).await?;
-    println!("✓ installed and configured: {}", command.command.join(" "));
+    let verb = if native {
+        "configured (nothing downloaded)"
+    } else {
+        "installed and configured"
+    };
+    println!("✓ {verb}: {}", command.command.join(" "));
     if matches!(
         plugin.as_str(),
         "claude" | "claude-agent-acp" | "claude-code-acp"

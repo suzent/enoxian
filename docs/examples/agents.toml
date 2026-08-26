@@ -36,13 +36,14 @@ command = ["<enoxian-home>/adapters/claude-agent-acp/0.69.0/node_modules/.bin/cl
 driver = "acp"
 command = ["npx", "@agentclientprotocol/codex-acp"]
 
-# ── Suzent over ACP ───────────────────────────────────────────────────────────
-# Suzent ships its own ACP agent, so no adapter bridge and no Node.js are
-# involved: `suzent acp` speaks the protocol directly. It is a translator over
-# a running Suzent backend, so `suzent serve` (or `suzent start`) must be up —
-# the session then appears in Suzent's own UI with its memory and skills, and
-# the circle workspace is bound as that session's working directory. Register
-# it with `enox agent add suzent --driver acp -- suzent acp`.
+# ── Suzent over ACP (a built-in "native" plugin) ───────────────────────────────
+# Suzent speaks ACP itself, so there is no adapter bridge, no Node.js, and
+# nothing to pin: `enox agent install suzent` only writes this handle, and the
+# command stays by-name so reinstalling the CLI elsewhere cannot strand it.
+# Suzent is a translator over a running backend, so `suzent serve` (or
+# `suzent start`) must be up — the session then appears in Suzent's own UI with
+# its memory and skills, and the circle workspace is bound as that session's
+# working directory.
 [agents.suzent]
 driver = "acp"
 command = ["suzent", "acp"]

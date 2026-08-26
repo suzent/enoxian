@@ -71,11 +71,18 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
-- Suzent can be driven as an agent with no adapter plugin and no Node.js: it
-  speaks ACP itself, so `enox agent add suzent --driver acp -- suzent acp` is
-  the whole setup and `@suzent` then works like `@claude`. The turn runs on your
-  own Suzent install, with its memory, skills, and model configuration, in the
-  circle workspace.
+- **`@suzent` is a built-in agent.** `enox agent install suzent` is the whole
+  setup and it then works like `@claude`, running on your own Suzent install
+  with its memory, skills, and model configuration, in the circle workspace.
+  Nothing is downloaded and nothing is pinned: Suzent speaks ACP itself, so
+  enabling it only points the handle at the CLI you installed. It appears in
+  Device Settings beside the adapters, reporting **READY** or asking for the
+  CLI — never for Node.js, which it does not use.
+- Plugin manifests in `~/.enoxian/plugins/` accept `kind = "native"` for any
+  CLI that speaks ACP itself: `binary` is resolved on `PATH`, `args` carries the
+  subcommand, `install_url` says where to get it, and `package`/`version` are
+  omitted. Third-party agents no longer need to ship an npm adapter to be a
+  first-class plugin.
 - Custom agents in Device Settings now show whether they can actually start —
   **READY**, **MISSING** with the command that could not be found, or
   **DOWNLOADS** for a `npx …` command — plus a description for agents Enoxian

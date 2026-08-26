@@ -171,10 +171,11 @@ enox agent reaction push
 enox say "@claude add tests for the invite parser"
 ```
 
-Or point at an agent that already speaks ACP itself — no adapter, no Node.js:
+Or enable an agent that already speaks ACP itself — no adapter, no Node.js,
+nothing downloaded:
 
 ```sh
-enox agent add suzent --driver acp -- suzent acp
+enox agent install suzent
 enox say "@suzent add tests for the invite parser"
 ```
 

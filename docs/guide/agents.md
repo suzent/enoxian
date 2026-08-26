@@ -174,24 +174,41 @@ Built-in managed adapter plugins:
   auth: `codex login`, or `CODEX_API_KEY`/`OPENAI_API_KEY` in the daemon's
   environment)
 
-Agents that ship ACP themselves need no adapter plugin at all — register the
-executable directly:
+Built-in **native** plugins — a product CLI that speaks ACP itself, so there is
+no adapter to install, nothing to pin, and no Node.js:
 
-- **Suzent** — `suzent acp`, no bridge and no Node.js. It is a translator over
-  a running Suzent backend (`suzent serve` or `suzent start` must be up), so the
-  turn executes with that install's own memory, skills, model configuration, and
+- **Suzent** — `suzent acp`. Enabling it only writes the chat handle; the CLI is
+  whatever you installed, resolved on `PATH`. It is a translator over a running
+  Suzent backend (`suzent serve` or `suzent start` must be up), so the turn
+  executes with that install's own memory, skills, model configuration, and
   permission rules, and the circle workspace becomes the session's working
   directory. Approvals it needs arrive here as `session/request_permission`.
-  Register it with:
 
   ```bash
-  enox agent add suzent --driver acp -- suzent acp
+  enox agent install suzent
   ```
 
 Plugin manifests are TOML files in `~/.enoxian/plugins/`. A manifest declares
 an id, exact package version, executable name, agent name, and driver. Packages
 are installed under `~/.enoxian/adapters/<id>/<version>/`. Version ranges are
 rejected, and plugin installation never happens while processing an `@mention`.
+
+A manifest may set `kind = "native"` for a CLI that speaks ACP itself. Enoxian
+then installs nothing: `binary` is resolved on `PATH`, `args` carries the
+subcommand that speaks the protocol, `install_url` says where to get the CLI,
+and `package`/`version` must be omitted — there is nothing to fetch and nothing
+to pin. A native handle stays by-name in `agents.toml`, so reinstalling the CLI
+somewhere else cannot strand it.
+
+```toml
+id = "mytool"
+agent = "mytool"
+kind = "native"
+binary = "mytool"
+args = ["acp"]
+install_url = "https://example.com/install"
+about = "My tool, speaking ACP directly."
+```
 Legacy `npx`/`npm` agent commands are shown as **runtime download** in Device
 Settings so they can be migrated with one click.
 
