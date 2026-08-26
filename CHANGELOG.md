@@ -39,6 +39,12 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- `enox update --dev` no longer fails to build when a pulled revision adds a
+  WebUI dependency. The frontend's installed packages are now refreshed
+  automatically whenever they are older than the lockfile.
+
 ## [0.4.4] — 2026-08-26
 
 ### Changed
