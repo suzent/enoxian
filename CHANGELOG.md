@@ -39,6 +39,8 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-26
+
 ### Added
 
 - Claimed tasks can now be returned to the open pool with `enox unclaim`, so
@@ -357,7 +359,8 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/suzent/enoxian/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/suzent/enoxian/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/suzent/enoxian/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/suzent/enoxian/compare/v0.4.1...v0.4.2
