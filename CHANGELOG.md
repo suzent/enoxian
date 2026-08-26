@@ -39,6 +39,12 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Security
+
+- External agents can now use short-lived actor tokens bound to the issuing
+  device and Circle, preventing token replay through another device while
+  preserving explicit task, chat, and file-lock attribution.
+
 ### Fixed
 
 - `enox update --dev` no longer fails to build when a pulled revision adds a
