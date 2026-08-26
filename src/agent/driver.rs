@@ -137,9 +137,20 @@ pub struct LaunchRequest<'a> {
     pub workspace: &'a Path,
     pub base_snapshot: &'a str,
     pub circle_id: &'a str,
+    pub circle_dir: &'a Path,
+    /// Token issued by this Circle's daemon for coordination CLI calls made
+    /// from the managed process tree. It is never placed in the prompt.
+    pub actor_token: Option<&'a str>,
     pub initiator: Initiator,
     /// Prior ACP session id to resume, if one is remembered for this agent.
     pub resume: Option<&'a str>,
+}
+
+#[derive(Clone, Copy)]
+struct ManagedActor<'a> {
+    agent_id: &'a str,
+    circle_id: &'a str,
+    token: Option<&'a str>,
 }
 
 /// Launch a permitted agent, running the given task under a change session.
@@ -156,6 +167,16 @@ pub async fn launch(req: LaunchRequest<'_>) -> Result<LaunchOutcome> {
     );
     session.requested_agent = Some(req.agent_name.to_string());
     session.actor_id = Some(req.agent_name.to_string());
+    if let Some(existing) = LocalChangeSession::load_managed(req.circle_dir) {
+        if existing.is_open() {
+            anyhow::bail!(
+                "managed agent '{}' is already running in this Circle (session {})",
+                existing.actor_id.as_deref().unwrap_or("?"),
+                existing.session_id
+            );
+        }
+    }
+    session.save_managed(req.circle_dir)?;
     tracing::info!(
         "[agent] launching `{}` ({:?}) session={} resume={:?} task_len={}",
         req.agent_name,
@@ -166,16 +187,31 @@ pub async fn launch(req: LaunchRequest<'_>) -> Result<LaunchOutcome> {
     );
 
     let run_dir = working_dir(req.workspace, req.cmd.working_dir.as_deref());
+    let actor = ManagedActor {
+        agent_id: req.agent_name,
+        circle_id: req.circle_id,
+        token: req.actor_token,
+    };
 
-    let (detail, reply, acp_session_id) = match req.cmd.driver {
-        Driver::Argv => (run_argv(req.cmd, req.task, &run_dir).await?, None, None),
-        Driver::Acp => {
-            let r = run_acp(req.cmd, req.initiator, req.task, &run_dir, req.resume).await?;
-            (r.detail, r.reply, r.acp_session_id)
-        }
+    let run_result = match req.cmd.driver {
+        Driver::Argv => run_argv(req.cmd, req.task, &run_dir, actor)
+            .await
+            .map(|detail| (detail, None, None)),
+        Driver::Acp => run_acp(
+            req.cmd,
+            req.initiator,
+            req.task,
+            &run_dir,
+            req.resume,
+            actor,
+        )
+        .await
+        .map(|r| (r.detail, r.reply, r.acp_session_id)),
     };
 
     session.finish();
+    session.save_managed(req.circle_dir)?;
+    let (detail, reply, acp_session_id) = run_result?;
     Ok(LaunchOutcome {
         session_id: session.session_id,
         mode,
@@ -191,10 +227,17 @@ struct AcpRun {
     acp_session_id: Option<String>,
 }
 
-async fn run_argv(cmd: &AgentCommand, task: &str, run_dir: &Path) -> Result<String> {
+async fn run_argv(
+    cmd: &AgentCommand,
+    task: &str,
+    run_dir: &Path,
+    actor: ManagedActor<'_>,
+) -> Result<String> {
     let rendered = cmd.render(task);
     let (program, args) = rendered.split_first().context("empty agent command")?;
-    let status = super::spawn::command(program, args)
+    let mut command = super::spawn::command(program, args);
+    super::spawn::apply_actor_env(&mut command, actor.agent_id, actor.circle_id, actor.token);
+    let status = command
         .current_dir(run_dir)
         .status()
         .await
@@ -208,6 +251,7 @@ async fn run_acp(
     task: &str,
     run_dir: &Path,
     resume: Option<&str>,
+    actor: ManagedActor<'_>,
 ) -> Result<AcpRun> {
     // Always allow the agent to act *within the workspace* — that is its job,
     // and enoxian captures whatever it writes as accepted proposal history.
@@ -222,9 +266,17 @@ async fn run_acp(
         capturing: capturing.clone(),
     };
 
-    let mut acp = AcpSession::start(&cmd.command, run_dir, hooks, resume)
-        .await
-        .context("ACP handshake failed")?;
+    let mut acp = AcpSession::start(
+        &cmd.command,
+        run_dir,
+        hooks,
+        resume,
+        actor.agent_id,
+        actor.circle_id,
+        actor.token,
+    )
+    .await
+    .context("ACP handshake failed")?;
 
     // Now capture only the reply to *this* prompt.
     capturing.store(true, Ordering::Relaxed);

@@ -9,7 +9,7 @@ Options:
   --json              Output raw JSON instead of human-readable text
   --circle <NAME>     Target circle by name, name prefix, or UUID prefix
                       (overrides ENOXIAN_CIRCLE env var)
-  --token <TOKEN>     Short-lived external-agent token from `enox register`
+  --token <TOKEN>     Short-lived actor token from `enox register`
                       (global; may be placed after the command)
   -h, --help
 ```
@@ -18,7 +18,16 @@ Circle resolution order: exact name → case-insensitive name prefix → UUID pr
 
 The target daemon URL is configured via `ENOXIAN_API` (default: `http://127.0.0.1:36521`).
 
-### External agent identity
+### Agent identity
+
+Agents launched by `enox agent run` or a pushed mention are registered
+automatically. Enoxian records their native file writes under a managed change
+session and injects `ENOXIAN_ACTOR_TOKEN` into their process tree. A shell tool
+that invokes `enox` therefore receives the same authenticated task, chat, and
+lock attribution without putting a secret in the prompt or on every command.
+
+The CLI reads `ENOXIAN_ACTOR_TOKEN` automatically. Native write/edit tools do
+not need it because their attribution comes from the managed session.
 
 An agent started outside Enoxian's managed process can register a label with the
 local device and use the returned one-hour token on each mutating invocation:
@@ -656,6 +665,11 @@ Launch a configured agent under a managed change session.
 ```bash
 enox [--circle <NAME>] agent run <AGENT> "<TASK>"
 ```
+
+The daemon issues the agent a short-lived actor token for coordination commands
+and persists the managed session for native file-write attribution. Only one
+managed agent session may be open in a Circle workspace at a time, keeping
+attribution unambiguous.
 
 ---
 

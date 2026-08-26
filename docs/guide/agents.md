@@ -309,6 +309,11 @@ It resumes the agent's remembered session, prints the reply, and the file
 changes become a proposal exactly as a mention would. (It does not inject the
 full world context, since it runs standalone without the live circle state.)
 
+Before launch, Enoxian registers the configured agent label with the local
+Circle daemon. Native file writes are correlated with the persisted managed
+session, while coordination CLI calls inherit a short-lived actor token through
+the process environment. The token is never added to the agent prompt.
+
 ---
 
 ## Reference

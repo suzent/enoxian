@@ -41,9 +41,10 @@ refuses to publish a version whose section is missing or empty.
 
 ### Security
 
-- External agents can now use short-lived actor tokens bound to the issuing
-  device and Circle, preventing token replay through another device while
-  preserving explicit task, chat, and file-lock attribution.
+- External and Enoxian-managed agents now use short-lived actor tokens bound to
+  the issuing device and Circle. Managed runs also bind native file writes to
+  their process session, preserving attribution without exposing a token to
+  write/edit tools or model context.
 
 ### Fixed
 

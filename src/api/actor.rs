@@ -61,22 +61,12 @@ pub(crate) fn resolve_actor(
     token: Option<&str>,
     legacy_agent_id: Option<String>,
     fallback: &str,
-) -> Result<ActorIdentity, Response> {
+) -> Result<ActorIdentity, ActorAuthError> {
     if let Some(token) = token {
         return state
             .actor_tokens
             .validate(token, &state.circle_id, &state.peer_id)
-            .map_err(|error| {
-                (
-                    StatusCode::UNAUTHORIZED,
-                    Json(json!({
-                        "error": "invalid or expired actor token",
-                        "code": "invalid_actor_token",
-                        "detail": format!("{error:?}")
-                    })),
-                )
-                    .into_response()
-            });
+            .map_err(|_| ActorAuthError::InvalidToken);
     }
 
     // Backward compatibility for the UI and older CLI clients. This is local
@@ -89,6 +79,25 @@ pub(crate) fn resolve_actor(
         issued_at: chrono::Utc::now(),
         expires_at: chrono::Utc::now(),
     })
+}
+
+pub(crate) enum ActorAuthError {
+    InvalidToken,
+}
+
+impl IntoResponse for ActorAuthError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::InvalidToken => (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "error": "invalid or expired actor token",
+                    "code": "invalid_actor_token"
+                })),
+            )
+                .into_response(),
+        }
+    }
 }
 
 fn valid_agent_id(value: &str) -> bool {

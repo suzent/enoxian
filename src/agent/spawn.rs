@@ -39,6 +39,23 @@ pub fn command(program: &str, args: &[String]) -> Command {
     c
 }
 
+/// Bind coordination commands launched anywhere in a managed agent's process
+/// tree to the actor identity issued by the local daemon. Native file writes
+/// are attributed separately by the managed change-session record.
+pub fn apply_actor_env(
+    command: &mut Command,
+    agent_id: &str,
+    circle_id: &str,
+    actor_token: Option<&str>,
+) {
+    command
+        .env("ENOXIAN_AGENT_ID", agent_id)
+        .env("ENOXIAN_CIRCLE", circle_id);
+    if let Some(token) = actor_token {
+        command.env("ENOXIAN_ACTOR_TOKEN", token);
+    }
+}
+
 /// A managed adapter is a transport bridge, not a replacement runtime. Point it
 /// at the user's installed product CLI so it reuses that CLI's login,
 /// settings, MCP configuration, and project skills instead of falling back to a
@@ -149,7 +166,22 @@ mod tests {
 
 #[cfg(test)]
 mod portable_tests {
+    use super::{apply_actor_env, command};
     use crate::agent::probe::bridged_cli;
+
+    #[test]
+    fn managed_process_inherits_actor_identity_without_prompt_injection() {
+        let mut child = command("agent", &[]);
+        apply_actor_env(&mut child, "hermes", "circle-1", Some("secret"));
+        let env: std::collections::HashMap<_, _> = child
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| value.map(|v| (key.to_owned(), v.to_owned())))
+            .collect();
+        assert_eq!(env[std::ffi::OsStr::new("ENOXIAN_AGENT_ID")], "hermes");
+        assert_eq!(env[std::ffi::OsStr::new("ENOXIAN_CIRCLE")], "circle-1");
+        assert_eq!(env[std::ffi::OsStr::new("ENOXIAN_ACTOR_TOKEN")], "secret");
+    }
 
     #[test]
     fn each_managed_bridge_targets_its_own_cli_and_variable() {

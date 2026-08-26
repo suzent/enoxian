@@ -18,7 +18,7 @@ pub struct AgentCli {
     pub circle: Option<String>,
 
     /// Short-lived actor token from `enox register`; may appear after the command
-    #[arg(long, global = true)]
+    #[arg(long, global = true, env = "ENOXIAN_ACTOR_TOKEN")]
     pub token: Option<String>,
 
     #[command(subcommand)]

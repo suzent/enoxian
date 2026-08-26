@@ -85,7 +85,7 @@ pub async fn create_task(
         "unknown",
     ) {
         Ok(actor) => actor,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let task = Task {
         task_id: uuid::Uuid::new_v4().to_string(),

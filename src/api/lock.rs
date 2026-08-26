@@ -46,7 +46,7 @@ pub async fn bind_path(
         "anonymous",
     ) {
         Ok(actor) => actor,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let agent_id = actor.agent_id.clone();
 
@@ -137,7 +137,7 @@ pub async fn release_path(
         "anonymous",
     ) {
         Ok(actor) => actor,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let agent_id = actor.agent_id.clone();
 
@@ -205,7 +205,7 @@ pub async fn claim_task(
         "anonymous",
     ) {
         Ok(actor) => actor,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let agent_id = actor.agent_id.clone();
     match update_task_status(&state, &req.task_id, TaskStatus::Claimed, &actor).await {
@@ -250,7 +250,7 @@ pub async fn done_task(
         "anonymous",
     ) {
         Ok(actor) => actor,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     match update_task_status(&state, &req.task_id, TaskStatus::Done, &actor).await {
         Ok(_) => {

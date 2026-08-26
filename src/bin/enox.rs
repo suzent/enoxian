@@ -107,7 +107,16 @@ async fn main() -> anyhow::Result<()> {
             use enoxian::cli::AgentAction;
             match args.action {
                 AgentAction::Run { agent, task } => {
-                    enoxian::commands::agent::run(cli.circle.as_deref(), agent, task).await
+                    let base = resolve_api_base(cli.circle.as_deref())?;
+                    let registered =
+                        enoxian::commands::register::issue(&client, &base, &agent).await?;
+                    enoxian::commands::agent::run(
+                        cli.circle.as_deref(),
+                        agent,
+                        task,
+                        &registered.token,
+                    )
+                    .await
                 }
                 AgentAction::List => enoxian::commands::agent::list(),
                 AgentAction::Plugins => enoxian::commands::agent::plugins(),

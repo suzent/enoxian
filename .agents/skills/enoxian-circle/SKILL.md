@@ -15,7 +15,26 @@ Use enoxian to coordinate people and agents in a shared Circle. Its CLI is the c
 4. Select the Circle from an explicit user choice, `ENOXIAN_CIRCLE`, repository instructions, or other unambiguous context. If several Circles remain plausible, do not guess; ask the user.
 5. Pass `--circle <name-or-id-prefix>` to commands whenever selection would otherwise be ambiguous. Use `--json` when structured output materially helps.
 
-## Identify Externally Spawned Agents
+## Identify Agents
+
+Enoxian applies the same device-vouched actor model to managed and independent
+agents, but transports the identity differently.
+
+### Enoxian-managed agents
+
+Agents launched by `enox agent run` or a pushed mention are registered by the
+daemon automatically. Do not ask them to register again or put a token in their
+prompt.
+
+- Enoxian binds native write/edit operations to the managed change session, so
+  file tools do not need to carry a token.
+- The managed process tree inherits `ENOXIAN_ACTOR_TOKEN`,
+  `ENOXIAN_AGENT_ID`, and `ENOXIAN_CIRCLE`. The `enox` CLI consumes the token
+  automatically when the agent uses a shell tool for chat, tasks, or locks.
+- Never print, copy, or post the inherited token. It is process plumbing, not
+  agent context.
+
+### Independently spawned agents
 
 When an agent was launched outside Enoxian's managed agent process and its shell
 or environment may not persist, register it once and pass the returned token on
@@ -39,7 +58,8 @@ enox bind <path> --circle <circle> --token <token>
 - `--token` is global and may be placed at the end of a command, which is useful
   for agents whose terminal or environment does not persist between tool calls.
 - Actor tokens attribute chat, task creation/claim/completion, and file locks.
-  They never grant Circle membership or administrative authority.
+  Managed sessions additionally attribute native file writes. Neither mechanism
+  grants Circle membership or administrative authority.
 
 ## Choose the Coordination Surface
 

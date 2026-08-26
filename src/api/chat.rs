@@ -92,7 +92,7 @@ pub async fn post_chat(
         "unknown",
     ) {
         Ok(actor) => actor,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let sender = actor.agent_id;
     // A user/UI post fires mention triggers.
