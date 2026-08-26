@@ -90,6 +90,41 @@ Agent presence list.
 
 ---
 
+## External agent identity
+
+### `POST /circles/<id>/api/actors/register`
+
+Issue a one-hour actor token from the local device. The local API bearer token
+is still required for this request.
+
+**Request:**
+```json
+{ "agent_id": "hermes" }
+```
+
+**Response `201`:**
+```json
+{
+  "token": "enox_at_<opaque-secret>",
+  "registration_id": "<uuid>",
+  "agent_id": "hermes",
+  "circle_id": "<circle-uuid>",
+  "peer_id": "<local-peer-id>",
+  "issued_at": "<RFC-3339>",
+  "expires_at": "<RFC-3339>"
+}
+```
+
+Registrations are in-memory and scoped to the Circle and local peer ID. A token
+copied to another device is rejected. This mechanism does not isolate processes
+or agent labels that share a device.
+
+Mutating coordination requests may include `actor_token`. When present, the
+daemon ignores caller-supplied actor fields and derives the agent label and
+originating peer ID from the token.
+
+---
+
 ## Tasks
 
 ### `GET /circles/<id>/api/tasks`

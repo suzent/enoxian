@@ -49,6 +49,7 @@ All per-circle endpoints are prefixed with `/circles/<circle-id>`:
 | `POST /circles/<id>/api/claim` | Claim task |
 | `POST /circles/<id>/api/done` | Mark task done |
 | `POST /circles/<id>/api/bind` | Acquire file lock |
+| `POST /circles/<id>/api/actors/register` | Issue a short-lived device-bound actor token |
 | `POST /circles/<id>/api/release` | Release file lock |
 | `GET /circles/<id>/api/events` | SSE event stream |
 | `GET /circles/<id>/api/files` | List tracked files |

@@ -29,6 +29,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = AgentCli::parse();
+    let actor_token = cli.token.clone();
     // Present the local API token on every request (the daemon requires it).
     // Read from ~/.enoxian/api.token, written by the daemon on first start.
     let client = {
@@ -163,24 +164,62 @@ async fn main() -> anyhow::Result<()> {
                     enoxian::commands::status::run(&client, &base, cli.json).await
                 }
                 AgentCommands::Who => enoxian::commands::who::run(&client, &base, cli.json).await,
+                AgentCommands::Register { agent_id } => {
+                    enoxian::commands::register::run(&client, &base, agent_id, cli.json).await
+                }
                 AgentCommands::Tasks { status } => {
                     enoxian::commands::tasks::run(&client, &base, status, cli.json).await
                 }
                 AgentCommands::TaskCreate { title, description } => {
-                    enoxian::commands::tasks::create(&client, &base, title, description, cli.json)
-                        .await
+                    enoxian::commands::tasks::create(
+                        &client,
+                        &base,
+                        title,
+                        description,
+                        actor_token.as_deref(),
+                        cli.json,
+                    )
+                    .await
                 }
                 AgentCommands::Claim { task_id } => {
-                    enoxian::commands::claim::run(&client, &base, task_id, cli.json).await
+                    enoxian::commands::claim::run(
+                        &client,
+                        &base,
+                        task_id,
+                        actor_token.as_deref(),
+                        cli.json,
+                    )
+                    .await
                 }
                 AgentCommands::Done { task_id } => {
-                    enoxian::commands::done_cmd::run(&client, &base, task_id, cli.json).await
+                    enoxian::commands::done_cmd::run(
+                        &client,
+                        &base,
+                        task_id,
+                        actor_token.as_deref(),
+                        cli.json,
+                    )
+                    .await
                 }
                 AgentCommands::Bind { path } => {
-                    enoxian::commands::bind::run(&client, &base, path, cli.json).await
+                    enoxian::commands::bind::run(
+                        &client,
+                        &base,
+                        path,
+                        actor_token.as_deref(),
+                        cli.json,
+                    )
+                    .await
                 }
                 AgentCommands::Release { path } => {
-                    enoxian::commands::release::run(&client, &base, path, cli.json).await
+                    enoxian::commands::release::run(
+                        &client,
+                        &base,
+                        path,
+                        actor_token.as_deref(),
+                        cli.json,
+                    )
+                    .await
                 }
                 AgentCommands::Watch => enoxian::commands::watch::run(&client, &base).await,
                 AgentCommands::Member(args) => {
@@ -197,7 +236,7 @@ async fn main() -> anyhow::Result<()> {
                     enoxian::commands::chat::run(&client, &base, follow, since).await
                 }
                 AgentCommands::Say { text } => {
-                    enoxian::commands::say::run(&client, &base, text).await
+                    enoxian::commands::say::run(&client, &base, text, actor_token.as_deref()).await
                 }
                 AgentCommands::Proposal(args) => {
                     use enoxian::cli::ProposalAction;

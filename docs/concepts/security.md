@@ -189,6 +189,15 @@ requires the bearer token stored at `~/.enoxian/api.token`, and CORS permits onl
 local origins. Explicit LAN binding widens the attack surface and should be used
 only on a trusted network.
 
+External agents can obtain a separate short-lived actor token with `enox
+register`. Actor tokens are opaque random bearer values bound in daemon memory
+to one Circle, one agent label, and the local cryptographic peer ID. They improve
+attribution and prevent cross-device replay, but they do not create isolation
+between processes on the same device: any local process able to read a token can
+act under that label. Passing `--token` can also expose it through process lists
+or tool logs. Actor tokens therefore expire after one hour, disappear on daemon
+restart, and confer no membership or administrative authority.
+
 ## Admin Key
 
 The circle creator generates an Ed25519 admin keypair at `enox init`. The

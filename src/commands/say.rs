@@ -1,12 +1,20 @@
 use anyhow::Result;
 use serde_json::json;
 
-pub async fn run(client: &reqwest::Client, base: &str, text: String) -> Result<()> {
+pub async fn run(
+    client: &reqwest::Client,
+    base: &str,
+    text: String,
+    actor_token: Option<&str>,
+) -> Result<()> {
     let agent_id = fetch_agent_id(client, base).await;
-    let body = json!({
+    let mut body = json!({
         "text": text,
         "agent_id": agent_id,
     });
+    if let Some(token) = actor_token {
+        body["actor_token"] = serde_json::Value::String(token.to_string());
+    }
     let resp = client
         .post(format!("{base}/chat"))
         .json(&body)

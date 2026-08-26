@@ -21,6 +21,7 @@ use yrs::{Any, Map, Out, ReadTxn, Transact, WriteTxn};
 pub struct PathRequest {
     pub path: String,
     pub agent_id: Option<String>,
+    pub actor_token: Option<String>,
 }
 
 pub async fn bind_path(
@@ -38,10 +39,16 @@ pub async fn bind_path(
                 .into_response()
         }
     };
-    let agent_id = req
-        .agent_id
-        .clone()
-        .unwrap_or_else(|| "anonymous".to_string());
+    let actor = match super::actor::resolve_actor(
+        &state,
+        req.actor_token.as_deref(),
+        req.agent_id.clone(),
+        "anonymous",
+    ) {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
+    let agent_id = actor.agent_id.clone();
 
     let conflict = {
         let txn = match state.control.try_transact() {
@@ -49,7 +56,7 @@ pub async fn bind_path(
             Err(_) => return super::circle_busy(),
         };
         txn.get_array(LOCK_LOG_KEY).and_then(|lock_log| {
-            if is_locked_by_other(&lock_log, &txn, &req.path, &agent_id) {
+            if is_locked_by_other(&lock_log, &txn, &req.path, &agent_id, &actor.peer_id) {
                 let holders = compute_lock_state(&lock_log, &txn);
                 Some(holders.get(&req.path).cloned().unwrap_or_default())
             } else {
@@ -66,18 +73,20 @@ pub async fn bind_path(
             .into_response();
     }
 
-    write_bind(&state, req, agent_id).await
+    write_bind(&state, req, actor).await
 }
 
 async fn write_bind(
     state: &AppState,
     req: PathRequest,
-    agent_id: String,
+    actor: crate::actor_token::ActorIdentity,
 ) -> axum::response::Response {
+    let agent_id = actor.agent_id.clone();
     {
         let entry = LockEntry {
             entry_id: uuid::Uuid::new_v4().to_string(),
             agent_id: agent_id.clone(),
+            peer_id: actor.peer_id,
             path: req.path.clone(),
             action: LockAction::Acquire,
             ts: chrono::Utc::now(),
@@ -121,12 +130,22 @@ pub async fn release_path(
                 .into_response()
         }
     };
-    let agent_id = req.agent_id.unwrap_or_else(|| "anonymous".to_string());
+    let actor = match super::actor::resolve_actor(
+        &state,
+        req.actor_token.as_deref(),
+        req.agent_id,
+        "anonymous",
+    ) {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
+    let agent_id = actor.agent_id.clone();
 
     {
         let entry = LockEntry {
             entry_id: uuid::Uuid::new_v4().to_string(),
             agent_id: agent_id.clone(),
+            peer_id: actor.peer_id,
             path: req.path.clone(),
             action: LockAction::Release,
             ts: chrono::Utc::now(),
@@ -161,6 +180,7 @@ pub async fn release_path(
 pub struct TaskRequest {
     pub task_id: String,
     pub agent_id: Option<String>,
+    pub actor_token: Option<String>,
 }
 
 pub async fn claim_task(
@@ -178,15 +198,17 @@ pub async fn claim_task(
                 .into_response()
         }
     };
-    let agent_id = req.agent_id.unwrap_or_else(|| "anonymous".to_string());
-    match update_task_status(
+    let actor = match super::actor::resolve_actor(
         &state,
-        &req.task_id,
-        TaskStatus::Claimed,
-        Some(agent_id.clone()),
-    )
-    .await
-    {
+        req.actor_token.as_deref(),
+        req.agent_id,
+        "anonymous",
+    ) {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
+    let agent_id = actor.agent_id.clone();
+    match update_task_status(&state, &req.task_id, TaskStatus::Claimed, &actor).await {
         Ok(_) => {
             let _ = state.events.send(CircleEvent::TaskClaimed {
                 task_id: req.task_id.clone(),
@@ -221,7 +243,16 @@ pub async fn done_task(
                 .into_response()
         }
     };
-    match update_task_status(&state, &req.task_id, TaskStatus::Done, None).await {
+    let actor = match super::actor::resolve_actor(
+        &state,
+        req.actor_token.as_deref(),
+        req.agent_id,
+        "anonymous",
+    ) {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
+    match update_task_status(&state, &req.task_id, TaskStatus::Done, &actor).await {
         Ok(_) => {
             let _ = state.events.send(CircleEvent::TaskDone {
                 task_id: req.task_id.clone(),
@@ -244,7 +275,7 @@ async fn update_task_status(
     state: &AppState,
     task_id: &str,
     new_status: TaskStatus,
-    claimed_by: Option<String>,
+    actor: &crate::actor_token::ActorIdentity,
 ) -> anyhow::Result<()> {
     let json_str = {
         let txn = state
@@ -261,10 +292,14 @@ async fn update_task_status(
     };
 
     let mut task: Task = serde_json::from_str(&json_str)?;
-    task.status = new_status;
+    task.status = new_status.clone();
     task.updated_at = chrono::Utc::now();
-    if let Some(agent) = claimed_by {
-        task.claimed_by = Some(agent);
+    if new_status == TaskStatus::Claimed {
+        task.claimed_by = Some(actor.agent_id.clone());
+        task.claimed_by_peer_id = Some(actor.peer_id.clone());
+    } else if new_status == TaskStatus::Done {
+        task.completed_by = Some(actor.agent_id.clone());
+        task.completed_by_peer_id = Some(actor.peer_id.clone());
     }
 
     let updated_json = serde_json::to_string(&task)?;

@@ -9,12 +9,36 @@ Options:
   --json              Output raw JSON instead of human-readable text
   --circle <NAME>     Target circle by name, name prefix, or UUID prefix
                       (overrides ENOXIAN_CIRCLE env var)
+  --token <TOKEN>     Short-lived external-agent token from `enox register`
+                      (global; may be placed after the command)
   -h, --help
 ```
 
 Circle resolution order: exact name → case-insensitive name prefix → UUID prefix → error if ambiguous. If only one circle exists, it is selected automatically and `--circle` is optional.
 
 The target daemon URL is configured via `ENOXIAN_API` (default: `http://127.0.0.1:36521`).
+
+### External agent identity
+
+An agent started outside Enoxian's managed process can register a label with the
+local device and use the returned one-hour token on each mutating invocation:
+
+```bash
+TOKEN=$(enox register hermes --circle my-circle)
+enox claim <TASK-ID> --circle my-circle --token "$TOKEN"
+enox say "I am working on it" --circle my-circle --token "$TOKEN"
+```
+
+The token is bound to the Circle and the daemon's cryptographic peer ID. Copying
+it to another device does not make it valid there. It authenticates the device's
+vouch for the label, not a distinct process: agents on the same device can use
+one another's tokens. Tokens are held only in daemon memory, expire after one
+hour, and become invalid when the daemon restarts.
+
+`--token` is designed for agents whose shell state may not persist between tool
+calls. It is a bearer secret and can be visible in process listings or command
+logs, so keep its lifetime short and do not grant membership or admin authority
+based on it.
 
 ---
 

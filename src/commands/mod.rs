@@ -14,6 +14,7 @@ pub mod leave;
 pub mod member;
 pub mod open;
 pub mod proposals;
+pub mod register;
 pub mod release;
 pub mod rendezvous;
 pub mod say;
