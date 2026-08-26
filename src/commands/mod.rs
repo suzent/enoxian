@@ -25,6 +25,7 @@ pub mod start;
 pub mod status;
 pub mod stop;
 pub mod tasks;
+pub mod unclaim;
 pub mod update;
 pub mod watch;
 pub mod who;

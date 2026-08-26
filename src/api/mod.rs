@@ -70,6 +70,7 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
             get(tasks::get_tasks).post(tasks::create_task),
         )
         .route("/circles/{circle_id}/api/claim", post(lock::claim_task))
+        .route("/circles/{circle_id}/api/unclaim", post(lock::unclaim_task))
         .route("/circles/{circle_id}/api/done", post(lock::done_task))
         .route("/circles/{circle_id}/api/bind", post(lock::bind_path))
         .route("/circles/{circle_id}/api/release", post(lock::release_path))

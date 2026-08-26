@@ -47,6 +47,7 @@ All per-circle endpoints are prefixed with `/circles/<circle-id>`:
 | `GET /circles/<id>/api/tasks` | Task list |
 | `POST /circles/<id>/api/tasks` | Create task |
 | `POST /circles/<id>/api/claim` | Claim task |
+| `POST /circles/<id>/api/unclaim` | Return a claimed task to the open pool |
 | `POST /circles/<id>/api/done` | Mark task done |
 | `POST /circles/<id>/api/bind` | Acquire file lock |
 | `POST /circles/<id>/api/actors/register` | Issue a short-lived device-bound actor token |

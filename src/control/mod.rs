@@ -99,6 +99,10 @@ pub struct Task {
     #[serde(default)]
     pub claimed_by_peer_id: Option<String>,
     #[serde(default)]
+    pub unclaimed_by: Option<String>,
+    #[serde(default)]
+    pub unclaimed_by_peer_id: Option<String>,
+    #[serde(default)]
     pub completed_by: Option<String>,
     #[serde(default)]
     pub completed_by_peer_id: Option<String>,
@@ -248,6 +252,10 @@ pub enum CircleEvent {
         task_id: String,
     },
     TaskClaimed {
+        task_id: String,
+        agent_id: String,
+    },
+    TaskUnclaimed {
         task_id: String,
         agent_id: String,
     },

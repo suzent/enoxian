@@ -200,6 +200,16 @@ async fn main() -> anyhow::Result<()> {
                     )
                     .await
                 }
+                AgentCommands::Unclaim { task_id } => {
+                    enoxian::commands::unclaim::run(
+                        &client,
+                        &base,
+                        task_id,
+                        actor_token.as_deref(),
+                        cli.json,
+                    )
+                    .await
+                }
                 AgentCommands::Done { task_id } => {
                     enoxian::commands::done_cmd::run(
                         &client,

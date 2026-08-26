@@ -398,6 +398,17 @@ enox [--circle <NAME>] claim <TASK-ID>
 
 ---
 
+### `unclaim`
+
+Return one of your claimed tasks to the open pool so another collaborator can
+claim it. The actor label and device must match the original claim.
+
+```bash
+enox [--circle <NAME>] unclaim <TASK-ID>
+```
+
+---
+
 ### `done`
 
 Mark a task as done.

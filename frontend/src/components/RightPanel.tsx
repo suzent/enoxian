@@ -231,7 +231,12 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
         if (data.type === 'file_updated' || data.type === 'file_deleted') {
           scheduleFilesRefresh()
         }
-        if (data.type === 'task_created' || data.type === 'task_claimed' || data.type === 'task_done') {
+        if (
+          data.type === 'task_created' ||
+          data.type === 'task_claimed' ||
+          data.type === 'task_unclaimed' ||
+          data.type === 'task_done'
+        ) {
           scheduleTasksRefresh()
         }
         if (data.type === 'member_joined' || data.type === 'member_removed' || data.type === 'member_pending') {

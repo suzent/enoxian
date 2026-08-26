@@ -249,8 +249,9 @@ impl AppState {
                                         });
                                     }
                                     TaskStatus::Open => {
-                                        let _ = events_for_tasks.send(CircleEvent::TaskCreated {
+                                        let _ = events_for_tasks.send(CircleEvent::TaskUnclaimed {
                                             task_id: task.task_id,
+                                            agent_id: task.unclaimed_by.unwrap_or_default(),
                                         });
                                     }
                                 }

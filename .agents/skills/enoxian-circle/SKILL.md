@@ -98,11 +98,15 @@ enox say "<message>" --circle <circle>
 enox tasks --circle <circle>
 enox task-create "<title>" --description "<text>" --circle <circle>
 enox claim <task-id> --circle <circle>
+enox unclaim <task-id> --circle <circle>
 enox done <task-id> --circle <circle>
 ```
 
 - Create a task when the user requests shared tracking or applicable repository instructions require one. Use a concrete outcome as the title and put scope or acceptance details in the description.
 - Claim an existing matching task before starting its work. Claim only one task at a time and never claim a merely similar or unrelated task.
+- If you stop owning a claimed task without completing it, return it to the
+  open pool with `unclaim`; only the recorded claimant on the claiming device
+  can do this. Do not unclaim another collaborator's work.
 - A direct request absent from the task list does not justify claiming unrelated work. If repository instructions require a registered task, stop before acting and ask for or create one only with appropriate authority.
 - Mark a task done only when its outcome is genuinely complete. Leave incomplete or blocked work unfinished and report the blocker.
 

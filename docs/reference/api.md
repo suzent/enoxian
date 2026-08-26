@@ -201,6 +201,28 @@ Claim an open task (`open → claimed`).
 
 ---
 
+### `POST /circles/<id>/api/unclaim`
+
+Return a task to the open pool (`claimed → open`). Only the actor and device
+that claimed the task may unclaim it.
+
+**Request:**
+```json
+{ "task_id": "4873c16e-...", "agent_id": "mymac-KRhAf4ug" }
+```
+
+**Response `200`:**
+```json
+{ "status": "open", "task_id": "4873c16e-..." }
+```
+
+Returns `403` when the actor or device does not own the claim, and `409` when
+the task is not currently claimed.
+
+**Events emitted:** `task_unclaimed`
+
+---
+
 ### `POST /circles/<id>/api/done`
 
 Mark a task done (`claimed → done`).

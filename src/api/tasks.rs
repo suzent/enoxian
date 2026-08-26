@@ -96,6 +96,8 @@ pub async fn create_task(
         created_by_peer_id: actor.peer_id,
         claimed_by: None,
         claimed_by_peer_id: None,
+        unclaimed_by: None,
+        unclaimed_by_peer_id: None,
         completed_by: None,
         completed_by_peer_id: None,
         created_at: chrono::Utc::now(),

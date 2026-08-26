@@ -228,6 +228,53 @@ pub async fn claim_task(
     }
 }
 
+pub async fn unclaim_task(
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
+    Json(req): Json<TaskRequest>,
+) -> impl IntoResponse {
+    let state = match daemon.get(&circle_id) {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
+    };
+    let actor = match super::actor::resolve_actor(
+        &state,
+        req.actor_token.as_deref(),
+        req.agent_id,
+        "anonymous",
+    ) {
+        Ok(actor) => actor,
+        Err(error) => return error.into_response(),
+    };
+    let agent_id = actor.agent_id.clone();
+    match update_task_status(&state, &req.task_id, TaskStatus::Open, &actor).await {
+        Ok(_) => {
+            let _ = state.events.send(CircleEvent::TaskUnclaimed {
+                task_id: req.task_id.clone(),
+                agent_id,
+            });
+            (
+                StatusCode::OK,
+                Json(json!({ "status": "open", "task_id": req.task_id })),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            let status = error
+                .downcast_ref::<TaskTransitionError>()
+                .map(TaskTransitionError::status_code)
+                .unwrap_or(StatusCode::NOT_FOUND);
+            (status, Json(json!({ "error": error.to_string() }))).into_response()
+        }
+    }
+}
+
 pub async fn done_task(
     State(daemon): State<DaemonState>,
     Path(circle_id): Path<String>,
@@ -292,15 +339,7 @@ async fn update_task_status(
     };
 
     let mut task: Task = serde_json::from_str(&json_str)?;
-    task.status = new_status.clone();
-    task.updated_at = chrono::Utc::now();
-    if new_status == TaskStatus::Claimed {
-        task.claimed_by = Some(actor.agent_id.clone());
-        task.claimed_by_peer_id = Some(actor.peer_id.clone());
-    } else if new_status == TaskStatus::Done {
-        task.completed_by = Some(actor.agent_id.clone());
-        task.completed_by_peer_id = Some(actor.peer_id.clone());
-    }
+    apply_task_status(&mut task, new_status, actor)?;
 
     let updated_json = serde_json::to_string(&task)?;
     let mut txn = state
@@ -310,4 +349,144 @@ async fn update_task_status(
     let tasks_map = txn.get_or_insert_map(TASKS_KEY);
     tasks_map.insert(&mut txn, task_id, Any::String(updated_json.as_str().into()));
     Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+enum TaskTransitionError {
+    #[error("task is not currently claimed")]
+    NotClaimed,
+    #[error("only the agent that claimed this task can unclaim it")]
+    NotClaimant,
+}
+
+impl TaskTransitionError {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            Self::NotClaimed => StatusCode::CONFLICT,
+            Self::NotClaimant => StatusCode::FORBIDDEN,
+        }
+    }
+}
+
+fn apply_task_status(
+    task: &mut Task,
+    new_status: TaskStatus,
+    actor: &crate::actor_token::ActorIdentity,
+) -> Result<(), TaskTransitionError> {
+    if new_status == TaskStatus::Open {
+        if task.status != TaskStatus::Claimed {
+            return Err(TaskTransitionError::NotClaimed);
+        }
+        let same_agent = task.claimed_by.as_deref() == Some(actor.agent_id.as_str());
+        let same_device = task
+            .claimed_by_peer_id
+            .as_deref()
+            .is_none_or(|peer_id| peer_id == actor.peer_id);
+        if !same_agent || !same_device {
+            return Err(TaskTransitionError::NotClaimant);
+        }
+        task.claimed_by = None;
+        task.claimed_by_peer_id = None;
+        task.unclaimed_by = Some(actor.agent_id.clone());
+        task.unclaimed_by_peer_id = Some(actor.peer_id.clone());
+    } else if new_status == TaskStatus::Claimed {
+        task.claimed_by = Some(actor.agent_id.clone());
+        task.claimed_by_peer_id = Some(actor.peer_id.clone());
+    } else if new_status == TaskStatus::Done {
+        task.completed_by = Some(actor.agent_id.clone());
+        task.completed_by_peer_id = Some(actor.peer_id.clone());
+    }
+    task.status = new_status;
+    task.updated_at = chrono::Utc::now();
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(claimed_by: Option<&str>, claimed_by_peer_id: Option<&str>) -> Task {
+        Task {
+            task_id: "task-1".into(),
+            title: "Test".into(),
+            description: None,
+            status: TaskStatus::Claimed,
+            created_by: "creator".into(),
+            created_by_peer_id: "creator-peer".into(),
+            claimed_by: claimed_by.map(str::to_owned),
+            claimed_by_peer_id: claimed_by_peer_id.map(str::to_owned),
+            unclaimed_by: None,
+            unclaimed_by_peer_id: None,
+            completed_by: None,
+            completed_by_peer_id: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn actor(agent_id: &str, peer_id: &str) -> crate::actor_token::ActorIdentity {
+        let now = chrono::Utc::now();
+        crate::actor_token::ActorIdentity {
+            registration_id: "registration".into(),
+            agent_id: agent_id.into(),
+            circle_id: "circle".into(),
+            peer_id: peer_id.into(),
+            issued_at: now,
+            expires_at: now + chrono::Duration::hours(1),
+        }
+    }
+
+    #[test]
+    fn claimant_can_return_task_to_open_pool() {
+        let mut task = task(Some("codex"), Some("device-a"));
+
+        apply_task_status(&mut task, TaskStatus::Open, &actor("codex", "device-a")).unwrap();
+
+        assert_eq!(task.status, TaskStatus::Open);
+        assert_eq!(task.claimed_by, None);
+        assert_eq!(task.claimed_by_peer_id, None);
+        assert_eq!(task.unclaimed_by.as_deref(), Some("codex"));
+        assert_eq!(task.unclaimed_by_peer_id.as_deref(), Some("device-a"));
+    }
+
+    #[test]
+    fn another_actor_cannot_unclaim_task() {
+        let mut task = task(Some("codex"), Some("device-a"));
+
+        let error = apply_task_status(&mut task, TaskStatus::Open, &actor("hermes", "device-a"))
+            .unwrap_err();
+
+        assert!(matches!(error, TaskTransitionError::NotClaimant));
+        assert_eq!(task.status, TaskStatus::Claimed);
+    }
+
+    #[test]
+    fn same_label_on_another_device_cannot_unclaim_task() {
+        let mut task = task(Some("codex"), Some("device-a"));
+
+        let error = apply_task_status(&mut task, TaskStatus::Open, &actor("codex", "device-b"))
+            .unwrap_err();
+
+        assert!(matches!(error, TaskTransitionError::NotClaimant));
+    }
+
+    #[test]
+    fn matching_legacy_claim_without_peer_id_can_be_unclaimed() {
+        let mut task = task(Some("codex"), None);
+
+        apply_task_status(&mut task, TaskStatus::Open, &actor("codex", "device-a")).unwrap();
+
+        assert_eq!(task.status, TaskStatus::Open);
+    }
+
+    #[test]
+    fn open_task_cannot_be_unclaimed_again() {
+        let mut task = task(None, None);
+        task.status = TaskStatus::Open;
+
+        let error = apply_task_status(&mut task, TaskStatus::Open, &actor("codex", "device-a"))
+            .unwrap_err();
+
+        assert!(matches!(error, TaskTransitionError::NotClaimed));
+    }
 }

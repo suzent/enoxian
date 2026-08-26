@@ -98,15 +98,16 @@ A locked file will be set to read-only (`chmod 444` on Unix) by the daemon. Your
 ## Task Lifecycle
 
 ```
-unclaimed → claimed → in_progress → done
-                              ↓
-                           blocked  (waiting on another task or lock)
+open ⇄ claimed → in_progress → done
+                         ↓
+                      blocked  (waiting on another task or lock)
 ```
 
 ```bash
 enox tasks                     # list all tasks with status
-enox tasks --status unclaimed  # filter by status
-enox claim <task-id>           # unclaimed → claimed
+enox tasks --status open       # filter by status
+enox claim <task-id>           # open → claimed
+enox unclaim <task-id>         # claimed → open; releases it for others
 enox done <task-id>            # in_progress → done
 ```
 
@@ -180,6 +181,7 @@ enox status                          # circle overview
 enox who                             # agent presence
 enox tasks                           # task list
 enox claim <task-id>                 # take a task
+enox unclaim <task-id>               # return a claimed task to the open pool
 enox done <task-id>                  # finish a task
 enox bind <path>                     # acquire file lock
 enox release <path>                  # release file lock

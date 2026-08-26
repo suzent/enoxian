@@ -60,6 +60,8 @@ pub enum AgentCommands {
     },
     /// Claim a task
     Claim { task_id: String },
+    /// Return a claimed task to the open pool
+    Unclaim { task_id: String },
     /// Mark a task as done
     Done { task_id: String },
     /// Acquire an explicit file lock
@@ -512,6 +514,17 @@ mod tests {
         assert!(matches!(
             cli.command,
             AgentCommands::Register { agent_id } if agent_id == "hermes"
+        ));
+    }
+
+    #[test]
+    fn unclaim_accepts_task_id_and_trailing_token() {
+        let cli = AgentCli::try_parse_from(["enox", "unclaim", "task-1", "--token", "secret"])
+            .expect("unclaim command should parse");
+        assert_eq!(cli.token.as_deref(), Some("secret"));
+        assert!(matches!(
+            cli.command,
+            AgentCommands::Unclaim { task_id } if task_id == "task-1"
         ));
     }
 }

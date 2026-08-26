@@ -39,6 +39,11 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- Claimed tasks can now be returned to the open pool with `enox unclaim`, so
+  another collaborator can claim them.
+
 ### Security
 
 - External and Enoxian-managed agents now use short-lived actor tokens bound to
