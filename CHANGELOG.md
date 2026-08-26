@@ -39,6 +39,8 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-08-26
+
 ### Changed
 
 - The WebUI now provides responsive, collapsible workspace panels; consistent
@@ -337,7 +339,8 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/suzent/enoxian/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/suzent/enoxian/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/suzent/enoxian/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/suzent/enoxian/compare/v0.4.0...v0.4.1
