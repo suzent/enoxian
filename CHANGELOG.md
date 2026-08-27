@@ -47,8 +47,14 @@ refuses to publish a version whose section is missing or empty.
   between — anything written in that gap reached the peer by neither route and
   stayed missing until the next reconnect. Chat was the most visible casualty,
   since the first few messages of a session land squarely in that window.
-
-### Fixed
+- Approving or removing a member can no longer leave a Circle unable to
+  decrypt. Both operations advance the MLS group irreversibly and then publish
+  the commit that lets everyone else follow, but the two happened in separate
+  steps — so if the control document was momentarily busy in between, the
+  group moved on while the commit that described the move was never written,
+  and every other device was stranded on the previous epoch. The WebUI then
+  invited a retry, which advanced the group again. Each operation is now a
+  single unit of work that either completes or changes nothing.
 
 - Circles with many files sync reliably again. Momentary CRDT lock contention
   was treated as permanent failure, so a workspace could connect, complete its

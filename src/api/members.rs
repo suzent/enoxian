@@ -15,6 +15,12 @@ use crate::control::{
 };
 use crate::daemon::DaemonState;
 
+/// Retry budget for taking the control document while approving a member.
+/// Nothing irreversible happens until both locks are held, so retrying is free;
+/// giving up returns a busy response having changed nothing.
+const APPROVAL_RETRIES: u32 = 10;
+const APPROVAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
 pub async fn list_members(
     State(daemon): State<DaemonState>,
     Path(circle_id): Path<String>,
@@ -187,115 +193,95 @@ pub async fn remove_member(
     //
     // Phase 1: all MLS operations under the lock → produce owned results.
     // Phase 2: CRDT writes and disk save outside the lock.
-    struct MlsRemoveOut {
-        commit_bytes: Vec<u8>,
-        epoch: u64,
-    }
-    let mls_out: Option<MlsRemoveOut> = {
-        let mut mls_locked = state.mls.lock().await;
-        // Safety: identity lives inside the MutexGuard; both are only accessed
-        // within this block, so the raw-pointer cast is safe.
-        let identity_ptr = &mls_locked.identity as *const _;
-        let identity = unsafe { &*identity_ptr };
-        match mls_locked.group.as_mut() {
-            None => None, // no MLS group — CRDT-only removal
-            Some(group) => {
-                match group.leaf_index_for_peer(&req.peer_id) {
-                    None => None, // peer never joined MLS; evict from CRDT only
-                    Some(leaf_idx) => {
-                        let commit_bytes =
-                            match group.remove_member(identity, leaf_idx) {
-                                Ok(b) => b,
-                                Err(e) => return (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    Json(
-                                        json!({"error": format!("MLS remove_member failed: {e}")}),
-                                    ),
-                                )
-                                    .into_response(),
-                            };
-                        let epoch = group.epoch();
-                        Some(MlsRemoveOut {
-                            commit_bytes,
-                            epoch,
-                        })
+    // One unit of work, for the same reason as `approve_member`: the MLS
+    // remove advances the epoch irreversibly, and the commit it returns is the
+    // only way remaining members can follow. Publishing that commit in a
+    // separate transaction meant a busy control document left every remaining
+    // member unable to decrypt, with the handler answering "try again".
+    //
+    // Take the MLS lock and the control-document write transaction together,
+    // then do the whole eviction — MLS commit, member removal, auxiliary key
+    // cleanup and tombstone — with no await in between.
+    let mut attempt: u32 = 0;
+    let evicted_agent_id: Option<String> = loop {
+        {
+            let mut mls_locked = state.mls.lock().await;
+            if let Ok(mut txn) = state.control.try_transact_mut() {
+                // A circle with no MLS group, or a peer that never joined it,
+                // is a CRDT-only eviction — no commit to publish.
+                let mls_out = match mls_locked.remove_member_by_peer(&req.peer_id) {
+                    Ok(out) => out,
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({"error": format!("MLS remove_member failed: {e}")})),
+                        )
+                            .into_response()
                     }
+                };
+
+                if let Some((commit_bytes, epoch)) = mls_out {
+                    let entry = MlsCommitEntry {
+                        epoch,
+                        data_hex: hex::encode(&commit_bytes),
+                        sender_peer_id: state.peer_id.clone(),
+                        ratchet_tree_hex: String::new(), // not needed for Remove commits
+                    };
+                    let Ok(json_str) = serde_json::to_string(&entry) else {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({
+                                "error": "the MLS group advanced but its commit could not be serialized"
+                            })),
+                        )
+                            .into_response();
+                    };
+                    let commits_arr = txn.get_or_insert_array(MLS_COMMITS_KEY);
+                    commits_arr.push_back(&mut txn, json_str.as_str());
                 }
+
+                // Read the agent_id before the entry goes, for the presence update.
+                let evicted = txn
+                    .get_map(MEMBER_LIST_KEY)
+                    .and_then(|member_map| member_map.get(&txn, req.peer_id.as_str()))
+                    .and_then(|v| match v {
+                        Out::Any(Any::String(s)) => serde_json::from_str::<MemberEntry>(&s)
+                            .ok()
+                            .map(|e| e.agent_id),
+                        _ => None,
+                    });
+
+                // The tombstone is the eviction boundary: sync.rs rejects a
+                // tombstoned peer before exchanging any data. Everything lands
+                // in one transaction so peers see a consistent state.
+                let removed_at = Utc::now().to_rfc3339();
+                let member_map = txn.get_or_insert_map(MEMBER_LIST_KEY);
+                let kp_map = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+                let welcome_map = txn.get_or_insert_map(MLS_WELCOMES_KEY);
+                let pending_map = txn.get_or_insert_map(MLS_PENDING_KEY);
+                let removed_map = txn.get_or_insert_map(MLS_REMOVED_KEY);
+                member_map.remove(&mut txn, req.peer_id.as_str());
+                kp_map.remove(&mut txn, req.peer_id.as_str());
+                welcome_map.remove(&mut txn, req.peer_id.as_str());
+                pending_map.remove(&mut txn, req.peer_id.as_str());
+                removed_map.insert(&mut txn, req.peer_id.as_str(), removed_at.as_str());
+                drop(txn);
+
+                if let Err(e) = mls_locked.save(&state.circle_dir) {
+                    tracing::error!(
+                        "[member] evicted {} but failed to persist the MLS group: {e}",
+                        req.peer_id
+                    );
+                }
+                break evicted;
             }
         }
-        // mls_locked drops here
-    };
-
-    // Phase 2: broadcast commit + save group (outside the MLS lock).
-    // The MLS epoch advances for remaining members, but we no longer derive or
-    // rotate a transport PSK from it — the transport key is a stable per-circle
-    // gate and eviction is the mls_removed tombstone written below. See
-    // docs/concepts/security.md.
-    if let Some(out) = mls_out {
-        // Broadcast the Remove commit to remaining members via the CRDT.
-        let entry = MlsCommitEntry {
-            epoch: out.epoch,
-            data_hex: hex::encode(&out.commit_bytes),
-            sender_peer_id: state.peer_id.clone(),
-            ratchet_tree_hex: String::new(), // not needed for Remove commits
-        };
-        if let Ok(json_str) = serde_json::to_string(&entry) {
-            let mut txn = match state.control.try_transact_mut() {
-                Ok(txn) => txn,
-                Err(_) => return super::circle_busy(),
-            };
-            let commits_arr = txn.get_or_insert_array(MLS_COMMITS_KEY);
-            commits_arr.push_back(&mut txn, json_str.as_str());
+        attempt += 1;
+        if attempt >= APPROVAL_RETRIES {
+            return super::circle_busy();
         }
-
-        // Persist the updated MLS group to disk.
-        let mls_locked = state.mls.lock().await;
-        if let Some(group) = &mls_locked.group {
-            let _ = group.save(&mls_locked.identity, &state.circle_dir);
-        }
-    }
-
-    // Read the agent_id before removing the member entry (needed for presence update).
-    let evicted_agent_id: Option<String> = {
-        let txn = match state.control.try_transact() {
-            Ok(txn) => txn,
-            Err(_) => return super::circle_busy(),
-        };
-        txn.get_map(MEMBER_LIST_KEY)
-            .and_then(|member_map| member_map.get(&txn, req.peer_id.as_str()))
-            .and_then(|v| {
-                if let Out::Any(Any::String(s)) = v {
-                    serde_json::from_str::<MemberEntry>(&s)
-                        .ok()
-                        .map(|e| e.agent_id)
-                } else {
-                    None
-                }
-            })
+        tokio::time::sleep(APPROVAL_BACKOFF * attempt).await;
     };
-
-    // Remove from CRDT member list, clean up auxiliary keys, and write tombstone.
-    // The tombstone (mls_removed map) is the sync-level gate: sync.rs rejects any
-    // peer found here before exchanging CRDT data, even during the brief window
-    // before PSK rotation completes.  All changes go in one transaction so peers
-    // receiving the CRDT update see a consistent state.
-    {
-        let removed_at = Utc::now().to_rfc3339();
-        let mut txn = match state.control.try_transact_mut() {
-            Ok(txn) => txn,
-            Err(_) => return super::circle_busy(),
-        };
-        let member_map = txn.get_or_insert_map(MEMBER_LIST_KEY);
-        let kp_map = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
-        let welcome_map = txn.get_or_insert_map(MLS_WELCOMES_KEY);
-        let pending_map = txn.get_or_insert_map(MLS_PENDING_KEY);
-        let removed_map = txn.get_or_insert_map(MLS_REMOVED_KEY);
-        member_map.remove(&mut txn, req.peer_id.as_str());
-        kp_map.remove(&mut txn, req.peer_id.as_str());
-        welcome_map.remove(&mut txn, req.peer_id.as_str());
-        pending_map.remove(&mut txn, req.peer_id.as_str());
-        removed_map.insert(&mut txn, req.peer_id.as_str(), removed_at.as_str());
-    }
 
     // Mark the evicted peer as offline in presence.
     if let Some(agent_id) = &evicted_agent_id {
@@ -505,153 +491,135 @@ pub async fn approve_member(
             .into_response();
     }
 
-    // Load key package
-    let kp_hex = {
-        let txn = match state.control.try_transact() {
-            Ok(txn) => txn,
-            Err(_) => return super::circle_busy(),
-        };
-        match txn
-            .get_map(MLS_KEY_PACKAGES_KEY)
-            .and_then(|kp_map| kp_map.get(&txn, req.peer_id.as_str()))
+    // Everything below is one unit of work.
+    //
+    // `add_member` advances the MLS epoch and cannot be undone, and the commit
+    // it produces is the only way other devices can follow. Publishing it in a
+    // separate transaction meant a busy control document could strand every
+    // peer on the old epoch — and because the handler answered "try again", the
+    // retry advanced the epoch a second time.
+    //
+    // So: take the MLS lock and the control-document write transaction together
+    // and only then touch the group. If the document is busy, release both and
+    // retry — nothing has happened yet. Once both are held there is no await
+    // point before the writes commit, so the epoch advance and the commit that
+    // describes it land together or not at all.
+    let mut attempt: u32 = 0;
+    let outcome = loop {
         {
-            Some(Out::Any(Any::String(s))) => s.to_string(),
-            _ => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": "key package not found"})),
-                )
-                    .into_response()
-            }
-        }
-    };
-    let kp_bytes = match hex::decode(&kp_hex) {
-        Ok(b) => b,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("invalid key package hex: {e}")})),
-            )
-                .into_response()
-        }
-    };
+            let mut mls_locked = state.mls.lock().await;
+            if let Ok(mut txn) = state.control.try_transact_mut() {
+                // Read what we need from the same transaction we will write to.
+                let Some(kp_hex) = txn
+                    .get_map(MLS_KEY_PACKAGES_KEY)
+                    .and_then(|kp_map| kp_map.get(&txn, req.peer_id.as_str()))
+                    .and_then(|v| match v {
+                        Out::Any(Any::String(s)) => Some(s.to_string()),
+                        _ => None,
+                    })
+                else {
+                    break Err((StatusCode::BAD_REQUEST, "key package not found".to_string()));
+                };
+                let kp_bytes = match hex::decode(&kp_hex) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        break Err((
+                            StatusCode::BAD_REQUEST,
+                            format!("invalid key package hex: {e}"),
+                        ))
+                    }
+                };
 
-    // Add MLS member
-    let (commit_bytes, welcome_bytes, ratchet_tree_bytes) = {
-        let mut mls_locked = state.mls.lock().await;
-        let identity_ptr = &mls_locked.identity as *const _;
-        let group = match mls_locked.group.as_mut() {
-            Some(g) => g,
-            None => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "MLS group not initialized"})),
-                )
-                    .into_response()
-            }
-        };
-        let identity = unsafe { &*identity_ptr };
-        match group.add_member(identity, &kp_bytes) {
-            Ok(t) => t,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("MLS add_member failed: {e}")})),
-                )
-                    .into_response()
-            }
-        }
-    };
+                let (agent_id, device_label, agents) = txn
+                    .get_map(MLS_PENDING_KEY)
+                    .and_then(|pending_map| pending_map.get(&txn, req.peer_id.as_str()))
+                    .and_then(|v| match v {
+                        Out::Any(Any::String(s)) => serde_json::from_str::<PendingEntry>(&s)
+                            .ok()
+                            .map(|e| (e.agent_id, e.device_label, e.agents)),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
 
-    let welcome_hex = hex::encode(&welcome_bytes);
-    let commit_hex = hex::encode(&commit_bytes);
-    let ratchet_hex = hex::encode(&ratchet_tree_bytes);
+                // Irreversible from here.
+                let (commit_bytes, welcome_bytes, ratchet_tree_bytes) =
+                    match mls_locked.add_member(&kp_bytes) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            break Err((
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("MLS add_member failed: {e}"),
+                            ))
+                        }
+                    };
+                let epoch = mls_locked.current_epoch().unwrap_or(0);
 
-    {
-        let mut txn = match state.control.try_transact_mut() {
-            Ok(txn) => txn,
-            Err(_) => return super::circle_busy(),
-        };
-        let welcomes_map = txn.get_or_insert_map(MLS_WELCOMES_KEY);
-        welcomes_map.insert(&mut txn, req.peer_id.as_str(), welcome_hex.as_str());
-    }
+                let commit_entry = MlsCommitEntry {
+                    epoch,
+                    data_hex: hex::encode(&commit_bytes),
+                    sender_peer_id: state.peer_id.clone(),
+                    ratchet_tree_hex: hex::encode(&ratchet_tree_bytes),
+                };
+                let member_entry = MemberEntry {
+                    peer_id: req.peer_id.clone(),
+                    owner: req.owner.clone(),
+                    agent_id,
+                    device_label,
+                    agents: req.agents.clone().unwrap_or(agents),
+                    role,
+                    added_at: Utc::now(),
+                    signature: sig,
+                };
+                // Serialize before writing anything. A failure here used to skip
+                // the commit silently and still report success — the same
+                // permanent divergence, with no error at all.
+                let (Ok(commit_json), Ok(member_json)) = (
+                    serde_json::to_string(&commit_entry),
+                    serde_json::to_string(&member_entry),
+                ) else {
+                    break Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "the MLS group advanced but its commit could not be serialized; \
+                         the member may need approving again"
+                            .to_string(),
+                    ));
+                };
 
-    {
-        let epoch = {
-            let mls_locked = state.mls.lock().await;
-            mls_locked.group.as_ref().map(|g| g.epoch()).unwrap_or(0)
-        };
-        let entry = MlsCommitEntry {
-            epoch,
-            data_hex: commit_hex,
-            sender_peer_id: state.peer_id.clone(),
-            ratchet_tree_hex: ratchet_hex,
-        };
-        if let Ok(json_str) = serde_json::to_string(&entry) {
-            let mut txn = match state.control.try_transact_mut() {
-                Ok(txn) => txn,
-                Err(_) => return super::circle_busy(),
-            };
-            let commits_arr = txn.get_or_insert_array(MLS_COMMITS_KEY);
-            commits_arr.push_back(&mut txn, json_str.as_str());
-        }
-    }
+                let welcomes_map = txn.get_or_insert_map(MLS_WELCOMES_KEY);
+                welcomes_map.insert(
+                    &mut txn,
+                    req.peer_id.as_str(),
+                    hex::encode(&welcome_bytes).as_str(),
+                );
+                let commits_arr = txn.get_or_insert_array(MLS_COMMITS_KEY);
+                commits_arr.push_back(&mut txn, commit_json.as_str());
+                let member_map = txn.get_or_insert_map(MEMBER_LIST_KEY);
+                member_map.insert(&mut txn, req.peer_id.as_str(), member_json.as_str());
+                let pending_map = txn.get_or_insert_map(MLS_PENDING_KEY);
+                pending_map.remove(&mut txn, req.peer_id.as_str());
+                drop(txn);
 
-    // Add to member list, remove from pending — carry device_label and agents from pending entry
-    let (agent_id, device_label, agents) = {
-        let txn = match state.control.try_transact() {
-            Ok(txn) => txn,
-            Err(_) => return super::circle_busy(),
-        };
-        txn.get_map(MLS_PENDING_KEY)
-            .and_then(|pending_map| pending_map.get(&txn, req.peer_id.as_str()))
-            .and_then(|v| {
-                if let Out::Any(Any::String(s)) = v {
-                    serde_json::from_str::<PendingEntry>(&s)
-                        .ok()
-                        .map(|e| (e.agent_id, e.device_label, e.agents))
-                } else {
-                    None
+                // Persist only once the commit is safely in the document. Not
+                // silent: without the group on disk it rolls back to the old
+                // epoch on restart while peers already hold the commit.
+                if let Err(e) = mls_locked.save(&state.circle_dir) {
+                    tracing::error!(
+                        "[member] approved {} but failed to persist the MLS group: {e}",
+                        req.peer_id
+                    );
                 }
-            })
-            .unwrap_or_default()
-    };
-
-    let entry = MemberEntry {
-        peer_id: req.peer_id.clone(),
-        owner: req.owner.clone(),
-        agent_id,
-        device_label,
-        agents: req.agents.clone().unwrap_or(agents),
-        role,
-        added_at: Utc::now(),
-        signature: sig,
-    };
-    let Ok(json_str) = serde_json::to_string(&entry) else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "serialize failed"})),
-        )
-            .into_response();
-    };
-
-    {
-        let mut txn = match state.control.try_transact_mut() {
-            Ok(txn) => txn,
-            Err(_) => return super::circle_busy(),
-        };
-        let member_map = txn.get_or_insert_map(MEMBER_LIST_KEY);
-        let pending_map = txn.get_or_insert_map(MLS_PENDING_KEY);
-        member_map.insert(&mut txn, req.peer_id.as_str(), json_str.as_str());
-        pending_map.remove(&mut txn, req.peer_id.as_str());
-    }
-
-    // Save MLS group
-    {
-        let mls_locked = state.mls.lock().await;
-        if let Some(group) = &mls_locked.group {
-            let _ = group.save(&mls_locked.identity, &state.circle_dir);
+                break Ok(());
+            }
         }
+        attempt += 1;
+        if attempt >= APPROVAL_RETRIES {
+            return super::circle_busy();
+        }
+        tokio::time::sleep(APPROVAL_BACKOFF * attempt).await;
+    };
+
+    if let Err((status, message)) = outcome {
+        return (status, Json(json!({ "error": message }))).into_response();
     }
 
     let _ = state.events.send(CircleEvent::MemberAdded {
