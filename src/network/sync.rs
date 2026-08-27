@@ -828,6 +828,24 @@ async fn sync_inner(
     // ephemeral and broadcast receivers only see events after subscription.
     flush_pending_awareness(&mut tx, state, &mut all_awareness_rx, peer_id).await?;
 
+    // Subscribe to local updates BEFORE the catch-up push, not after it.
+    //
+    // The catch-up sends what the peer is missing as of now; the broadcast
+    // carries everything produced from now on. Subscribing afterwards left a
+    // gap between the two, and anything written in it reached the peer neither
+    // way — it was not in the push, and nobody was listening yet. Chat lives in
+    // the control doc, which the push sends first, so a message posted while
+    // the rest of the workspace was still being pushed fell into that gap and
+    // stayed missing until the next reconnect. That is the "first few messages
+    // don't sync" case.
+    //
+    // Subscribing first makes the two overlap instead of leaving a gap. An
+    // update caught by both is applied twice, which is free: CRDT updates are
+    // idempotent, which is the same reason the lag path below can re-send
+    // everything.
+    let mut all_rx = state.all_updates.subscribe();
+    let mut all_deletes_rx = state.all_deletes.subscribe();
+
     // ── Post-handshake catch-up ───────────────────────────────────────────────
     //
     // The handshake only covers docs that were open on BOTH sides at the moment
@@ -916,8 +934,6 @@ async fn sync_inner(
         }
     });
 
-    let mut all_rx = state.all_updates.subscribe();
-    let mut all_deletes_rx = state.all_deletes.subscribe();
     let mut circle_events_rx = state.events.subscribe();
     let remote_peer_id = peer_id.to_string();
 
