@@ -68,8 +68,9 @@ async fn state_vector_retry(doc: &Doc, path: &str) -> StateVector {
 /// Encode a doc's diff against `sv`, retrying while another writer holds the lock.
 ///
 /// On exhaustion returns an empty diff rather than aborting. The doc is not
-/// dropped from the sync: the post-handshake catch-up push re-sends full state
-/// for every doc, and the continuous exchange forwards later edits.
+/// dropped from the sync: the continuous exchange forwards later edits, the
+/// peer can ask for it explicitly with a resync request, and a lagged broadcast
+/// still triggers a full-state resend.
 async fn encode_diff_retry(doc: &Doc, sv: &StateVector, path: &str) -> Vec<u8> {
     for attempt in 0..CONTENTION_RETRIES {
         if let Ok(txn) = doc.try_transact() {
@@ -433,6 +434,19 @@ async fn full_state_update(state: &AppState, path: &str) -> Vec<u8> {
     encode_sync(Message::Sync(SyncMessage::Update(full_diff)))
 }
 
+/// Whether a v1-encoded update carries no changes.
+///
+/// `encode_diff_v1` against an up-to-date state vector still produces a short
+/// well-formed update — zero blocks and an empty delete set — rather than zero
+/// bytes. Recognising it lets the catch-up push skip docs the peer already has,
+/// which is the difference between a reconnect costing nothing and a reconnect
+/// re-sending the entire workspace.
+fn is_empty_update(diff: &[u8]) -> bool {
+    Update::decode_v1(diff)
+        .map(|update| update.state_vector().is_empty() && update.is_empty())
+        .unwrap_or(false)
+}
+
 fn all_doc_paths(state: &AppState) -> Vec<String> {
     let mut paths: Vec<String> = state.docs.iter().map(|e| e.key().clone()).collect();
     paths.insert(0, "__control__".to_string());
@@ -658,6 +672,10 @@ async fn sync_inner(
         debug!("[sync] {skipped_snapshots} doc(s) busy during pre-merge snapshot; conflict detection skipped for those");
     }
 
+    // State vectors the peer reports during the handshake, keyed by doc path.
+    // Absent = the peer never mentioned that doc, so it does not have it.
+    let mut peer_svs: HashMap<String, StateVector> = HashMap::new();
+
     // ── Handshake ─────────────────────────────────────────────────────────────
 
     if is_initiator {
@@ -721,6 +739,9 @@ async fn sync_inner(
                     &encode_sync(Message::Sync(SyncMessage::SyncStep2(diff))),
                 )
                 .await?;
+                // Remember what the peer already has. The catch-up push below
+                // uses it to send a diff instead of the entire doc history.
+                peer_svs.insert(path, sv);
             }
         }
     } else {
@@ -754,6 +775,9 @@ async fn sync_inner(
                     &encode_sync(Message::Sync(SyncMessage::SyncStep2(diff))),
                 )
                 .await?;
+                // Remember what the peer already has. The catch-up push below
+                // uses it to send a diff instead of the entire doc history.
+                peer_svs.insert(path, sv);
             }
         }
 
@@ -824,10 +848,36 @@ async fn sync_inner(
         }
         return Err(anyhow::anyhow!("peer removed during sync catch-up"));
     }
+    let mut pushed = 0usize;
+    let mut skipped = 0usize;
     for path in all_doc_paths(state) {
-        let msg = full_state_update(state, &path).await;
+        let msg = match peer_svs.get(&path) {
+            // The peer told us what it has, so send only what it is missing.
+            // For an already-converged doc that is an empty update, and sending
+            // it would be pure head-of-line blocking in front of live edits.
+            Some(their_sv) => {
+                let doc = if path == "__control__" {
+                    state.control.clone()
+                } else {
+                    state.get_or_create_doc(&path)
+                };
+                let diff = encode_diff_retry(&doc, their_sv, &path).await;
+                if is_empty_update(&diff) {
+                    skipped += 1;
+                    continue;
+                }
+                encode_sync(Message::Sync(SyncMessage::Update(diff)))
+            }
+            // Never mentioned in the handshake — the peer does not have this
+            // doc at all, so it needs the whole thing.
+            None => full_state_update(state, &path).await,
+        };
+        pushed += 1;
         write_frame(&mut tx, state, &path, &msg).await?;
     }
+    debug!(
+        "[sync] catch-up to {peer_id}: pushed {pushed} doc(s), skipped {skipped} already in sync"
+    );
     flush_pending_awareness(&mut tx, state, &mut all_awareness_rx, peer_id).await?;
 
     // ── Continuous exchange ───────────────────────────────────────────────────
@@ -1072,6 +1122,47 @@ mod tests {
 
         assert!(state.is_foreign_peer(&foreign));
         assert!(!state.is_foreign_peer(&unknown));
+    }
+
+    /// `is_empty_update` gates whether the catch-up push skips a doc, so a
+    /// false positive would silently drop real data. Pin both directions.
+    #[test]
+    fn empty_update_detection_distinguishes_converged_from_pending() {
+        use yrs::{Text, Transact, WriteTxn};
+
+        let doc = Doc::new();
+        {
+            let mut txn = doc.transact_mut();
+            let text = txn.get_or_insert_text("f");
+            text.push(&mut txn, "hello");
+        }
+
+        // A diff against a peer that already has everything carries no changes.
+        let converged_sv = doc.transact().state_vector();
+        let converged = doc.transact().encode_diff_v1(&converged_sv);
+        assert!(
+            is_empty_update(&converged),
+            "diff against an up-to-date state vector must read as empty"
+        );
+
+        // A diff against a peer that has nothing must NOT read as empty.
+        let full = doc.transact().encode_diff_v1(&StateVector::default());
+        assert!(
+            !is_empty_update(&full),
+            "full state of a non-empty doc must never be skipped"
+        );
+
+        // A diff carrying only the newest edit must NOT read as empty.
+        {
+            let mut txn = doc.transact_mut();
+            let text = txn.get_or_insert_text("f");
+            text.push(&mut txn, " world");
+        }
+        let incremental = doc.transact().encode_diff_v1(&converged_sv);
+        assert!(
+            !is_empty_update(&incremental),
+            "a diff containing a real edit must never be skipped"
+        );
     }
 
     #[test]

@@ -63,6 +63,13 @@ refuses to publish a version whose section is missing or empty.
   The pending entry is cleared from inside a document observer, which runs
   while the triggering write is still in progress, so the removal lost the race
   essentially every time and the stale entry was never retried.
+- Reconnecting to a peer no longer re-sends the whole workspace. Every
+  reconnect previously pushed the full history of every document, even when the
+  peer already had all of it, and that push ran ahead of live edits on the same
+  connection — so in a Circle with many files, chat messages and edits could sit
+  behind megabytes of redundant data and never arrive before the connection
+  dropped. The catch-up now sends only what the peer is missing, and sends
+  nothing at all for documents already in sync.
 - Sync and MLS bootstrap failures are logged at warning level instead of debug,
   so a Circle that has silently stopped syncing is now visible in the daemon
   log.
