@@ -875,7 +875,7 @@ async fn sync_inner(
         pushed += 1;
         write_frame(&mut tx, state, &path, &msg).await?;
     }
-    debug!(
+    info!(
         "[sync] catch-up to {peer_id}: pushed {pushed} doc(s), skipped {skipped} already in sync"
     );
     flush_pending_awareness(&mut tx, state, &mut all_awareness_rx, peer_id).await?;
