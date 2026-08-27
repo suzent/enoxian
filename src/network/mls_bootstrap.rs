@@ -129,10 +129,21 @@ async fn merge_maps(state: &AppState, groups: &[(&str, &[(String, String)])]) ->
 }
 
 async fn apply_snapshot(state: &AppState, peer: PeerId, incoming: Snapshot) -> Result<()> {
-    anyhow::ensure!(
-        incoming.circle_id == state.circle_id,
-        "bootstrap circle mismatch"
-    );
+    // This exchange is not MLS-encrypted, which makes it the only place a
+    // peer's Circle can be established before any key agreement. The sync
+    // handshake carries `circle_id` too, but inside the encrypted envelope —
+    // so a peer from another Circle fails decryption there long before the
+    // check runs, and could never be identified. Record it here instead, so
+    // the swarm stops dialing it.
+    if incoming.circle_id != state.circle_id {
+        if state.mark_foreign_peer(&peer.to_string()) {
+            warn!(
+                "[mls-bootstrap] {peer} belongs to circle {}; suppressing further dials from circle {}",
+                incoming.circle_id, state.circle_id
+            );
+        }
+        anyhow::bail!("bootstrap circle mismatch");
+    }
     anyhow::ensure!(
         incoming.sender_peer_id == peer.to_string(),
         "bootstrap peer mismatch"

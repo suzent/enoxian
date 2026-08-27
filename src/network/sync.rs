@@ -329,43 +329,76 @@ fn device_label_for_peer(state: &AppState, peer_id: &PeerId) -> Option<String> {
     }
 }
 
-fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId) -> bool {
+/// Outcome of one attempt to apply a peer update.
+enum ApplyOutcome {
+    Applied,
+    /// The doc is locked by another writer — worth retrying.
+    Busy,
+    /// Malformed or unapplicable update — retrying cannot help.
+    Fatal,
+}
+
+/// One attempt, kept synchronous so the transaction guard (which is not `Send`)
+/// never spans an await point and `run_sync` stays spawnable.
+fn try_apply_once(doc: &Doc, raw: &[u8], path: &str) -> ApplyOutcome {
+    let update = match Update::decode_v1(raw) {
+        Ok(update) => update,
+        Err(e) => {
+            warn!("[sync] decode_v1 for {path}: {e}");
+            return ApplyOutcome::Fatal;
+        }
+    };
+    // "p2p" origin so the observer skips forwarding this back to all_updates,
+    // preventing the update from echoing to the peer that just sent it.
+    let Ok(mut txn) = doc.try_transact_mut_with("p2p") else {
+        return ApplyOutcome::Busy;
+    };
+    if let Err(e) = txn.apply_update(update) {
+        warn!("[sync] apply_update for {path}: {e}");
+        return ApplyOutcome::Fatal;
+    }
+    ApplyOutcome::Applied
+}
+
+/// Apply an update received from a peer, retrying while the doc is busy.
+///
+/// Returning false tears the sync down and forces a reconnect that re-sends
+/// everything from scratch, so a doc that is merely locked for a moment must
+/// not be allowed to cause one.
+async fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId) -> bool {
     let doc = if path == "__control__" {
         state.control.clone()
     } else {
         state.get_or_create_doc(path)
     };
 
-    match Update::decode_v1(raw) {
-        Ok(update) => {
-            // Use "p2p" origin so the observer skips forwarding this back to all_updates,
-            // preventing the update from echoing to the peer that just sent it.
-            let mut txn = match doc.try_transact_mut_with("p2p") {
-                Ok(txn) => txn,
-                Err(_) => {
-                    warn!("[sync] state busy; deferring update for {path} to the next sync");
-                    return false;
-                }
-            };
-            if let Err(e) = txn.apply_update(update) {
-                warn!("[sync] apply_update for {path}: {e}");
-                return false;
+    let mut applied = false;
+    for attempt in 0..CONTENTION_RETRIES {
+        match try_apply_once(&doc, raw, path) {
+            ApplyOutcome::Applied => {
+                applied = true;
+                break;
             }
-            if path != "__control__" {
-                let author = device_label_for_peer(state, &peer_id);
-                let state = state.clone();
-                let path = path.to_string();
-                tokio::spawn(async move {
-                    crate::store::fs::flush_to_disk(&state, &path, author).await;
-                });
+            ApplyOutcome::Fatal => return false,
+            ApplyOutcome::Busy => {
+                tokio::time::sleep(CONTENTION_BACKOFF * (attempt + 1)).await;
             }
-            true
-        }
-        Err(e) => {
-            warn!("[sync] decode_v1 for {path}: {e}");
-            false
         }
     }
+    if !applied {
+        warn!("[sync] {path}: state busy after retries; deferring update to the next sync");
+        return false;
+    }
+
+    if path != "__control__" {
+        let author = device_label_for_peer(state, &peer_id);
+        let state = state.clone();
+        let path = path.to_string();
+        tokio::spawn(async move {
+            crate::store::fs::flush_to_disk(&state, &path, author).await;
+        });
+    }
+    true
 }
 
 fn apply_awareness(state: &AppState, path: &str, data: Vec<u8>) {
@@ -650,7 +683,7 @@ async fn sync_inner(
         for _ in 0..my_paths.len() {
             let (path, data) = read_frame(&mut rx, state).await?;
             if let IncomingEvent::Apply { raw_update, .. } = parse_frame(path.clone(), &data) {
-                if !apply_update(state, &path, &raw_update, peer_id) {
+                if !apply_update(state, &path, &raw_update, peer_id).await {
                     return Err(anyhow::anyhow!("circle state busy; reconnecting sync"));
                 }
             }
@@ -746,7 +779,7 @@ async fn sync_inner(
         for _ in 0..my_paths.len() {
             let (path, data) = read_frame(&mut rx, state).await?;
             if let IncomingEvent::Apply { raw_update, .. } = parse_frame(path.clone(), &data) {
-                if !apply_update(state, &path, &raw_update, peer_id) {
+                if !apply_update(state, &path, &raw_update, peer_id).await {
                     return Err(anyhow::anyhow!("circle state busy; reconnecting sync"));
                 }
             }
@@ -866,7 +899,7 @@ async fn sync_inner(
                 }
                 match event {
                     IncomingEvent::Apply { path, raw_update } => {
-                        if !apply_update(state, &path, &raw_update, peer_id) {
+                        if !apply_update(state, &path, &raw_update, peer_id).await {
                             return Err(anyhow::anyhow!("circle state busy; reconnecting sync"));
                         }
                     }
