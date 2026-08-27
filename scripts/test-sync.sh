@@ -30,7 +30,7 @@ D2_PORT=36542
 CIRCLE_NAME="synctest"
 
 ok()      { echo "  ✓ $*"; }
-fail()    { echo "  ✗ $*"; exit 1; }
+fail()    { echo "  ✗ $*"; dump_logs; exit 1; }
 section() { echo; echo "── $* ──"; }
 
 dump_logs() {
@@ -54,7 +54,11 @@ trap 'on_err $LINENO' ERR
 cleanup() {
     pkill -f "enox daemon run --port $D1_PORT" 2>/dev/null || true
     pkill -f "enox daemon run --port $D2_PORT" 2>/dev/null || true
-    rm -rf "$TMPDIR_TEST"
+    if [[ -n "${KEEP_TMP:-}" ]]; then
+        echo "  (kept $TMPDIR_TEST)"
+    else
+        rm -rf "$TMPDIR_TEST"
+    fi
 }
 trap cleanup EXIT
 
@@ -150,6 +154,21 @@ wait_for "daemon 2 never started serving the circle" 30 circle_live_2
 ok "circle active on daemon 2"
 
 section "Presence — both devices visible"
+#
+# This is the regression guard for the catch-up/subscription ordering in
+# `network::sync` — treat a failure here as a sync bug, not a flaky test.
+#
+# Presence is written into the control doc. When the live update stream was
+# subscribed *after* the catch-up push rather than before it, a presence write
+# landing in the gap between them reached the peer by neither route and the
+# other device simply never appeared. Heartbeats retry every 30s, but each new
+# session re-opened the same gap, so it could persist indefinitely.
+#
+# Measured across 22 runs: 7 failures in 10 before the ordering was fixed,
+# 0 in 12 after. If this starts failing intermittently again, something has
+# reintroduced a window where local writes reach neither the push nor the
+# stream.
+#
 # join_policy defaults to auto, so daemon 1 approves on its own.
 wait_for "the two daemons never saw each other" 45 both_present
 ok "both devices in presence"
