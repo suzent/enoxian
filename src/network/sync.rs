@@ -18,7 +18,7 @@ use yrs::sync::protocol::{Message, SyncMessage};
 use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
 use yrs::{
-    encoding::read::Cursor, Any, GetString, Map, Out, ReadTxn, StateVector, Transact, Update,
+    encoding::read::Cursor, Any, Doc, GetString, Map, Out, ReadTxn, StateVector, Transact, Update,
 };
 
 use crate::control::MLS_REMOVED_KEY;
@@ -26,11 +26,61 @@ use crate::state::AppState;
 
 pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/sync/2.0.0");
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
 const AWARENESS_PATH_PREFIX: &str = "\0awareness/";
 const DELETE_PATH_PREFIX: &str = "\0delete/";
 const REVOKED_PATH: &str = "\0revoked";
 const SESSION_PATH: &str = "\0session";
 const SESSION_HELLO_MAGIC: &[u8] = b"enoxian-sync-session-v2\0";
+
+/// Doc-lock contention retry budget.
+///
+/// A `try_transact` failure means another writer holds the doc for the duration
+/// of one update application — microseconds to low milliseconds. It is never a
+/// reason to abort a sync, but we must not block the runtime waiting either
+/// (that is what caused the WebUI lockups these `try_*` calls were introduced
+/// for). So: retry with a short async backoff, which yields to the scheduler.
+///
+/// This matters most in large circles. Every one of these calls sits in a loop
+/// over all docs, so a per-doc failure probability compounds across the whole
+/// workspace — a circle with hundreds of files hits a busy doc on almost every
+/// pass, while a three-file circle almost never does.
+const CONTENTION_RETRIES: u32 = 8;
+const CONTENTION_BACKOFF: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Read a doc's state vector, retrying while another writer holds the lock.
+///
+/// On exhaustion returns an empty state vector — "I know nothing about this
+/// doc" — which makes the peer send us its full state. Costs bandwidth, but
+/// converges, and keeps the handshake's frame count intact (the reader expects
+/// exactly one frame per path, so an early return here would desync framing).
+async fn state_vector_retry(doc: &Doc, path: &str) -> StateVector {
+    for attempt in 0..CONTENTION_RETRIES {
+        if let Ok(txn) = doc.try_transact() {
+            return txn.state_vector();
+        }
+        tokio::time::sleep(CONTENTION_BACKOFF * (attempt + 1)).await;
+    }
+    warn!("[sync] {path}: state busy after retries; requesting full state from peer");
+    StateVector::default()
+}
+
+/// Encode a doc's diff against `sv`, retrying while another writer holds the lock.
+///
+/// On exhaustion returns an empty diff rather than aborting. The doc is not
+/// dropped from the sync: the continuous exchange forwards later edits, the
+/// peer can ask for it explicitly with a resync request, and a lagged broadcast
+/// still triggers a full-state resend.
+async fn encode_diff_retry(doc: &Doc, sv: &StateVector, path: &str) -> Vec<u8> {
+    for attempt in 0..CONTENTION_RETRIES {
+        if let Ok(txn) = doc.try_transact() {
+            return txn.encode_diff_v1(sv);
+        }
+        tokio::time::sleep(CONTENTION_BACKOFF * (attempt + 1)).await;
+    }
+    warn!("[sync] {path}: state busy after retries; sending empty diff (catch-up will resend)");
+    Vec::new()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PeerSession {
@@ -280,43 +330,76 @@ fn device_label_for_peer(state: &AppState, peer_id: &PeerId) -> Option<String> {
     }
 }
 
-fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId) -> bool {
+/// Outcome of one attempt to apply a peer update.
+enum ApplyOutcome {
+    Applied,
+    /// The doc is locked by another writer — worth retrying.
+    Busy,
+    /// Malformed or unapplicable update — retrying cannot help.
+    Fatal,
+}
+
+/// One attempt, kept synchronous so the transaction guard (which is not `Send`)
+/// never spans an await point and `run_sync` stays spawnable.
+fn try_apply_once(doc: &Doc, raw: &[u8], path: &str) -> ApplyOutcome {
+    let update = match Update::decode_v1(raw) {
+        Ok(update) => update,
+        Err(e) => {
+            warn!("[sync] decode_v1 for {path}: {e}");
+            return ApplyOutcome::Fatal;
+        }
+    };
+    // "p2p" origin so the observer skips forwarding this back to all_updates,
+    // preventing the update from echoing to the peer that just sent it.
+    let Ok(mut txn) = doc.try_transact_mut_with("p2p") else {
+        return ApplyOutcome::Busy;
+    };
+    if let Err(e) = txn.apply_update(update) {
+        warn!("[sync] apply_update for {path}: {e}");
+        return ApplyOutcome::Fatal;
+    }
+    ApplyOutcome::Applied
+}
+
+/// Apply an update received from a peer, retrying while the doc is busy.
+///
+/// Returning false tears the sync down and forces a reconnect that re-sends
+/// everything from scratch, so a doc that is merely locked for a moment must
+/// not be allowed to cause one.
+async fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId) -> bool {
     let doc = if path == "__control__" {
         state.control.clone()
     } else {
         state.get_or_create_doc(path)
     };
 
-    match Update::decode_v1(raw) {
-        Ok(update) => {
-            // Use "p2p" origin so the observer skips forwarding this back to all_updates,
-            // preventing the update from echoing to the peer that just sent it.
-            let mut txn = match doc.try_transact_mut_with("p2p") {
-                Ok(txn) => txn,
-                Err(_) => {
-                    warn!("[sync] state busy; deferring update for {path} to the next sync");
-                    return false;
-                }
-            };
-            if let Err(e) = txn.apply_update(update) {
-                warn!("[sync] apply_update for {path}: {e}");
-                return false;
+    let mut applied = false;
+    for attempt in 0..CONTENTION_RETRIES {
+        match try_apply_once(&doc, raw, path) {
+            ApplyOutcome::Applied => {
+                applied = true;
+                break;
             }
-            if path != "__control__" {
-                let author = device_label_for_peer(state, &peer_id);
-                let state = state.clone();
-                let path = path.to_string();
-                tokio::spawn(async move {
-                    crate::store::fs::flush_to_disk(&state, &path, author).await;
-                });
+            ApplyOutcome::Fatal => return false,
+            ApplyOutcome::Busy => {
+                tokio::time::sleep(CONTENTION_BACKOFF * (attempt + 1)).await;
             }
-            true
-        }
-        Err(e) => {
-            warn!("[sync] decode_v1 for {path}: {e}");
-            false
         }
     }
+    if !applied {
+        warn!("[sync] {path}: state busy after retries; deferring update to the next sync");
+        return false;
+    }
+
+    if path != "__control__" {
+        let author = device_label_for_peer(state, &peer_id);
+        let state = state.clone();
+        let path = path.to_string();
+        tokio::spawn(async move {
+            crate::store::fs::flush_to_disk(&state, &path, author).await;
+        });
+    }
+    true
 }
 
 fn apply_awareness(state: &AppState, path: &str, data: Vec<u8>) {
@@ -341,15 +424,27 @@ async fn apply_delete(state: &AppState, path: &str) {
 /// Encode the full CRDT state of a doc as an Update message.
 /// Sending this is equivalent to "here is everything I have" — safe to apply
 /// at any time because CRDT merges are idempotent.
-fn full_state_update(state: &AppState, path: &str) -> Option<Vec<u8>> {
+async fn full_state_update(state: &AppState, path: &str) -> Vec<u8> {
     let doc = if path == "__control__" {
         state.control.clone()
     } else {
         state.get_or_create_doc(path)
     };
-    let empty_sv = StateVector::default();
-    let full_diff = doc.try_transact().ok()?.encode_diff_v1(&empty_sv);
-    Some(encode_sync(Message::Sync(SyncMessage::Update(full_diff))))
+    let full_diff = encode_diff_retry(&doc, &StateVector::default(), path).await;
+    encode_sync(Message::Sync(SyncMessage::Update(full_diff)))
+}
+
+/// Whether a v1-encoded update carries no changes.
+///
+/// `encode_diff_v1` against an up-to-date state vector still produces a short
+/// well-formed update — zero blocks and an empty delete set — rather than zero
+/// bytes. Recognising it lets the catch-up push skip docs the peer already has,
+/// which is the difference between a reconnect costing nothing and a reconnect
+/// re-sending the entire workspace.
+fn is_empty_update(diff: &[u8]) -> bool {
+    Update::decode_v1(diff)
+        .map(|update| update.state_vector().is_empty() && update.is_empty())
+        .unwrap_or(false)
 }
 
 fn all_doc_paths(state: &AppState) -> Vec<String> {
@@ -390,11 +485,19 @@ async fn write_conflict_copy(state: &AppState, rel_path: &str, content: &str) {
 
 // ── Main entry point ──────────────────────────────────────────────────────────
 
+/// Revocation check for the sync loop.
+///
+/// Fails OPEN on lock contention. `try_is_peer_removed` returns `None` when the
+/// control doc is momentarily locked by another writer — and the control doc is
+/// the hottest doc in a circle, because presence heartbeats write to it
+/// continuously. Reading that transient `None` as "revoked" tears down healthy
+/// syncs against peers that were never removed. Only a real tombstone entry may
+/// revoke; absence of an answer may not.
 fn sync_revoked(state: &AppState, peer_id: &PeerId) -> bool {
-    state.try_is_peer_removed(&state.peer_id).unwrap_or(true)
+    state.try_is_peer_removed(&state.peer_id).unwrap_or(false)
         || state
             .try_is_peer_removed(&peer_id.to_string())
-            .unwrap_or(true)
+            .unwrap_or(false)
 }
 
 fn mark_self_removed(state: &AppState) {
@@ -423,7 +526,11 @@ fn mark_self_removed(state: &AppState) {
 
 pub async fn run_sync(peer_id: PeerId, stream: Stream, state: AppState, is_initiator: bool) {
     if let Err(e) = sync_inner(peer_id, stream, &state, is_initiator).await {
-        debug!("[sync] {peer_id}: {e}");
+        // Deliberately `warn`, not `debug`. Every reason a sync ends early —
+        // circle mismatch, revocation, lock contention, a torn stream — used to
+        // land below the daemon's default level, so a circle that had silently
+        // stopped syncing looked identical in the log to one that was healthy.
+        warn!("[sync] {peer_id}: sync ended: {e}");
     }
 }
 
@@ -493,6 +600,15 @@ async fn sync_inner(
 
     if let Some(remote_circle_id) = &peer_session.circle_id {
         if remote_circle_id != &state.circle_id {
+            // Remember it, so the swarm stops dialing this peer for this circle.
+            // Without this the connection is torn down here and immediately
+            // re-established from the same Kademlia routing entry.
+            if state.mark_foreign_peer(&peer_id.to_string()) {
+                warn!(
+                    "[sync] {peer_id} belongs to circle {remote_circle_id}; suppressing further dials from circle {}",
+                    state.circle_id
+                );
+            }
             warn!(
                 "[sync] rejected {peer_id}: circle mismatch (remote {remote_circle_id}, local {})",
                 state.circle_id
@@ -532,13 +648,19 @@ async fn sync_inner(
     // handshake so that the initiator (which applies SyncStep2 before receiving
     // the responder's SyncStep1) still has access to the pre-merge state.
 
+    // A doc that is busy right now is skipped, not fatal. This map only feeds
+    // conflict detection, and both readers below already treat a missing entry
+    // as "no pre-merge baseline" and move on. Aborting the whole sync here
+    // instead means one momentarily-locked file blocks every other file in the
+    // circle from syncing at all.
     let mut pre_merge: HashMap<String, (Vec<u8>, String)> = HashMap::new();
+    let mut skipped_snapshots = 0usize;
     for entry in state.docs.iter() {
         let path = entry.key().clone();
-        let txn = entry
-            .value()
-            .try_transact()
-            .map_err(|_| anyhow::anyhow!("circle state busy during sync snapshot"))?;
+        let Ok(txn) = entry.value().try_transact() else {
+            skipped_snapshots += 1;
+            continue;
+        };
         let sv = txn.state_vector().encode_v1();
         let content = txn
             .get_text(path.as_str())
@@ -546,6 +668,13 @@ async fn sync_inner(
             .unwrap_or_default();
         pre_merge.insert(path, (sv, content));
     }
+    if skipped_snapshots > 0 {
+        debug!("[sync] {skipped_snapshots} doc(s) busy during pre-merge snapshot; conflict detection skipped for those");
+    }
+
+    // State vectors the peer reports during the handshake, keyed by doc path.
+    // Absent = the peer never mentioned that doc, so it does not have it.
+    let mut peer_svs: HashMap<String, StateVector> = HashMap::new();
 
     // ── Handshake ─────────────────────────────────────────────────────────────
 
@@ -558,10 +687,7 @@ async fn sync_inner(
             } else {
                 state.get_or_create_doc(path)
             };
-            let sv = doc
-                .try_transact()
-                .map_err(|_| anyhow::anyhow!("circle state busy during sync handshake"))?
-                .state_vector();
+            let sv = state_vector_retry(&doc, path).await;
             write_frame(
                 &mut tx,
                 state,
@@ -575,7 +701,7 @@ async fn sync_inner(
         for _ in 0..my_paths.len() {
             let (path, data) = read_frame(&mut rx, state).await?;
             if let IncomingEvent::Apply { raw_update, .. } = parse_frame(path.clone(), &data) {
-                if !apply_update(state, &path, &raw_update, peer_id) {
+                if !apply_update(state, &path, &raw_update, peer_id).await {
                     return Err(anyhow::anyhow!("circle state busy; reconnecting sync"));
                 }
             }
@@ -605,10 +731,7 @@ async fn sync_inner(
                 } else {
                     state.get_or_create_doc(&path)
                 };
-                let diff = doc
-                    .try_transact()
-                    .map_err(|_| anyhow::anyhow!("circle state busy during sync handshake"))?
-                    .encode_diff_v1(&sv);
+                let diff = encode_diff_retry(&doc, &sv, &path).await;
                 write_frame(
                     &mut tx,
                     state,
@@ -616,6 +739,9 @@ async fn sync_inner(
                     &encode_sync(Message::Sync(SyncMessage::SyncStep2(diff))),
                 )
                 .await?;
+                // Remember what the peer already has. The catch-up push below
+                // uses it to send a diff instead of the entire doc history.
+                peer_svs.insert(path, sv);
             }
         }
     } else {
@@ -641,10 +767,7 @@ async fn sync_inner(
                 } else {
                     state.get_or_create_doc(&path)
                 };
-                let diff = doc
-                    .try_transact()
-                    .map_err(|_| anyhow::anyhow!("circle state busy during sync handshake"))?
-                    .encode_diff_v1(&sv);
+                let diff = encode_diff_retry(&doc, &sv, &path).await;
                 write_frame(
                     &mut tx,
                     state,
@@ -652,6 +775,9 @@ async fn sync_inner(
                     &encode_sync(Message::Sync(SyncMessage::SyncStep2(diff))),
                 )
                 .await?;
+                // Remember what the peer already has. The catch-up push below
+                // uses it to send a diff instead of the entire doc history.
+                peer_svs.insert(path, sv);
             }
         }
 
@@ -663,10 +789,7 @@ async fn sync_inner(
             } else {
                 state.get_or_create_doc(path)
             };
-            let sv = doc
-                .try_transact()
-                .map_err(|_| anyhow::anyhow!("circle state busy during sync handshake"))?
-                .state_vector();
+            let sv = state_vector_retry(&doc, path).await;
             write_frame(
                 &mut tx,
                 state,
@@ -680,7 +803,7 @@ async fn sync_inner(
         for _ in 0..my_paths.len() {
             let (path, data) = read_frame(&mut rx, state).await?;
             if let IncomingEvent::Apply { raw_update, .. } = parse_frame(path.clone(), &data) {
-                if !apply_update(state, &path, &raw_update, peer_id) {
+                if !apply_update(state, &path, &raw_update, peer_id).await {
                     return Err(anyhow::anyhow!("circle state busy; reconnecting sync"));
                 }
             }
@@ -713,17 +836,48 @@ async fn sync_inner(
     // messages — the peer applies them idempotently via the continuous exchange
     // reader. Both sides do this, so convergence is guaranteed regardless of the
     // initial asymmetry.
-    for path in all_doc_paths(state) {
-        if sync_revoked(state, &peer_id) {
-            if state.is_peer_removed(&peer_id.to_string()) {
-                let _ = write_frame(&mut tx, state, REVOKED_PATH, &[]).await;
-            }
-            return Err(anyhow::anyhow!("peer removed during sync catch-up"));
+    // Revocation is checked once here, not once per doc. In a circle with
+    // hundreds of files this loop runs hundreds of times, and re-reading the
+    // control doc on every iteration gave a transient lock hundreds of chances
+    // to abort an otherwise healthy catch-up. The continuous exchange below
+    // re-checks revocation on every frame, so a peer removed mid-catch-up is
+    // still cut off promptly.
+    if sync_revoked(state, &peer_id) {
+        if state.is_peer_removed(&peer_id.to_string()) {
+            let _ = write_frame(&mut tx, state, REVOKED_PATH, &[]).await;
         }
-        if let Some(msg) = full_state_update(state, &path) {
-            write_frame(&mut tx, state, &path, &msg).await?;
-        }
+        return Err(anyhow::anyhow!("peer removed during sync catch-up"));
     }
+    let mut pushed = 0usize;
+    let mut skipped = 0usize;
+    for path in all_doc_paths(state) {
+        let msg = match peer_svs.get(&path) {
+            // The peer told us what it has, so send only what it is missing.
+            // For an already-converged doc that is an empty update, and sending
+            // it would be pure head-of-line blocking in front of live edits.
+            Some(their_sv) => {
+                let doc = if path == "__control__" {
+                    state.control.clone()
+                } else {
+                    state.get_or_create_doc(&path)
+                };
+                let diff = encode_diff_retry(&doc, their_sv, &path).await;
+                if is_empty_update(&diff) {
+                    skipped += 1;
+                    continue;
+                }
+                encode_sync(Message::Sync(SyncMessage::Update(diff)))
+            }
+            // Never mentioned in the handshake — the peer does not have this
+            // doc at all, so it needs the whole thing.
+            None => full_state_update(state, &path).await,
+        };
+        pushed += 1;
+        write_frame(&mut tx, state, &path, &msg).await?;
+    }
+    info!(
+        "[sync] catch-up to {peer_id}: pushed {pushed} doc(s), skipped {skipped} already in sync"
+    );
     flush_pending_awareness(&mut tx, state, &mut all_awareness_rx, peer_id).await?;
 
     // ── Continuous exchange ───────────────────────────────────────────────────
@@ -795,7 +949,7 @@ async fn sync_inner(
                 }
                 match event {
                     IncomingEvent::Apply { path, raw_update } => {
-                        if !apply_update(state, &path, &raw_update, peer_id) {
+                        if !apply_update(state, &path, &raw_update, peer_id).await {
                             return Err(anyhow::anyhow!("circle state busy; reconnecting sync"));
                         }
                     }
@@ -803,10 +957,7 @@ async fn sync_inner(
                         // Peer lagged — send them our full state for this doc
                         let sv = StateVector::decode_v1(&sv)?;
                         let doc = if path == "__control__" { state.control.clone() } else { state.get_or_create_doc(&path) };
-                        let diff = doc
-                            .try_transact()
-                            .map_err(|_| anyhow::anyhow!("circle state busy during resync"))?
-                            .encode_diff_v1(&sv);
+                        let diff = encode_diff_retry(&doc, &sv, &path).await;
                         let step2 = encode_sync(Message::Sync(SyncMessage::SyncStep2(diff)));
                         write_frame(&mut tx, state, &path, &step2).await?;
                     }
@@ -845,9 +996,8 @@ async fn sync_inner(
                         // are idempotent so re-sending existing state is safe.
                         warn!("[sync] lagged {n} updates to {peer_id} — sending full state");
                         for path in all_doc_paths(state) {
-                            if let Some(msg) = full_state_update(state, &path) {
-                                write_frame(&mut tx, state, &path, &msg).await?;
-                            }
+                            let msg = full_state_update(state, &path).await;
+                            write_frame(&mut tx, state, &path, &msg).await?;
                         }
                     }
                     Err(RecvError::Closed) => break,
@@ -897,6 +1047,123 @@ async fn sync_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_state() -> AppState {
+        AppState::new(
+            "circle-local".into(),
+            "Circle".into(),
+            std::path::PathBuf::new(),
+            std::path::PathBuf::new(),
+            String::new(),
+            "agent".into(),
+            1,
+            "peer-local".into(),
+            crate::config::JoinPolicy::Manual,
+            "owner".into(),
+            crate::mls::new_mls_state(
+                crate::mls::MlsIdentity::generate("peer-local").unwrap(),
+                None,
+            ),
+        )
+    }
+
+    /// Regression: a momentarily locked control doc must not read as
+    /// revocation. `try_is_peer_removed` returns `None` under contention, and
+    /// defaulting that to "removed" tore down healthy syncs — the control doc
+    /// is written constantly by presence heartbeats, and the catch-up loop
+    /// consulted it once per doc, so large circles aborted almost every pass.
+    #[test]
+    fn contended_control_doc_does_not_read_as_revocation() {
+        let state = test_state();
+        let peer = PeerId::random();
+
+        // Hold a write transaction, exactly as a concurrent writer would.
+        let _held = state.control.try_transact_mut().unwrap();
+
+        assert!(
+            state.try_is_peer_removed(&peer.to_string()).is_none(),
+            "precondition: the contended doc should refuse a read transaction"
+        );
+        assert!(
+            !sync_revoked(&state, &peer),
+            "lock contention must not be reported as revocation"
+        );
+    }
+
+    #[test]
+    fn revocation_is_still_detected_when_the_doc_is_readable() {
+        use yrs::WriteTxn;
+        let state = test_state();
+        let peer = PeerId::random();
+
+        {
+            let mut txn = state.control.try_transact_mut().unwrap();
+            let removed = txn.get_or_insert_map(MLS_REMOVED_KEY);
+            removed.insert(&mut txn, peer.to_string().as_str(), "2026-08-27T00:00:00Z");
+        }
+
+        assert!(sync_revoked(&state, &peer), "a real tombstone must revoke");
+    }
+
+    /// A confirmed cross-circle peer is recorded once so the swarm can stop
+    /// redialing it; peers we know nothing about stay dialable, because a fresh
+    /// joiner is indistinguishable from an unknown peer until it syncs.
+    #[test]
+    fn foreign_peers_are_recorded_once_and_unknown_peers_stay_dialable() {
+        let state = test_state();
+        let foreign = PeerId::random().to_string();
+        let unknown = PeerId::random().to_string();
+
+        assert!(state.mark_foreign_peer(&foreign), "first mark is new");
+        assert!(
+            !state.mark_foreign_peer(&foreign),
+            "second mark is a repeat"
+        );
+
+        assert!(state.is_foreign_peer(&foreign));
+        assert!(!state.is_foreign_peer(&unknown));
+    }
+
+    /// `is_empty_update` gates whether the catch-up push skips a doc, so a
+    /// false positive would silently drop real data. Pin both directions.
+    #[test]
+    fn empty_update_detection_distinguishes_converged_from_pending() {
+        use yrs::{Text, Transact, WriteTxn};
+
+        let doc = Doc::new();
+        {
+            let mut txn = doc.transact_mut();
+            let text = txn.get_or_insert_text("f");
+            text.push(&mut txn, "hello");
+        }
+
+        // A diff against a peer that already has everything carries no changes.
+        let converged_sv = doc.transact().state_vector();
+        let converged = doc.transact().encode_diff_v1(&converged_sv);
+        assert!(
+            is_empty_update(&converged),
+            "diff against an up-to-date state vector must read as empty"
+        );
+
+        // A diff against a peer that has nothing must NOT read as empty.
+        let full = doc.transact().encode_diff_v1(&StateVector::default());
+        assert!(
+            !is_empty_update(&full),
+            "full state of a non-empty doc must never be skipped"
+        );
+
+        // A diff carrying only the newest edit must NOT read as empty.
+        {
+            let mut txn = doc.transact_mut();
+            let text = txn.get_or_insert_text("f");
+            text.push(&mut txn, " world");
+        }
+        let incremental = doc.transact().encode_diff_v1(&converged_sv);
+        assert!(
+            !is_empty_update(&incremental),
+            "a diff containing a real edit must never be skipped"
+        );
+    }
 
     #[test]
     fn decodes_legacy_session_id() {

@@ -210,6 +210,15 @@ fn ensure_peer_authorized(state: &AppState, peer_id: &PeerId) -> Result<()> {
         !state.is_self_removed() && !state.is_peer_removed(&peer_id.to_string()),
         "peer removed from circle"
     );
+    // A peer that already proved it belongs to a different circle has nothing
+    // to exchange with us. Without this check the event batch is swapped
+    // anyway and every foreign proposal is rejected one at a time — and since
+    // a rejected event is never stored, our WANT set never changes, so the
+    // peer re-offers the identical batch on every reconcile, forever.
+    anyhow::ensure!(
+        !state.is_foreign_peer(&peer_id.to_string()),
+        "peer belongs to another circle"
+    );
     Ok(())
 }
 

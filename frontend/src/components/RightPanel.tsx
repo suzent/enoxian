@@ -287,10 +287,18 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
   const isAdmin = members.some(m => m.agent_id === status?.agent_id && m.role === 'admin')
     || members.some(m => m.peer_id && m.role === 'admin' && m.agent_id === status?.agent_id)
 
+  // Used after a member action the user just took. Unlike the background
+  // poll, a failure here must be visible: silently swallowing it leaves the
+  // roster showing the pre-action state, so a request that actually succeeded
+  // looks like it did nothing.
   const refreshMembers = useCallback(() => {
     if (!activeCircleId) return
-    getMembers(activeCircleId).then(setMembers).catch(() => {})
-    getPending(activeCircleId).then(setPending).catch(() => {})
+    Promise.all([
+      getMembers(activeCircleId).then(setMembers),
+      getPending(activeCircleId).then(setPending),
+    ]).catch((err: any) => {
+      setMemberActionError(`could not refresh members: ${err.message}`)
+    })
   }, [activeCircleId])
 
   const handleApprove = async (peerId: string, owner: string) => {

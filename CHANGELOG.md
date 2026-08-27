@@ -39,6 +39,50 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- Circles with many files sync reliably again. Momentary CRDT lock contention
+  was treated as permanent failure, so a workspace could connect, complete its
+  sync handshake, and still never exchange any changes — the larger the Circle,
+  the more reliably it failed.
+- Agents no longer appear stale while they are online. A presence heartbeat
+  that lost the race for the control document was dropped instead of retried,
+  which made a healthy local agent look offline to every peer.
+- Peers belonging to a different Circle are no longer dialed, connected to, or
+  offered event and proposal data. Every Circle on a device shares one peer
+  routing table, so a Circle could spend nearly all of its connection attempts
+  reaching other Circles' peers and re-rejecting the same foreign proposals on
+  every pass.
+- Devices that fell onto different MLS epochs can recover again. The plaintext
+  MLS bootstrap exchange is the only way the needed commits can reach a device
+  once the encrypted path is already deadlocked, and it was abandoning the
+  exchange whenever the control document was momentarily busy — which is its
+  normal state. A stranded device stayed stranded, and every sync frame it sent
+  failed to decrypt.
+- Inviting a device to a Circle no longer leaves a permanent extra "awaiting
+  approval" entry. A joining device writes a provisional member entry for
+  itself, so the admin's approval arrived as an update to an existing entry
+  rather than a new one and was never recognised — leaving a pending request
+  that synced back and reappeared on the admin's side after every approval.
+- Approving or rejecting a join request updates the WebUI immediately instead of
+  lingering until the next refresh. Clearing a pending request emitted no event
+  at all, so an open UI kept showing "awaiting approval" for up to fifteen
+  seconds after the request was already gone.
+- A peer that has been approved no longer keeps showing as "awaiting approval".
+  The pending entry is cleared from inside a document observer, which runs
+  while the triggering write is still in progress, so the removal lost the race
+  essentially every time and the stale entry was never retried.
+- Reconnecting to a peer no longer re-sends the whole workspace. Every
+  reconnect previously pushed the full history of every document, even when the
+  peer already had all of it, and that push ran ahead of live edits on the same
+  connection — so in a Circle with many files, chat messages and edits could sit
+  behind megabytes of redundant data and never arrive before the connection
+  dropped. The catch-up now sends only what the peer is missing, and sends
+  nothing at all for documents already in sync.
+- Sync and MLS bootstrap failures are logged at warning level instead of debug,
+  so a Circle that has silently stopped syncing is now visible in the daemon
+  log.
+
 ## [0.5.0] — 2026-08-26
 
 ### Added

@@ -18,6 +18,10 @@ use std::collections::{HashMap, HashSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+/// Retry budget for clearing a peer's pending entry. See [`remove_pending_entry`].
+const PENDING_REMOVE_RETRIES: u32 = 10;
+const PENDING_REMOVE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
 use yrs::{Array, Observable};
 
 use crate::{
@@ -371,12 +375,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         let s = state_for_self_evict.clone();
                         let peer_str = self_peer_str.clone();
                         tokio::spawn(async move {
-                            use yrs::{Map, Transact, WriteTxn};
-                            let Ok(mut txn) = s.control.try_transact_mut() else {
-                                return;
-                            };
-                            let pm = txn.get_or_insert_map(MLS_PENDING_KEY);
-                            pm.remove(&mut txn, peer_str.as_str());
+                            remove_pending_entry(&s, peer_str.as_str(), "self-evict").await;
                         });
                     }
                 }
@@ -405,18 +404,14 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         if key.as_ref() != self_peer_str.as_str() {
                             continue;
                         }
-                        if let yrs::types::EntryChange::Inserted(_) = change {
-                            // Admin just wrote our member entry via P2P sync — remove our pending entry.
+                        if approval_clears_pending(change) {
+                            // The admin wrote our member entry via P2P sync — drop
+                            // our own pending entry.
                             let s = state_for_approval.clone();
                             let peer_str = self_peer_str.clone();
                             tokio::spawn(async move {
-                                use yrs::{Map, Transact as _, WriteTxn};
-                                let Ok(mut txn) = s.control.try_transact_mut() else {
-                                    return;
-                                };
-                                let pm = txn.get_or_insert_map(MLS_PENDING_KEY);
-                                pm.remove(&mut txn, peer_str.as_str());
-                                tracing::info!("[member] removed pending entry after P2P approval");
+                                remove_pending_entry(&s, peer_str.as_str(), "approved via P2P")
+                                    .await;
                             });
                         }
                     }
@@ -1060,6 +1055,21 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             swarm.close_connection(connection_id);
                             continue;
                         }
+                        // A peer that already identified itself as belonging to
+                        // another circle is dropped before we spend any streams
+                        // on it. Only confirmed mismatches are filtered here —
+                        // an unknown peer may be a fresh joiner and must still
+                        // be allowed to reach the sync handshake.
+                        if !is_infrastructure
+                            && state_for_swarm.is_foreign_peer(&peer_id.to_string())
+                        {
+                            tracing::debug!(
+                                "[{}] dropping connection from {peer_id}: belongs to another circle",
+                                circle_id
+                            );
+                            swarm.close_connection(connection_id);
+                            continue;
+                        }
                         let route_addr = match &endpoint {
                             libp2p::core::ConnectedPoint::Listener { local_addr, .. }
                                 if is_relayed => local_addr,
@@ -1149,6 +1159,9 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     }
                     SwarmEvent::Behaviour(EnochEvent::Mdns(mdns::Event::Discovered(peers))) => {
                         for (peer_id, addr) in peers {
+                            if state_for_swarm.is_foreign_peer(&peer_id.to_string()) {
+                                continue;
+                            }
                             info!("[{}] mDNS discovered: {peer_id} @ {addr}", circle_id);
                             swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
                             if let Err(e) = swarm.dial(
@@ -1169,6 +1182,12 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     SwarmEvent::Behaviour(EnochEvent::Identify(identify::Event::Received {
                         peer_id, info, ..
                     })) => {
+                        // Don't feed another circle's peer into our routing
+                        // table — that is what makes the redial loop survive
+                        // long after the connection was rejected.
+                        if state_for_swarm.is_foreign_peer(&peer_id.to_string()) {
+                            continue;
+                        }
                         for addr in &info.listen_addrs {
                             swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
                         }
@@ -1187,6 +1206,13 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                                 for reg in registrations {
                                     let pid = reg.record.peer_id();
                                     if pid == *swarm.local_peer_id() { continue; }
+                                    if state_for_swarm.is_foreign_peer(&pid.to_string()) {
+                                        tracing::debug!(
+                                            "[{}] skipping {pid}: belongs to another circle",
+                                            circle_id
+                                        );
+                                        continue;
+                                    }
                                     for addr in reg.record.addresses() {
                                         if force_relay
                                             && !crate::network::public_relay_transport::is_relayed_addr(addr)
@@ -1312,6 +1338,53 @@ fn spawn_control_persist(
             }
         }
     });
+}
+
+/// Whether a P2P change to our own member-list entry means we have been approved.
+///
+/// Must accept `Updated` as well as `Inserted`. A joining device writes a
+/// provisional self-signed member entry for itself at startup (see the
+/// auto-register block in `spawn_circle`), so when the admin's approval arrives
+/// it lands on a key that already exists — an `Updated` change, never an
+/// `Inserted` one. Matching only `Inserted` meant the approval was never
+/// noticed, the device's pending entry was never cleared, and because that
+/// entry lives in the shared CRDT it synced back and resurrected "awaiting
+/// approval" on the admin too. Deterministic, not a race.
+fn approval_clears_pending(change: &yrs::types::EntryChange) -> bool {
+    matches!(
+        change,
+        yrs::types::EntryChange::Inserted(_) | yrs::types::EntryChange::Updated(_, _)
+    )
+}
+
+/// Clear a peer's pending entry, retrying while the control doc is busy.
+///
+/// These removals are spawned from inside a Yjs observer, and an observer runs
+/// while the transaction that triggered it still holds the control doc. A
+/// single `try_transact_mut` therefore races that transaction's drop and loses
+/// essentially every time — it had never once succeeded in practice, which
+/// leaves a peer showing as "awaiting approval" in the UI forever despite
+/// already being a full member.
+async fn remove_pending_entry(state: &AppState, peer_str: &str, reason: &str) {
+    for attempt in 0..PENDING_REMOVE_RETRIES {
+        let removed = {
+            match yrs::Transact::try_transact_mut(&*state.control) {
+                Ok(mut txn) => {
+                    use yrs::{Map, WriteTxn};
+                    let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
+                    pending.remove(&mut txn, peer_str);
+                    true
+                }
+                Err(_) => false,
+            }
+        };
+        if removed {
+            info!("[member] removed pending entry for {peer_str} ({reason})");
+            return;
+        }
+        tokio::time::sleep(PENDING_REMOVE_BACKOFF * (attempt + 1)).await;
+    }
+    warn!("[member] control doc busy after retries; {peer_str} still shows as pending ({reason})");
 }
 
 async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::SharedMlsState) {
@@ -1688,4 +1761,101 @@ fn is_routable_listen_addr(addr: &Multiaddr) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::MLS_PENDING_KEY;
+    use crate::state::AppState;
+    use yrs::{Map, ReadTxn, Transact, WriteTxn};
+
+    fn test_state() -> AppState {
+        AppState::new(
+            "circle".into(),
+            "Circle".into(),
+            std::path::PathBuf::new(),
+            std::path::PathBuf::new(),
+            String::new(),
+            "agent".into(),
+            1,
+            "peer-local".into(),
+            crate::config::JoinPolicy::Manual,
+            "owner".into(),
+            crate::mls::new_mls_state(
+                crate::mls::MlsIdentity::generate("peer-local").unwrap(),
+                None,
+            ),
+        )
+    }
+
+    fn seed_pending(state: &AppState, peer: &str) {
+        let mut txn = state.control.try_transact_mut().unwrap();
+        let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
+        pending.insert(&mut txn, peer, "{}");
+    }
+
+    fn is_pending(state: &AppState, peer: &str) -> bool {
+        let txn = state.control.try_transact().unwrap();
+        txn.get_map(MLS_PENDING_KEY)
+            .and_then(|pending| pending.get(&txn, peer))
+            .is_some()
+    }
+
+    /// Regression: a joining device writes a provisional self-signed member
+    /// entry for itself, so the admin's approval arrives as an update to an
+    /// existing key rather than an insert. Matching only `Inserted` meant the
+    /// approval was never noticed and every fresh join left a permanent
+    /// "awaiting approval" that synced back to the admin.
+    #[test]
+    fn approval_is_recognised_whether_inserted_or_updated() {
+        use yrs::types::EntryChange;
+        use yrs::{Any, Out};
+
+        let value = || Out::Any(Any::String("{}".into()));
+
+        assert!(
+            approval_clears_pending(&EntryChange::Inserted(value())),
+            "a first-time write of our member entry is an approval"
+        );
+        assert!(
+            approval_clears_pending(&EntryChange::Updated(value(), value())),
+            "an approval landing on our provisional self-written entry still counts"
+        );
+        assert!(
+            !approval_clears_pending(&EntryChange::Removed(value())),
+            "removal from the member list is not an approval"
+        );
+    }
+
+    /// Regression: clearing a pending entry is spawned from inside a Yjs
+    /// observer, which runs while the triggering transaction still holds the
+    /// control doc. A single `try_transact_mut` loses that race essentially
+    /// every time, which left an approved peer showing as "awaiting approval"
+    /// in the UI forever. The removal must outlive the contention.
+    #[tokio::test]
+    async fn pending_entry_removal_outlives_contention() {
+        let state = test_state();
+        let peer = "12D3KooWtest";
+        seed_pending(&state, peer);
+
+        let task = {
+            let s = state.clone();
+            let peer = peer.to_string();
+            tokio::spawn(async move { remove_pending_entry(&s, &peer, "test").await })
+        };
+
+        // Hold the control doc while the removal is already running, the way
+        // the observer's own transaction does.
+        {
+            let _held = state.control.try_transact_mut().unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+
+        task.await.unwrap();
+        assert!(
+            !is_pending(&state, peer),
+            "pending entry must be cleared once the control doc frees up"
+        );
+    }
 }

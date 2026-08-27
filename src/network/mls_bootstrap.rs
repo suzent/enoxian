@@ -9,7 +9,7 @@ use libp2p::{PeerId, Stream, StreamProtocol};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
-use tracing::debug;
+use tracing::warn;
 use yrs::{Array, Map, Out, ReadTxn, Transact, WriteTxn};
 
 use crate::control::{
@@ -34,32 +34,40 @@ struct Snapshot {
     commits: Vec<MlsCommitEntry>,
 }
 
-fn map_strings(state: &AppState, key: &str) -> Result<Vec<(String, String)>> {
-    let txn = state
-        .control
-        .try_transact()
-        .map_err(|_| anyhow::anyhow!("circle state busy"))?;
+/// Contention retry budget for the control doc.
+///
+/// This is the plaintext recovery path out of an MLS epoch deadlock: once two
+/// devices are on different epochs, neither can decrypt the other's CRDT
+/// frames, so the commits needed to catch up can only arrive here. Giving up
+/// on a momentarily busy control doc makes that deadlock permanent — and the
+/// control doc is the busiest doc in a circle, so "momentarily busy" is the
+/// normal case rather than the exception.
+const CONTENTION_RETRIES: u32 = 10;
+const CONTENTION_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+fn map_strings_in<T: ReadTxn>(txn: &T, key: &str) -> Vec<(String, String)> {
     let Some(map) = txn.get_map(key) else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
     let mut values: Vec<_> = map
-        .iter(&txn)
+        .iter(txn)
         .filter_map(|(key, value)| match value {
             Out::Any(yrs::Any::String(value)) => Some((key.to_string(), value.to_string())),
             _ => None,
         })
         .collect();
     values.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(values)
+    values
 }
 
-fn snapshot(state: &AppState, receiver: &PeerId) -> Result<Snapshot> {
-    let welcomes = map_strings(state, MLS_WELCOMES_KEY)?;
-    let txn = state
-        .control
-        .try_transact()
-        .map_err(|_| anyhow::anyhow!("circle state busy"))?;
-    let mut commits: Vec<_> = txn
+/// Build the snapshot from a single read transaction.
+///
+/// Previously each field took its own transaction — seven acquisitions per
+/// snapshot, every one an independent chance to abort the whole bootstrap.
+/// One transaction is both cheaper and a consistent view of the group state.
+fn try_snapshot(state: &AppState, receiver: &PeerId) -> Option<Snapshot> {
+    let txn = state.control.try_transact().ok()?;
+    let mut commits: Vec<MlsCommitEntry> = txn
         .get_array(MLS_COMMITS_KEY)
         .into_iter()
         .flat_map(|commits| commits.iter(&txn))
@@ -69,82 +77,125 @@ fn snapshot(state: &AppState, receiver: &PeerId) -> Result<Snapshot> {
         })
         .collect();
     commits.sort_by_key(|entry: &MlsCommitEntry| entry.epoch);
-    Ok(Snapshot {
+    let receiver = receiver.to_string();
+    Some(Snapshot {
         circle_id: state.circle_id.clone(),
         sender_peer_id: state.peer_id.clone(),
-        key_packages: map_strings(state, MLS_KEY_PACKAGES_KEY)?,
-        owner_claims: map_strings(state, MLS_OWNER_CLAIMS_KEY)?,
-        pending: map_strings(state, MLS_PENDING_KEY)?,
-        members: map_strings(state, MEMBER_LIST_KEY)?,
-        removed: map_strings(state, MLS_REMOVED_KEY)?,
-        welcome: welcomes
+        key_packages: map_strings_in(&txn, MLS_KEY_PACKAGES_KEY),
+        owner_claims: map_strings_in(&txn, MLS_OWNER_CLAIMS_KEY),
+        pending: map_strings_in(&txn, MLS_PENDING_KEY),
+        members: map_strings_in(&txn, MEMBER_LIST_KEY),
+        removed: map_strings_in(&txn, MLS_REMOVED_KEY),
+        welcome: map_strings_in(&txn, MLS_WELCOMES_KEY)
             .into_iter()
-            .find(|(peer, _)| peer == &receiver.to_string())
+            .find(|(peer, _)| peer == &receiver)
             .map(|(_, value)| value),
         commits,
     })
 }
 
-fn merge_map(state: &AppState, key: &str, entries: &[(String, String)]) -> Result<()> {
-    let mut txn = state
-        .control
-        .try_transact_mut_with("p2p")
-        .map_err(|_| anyhow::anyhow!("circle state busy"))?;
-    let map = txn.get_or_insert_map(key);
-    for (entry_key, value) in entries {
-        let unchanged = map
-            .get(&txn, entry_key.as_str())
-            .is_some_and(|current| current.to_string(&txn) == *value);
-        if !unchanged {
-            map.insert(&mut txn, entry_key.as_str(), value.as_str());
+async fn snapshot(state: &AppState, receiver: &PeerId) -> Result<Snapshot> {
+    for attempt in 0..CONTENTION_RETRIES {
+        if let Some(snapshot) = try_snapshot(state, receiver) {
+            return Ok(snapshot);
         }
+        tokio::time::sleep(CONTENTION_BACKOFF * (attempt + 1)).await;
     }
-    Ok(())
+    anyhow::bail!("circle state busy after retries; could not build MLS bootstrap snapshot")
+}
+
+/// Merge every incoming map under one write transaction, retrying on contention.
+async fn merge_maps(state: &AppState, groups: &[(&str, &[(String, String)])]) -> Result<()> {
+    for attempt in 0..CONTENTION_RETRIES {
+        {
+            if let Ok(mut txn) = state.control.try_transact_mut_with("p2p") {
+                for (key, entries) in groups {
+                    let map = txn.get_or_insert_map(*key);
+                    for (entry_key, value) in entries.iter() {
+                        let unchanged = map
+                            .get(&txn, entry_key.as_str())
+                            .is_some_and(|current| current.to_string(&txn) == *value);
+                        if !unchanged {
+                            map.insert(&mut txn, entry_key.as_str(), value.as_str());
+                        }
+                    }
+                }
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(CONTENTION_BACKOFF * (attempt + 1)).await;
+    }
+    anyhow::bail!("circle state busy after retries; MLS bootstrap merge deferred")
 }
 
 async fn apply_snapshot(state: &AppState, peer: PeerId, incoming: Snapshot) -> Result<()> {
-    anyhow::ensure!(
-        incoming.circle_id == state.circle_id,
-        "bootstrap circle mismatch"
-    );
+    // This exchange is not MLS-encrypted, which makes it the only place a
+    // peer's Circle can be established before any key agreement. The sync
+    // handshake carries `circle_id` too, but inside the encrypted envelope —
+    // so a peer from another Circle fails decryption there long before the
+    // check runs, and could never be identified. Record it here instead, so
+    // the swarm stops dialing it.
+    if incoming.circle_id != state.circle_id {
+        if state.mark_foreign_peer(&peer.to_string()) {
+            warn!(
+                "[mls-bootstrap] {peer} belongs to circle {}; suppressing further dials from circle {}",
+                incoming.circle_id, state.circle_id
+            );
+        }
+        anyhow::bail!("bootstrap circle mismatch");
+    }
     anyhow::ensure!(
         incoming.sender_peer_id == peer.to_string(),
         "bootstrap peer mismatch"
     );
-    merge_map(state, MLS_KEY_PACKAGES_KEY, &incoming.key_packages)?;
-    merge_map(state, MLS_OWNER_CLAIMS_KEY, &incoming.owner_claims)?;
-    merge_map(state, MLS_PENDING_KEY, &incoming.pending)?;
-    merge_map(state, MEMBER_LIST_KEY, &incoming.members)?;
-    merge_map(state, MLS_REMOVED_KEY, &incoming.removed)?;
+    merge_maps(
+        state,
+        &[
+            (MLS_KEY_PACKAGES_KEY, &incoming.key_packages),
+            (MLS_OWNER_CLAIMS_KEY, &incoming.owner_claims),
+            (MLS_PENDING_KEY, &incoming.pending),
+            (MEMBER_LIST_KEY, &incoming.members),
+            (MLS_REMOVED_KEY, &incoming.removed),
+        ],
+    )
+    .await?;
 
     if let Some(welcome) = incoming.welcome {
         crate::lifecycle::consume_welcome(welcome.clone(), state.mls.clone(), state.clone()).await;
-        merge_map(state, MLS_WELCOMES_KEY, &[(state.peer_id.clone(), welcome)])?;
+        merge_maps(
+            state,
+            &[(MLS_WELCOMES_KEY, &[(state.peer_id.clone(), welcome)][..])],
+        )
+        .await?;
     }
 
     for entry in incoming.commits {
         crate::lifecycle::apply_commit_entry(entry.clone(), state.mls.clone(), state.clone()).await;
         let json = serde_json::to_string(&entry)?;
-        let exists = {
-            let txn = state
-                .control
-                .try_transact()
-                .map_err(|_| anyhow::anyhow!("circle state busy"))?;
-            txn.get_array(MLS_COMMITS_KEY)
-                .into_iter()
-                .flat_map(|commits| commits.iter(&txn))
-                .any(|value| value.to_string(&txn) == json)
-        };
-        if !exists {
-            let mut txn = state
-                .control
-                .try_transact_mut_with("p2p")
-                .map_err(|_| anyhow::anyhow!("circle state busy"))?;
-            let commits_ref = txn.get_or_insert_array(MLS_COMMITS_KEY);
-            commits_ref.push_back(&mut txn, json);
-        }
+        append_commit(state, json).await?;
     }
     Ok(())
+}
+
+/// Append a commit to the shared log if it is not already there, retrying on
+/// contention. Dropping a commit here is what strands a peer on an old epoch.
+async fn append_commit(state: &AppState, json: String) -> Result<()> {
+    for attempt in 0..CONTENTION_RETRIES {
+        {
+            if let Ok(mut txn) = state.control.try_transact_mut_with("p2p") {
+                let commits_ref = txn.get_or_insert_array(MLS_COMMITS_KEY);
+                let exists = commits_ref
+                    .iter(&txn)
+                    .any(|value| value.to_string(&txn) == json);
+                if !exists {
+                    commits_ref.push_back(&mut txn, json);
+                }
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(CONTENTION_BACKOFF * (attempt + 1)).await;
+    }
+    anyhow::bail!("circle state busy after retries; MLS commit not recorded")
 }
 
 async fn write_snapshot<W: AsyncWriteExt + Unpin>(writer: &mut W, value: &Snapshot) -> Result<()> {
@@ -170,13 +221,13 @@ async fn read_snapshot<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Snapsh
 
 pub async fn run(peer: PeerId, stream: Stream, state: AppState, initiator: bool) {
     if let Err(error) = run_inner(peer, stream, &state, initiator).await {
-        debug!("[mls-bootstrap] {peer}: {error}");
+        warn!("[mls-bootstrap] {peer}: bootstrap ended: {error}");
     }
 }
 
 async fn run_inner(peer: PeerId, stream: Stream, state: &AppState, initiator: bool) -> Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream.compat());
-    let first = snapshot(state, &peer)?;
+    let first = snapshot(state, &peer).await?;
     let remote = if initiator {
         write_snapshot(&mut writer, &first).await?;
         read_snapshot(&mut reader).await?
@@ -194,7 +245,7 @@ async fn run_inner(peer: PeerId, stream: Stream, state: &AppState, initiator: bo
         tokio::select! {
             incoming = read_snapshot(&mut reader) => apply_snapshot(state, peer, incoming?).await?,
             _ = interval.tick() => {
-                let next = snapshot(state, &peer)?;
+                let next = snapshot(state, &peer).await?;
                 let encoded = serde_json::to_vec(&next)?;
                 if encoded != last_sent {
                     write_snapshot(&mut writer, &next).await?;

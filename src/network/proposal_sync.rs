@@ -240,6 +240,10 @@ fn ensure_peer_authorized(state: &AppState, peer_id: &PeerId) -> Result<()> {
         !state.is_self_removed() && !state.is_peer_removed(&peer_id.to_string()),
         "peer removed from circle"
     );
+    anyhow::ensure!(
+        !state.is_foreign_peer(&peer_id.to_string()),
+        "peer belongs to another circle"
+    );
     Ok(())
 }
 
