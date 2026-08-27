@@ -271,6 +271,11 @@ pub enum CircleEvent {
     MemberRemoved {
         peer_id: String,
     },
+    /// A join request appeared in, or was cleared from, the pending map.
+    /// Carries only the peer — viewers refetch the roster and pending list.
+    MemberPending {
+        peer_id: String,
+    },
     /// A chat message was posted to the circle.
     MessagePosted {
         message: ChatMessage,

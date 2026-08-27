@@ -1,6 +1,6 @@
 use crate::control::{
     ChatActivity, ChatMessage, CircleEvent, Presence, Task, TaskStatus, CHAT_ACTIVITY_KEY,
-    CHAT_KEY, MEMBER_LIST_KEY, MLS_REMOVED_KEY, PRESENCE_KEY, TASKS_KEY,
+    CHAT_KEY, MEMBER_LIST_KEY, MLS_PENDING_KEY, MLS_REMOVED_KEY, PRESENCE_KEY, TASKS_KEY,
 };
 use dashmap::DashMap;
 use libp2p::{multiaddr::Protocol, swarm::ConnectionId, Multiaddr};
@@ -313,6 +313,28 @@ impl AppState {
             },
         );
         std::mem::forget(members_sub);
+
+        // Observe the pending map too. Without this, a join request being
+        // cleared produced no event at all, so an open UI kept showing
+        // "awaiting approval" until its next 15-second poll — long after the
+        // request was actually gone. Insert, update and removal all matter:
+        // the first two surface a new request, the last retires it.
+        let pending_map = control.get_or_insert_map(MLS_PENDING_KEY);
+        let events_for_pending = events_tx.clone();
+        let pending_sub = pending_map.observe(
+            move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                if !is_p2p {
+                    return;
+                }
+                for (key, _change) in event.keys(txn).iter() {
+                    let _ = events_for_pending.send(CircleEvent::MemberPending {
+                        peer_id: key.to_string(),
+                    });
+                }
+            },
+        );
+        std::mem::forget(pending_sub);
 
         // Observe presence for P2P-delivered changes, so a peer going offline or
         // coming back updates an open UI instead of waiting for a reload.

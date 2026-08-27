@@ -64,6 +64,10 @@ refuses to publish a version whose section is missing or empty.
   itself, so the admin's approval arrived as an update to an existing entry
   rather than a new one and was never recognised — leaving a pending request
   that synced back and reappeared on the admin's side after every approval.
+- Approving or rejecting a join request updates the WebUI immediately instead of
+  lingering until the next refresh. Clearing a pending request emitted no event
+  at all, so an open UI kept showing "awaiting approval" for up to fifteen
+  seconds after the request was already gone.
 - A peer that has been approved no longer keeps showing as "awaiting approval".
   The pending entry is cleared from inside a document observer, which runs
   while the triggering write is still in progress, so the removal lost the race
