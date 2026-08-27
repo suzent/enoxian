@@ -41,6 +41,12 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Messages sent just after two devices connect are no longer lost. The initial
+  catch-up sends what a peer is missing and the live stream carries everything
+  after it, but the two were started in the wrong order, leaving a gap in
+  between — anything written in that gap reached the peer by neither route and
+  stayed missing until the next reconnect. Chat was the most visible casualty,
+  since the first few messages of a session land squarely in that window.
 - Approving or removing a member can no longer leave a Circle unable to
   decrypt. Both operations advance the MLS group irreversibly and then publish
   the commit that lets everyone else follow, but the two happened in separate
@@ -49,8 +55,6 @@ refuses to publish a version whose section is missing or empty.
   and every other device was stranded on the previous epoch. The WebUI then
   invited a retry, which advanced the group again. Each operation is now a
   single unit of work that either completes or changes nothing.
-
-### Fixed
 
 - Circles with many files sync reliably again. Momentary CRDT lock contention
   was treated as permanent failure, so a workspace could connect, complete its
