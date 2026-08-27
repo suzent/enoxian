@@ -351,6 +351,20 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   }
 
   const onInputKeyDown = (e: React.KeyboardEvent) => {
+    // Ignore every key that belongs to an in-progress IME composition.
+    //
+    // Typing Chinese, Japanese or Korean goes through a candidate window, and
+    // Enter there means "accept this candidate", not "send". Arrow keys move
+    // through candidates for the same reason. Acting on those posts a half
+    // finished message mid-word — so anyone using Pinyin or a Japanese IME
+    // cannot write a sentence without it being sent out from under them.
+    //
+    // `isComposing` is the standardised signal and covers the whole
+    // composition; keyCode 229 is the legacy equivalent some browsers still
+    // send for the final key, so check both.
+    const native = e.nativeEvent as KeyboardEvent
+    if (native.isComposing || native.keyCode === 229) return
+
     if (mentionOpen) {
       const items = buildMentionItems(members, presence, fragment ?? '')
       if (items.length > 0) {

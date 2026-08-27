@@ -341,7 +341,13 @@ export default function DeviceSettings({ onClose }: Props) {
                       </div>
                       <input
                         value={command} onChange={e => setCommand(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && submitAdd()}
+                        onKeyDown={e => {
+                          // Enter during an IME composition accepts a
+                          // candidate; it must not submit the form.
+                          const native = e.nativeEvent as KeyboardEvent
+                          if (native.isComposing || native.keyCode === 229) return
+                          if (e.key === 'Enter') submitAdd()
+                        }}
                         placeholder="executable and arguments"
                         className="border border-obsidian px-2 py-1 text-[11px] focus:outline-none focus:bg-obsidian/5"
                       />

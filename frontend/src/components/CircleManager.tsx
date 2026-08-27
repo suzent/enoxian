@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { initCircle, enterCircle, enableCircle, disableCircle, leaveCircle } from '../api'
 import { useApp } from '../context/AppContext'
 import type { RitualMode } from './RitualTransition'
+import { joinedCircleName } from '../lib/circleName'
 
 interface Props {
   onRitual?: (mode: RitualMode, label?: string) => void
@@ -47,7 +48,7 @@ export default function CircleManager({ onRitual }: Props) {
       await reloadCircles()
       if (res.circle_id) setActiveCircleId(res.circle_id)
       setModal(null)
-      onRitual?.('enter', enterOwner || 'invite')
+      onRitual?.('enter', await joinedCircleName(res.circle_id))
       setEnterTarget('')
       setEnterOwner('')
     } catch (err: any) {

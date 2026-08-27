@@ -41,6 +41,15 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Typing Chinese, Japanese or Korean in chat no longer sends the message
+  mid-word. Enter selects a candidate from the input method's popup, and that
+  keypress was being read as "send" — so a sentence went out half-finished on
+  the first character anyone typed. Arrow keys, which move through candidates,
+  were likewise being intercepted.
+- The join animation now names the Circle being joined rather than the name you
+  chose for your own device, which made joining "SUZENT-dev" as "suzy" announce
+  "joining circle suzy".
+
 - Messages sent just after two devices connect are no longer lost. The initial
   catch-up sends what a peer is missing and the live stream carries everything
   after it, but the two were started in the wrong order, leaving a gap in
@@ -55,7 +64,6 @@ refuses to publish a version whose section is missing or empty.
   and every other device was stranded on the previous epoch. The WebUI then
   invited a retry, which advanced the group again. Each operation is now a
   single unit of work that either completes or changes nothing.
-
 - Circles with many files sync reliably again. Momentary CRDT lock contention
   was treated as permanent failure, so a workspace could connect, complete its
   sync handshake, and still never exchange any changes — the larger the Circle,
