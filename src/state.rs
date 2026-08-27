@@ -107,6 +107,21 @@ pub struct AppState {
     /// Recent P2P connection failures (unix_ts, message). Surfaced by the status
     /// API so silent handshake failures (e.g. PSK mismatch) are diagnosable.
     pub recent_conn_errors: Arc<RwLock<std::collections::VecDeque<(i64, String)>>>,
+    /// Peers that identified themselves as belonging to a *different* circle
+    /// during the sync handshake.
+    ///
+    /// Every circle on a device bootstraps off the same rendezvous/relay and
+    /// shares one Kademlia DHT, so each circle's routing table accumulates
+    /// peers from other circles. Those dials succeed at the transport layer
+    /// (QUIC and relay circuits carry no circle PSK), exchange nothing, and die
+    /// on keep-alive timeout — then get redialed from the same routing entry,
+    /// forever. Recording a confirmed mismatch lets us stop dialing them.
+    ///
+    /// Confirmed mismatches only. An *unknown* peer must still be allowed
+    /// through: a fresh joiner is not in our member list yet and has to sync the
+    /// control doc to deliver its KeyPackage. See the membership gate in
+    /// `network::sync`.
+    pub foreign_peers: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
 impl AppState {
@@ -377,6 +392,7 @@ impl AppState {
             owner,
             mls,
             recent_conn_errors: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            foreign_peers: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
     }
 
@@ -448,6 +464,24 @@ impl AppState {
 
     pub fn is_peer_removed(&self, peer_id: &str) -> bool {
         self.try_is_peer_removed(peer_id).unwrap_or(false)
+    }
+
+    /// Record a peer that proved, via the sync handshake, to belong to another
+    /// circle. Returns true if this is the first time we've seen it.
+    pub fn mark_foreign_peer(&self, peer_id: &str) -> bool {
+        match self.foreign_peers.write() {
+            Ok(mut set) => set.insert(peer_id.to_string()),
+            Err(_) => false,
+        }
+    }
+
+    /// Whether this peer is known to belong to a different circle. Unknown
+    /// peers return false — only a confirmed mismatch counts.
+    pub fn is_foreign_peer(&self, peer_id: &str) -> bool {
+        self.foreign_peers
+            .read()
+            .map(|set| set.contains(peer_id))
+            .unwrap_or(false)
     }
 
     pub fn is_self_removed(&self) -> bool {

@@ -1060,6 +1060,21 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             swarm.close_connection(connection_id);
                             continue;
                         }
+                        // A peer that already identified itself as belonging to
+                        // another circle is dropped before we spend any streams
+                        // on it. Only confirmed mismatches are filtered here —
+                        // an unknown peer may be a fresh joiner and must still
+                        // be allowed to reach the sync handshake.
+                        if !is_infrastructure
+                            && state_for_swarm.is_foreign_peer(&peer_id.to_string())
+                        {
+                            tracing::debug!(
+                                "[{}] dropping connection from {peer_id}: belongs to another circle",
+                                circle_id
+                            );
+                            swarm.close_connection(connection_id);
+                            continue;
+                        }
                         let route_addr = match &endpoint {
                             libp2p::core::ConnectedPoint::Listener { local_addr, .. }
                                 if is_relayed => local_addr,
@@ -1149,6 +1164,9 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     }
                     SwarmEvent::Behaviour(EnochEvent::Mdns(mdns::Event::Discovered(peers))) => {
                         for (peer_id, addr) in peers {
+                            if state_for_swarm.is_foreign_peer(&peer_id.to_string()) {
+                                continue;
+                            }
                             info!("[{}] mDNS discovered: {peer_id} @ {addr}", circle_id);
                             swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
                             if let Err(e) = swarm.dial(
@@ -1169,6 +1187,12 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     SwarmEvent::Behaviour(EnochEvent::Identify(identify::Event::Received {
                         peer_id, info, ..
                     })) => {
+                        // Don't feed another circle's peer into our routing
+                        // table — that is what makes the redial loop survive
+                        // long after the connection was rejected.
+                        if state_for_swarm.is_foreign_peer(&peer_id.to_string()) {
+                            continue;
+                        }
                         for addr in &info.listen_addrs {
                             swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
                         }
@@ -1187,6 +1211,13 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                                 for reg in registrations {
                                     let pid = reg.record.peer_id();
                                     if pid == *swarm.local_peer_id() { continue; }
+                                    if state_for_swarm.is_foreign_peer(&pid.to_string()) {
+                                        tracing::debug!(
+                                            "[{}] skipping {pid}: belongs to another circle",
+                                            circle_id
+                                        );
+                                        continue;
+                                    }
                                     for addr in reg.record.addresses() {
                                         if force_relay
                                             && !crate::network::public_relay_transport::is_relayed_addr(addr)

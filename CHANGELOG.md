@@ -39,6 +39,23 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- Circles with many files sync reliably again. Momentary CRDT lock contention
+  was treated as permanent failure, so a workspace could connect, complete its
+  sync handshake, and still never exchange any changes — the larger the Circle,
+  the more reliably it failed.
+- Agents no longer appear stale while they are online. A presence heartbeat
+  that lost the race for the control document was dropped instead of retried,
+  which made a healthy local agent look offline to every peer.
+- Peers belonging to a different Circle are no longer dialed, connected to, or
+  offered event and proposal data. Every Circle on a device shares one peer
+  routing table, so a Circle could spend nearly all of its connection attempts
+  reaching other Circles' peers and re-rejecting the same foreign proposals on
+  every pass.
+- Sync failures are logged at warning level instead of debug, so a Circle that
+  has silently stopped syncing is now visible in the daemon log.
+
 ## [0.5.0] — 2026-08-26
 
 ### Added

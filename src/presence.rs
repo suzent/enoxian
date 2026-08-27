@@ -120,12 +120,13 @@ fn read_presence(state: &AppState, agent_id: &str) -> Option<Presence> {
     }
 }
 
+/// Returns false if the control doc was busy and the entry was not written.
 fn write_presence_with_file(
     state: &AppState,
     agent_id: &str,
     status: AgentStatus,
     current_file: Option<String>,
-) {
+) -> bool {
     let presence = Presence {
         agent_id: agent_id.to_string(),
         status,
@@ -134,14 +135,11 @@ fn write_presence_with_file(
         peer_id: state.peer_id.clone(),
     };
     let Ok(json) = serde_json::to_string(&presence) else {
-        return;
+        return false;
     };
     let mut txn = match state.control.try_transact_mut() {
         Ok(txn) => txn,
-        Err(_) => {
-            tracing::debug!("[presence] circle state busy; deferring presence refresh");
-            return;
-        }
+        Err(_) => return false,
     };
     let map = txn.get_or_insert_map(PRESENCE_KEY);
     let suffix = peer_suffix(agent_id);
@@ -154,12 +152,34 @@ fn write_presence_with_file(
         map.remove(&mut txn, key.as_str());
     }
     map.insert(&mut txn, agent_id, json.as_str());
+    true
 }
 
 /// Write or refresh the local presence entry in the control doc.
-fn write_presence(state: &AppState, agent_id: &str, status: AgentStatus) {
+fn write_presence(state: &AppState, agent_id: &str, status: AgentStatus) -> bool {
     let current_file = read_presence(state, agent_id).and_then(|p| p.current_file);
-    write_presence_with_file(state, agent_id, status, current_file);
+    write_presence_with_file(state, agent_id, status, current_file)
+}
+
+/// Heartbeat retry budget. See [`heartbeat`].
+const PRESENCE_RETRIES: u32 = 6;
+const PRESENCE_BACKOFF: Duration = Duration::from_millis(50);
+
+/// Refresh the local presence entry, retrying while the control doc is busy.
+///
+/// A dropped heartbeat is not cosmetic. Presence staleness is derived purely
+/// from `last_seen`, and the tick is 30s — so silently skipping a write makes a
+/// perfectly healthy local agent show as stale to every peer, and to `enox who`
+/// on this machine. The control doc is also the most contended doc in a circle,
+/// which is exactly when the skip fires.
+async fn heartbeat(state: &AppState, agent_id: &str, status: AgentStatus) {
+    for attempt in 0..PRESENCE_RETRIES {
+        if write_presence(state, agent_id, status.clone()) {
+            return;
+        }
+        tokio::time::sleep(PRESENCE_BACKOFF * (attempt + 1)).await;
+    }
+    tracing::warn!("[presence] control doc busy after retries; {agent_id} heartbeat skipped");
 }
 
 pub fn set_current_file(state: &AppState, current_file: Option<String>) {
@@ -195,10 +215,57 @@ pub fn spawn_presence(state: AppState, agent_id: String, token: CancellationToke
         loop {
             tokio::select! {
                 _ = token.cancelled() => break,
-                _ = interval.tick() => write_presence(&state, &agent_id, AgentStatus::Online),
+                _ = interval.tick() => heartbeat(&state, &agent_id, AgentStatus::Online).await,
             }
         }
         // Mark offline on clean shutdown
         write_presence_with_file(&state, &agent_id, AgentStatus::Offline, None);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+    use crate::{config::JoinPolicy, mls};
+    use std::path::PathBuf;
+
+    fn test_state() -> AppState {
+        AppState::new(
+            "circle".into(),
+            "Circle".into(),
+            PathBuf::new(),
+            PathBuf::new(),
+            String::new(),
+            "suzy-local".into(),
+            1,
+            "peer-local".into(),
+            JoinPolicy::Manual,
+            "owner".into(),
+            mls::new_mls_state(mls::MlsIdentity::generate("peer-local").unwrap(), None),
+        )
+    }
+
+    /// Regression: a heartbeat that loses the race for the control doc must
+    /// report the failure rather than silently claiming success, so the caller
+    /// can retry. Presence staleness is computed from `last_seen` alone, so a
+    /// dropped write shows a live agent as offline to every peer.
+    #[test]
+    fn contended_write_reports_failure_then_succeeds_once_free() {
+        let state = test_state();
+
+        {
+            let _held = state.control.try_transact_mut().unwrap();
+            assert!(
+                !write_presence(&state, "suzy-local", AgentStatus::Online),
+                "a contended control doc must report the write as failed"
+            );
+        }
+
+        assert!(
+            write_presence(&state, "suzy-local", AgentStatus::Online),
+            "the same write must succeed once the doc is free"
+        );
+        assert!(read_presence(&state, "suzy-local").is_some());
+    }
 }
