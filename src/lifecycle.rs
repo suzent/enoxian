@@ -404,8 +404,9 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         if key.as_ref() != self_peer_str.as_str() {
                             continue;
                         }
-                        if let yrs::types::EntryChange::Inserted(_) = change {
-                            // Admin just wrote our member entry via P2P sync — remove our pending entry.
+                        if approval_clears_pending(change) {
+                            // The admin wrote our member entry via P2P sync — drop
+                            // our own pending entry.
                             let s = state_for_approval.clone();
                             let peer_str = self_peer_str.clone();
                             tokio::spawn(async move {
@@ -1339,6 +1340,23 @@ fn spawn_control_persist(
     });
 }
 
+/// Whether a P2P change to our own member-list entry means we have been approved.
+///
+/// Must accept `Updated` as well as `Inserted`. A joining device writes a
+/// provisional self-signed member entry for itself at startup (see the
+/// auto-register block in `spawn_circle`), so when the admin's approval arrives
+/// it lands on a key that already exists — an `Updated` change, never an
+/// `Inserted` one. Matching only `Inserted` meant the approval was never
+/// noticed, the device's pending entry was never cleared, and because that
+/// entry lives in the shared CRDT it synced back and resurrected "awaiting
+/// approval" on the admin too. Deterministic, not a race.
+fn approval_clears_pending(change: &yrs::types::EntryChange) -> bool {
+    matches!(
+        change,
+        yrs::types::EntryChange::Inserted(_) | yrs::types::EntryChange::Updated(_, _)
+    )
+}
+
 /// Clear a peer's pending entry, retrying while the control doc is busy.
 ///
 /// These removals are spawned from inside a Yjs observer, and an observer runs
@@ -1782,6 +1800,32 @@ mod tests {
         txn.get_map(MLS_PENDING_KEY)
             .and_then(|pending| pending.get(&txn, peer))
             .is_some()
+    }
+
+    /// Regression: a joining device writes a provisional self-signed member
+    /// entry for itself, so the admin's approval arrives as an update to an
+    /// existing key rather than an insert. Matching only `Inserted` meant the
+    /// approval was never noticed and every fresh join left a permanent
+    /// "awaiting approval" that synced back to the admin.
+    #[test]
+    fn approval_is_recognised_whether_inserted_or_updated() {
+        use yrs::types::EntryChange;
+        use yrs::{Any, Out};
+
+        let value = || Out::Any(Any::String("{}".into()));
+
+        assert!(
+            approval_clears_pending(&EntryChange::Inserted(value())),
+            "a first-time write of our member entry is an approval"
+        );
+        assert!(
+            approval_clears_pending(&EntryChange::Updated(value(), value())),
+            "an approval landing on our provisional self-written entry still counts"
+        );
+        assert!(
+            !approval_clears_pending(&EntryChange::Removed(value())),
+            "removal from the member list is not an approval"
+        );
     }
 
     /// Regression: clearing a pending entry is spawned from inside a Yjs

@@ -59,6 +59,11 @@ refuses to publish a version whose section is missing or empty.
   exchange whenever the control document was momentarily busy — which is its
   normal state. A stranded device stayed stranded, and every sync frame it sent
   failed to decrypt.
+- Inviting a device to a Circle no longer leaves a permanent extra "awaiting
+  approval" entry. A joining device writes a provisional member entry for
+  itself, so the admin's approval arrived as an update to an existing entry
+  rather than a new one and was never recognised — leaving a pending request
+  that synced back and reappeared on the admin's side after every approval.
 - A peer that has been approved no longer keeps showing as "awaiting approval".
   The pending entry is cleared from inside a document observer, which runs
   while the triggering write is still in progress, so the removal lost the race
