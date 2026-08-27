@@ -53,8 +53,19 @@ refuses to publish a version whose section is missing or empty.
   routing table, so a Circle could spend nearly all of its connection attempts
   reaching other Circles' peers and re-rejecting the same foreign proposals on
   every pass.
-- Sync failures are logged at warning level instead of debug, so a Circle that
-  has silently stopped syncing is now visible in the daemon log.
+- Devices that fell onto different MLS epochs can recover again. The plaintext
+  MLS bootstrap exchange is the only way the needed commits can reach a device
+  once the encrypted path is already deadlocked, and it was abandoning the
+  exchange whenever the control document was momentarily busy — which is its
+  normal state. A stranded device stayed stranded, and every sync frame it sent
+  failed to decrypt.
+- A peer that has been approved no longer keeps showing as "awaiting approval".
+  The pending entry is cleared from inside a document observer, which runs
+  while the triggering write is still in progress, so the removal lost the race
+  essentially every time and the stale entry was never retried.
+- Sync and MLS bootstrap failures are logged at warning level instead of debug,
+  so a Circle that has silently stopped syncing is now visible in the daemon
+  log.
 
 ## [0.5.0] — 2026-08-26
 

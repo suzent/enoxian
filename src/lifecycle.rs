@@ -18,6 +18,10 @@ use std::collections::{HashMap, HashSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+/// Retry budget for clearing a peer's pending entry. See [`remove_pending_entry`].
+const PENDING_REMOVE_RETRIES: u32 = 10;
+const PENDING_REMOVE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
 use yrs::{Array, Observable};
 
 use crate::{
@@ -371,12 +375,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         let s = state_for_self_evict.clone();
                         let peer_str = self_peer_str.clone();
                         tokio::spawn(async move {
-                            use yrs::{Map, Transact, WriteTxn};
-                            let Ok(mut txn) = s.control.try_transact_mut() else {
-                                return;
-                            };
-                            let pm = txn.get_or_insert_map(MLS_PENDING_KEY);
-                            pm.remove(&mut txn, peer_str.as_str());
+                            remove_pending_entry(&s, peer_str.as_str(), "self-evict").await;
                         });
                     }
                 }
@@ -410,13 +409,8 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             let s = state_for_approval.clone();
                             let peer_str = self_peer_str.clone();
                             tokio::spawn(async move {
-                                use yrs::{Map, Transact as _, WriteTxn};
-                                let Ok(mut txn) = s.control.try_transact_mut() else {
-                                    return;
-                                };
-                                let pm = txn.get_or_insert_map(MLS_PENDING_KEY);
-                                pm.remove(&mut txn, peer_str.as_str());
-                                tracing::info!("[member] removed pending entry after P2P approval");
+                                remove_pending_entry(&s, peer_str.as_str(), "approved via P2P")
+                                    .await;
                             });
                         }
                     }
@@ -1345,6 +1339,36 @@ fn spawn_control_persist(
     });
 }
 
+/// Clear a peer's pending entry, retrying while the control doc is busy.
+///
+/// These removals are spawned from inside a Yjs observer, and an observer runs
+/// while the transaction that triggered it still holds the control doc. A
+/// single `try_transact_mut` therefore races that transaction's drop and loses
+/// essentially every time — it had never once succeeded in practice, which
+/// leaves a peer showing as "awaiting approval" in the UI forever despite
+/// already being a full member.
+async fn remove_pending_entry(state: &AppState, peer_str: &str, reason: &str) {
+    for attempt in 0..PENDING_REMOVE_RETRIES {
+        let removed = {
+            match yrs::Transact::try_transact_mut(&*state.control) {
+                Ok(mut txn) => {
+                    use yrs::{Map, WriteTxn};
+                    let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
+                    pending.remove(&mut txn, peer_str);
+                    true
+                }
+                Err(_) => false,
+            }
+        };
+        if removed {
+            info!("[member] removed pending entry for {peer_str} ({reason})");
+            return;
+        }
+        tokio::time::sleep(PENDING_REMOVE_BACKOFF * (attempt + 1)).await;
+    }
+    warn!("[member] control doc busy after retries; {peer_str} still shows as pending ({reason})");
+}
+
 async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::SharedMlsState) {
     use yrs::{Any, Map, Out, ReadTxn, Transact, WriteTxn};
 
@@ -1719,4 +1743,75 @@ fn is_routable_listen_addr(addr: &Multiaddr) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::MLS_PENDING_KEY;
+    use crate::state::AppState;
+    use yrs::{Map, ReadTxn, Transact, WriteTxn};
+
+    fn test_state() -> AppState {
+        AppState::new(
+            "circle".into(),
+            "Circle".into(),
+            std::path::PathBuf::new(),
+            std::path::PathBuf::new(),
+            String::new(),
+            "agent".into(),
+            1,
+            "peer-local".into(),
+            crate::config::JoinPolicy::Manual,
+            "owner".into(),
+            crate::mls::new_mls_state(
+                crate::mls::MlsIdentity::generate("peer-local").unwrap(),
+                None,
+            ),
+        )
+    }
+
+    fn seed_pending(state: &AppState, peer: &str) {
+        let mut txn = state.control.try_transact_mut().unwrap();
+        let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
+        pending.insert(&mut txn, peer, "{}");
+    }
+
+    fn is_pending(state: &AppState, peer: &str) -> bool {
+        let txn = state.control.try_transact().unwrap();
+        txn.get_map(MLS_PENDING_KEY)
+            .and_then(|pending| pending.get(&txn, peer))
+            .is_some()
+    }
+
+    /// Regression: clearing a pending entry is spawned from inside a Yjs
+    /// observer, which runs while the triggering transaction still holds the
+    /// control doc. A single `try_transact_mut` loses that race essentially
+    /// every time, which left an approved peer showing as "awaiting approval"
+    /// in the UI forever. The removal must outlive the contention.
+    #[tokio::test]
+    async fn pending_entry_removal_outlives_contention() {
+        let state = test_state();
+        let peer = "12D3KooWtest";
+        seed_pending(&state, peer);
+
+        let task = {
+            let s = state.clone();
+            let peer = peer.to_string();
+            tokio::spawn(async move { remove_pending_entry(&s, &peer, "test").await })
+        };
+
+        // Hold the control doc while the removal is already running, the way
+        // the observer's own transaction does.
+        {
+            let _held = state.control.try_transact_mut().unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+
+        task.await.unwrap();
+        assert!(
+            !is_pending(&state, peer),
+            "pending entry must be cleared once the control doc frees up"
+        );
+    }
 }
