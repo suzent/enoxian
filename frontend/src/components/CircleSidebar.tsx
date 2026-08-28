@@ -3,6 +3,7 @@ import { Settings } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import { initCircle, enterCircle, getIdentity, type IdentityInfo } from '../api'
 import { shortenAgentId } from '../lib/displayName'
+import { joinedCircleName } from '../lib/circleName'
 import DeviceSettings from './DeviceSettings'
 import type { RitualMode } from './RitualTransition'
 
@@ -110,7 +111,8 @@ export default function CircleSidebar({ onRitual }: Props) {
       const res = await enterCircle(enterTarget.trim(), enterOwner || undefined)
       await reloadCircles()
       if (res.circle_id) setActiveCircleId(res.circle_id)
-      setModal(null); onRitual?.('enter', enterOwner || 'invite')
+      setModal(null)
+      onRitual?.('enter', await joinedCircleName(res.circle_id))
       setEnterTarget(''); setEnterOwner('')
     } catch (err: any) { setError(err.message) }
   }

@@ -143,6 +143,13 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
       e.preventDefault()
       return
     }
+    // While an IME composition is in flight the keys belong to the candidate
+    // window, not to us: Backspace is editing the composition rather than
+    // deleting a chip, and Enter is accepting a candidate rather than sending.
+    // Pass it straight through untouched.
+    const native = e.nativeEvent as KeyboardEvent
+    if (native.isComposing || native.keyCode === 229) return
+
     if (e.key === 'Backspace') {
       const sel = window.getSelection()
       if (sel && sel.isCollapsed && sel.rangeCount > 0) {
