@@ -32,6 +32,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         relay_from_invite,
         rendezvous_from_invite,
         admin_pubkey_hex,
+        join_grant,
     ) = if args.target.starts_with("enoxian://") {
         let payload = invite::decode(&args.target)?;
         invite::check_expiry(&payload)?;
@@ -48,6 +49,15 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
             .as_deref()
             .map(hex::encode)
             .unwrap_or_default();
+        // Keep the grant from the invite we redeemed. The daemon presents it
+        // when it writes this device's pending entry, where it is checked
+        // against the issuing member's standing at that moment.
+        let join_grant = payload.grant.as_ref().map(|g| crate::control::JoinGrant {
+            inviter_pubkey_hex: g.inviter_pubkey_hex.clone(),
+            nonce: g.nonce.clone(),
+            sig: g.sig.clone(),
+            expires_at: payload.expires_at,
+        });
         (
             payload.circle_id,
             name,
@@ -56,6 +66,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
             payload.relay_addr,
             payload.rendezvous_addr,
             admin_pubkey_hex,
+            join_grant,
         )
     } else {
         let secret = args.secret.as_deref().context(
@@ -70,6 +81,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
             None,
             None,
             String::new(),
+            None,
         )
     };
 
@@ -172,6 +184,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         circle_name: circle_name.clone(),
         psk_hex: psk_hex.clone(),
         keypair_proto_hex: keypair_to_hex(&keypair)?,
+        join_grant,
         workspace_dir: workspace_dir.to_string_lossy().into_owned(),
         admin_pubkey_hex,
         disabled: false,

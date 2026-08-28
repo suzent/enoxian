@@ -238,6 +238,14 @@ pub async fn generate_invite(
         crate::commands::rendezvous::resolve_default().await
     };
 
+    // Sign the invite with this member's own circle key. Every member has one,
+    // so any member can still invite; the grant records which of them did.
+    let grant = invite::sign_grant(&config.circle_id, &config.keypair_proto_hex, expires_at)
+        .map_err(|e| {
+            tracing::warn!("[invite] could not sign invite grant: {e}");
+            e
+        })
+        .ok();
     let uri = invite::encode(&InvitePayload {
         circle_id: config.circle_id.clone(),
         psk_bytes: psk,
@@ -247,6 +255,7 @@ pub async fn generate_invite(
         admin_pubkey_bytes,
         relay_addr: relay_addr.clone(),
         rendezvous_addr: rendezvous_addr.clone(),
+        grant,
     });
 
     Json(json!({

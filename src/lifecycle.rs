@@ -27,9 +27,9 @@ use yrs::{Array, Observable};
 use crate::{
     config::{self, CircleConfig, JoinPolicy},
     control::{
-        MemberEntry, MemberRole, MlsCommitEntry, OwnerClaim, PendingEntry, MEMBER_LIST_KEY,
-        MLS_COMMITS_KEY, MLS_KEY_PACKAGES_KEY, MLS_OWNER_CLAIMS_KEY, MLS_PENDING_KEY,
-        MLS_WELCOMES_KEY,
+        MemberEntry, MemberRole, MlsCommitEntry, OwnerClaim, PendingEntry, INVITE_NONCES_KEY,
+        MEMBER_LIST_KEY, MLS_COMMITS_KEY, MLS_KEY_PACKAGES_KEY, MLS_OWNER_CLAIMS_KEY,
+        MLS_PENDING_KEY, MLS_WELCOMES_KEY,
     },
     crypto::{keypair_from_hex, psk_from_hex},
     daemon::DaemonState,
@@ -253,6 +253,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             .unwrap_or_default()
                     },
                     requested_at: chrono::Utc::now(),
+                    join_grant: config.join_grant.clone(),
                 };
                 if let Ok(json_str) = serde_json::to_string(&pending_entry) {
                     let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
@@ -1387,6 +1388,79 @@ async fn remove_pending_entry(state: &AppState, peer_str: &str, reason: &str) {
     warn!("[member] control doc busy after retries; {peer_str} still shows as pending ({reason})");
 }
 
+/// Whether an invite grant entitles its bearer to be admitted right now.
+///
+/// Authorship alone is not enough. A grant proves which member issued the
+/// invite; this decides whether that member is *still* entitled to admit
+/// anyone, which is re-evaluated at the moment the invite is redeemed rather
+/// than when it was written. Removing a member therefore invalidates every
+/// invite they ever issued, without rotating any shared secret and without
+/// narrowing who may invite.
+///
+/// Reads from the caller's transaction so the whole admission decision sees one
+/// consistent view of membership.
+fn grant_admits<T: yrs::ReadTxn>(
+    txn: &T,
+    circle_id: &str,
+    peer_id: &str,
+    grant: Option<&crate::control::JoinGrant>,
+) -> Result<(), String> {
+    use crate::control::MLS_REMOVED_KEY;
+    use yrs::{Any, Map, Out};
+
+    let Some(grant) = grant else {
+        return Err("no invite grant presented".into());
+    };
+
+    if chrono::Utc::now() > grant.expires_at {
+        return Err(format!("invite expired at {}", grant.expires_at));
+    }
+
+    let invite_grant = crate::invite::InviteGrant {
+        inviter_pubkey_hex: grant.inviter_pubkey_hex.clone(),
+        nonce: grant.nonce.clone(),
+        sig: grant.sig.clone(),
+    };
+    if let Err(e) = crate::invite::verify_grant(circle_id, &invite_grant, grant.expires_at) {
+        return Err(format!("invalid invite grant: {e}"));
+    }
+
+    let inviter = invite_grant
+        .inviter_peer_id()
+        .map_err(|e| format!("invite grant names no usable issuer: {e}"))?;
+
+    // An invite admits one device. Without this, an invite that legitimately
+    // admitted someone once would keep working.
+    let already_used = txn
+        .get_map(INVITE_NONCES_KEY)
+        .and_then(|used| used.get(txn, grant.nonce.as_str()))
+        .is_some();
+    if already_used {
+        return Err("invite already redeemed".into());
+    }
+
+    // The issuer must still be a member in good standing. This is the check the
+    // whole scheme rests on.
+    if txn
+        .get_map(MLS_REMOVED_KEY)
+        .and_then(|removed| removed.get(txn, inviter.as_str()))
+        .is_some()
+    {
+        return Err(format!("invite was issued by removed member {inviter}"));
+    }
+    let inviter_is_member = matches!(
+        txn.get_map(MEMBER_LIST_KEY)
+            .and_then(|members| members.get(txn, inviter.as_str())),
+        Some(Out::Any(Any::String(_)))
+    );
+    if !inviter_is_member {
+        return Err(format!("invite was issued by non-member {inviter}"));
+    }
+
+    let _ = peer_id;
+    Ok(())
+}
+
 /// Retry budget for taking the control document while auto-approving.
 /// Nothing irreversible happens until both locks are held.
 const APPROVAL_RETRIES: u32 = 10;
@@ -1423,6 +1497,27 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                 let Ok(kp_bytes) = hex::decode(&kp_hex) else {
                     return;
                 };
+
+                // Decide admission before touching the group. `add_member`
+                // advances the epoch irreversibly and issues a Welcome to it,
+                // so anything that should refuse a joiner has to refuse here.
+                let presented = txn
+                    .get_map(MLS_PENDING_KEY)
+                    .and_then(|pending| pending.get(&txn, peer_id_str.as_str()))
+                    .and_then(|v| match v {
+                        Out::Any(Any::String(s)) => serde_json::from_str::<PendingEntry>(&s).ok(),
+                        _ => None,
+                    })
+                    .and_then(|entry| entry.join_grant);
+                if let Err(reason) =
+                    grant_admits(&txn, &state.circle_id, &peer_id_str, presented.as_ref())
+                {
+                    warn!("[member] refused automatic approval of {peer_id_str}: {reason}");
+                    // Leave the request pending rather than discarding it: an
+                    // admin can still approve deliberately, which is the right
+                    // escape hatch for a legitimate joiner whose invite lapsed.
+                    return;
+                }
 
                 let (commit_bytes, welcome_bytes, ratchet_tree_bytes) = match mls_locked
                     .add_member(&kp_bytes)
@@ -1500,6 +1595,16 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                 member_map.insert(&mut txn, peer_id_str.as_str(), member_json.as_str());
                 let pending_map = txn.get_or_insert_map(MLS_PENDING_KEY);
                 pending_map.remove(&mut txn, peer_id_str.as_str());
+                // Burn the nonce in the same transaction that admits, so an
+                // invite cannot admit twice even under a concurrent redemption.
+                if let Some(grant) = presented.as_ref() {
+                    let used = txn.get_or_insert_map(INVITE_NONCES_KEY);
+                    used.insert(
+                        &mut txn,
+                        grant.nonce.as_str(),
+                        chrono::Utc::now().to_rfc3339().as_str(),
+                    );
+                }
                 drop(txn);
 
                 if let Err(e) = mls_locked.save(&state.circle_dir) {

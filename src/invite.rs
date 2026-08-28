@@ -34,6 +34,86 @@ pub struct InvitePayload {
     /// Rendezvous server multiaddr (QUIC, e.g. /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<peer_id>).
     /// Joinees add this to their rendezvous_addrs for automatic peer discovery.
     pub rendezvous_addr: Option<String>,
+    /// The grant: who issued this invite, a one-time nonce, and their signature.
+    ///
+    /// Present on invites minted by a member; absent on invites predating the
+    /// grant. Without it an invite is only a bearer credential — anyone holding
+    /// the circle's PSK can mint one, set any expiry they like, and no later
+    /// change to the circle can invalidate it. The grant binds the invite to a
+    /// member whose standing is re-checked when it is redeemed.
+    pub grant: Option<InviteGrant>,
+}
+
+/// Issuer, nonce and signature carried by an invite.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InviteGrant {
+    /// hex(protobuf) of the issuing member's per-circle public key.
+    ///
+    /// The key rather than the peer ID: the peer ID is derived from it, so this
+    /// both identifies the issuer and verifies the signature without a lookup.
+    pub inviter_pubkey_hex: String,
+    /// One-time identifier, recorded when redeemed so an invite admits once.
+    pub nonce: String,
+    /// hex(sign(inviter_circle_key, [`grant_message`]))
+    pub sig: String,
+}
+
+impl InviteGrant {
+    /// Peer ID of the issuer, derived from the carried key.
+    pub fn inviter_peer_id(&self) -> Result<String> {
+        Ok(self.inviter_public_key()?.to_peer_id().to_string())
+    }
+
+    fn inviter_public_key(&self) -> Result<libp2p::identity::PublicKey> {
+        let bytes = hex::decode(self.inviter_pubkey_hex.trim())
+            .context("inviter public key is not valid hex")?;
+        libp2p::identity::PublicKey::try_decode_protobuf(&bytes)
+            .map_err(|e| anyhow::anyhow!("invalid inviter public key: {e}"))
+    }
+}
+
+/// Mint a grant for an invite, signing with this member's per-circle key.
+///
+/// Every member holds such a key, so issuing invites stays open to the whole
+/// circle — the grant records *which* member issued it, not that an admin did.
+pub fn sign_grant(
+    circle_id: &str,
+    keypair_proto_hex: &str,
+    expires_at: DateTime<Utc>,
+) -> Result<InviteGrant> {
+    let keypair = crate::crypto::keypair_from_hex(keypair_proto_hex)?;
+    let nonce = Uuid::new_v4().to_string();
+    let sig = keypair
+        .sign(&grant_message(circle_id, &nonce, expires_at))
+        .map_err(|e| anyhow::anyhow!("signing invite grant failed: {e}"))?;
+    Ok(InviteGrant {
+        inviter_pubkey_hex: hex::encode(keypair.public().encode_protobuf()),
+        nonce,
+        sig: hex::encode(sig),
+    })
+}
+
+/// Check that a grant was signed by the key it names, over this circle, nonce
+/// and expiry.
+///
+/// This proves only authorship. Whether the issuer is *still* entitled to admit
+/// anyone is a separate question, answered against live membership at the point
+/// the invite is redeemed — that separation is what lets removing a member
+/// invalidate the invites they issued.
+pub fn verify_grant(circle_id: &str, grant: &InviteGrant, expires_at: DateTime<Utc>) -> Result<()> {
+    let pubkey = grant.inviter_public_key()?;
+    let sig = hex::decode(grant.sig.trim()).context("grant signature is not valid hex")?;
+    if !pubkey.verify(&grant_message(circle_id, &grant.nonce, expires_at), &sig) {
+        bail!("invite grant signature does not match the issuing key");
+    }
+    Ok(())
+}
+
+/// Canonical bytes an inviter signs. Covers the circle, the nonce and the
+/// expiry, so none of the three can be altered without invalidating the grant —
+/// which is what makes a TTL mean anything.
+pub fn grant_message(circle_id: &str, nonce: &str, expires_at: DateTime<Utc>) -> Vec<u8> {
+    format!("invite:{circle_id}:{nonce}:{}", expires_at.timestamp()).into_bytes()
 }
 
 // ── Encoding ──────────────────────────────────────────────────────────────────
@@ -83,6 +163,24 @@ pub fn encode(payload: &InvitePayload) -> String {
     let rendezvous_len = rendezvous_bytes.len() as u16;
     raw.extend_from_slice(&rendezvous_len.to_be_bytes());
     raw.extend_from_slice(rendezvous_bytes);
+
+    // Extension 4: the grant — inviter peer id, nonce, signature. Each is a
+    // u16 BE length prefix followed by bytes. Absent on invites minted before
+    // grants existed, which decode with `grant: None`.
+    let (inviter, nonce, sig) = match &payload.grant {
+        Some(g) => (
+            g.inviter_pubkey_hex.as_str(),
+            g.nonce.as_str(),
+            g.sig.as_str(),
+        ),
+        None => ("", "", ""),
+    };
+    for field in [inviter, nonce, sig] {
+        let bytes = field.as_bytes();
+        assert!(bytes.len() <= 65535, "grant field too long");
+        raw.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+        raw.extend_from_slice(bytes);
+    }
 
     format!("{SCHEME_PREFIX}{}", URL_SAFE_NO_PAD.encode(&raw))
 }
@@ -178,20 +276,55 @@ pub fn decode(uri: &str) -> Result<InvitePayload> {
     };
 
     // Extension 3: rendezvous addr (u16 BE length prefix). Absent in older invites.
+    let mut ext4_offset = ext3_offset;
     let rendezvous_addr = if ext3_offset + 2 <= raw.len() {
         let len = u16::from_be_bytes([raw[ext3_offset], raw[ext3_offset + 1]]) as usize;
         let start = ext3_offset + 2;
         let end = start + len;
         if len > 0 && end <= raw.len() {
+            ext4_offset = end;
             Some(
                 String::from_utf8(raw[start..end].to_vec())
                     .context("rendezvous addr is not valid UTF-8")?,
             )
         } else {
+            ext4_offset = start;
             None
         }
     } else {
         None
+    };
+
+    // Extension 4: the grant. All three fields must be present and non-empty
+    // for the invite to carry one; anything else decodes as no grant at all,
+    // never as a partial one that might be waved through downstream.
+    let mut grant_fields: Vec<String> = Vec::with_capacity(3);
+    let mut offset = ext4_offset;
+    for _ in 0..3 {
+        if offset + 2 > raw.len() {
+            break;
+        }
+        let len = u16::from_be_bytes([raw[offset], raw[offset + 1]]) as usize;
+        let start = offset + 2;
+        let end = start + len;
+        if end > raw.len() {
+            break;
+        }
+        grant_fields.push(
+            String::from_utf8(raw[start..end].to_vec())
+                .context("grant field is not valid UTF-8")?,
+        );
+        offset = end;
+    }
+    let grant = match grant_fields.as_slice() {
+        [inviter, nonce, sig] if !inviter.is_empty() && !nonce.is_empty() && !sig.is_empty() => {
+            Some(InviteGrant {
+                inviter_pubkey_hex: inviter.clone(),
+                nonce: nonce.clone(),
+                sig: sig.clone(),
+            })
+        }
+        _ => None,
     };
 
     Ok(InvitePayload {
@@ -203,6 +336,7 @@ pub fn decode(uri: &str) -> Result<InvitePayload> {
         admin_pubkey_bytes,
         relay_addr,
         rendezvous_addr,
+        grant,
     })
 }
 
@@ -261,6 +395,7 @@ mod tests {
         let psk = [42u8; 32];
         let expires = Utc::now() + Duration::days(7);
         let payload = InvitePayload {
+            grant: None,
             circle_id: "8e563c41-f0ec-4225-9764-064f1fb04341".to_string(),
             psk_bytes: psk,
             circle_name: Some("TestCircle".to_string()),
@@ -298,6 +433,7 @@ mod tests {
         let psk = [0u8; 32];
         let expires = Utc::now() + Duration::hours(24);
         let payload = InvitePayload {
+            grant: None,
             circle_id: "8e563c41-f0ec-4225-9764-064f1fb04341".to_string(),
             psk_bytes: psk,
             circle_name: None,
@@ -317,6 +453,7 @@ mod tests {
     fn expiry_detected() {
         let psk = [0u8; 32];
         let payload = InvitePayload {
+            grant: None,
             circle_id: "8e563c41-f0ec-4225-9764-064f1fb04341".to_string(),
             psk_bytes: psk,
             circle_name: None,
@@ -336,5 +473,111 @@ mod tests {
         assert_eq!(parse_ttl("7d").unwrap(), Duration::days(7));
         assert_eq!(parse_ttl("24h").unwrap(), Duration::hours(24));
         assert!(parse_ttl("bad").is_err());
+    }
+}
+
+#[cfg(test)]
+mod grant_tests {
+    use super::*;
+    use crate::crypto::keypair_to_hex;
+    use libp2p::identity::Keypair;
+
+    fn member() -> (String, String) {
+        let kp = Keypair::generate_ed25519();
+        (
+            keypair_to_hex(&kp).unwrap(),
+            kp.public().to_peer_id().to_string(),
+        )
+    }
+
+    #[test]
+    fn a_grant_verifies_and_names_its_issuer() {
+        let (hex, peer) = member();
+        let exp = Utc::now() + Duration::days(1);
+        let grant = sign_grant("circle-1", &hex, exp).unwrap();
+        assert!(verify_grant("circle-1", &grant, exp).is_ok());
+        assert_eq!(grant.inviter_peer_id().unwrap(), peer);
+    }
+
+    /// The signature covers circle, nonce and expiry, so none can be edited
+    /// after the fact. Extending the expiry is the interesting one: without it
+    /// covered, a TTL would be a suggestion rather than a limit.
+    #[test]
+    fn none_of_the_signed_fields_can_be_altered() {
+        let (hex, _) = member();
+        let exp = Utc::now() + Duration::days(1);
+        let grant = sign_grant("circle-1", &hex, exp).unwrap();
+
+        assert!(verify_grant("circle-2", &grant, exp).is_err(), "circle");
+        assert!(
+            verify_grant("circle-1", &grant, exp + Duration::days(365)).is_err(),
+            "expiry"
+        );
+        let mut tampered = grant.clone();
+        tampered.nonce = "different".into();
+        assert!(verify_grant("circle-1", &tampered, exp).is_err(), "nonce");
+    }
+
+    /// A grant cannot be re-attributed to someone else: swapping in another
+    /// member's key breaks the signature, so an invite can never appear to
+    /// have been issued by a member who did not issue it.
+    #[test]
+    fn a_grant_cannot_be_reattributed_to_another_member() {
+        let (issuer_hex, _) = member();
+        let (_, other_peer) = member();
+        let (other_hex, _) = member();
+        let exp = Utc::now() + Duration::days(1);
+
+        let mut grant = sign_grant("circle-1", &issuer_hex, exp).unwrap();
+        let other_pub = crate::crypto::keypair_from_hex(&other_hex)
+            .unwrap()
+            .public()
+            .encode_protobuf();
+        grant.inviter_pubkey_hex = hex::encode(other_pub);
+
+        assert!(verify_grant("circle-1", &grant, exp).is_err());
+        assert_ne!(grant.inviter_peer_id().unwrap(), other_peer);
+    }
+
+    #[test]
+    fn a_grant_survives_the_invite_encoding() {
+        let (hex, peer) = member();
+        let exp = Utc::now() + Duration::days(1);
+        let grant = sign_grant("00000000-0000-0000-0000-000000000001", &hex, exp).unwrap();
+        let uri = encode(&InvitePayload {
+            circle_id: "00000000-0000-0000-0000-000000000001".into(),
+            psk_bytes: [7u8; 32],
+            circle_name: Some("c".into()),
+            expires_at: exp,
+            peer_addr: None,
+            admin_pubkey_bytes: None,
+            relay_addr: None,
+            rendezvous_addr: None,
+            grant: Some(grant),
+        });
+        let back = decode(&uri)
+            .unwrap()
+            .grant
+            .expect("grant survives encoding");
+        assert_eq!(back.inviter_peer_id().unwrap(), peer);
+        assert!(verify_grant("00000000-0000-0000-0000-000000000001", &back, exp).is_ok());
+    }
+
+    /// Invites minted before grants existed must still decode — as carrying no
+    /// grant, never as a partial one that downstream might treat as present.
+    #[test]
+    fn an_invite_without_a_grant_decodes_as_none() {
+        let uri = encode(&InvitePayload {
+            circle_id: "00000000-0000-0000-0000-000000000002".into(),
+            psk_bytes: [1u8; 32],
+            circle_name: None,
+            expires_at: Utc::now() + Duration::days(1),
+            peer_addr: None,
+            admin_pubkey_bytes: None,
+            relay_addr: None,
+            rendezvous_addr: None,
+            grant: None,
+        });
+        assert!(decode(&uri).unwrap().grant.is_none());
     }
 }
