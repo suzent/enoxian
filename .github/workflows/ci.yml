@@ -205,6 +205,13 @@ jobs:
         continue-on-error: true
         run: npm audit
 
+      # Runs before the build: a failing unit test should be reported as a
+      # failing test, not buried behind a build that may also fail for its own
+      # reasons.
+      - name: Test
+        working-directory: frontend
+        run: npm test
+
       - name: Build
         working-directory: frontend
         run: npm run build
