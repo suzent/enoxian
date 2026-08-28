@@ -39,6 +39,16 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Security
+
+- Invites are now signed by the member who issues them, and are checked against
+  that member's standing at the moment they are redeemed. Removing a member
+  therefore invalidates every invite they issued, and an invite admits one
+  device rather than any number. Previously an invite was a bearer credential
+  that anyone holding the Circle's key could mint, with an expiry nothing
+  enforced, and no later change to the Circle could withdraw it. Any member can
+  still issue invites — what changed is that the invite now records who did.
+
 ### Fixed
 
 - Typing Chinese, Japanese or Korean in chat no longer sends the message

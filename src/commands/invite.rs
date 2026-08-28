@@ -77,6 +77,10 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
     // Embed admin pubkey if admin.key is present (only on admin machines)
     let admin_pubkey_bytes = try_load_admin_pubkey(&config.circle_id);
 
+    // Signed with this member's own circle key — any member can invite; the
+    // grant records which of them did, so the invite can be checked against
+    // their standing when it is redeemed.
+    let grant = invite::sign_grant(&config.circle_id, &config.keypair_proto_hex, expires_at).ok();
     let uri = invite::encode(&InvitePayload {
         circle_id: config.circle_id.clone(),
         psk_bytes: psk,
@@ -86,6 +90,7 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
         admin_pubkey_bytes,
         relay_addr: relay_addr.clone(),
         rendezvous_addr: rendezvous_addr.clone(),
+        grant,
     });
 
     println!(

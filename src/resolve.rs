@@ -71,6 +71,7 @@ mod tests {
 
     fn cfg(id: &str, name: &str) -> CircleConfig {
         CircleConfig {
+            join_grant: None,
             circle_id: id.to_string(),
             circle_name: name.to_string(),
             psk_hex: String::new(),

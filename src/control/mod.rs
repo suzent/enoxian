@@ -30,12 +30,31 @@ pub const MLS_OWNER_CLAIMS_KEY: &str = "mls_owner_claims";
 /// Used as a sync-level gate: removed peers are rejected before any CRDT data
 /// is exchanged, even during the brief window before PSK rotation completes.
 pub const MLS_REMOVED_KEY: &str = "mls_removed";
+/// Nonces of invite grants already redeemed. An invite admits one device; the
+/// nonce is recorded here so presenting it again is refused.
+pub const INVITE_NONCES_KEY: &str = "invite_nonces";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnerClaim {
     pub owner: String,
     /// hex(sign(peer_keypair, "owner:{owner}"))
     pub sig: String,
+}
+
+/// The invite grant a joining device presents, carried from the invite it used.
+///
+/// Self-contained so it can be checked without the original invite: the
+/// signature covers the circle, the nonce and the expiry recorded here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JoinGrant {
+    /// hex(protobuf) of the issuing member's per-circle public key.
+    pub inviter_pubkey_hex: String,
+    /// One-time identifier, recorded on redemption so an invite admits once.
+    pub nonce: String,
+    /// hex signature over `invite:{circle_id}:{nonce}:{expires_at}`.
+    pub sig: String,
+    /// The expiry the signature covers.
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +71,10 @@ pub struct PendingEntry {
     /// hex(sign(peer_keypair, "owner:{owner}"))
     pub owner_sig: String,
     pub requested_at: DateTime<Utc>,
+    /// Grant from the invite this device joined with. Absent for devices that
+    /// joined before grants existed, and for invites minted without one.
+    #[serde(default)]
+    pub join_grant: Option<JoinGrant>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

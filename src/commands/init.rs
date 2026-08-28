@@ -83,11 +83,13 @@ pub async fn run(args: InitArgs) -> Result<()> {
         _ => crate::config::JoinPolicy::Auto,
     };
 
+    // The founder admits themselves; there is no invite to carry.
     let config = CircleConfig {
         circle_id: circle_id.clone(),
         circle_name: args.name.clone(),
         psk_hex: hex::encode(psk),
         keypair_proto_hex: keypair_to_hex(&keypair)?,
+        join_grant: None,
         workspace_dir: workspace_dir.to_string_lossy().into_owned(),
         admin_pubkey_hex: admin_pubkey_hex.clone(),
         disabled: false,
@@ -119,15 +121,18 @@ pub async fn run(args: InitArgs) -> Result<()> {
     // ── Generate invite ───────────────────────────────────────────────────────
     let ttl = invite::parse_ttl(&args.ttl)?;
     let admin_pubkey_bytes = hex::decode(&admin_pubkey_hex).ok();
+    let expires_at = Utc::now() + ttl;
+    let grant = invite::sign_grant(&circle_id, &keypair_to_hex(&keypair)?, expires_at).ok();
     let invite_uri = invite::encode(&InvitePayload {
         circle_id: circle_id.clone(),
         psk_bytes: psk,
         circle_name: Some(args.name.clone()),
-        expires_at: Utc::now() + ttl,
+        expires_at,
         peer_addr: None,
         admin_pubkey_bytes,
         relay_addr: None,
         rendezvous_addr: None,
+        grant,
     });
 
     println!("✦ Circle cast: {}", args.name);

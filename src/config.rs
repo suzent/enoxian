@@ -39,6 +39,10 @@ pub struct CircleConfig {
     /// Diagnostic mode: only connect to circle peers through circuit relay.
     #[serde(default)]
     pub force_relay: bool,
+    /// Grant from the invite this device joined with, kept so the daemon can
+    /// present it when it writes its pending entry.
+    #[serde(default)]
+    pub join_grant: Option<crate::control::JoinGrant>,
     /// Known peer multiaddrs (e.g. from invite). Dialed on startup as bootstrap
     /// peers in addition to mDNS discovery.
     #[serde(default)]
@@ -334,6 +338,7 @@ mod workspace_tests {
 
     fn circle(id: &str, name: &str, workspace: &std::path::Path) -> CircleConfig {
         CircleConfig {
+            join_grant: None,
             circle_id: id.into(),
             circle_name: name.into(),
             psk_hex: String::new(),
