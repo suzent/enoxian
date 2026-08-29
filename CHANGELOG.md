@@ -39,6 +39,14 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- `enox member add` and `enox member promote` work again. Both signed a
+  different message than the daemon verified, so every attempt was rejected —
+  and because the CLI ignored the response status, a rejected request still
+  printed `✦ done` while nothing changed. Member operations now report failures
+  with the daemon's reason and exit non-zero.
+
 ### Security
 
 - Invites are now signed by the member who issues them, and are checked against
