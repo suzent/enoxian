@@ -32,6 +32,17 @@ cleanup() { pkill -f "enox daemon run --port $PORT" 2>/dev/null || true; rm -rf 
 trap cleanup EXIT
 
 E() { ENOXIAN_HOME="$STATE" ENOXIAN_API="http://127.0.0.1:$PORT" "$ENOX" "$@"; }
+# Probe an authenticated API route, not `/`.
+#
+# `/` serves the WebUI, which the Rust CI job never builds — so it 404s there
+# and the daemon looked permanently unreachable. It 404s locally too; the old
+# probe only ever passed by accident. Waiting on the token file and a real API
+# response tests the thing the script actually needs.
+daemon_ready() {
+    [[ -f "$STATE/api.token" ]] || return 1
+    curl -sf -o /dev/null -H "Authorization: Bearer $(cat "$STATE/api.token")" \
+        "http://127.0.0.1:$PORT/circles"
+}
 members() { E member list --circle "$CIRCLE_ID" 2>/dev/null; }
 # Grep the roster rather than the command output: the whole point is to believe
 # only observed state.
@@ -43,8 +54,8 @@ cargo build --bins -q && ok "built"
 section "Start daemon"
 mkdir -p "$STATE" "$WS"
 ENOXIAN_HOME="$STATE" "$ENOX" daemon run --port $PORT > "$TMPDIR_TEST/d.log" 2>&1 &
-for _ in $(seq 1 25); do curl -sf -o /dev/null "http://127.0.0.1:$PORT/" && break; sleep 1; done
-curl -sf -o /dev/null "http://127.0.0.1:$PORT/" || fail "daemon never became reachable"
+for _ in $(seq 1 40); do daemon_ready && break; sleep 1; done
+daemon_ready || fail "daemon never became reachable"
 ok "daemon up on port $PORT"
 
 section "Create circle"
@@ -54,11 +65,13 @@ import sys, json
 print(next(c['circle_id'] for c in json.load(sys.stdin) if c['circle_name'] == '$CIRCLE_NAME'))
 ")
 [[ -n "$CIRCLE_ID" ]] || fail "could not determine circle_id"
-for _ in $(seq 1 30); do
+circle_live() {
     curl -sf -o /dev/null -H "Authorization: Bearer $(cat "$STATE/api.token")" \
-        "http://127.0.0.1:$PORT/circles/$CIRCLE_ID/api/status" && break
-    sleep 1
-done
+        "http://127.0.0.1:$PORT/circles/$CIRCLE_ID/api/status"
+}
+# A new circle is not served until the daemon's periodic sweep picks it up.
+for _ in $(seq 1 40); do circle_live && break; sleep 1; done
+circle_live || fail "circle never became active"
 ok "circle $CIRCLE_ID active"
 
 section "Founder is admin"

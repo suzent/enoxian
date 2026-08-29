@@ -87,7 +87,16 @@ wait_for() {
     done
 }
 
-daemon_up()   { curl -sf -o /dev/null "http://127.0.0.1:$1/"; }
+# Probe an authenticated API route, not `/`. That path serves the WebUI, which
+# a Rust-only build never produces, so it 404s and the daemon looks permanently
+# unreachable. Waiting on the token file and a real API response tests what the
+# script actually needs.
+daemon_up() {
+    local state=$1 port=$2
+    [[ -f "$state/api.token" ]] || return 1
+    curl -sf -o /dev/null -H "Authorization: Bearer $(cat "$state/api.token")" \
+        "http://127.0.0.1:$port/circles"
+}
 # A newly created circle is not served until the daemon picks it up, which it
 # does on a periodic sweep rather than instantly. Its scoped routes 404 until
 # then, and `curl -sf` turns that into an empty body and a dead script.
@@ -109,7 +118,7 @@ section "Start daemon 1 (circle creator)"
 mkdir -p "$D1_STATE" "$D1_WS"
 ENOXIAN_DEVICE_LABEL="device-one" ENOXIAN_HOME="$D1_STATE" \
     "$ENOX" daemon run --port $D1_PORT > "$TMPDIR_TEST/d1.log" 2>&1 &
-wait_for "daemon 1 never became reachable" 20 daemon_up $D1_PORT
+wait_for "daemon 1 never became reachable" 40 daemon_up "$D1_STATE" $D1_PORT
 ok "daemon 1 up on port $D1_PORT"
 
 section "Create circle on daemon 1"
@@ -129,7 +138,7 @@ section "Start daemon 2 and enter circle"
 mkdir -p "$D2_STATE" "$D2_WS"
 ENOXIAN_DEVICE_LABEL="device-two" ENOXIAN_HOME="$D2_STATE" \
     "$ENOX" daemon run --port $D2_PORT > "$TMPDIR_TEST/d2.log" 2>&1 &
-wait_for "daemon 2 never became reachable" 20 daemon_up $D2_PORT
+wait_for "daemon 2 never became reachable" 40 daemon_up "$D2_STATE" $D2_PORT
 ok "daemon 2 up on port $D2_PORT"
 
 # The daemon listens on 0.0.0.0 but only advertises routable addresses, so
@@ -214,7 +223,7 @@ pkill -f "enox daemon run --port $D1_PORT" 2>/dev/null || true
 sleep 1
 ENOXIAN_DEVICE_LABEL="device-one" ENOXIAN_HOME="$D1_STATE" \
     "$ENOX" daemon run --port $D1_PORT >> "$TMPDIR_TEST/d1.log" 2>&1 &
-wait_for "daemon 1 never came back after restart" 20 daemon_up $D1_PORT
+wait_for "daemon 1 never came back after restart" 40 daemon_up "$D1_STATE" $D1_PORT
 PEER_AFTER=$(curl1 "/circles/$CIRCLE_ID/api/status" | python3 -c "import sys,json;print(json.load(sys.stdin)['p2p']['peer_id'])")
 [[ "$PEER_BEFORE" == "$PEER_AFTER" ]] || fail "peer ID changed after restart: $PEER_BEFORE → $PEER_AFTER"
 ok "peer ID stable across restart"
