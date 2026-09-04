@@ -41,6 +41,12 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- The Windows installer works again on Windows 10 machines without .NET
+  Framework 4.7.1. It read the machine architecture through an API those
+  systems do not have, and strict mode turned the missing property into a hard
+  error, so `irm ... | iex` failed with "The property 'OSArchitecture' cannot be
+  found on this object" before downloading anything — on hardware the installer
+  fully supports.
 - `enox member add` and `enox member promote` work again. Both signed a
   different message than the daemon verified, so every attempt was rejected —
   and because the CLI ignored the response status, a rejected request still
