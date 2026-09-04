@@ -104,6 +104,37 @@ jobs:
       - name: Validate POSIX shell installer
         run: sh -n scripts/install.sh
 
+      # install.ps1 had no validation of any kind, which is how an unavailable
+      # .NET API reached users and stopped the installer before it downloaded
+      # anything. Parsing is the floor — it would not have caught that bug,
+      # which was a runtime property lookup — so the guard below covers the
+      # actual failure mode.
+      - name: Validate PowerShell installer
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path scripts/install.ps1).Path, [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) {
+              $errors | ForEach-Object { Write-Error $_.ToString() }
+              exit 1
+          }
+          Write-Host 'install.ps1 parses'
+
+      # `RuntimeInformation` needs .NET Framework 4.7.1. Older Windows 10
+      # installs lack it, and under Set-StrictMode the missing property is a
+      # hard error rather than a fallback, so the installer refused to run on
+      # machines it supports. Architecture detection must stay on the
+      # environment variables, which every supported Windows has.
+      - name: Installer architecture detection stays portable
+        run: |
+          set -euo pipefail
+          if grep -n 'RuntimeInformation' scripts/install.ps1; then
+            echo "::error::install.ps1 must not use RuntimeInformation (needs .NET Framework 4.7.1, absent on older Windows 10)."
+            exit 1
+          fi
+          echo "architecture detection uses portable environment variables"
+
       # `.gitattributes` forces LF on shell scripts; a CRLF install.sh fails at
       # the shebang on the user's machine, long after CI passed.
       - name: Reject CRLF in shell scripts

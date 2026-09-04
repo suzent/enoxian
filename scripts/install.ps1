@@ -29,8 +29,19 @@ if ($Version -ne 'latest' -and -not $Version.StartsWith('v')) { $Version = "v$Ve
 if (-not [Environment]::Is64BitOperatingSystem) {
     throw 'enoxian installer: only 64-bit Windows is supported'
 }
-if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [Runtime.InteropServices.Architecture]::X64) {
-    throw "enoxian installer: unsupported Windows architecture $([Runtime.InteropServices.RuntimeInformation]::OSArchitecture)"
+# `RuntimeInformation` arrived in .NET Framework 4.7.1. On an older Windows 10
+# the static property is simply absent, and `Set-StrictMode` turns that into a
+# hard `PropertyNotFoundStrict` failure — so the installer died on a machine it
+# was perfectly capable of installing on, before downloading anything. These
+# environment variables predate every supported version of Windows.
+#
+# `PROCESSOR_ARCHITECTURE` describes the current *process*, so a 32-bit
+# PowerShell on 64-bit Windows reports x86; `PROCESSOR_ARCHITEW6432` is set only
+# under WOW64 and carries the real machine architecture. Preferring it keeps
+# this in agreement with the 64-bit check above, which asks about the OS.
+$Arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+if ($Arch -ne 'AMD64') {
+    throw "enoxian installer: unsupported Windows architecture $Arch"
 }
 
 $Asset = 'enoxian-windows-x86_64.zip'
