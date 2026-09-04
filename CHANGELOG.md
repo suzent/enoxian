@@ -39,6 +39,8 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-04
+
 ### Added
 
 - `enox agent install suzent` is the whole setup for `@suzent`, which is now a
@@ -138,6 +140,8 @@ refuses to publish a version whose section is missing or empty.
   that anyone holding the Circle's key could mint, with an expiry nothing
   enforced, and no later change to the Circle could withdraw it. Any member can
   still issue invites — what changed is that the invite now records who did.
+  Invites minted by 0.5.0 and earlier carry no grant and are refused, so
+  re-issue any that are still outstanding after upgrading.
 
 ## [0.5.0] — 2026-08-26
 
@@ -459,7 +463,8 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/suzent/enoxian/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/suzent/enoxian/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/suzent/enoxian/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/suzent/enoxian/compare/v0.4.2...v0.4.3
