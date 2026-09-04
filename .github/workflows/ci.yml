@@ -175,6 +175,14 @@ jobs:
       - name: Test
         run: cargo test --locked --all-targets
 
+      # End-to-end membership against a real daemon. Single daemon, no peer,
+      # no timing — the checks assert what the member list says afterwards
+      # rather than what the command printed, which is the only way a CLI that
+      # reports success on a rejected request gets caught.
+      - name: Circle membership (end to end)
+        if: runner.os == 'Linux'
+        run: ./scripts/test-members.sh
+
   frontend:
     name: Frontend production build
     runs-on: ubuntu-latest

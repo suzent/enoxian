@@ -718,3 +718,323 @@ fn resolve_admin_sig(circle_id: &str, msg: &[u8], provided: &str) -> anyhow::Res
     }
     local_admin_sign(circle_id, msg)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::{JoinGrant, MLS_KEY_PACKAGES_KEY};
+    use crate::daemon::DaemonState;
+    use crate::mls::{group::MlsGroupManager, MlsIdentity};
+    use crate::state::AppState;
+    use libp2p::identity::Keypair;
+    use std::path::PathBuf;
+    use tokio_util::sync::CancellationToken;
+    use yrs::{Map, ReadTxn, Transact, WriteTxn};
+
+    const CIRCLE: &str = "circle-under-test";
+
+    struct Fixture {
+        daemon: DaemonState,
+        state: AppState,
+        admin: Keypair,
+        _dir: tempfile::TempDir,
+    }
+
+    /// A circle with a live MLS group, as the member handlers expect to find it.
+    fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let admin = Keypair::generate_ed25519();
+        let identity = MlsIdentity::generate("admin").unwrap();
+        let group = MlsGroupManager::create(&identity).unwrap();
+        let mls = crate::mls::new_mls_state(identity, Some(group));
+
+        let state = AppState::new(
+            CIRCLE.into(),
+            "test".into(),
+            PathBuf::from(dir.path()),
+            PathBuf::from(dir.path()),
+            hex::encode(admin.public().encode_protobuf()),
+            "admin-agent".into(),
+            1,
+            Keypair::generate_ed25519()
+                .public()
+                .to_peer_id()
+                .to_string(),
+            crate::config::JoinPolicy::Manual,
+            "owner".into(),
+            mls,
+        );
+        let daemon = DaemonState::new();
+        daemon.insert_circle(CIRCLE.into(), state.clone(), CancellationToken::new());
+        Fixture {
+            daemon,
+            state,
+            admin,
+            _dir: dir,
+        }
+    }
+
+    fn sign(admin: &Keypair, msg: &str) -> String {
+        hex::encode(admin.sign(msg.as_bytes()).unwrap())
+    }
+
+    /// Register a candidate the way a joining device does, so approve has a
+    /// KeyPackage to consume.
+    ///
+    /// The MLS credential must carry the peer id, not the owner name:
+    /// `leaf_index_for_peer` matches on it, so a credential built any other way
+    /// leaves the member unremovable at the MLS layer. `enter.rs` does the same.
+    fn candidate(fx: &Fixture, _owner: &str) -> String {
+        let peer = Keypair::generate_ed25519()
+            .public()
+            .to_peer_id()
+            .to_string();
+        let identity = MlsIdentity::generate(&peer).unwrap();
+        let kp = identity.generate_key_package().unwrap();
+        let mut txn = fx.state.control.transact_mut();
+        let packages = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+        packages.insert(&mut txn, peer.as_str(), hex::encode(kp).as_str());
+        peer
+    }
+
+    fn map_has(fx: &Fixture, key: &str, field: &str) -> bool {
+        let txn = fx.state.control.transact();
+        txn.get_map(key).and_then(|m| m.get(&txn, field)).is_some()
+    }
+
+    fn commit_count(fx: &Fixture) -> u32 {
+        let txn = fx.state.control.transact();
+        txn.get_array(MLS_COMMITS_KEY)
+            .map(|a| a.len(&txn))
+            .unwrap_or(0)
+    }
+
+    fn epoch(fx: &Fixture) -> u64 {
+        futures::executor::block_on(async {
+            fx.state.mls.lock().await.current_epoch().unwrap_or(0)
+        })
+    }
+
+    fn grant(fx: &Fixture) -> JoinGrant {
+        // Issued by the admin, who is a member in good standing.
+        let expires_at = Utc::now() + chrono::Duration::days(1);
+        let g = crate::invite::sign_grant(
+            CIRCLE,
+            &crate::crypto::keypair_to_hex(&fx.admin).unwrap(),
+            expires_at,
+        )
+        .unwrap();
+        JoinGrant {
+            inviter_pubkey_hex: g.inviter_pubkey_hex,
+            nonce: g.nonce,
+            sig: g.sig,
+            expires_at,
+        }
+    }
+
+    // ── Signature verification ────────────────────────────────────────────────
+
+    #[test]
+    fn admin_signature_verification_accepts_only_the_exact_message() {
+        let fx = fixture();
+        let pubkey = hex::encode(fx.admin.public().encode_protobuf());
+        let msg = b"add:peer-1:member:owner:alice";
+
+        assert!(verify_admin_sig(
+            &pubkey,
+            msg,
+            &sign(&fx.admin, "add:peer-1:member:owner:alice")
+        )
+        .is_ok());
+        // A different message, which is exactly how the CLI's format drifted
+        // out of step with the daemon's and every add was rejected.
+        assert!(verify_admin_sig(&pubkey, msg, &sign(&fx.admin, "add:peer-1:member")).is_err());
+        // A different signer.
+        let impostor = Keypair::generate_ed25519();
+        assert!(verify_admin_sig(
+            &pubkey,
+            msg,
+            &sign(&impostor, "add:peer-1:member:owner:alice")
+        )
+        .is_err());
+        assert!(verify_admin_sig(&pubkey, msg, "not-hex").is_err());
+        assert!(verify_admin_sig("", msg, &sign(&fx.admin, "x")).is_err());
+    }
+
+    // ── Approval ─────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn approve_publishes_the_commit_with_the_member_entry() {
+        let fx = fixture();
+        let peer = candidate(&fx, "alice");
+        let before = epoch(&fx);
+
+        let sig = sign(&fx.admin, &format!("add:{peer}:member:owner:alice"));
+        let resp = approve_member(
+            axum::extract::State(fx.daemon.clone()),
+            axum::extract::Path(CIRCLE.into()),
+            axum::Json(ApproveMemberRequest {
+                peer_id: peer.clone(),
+                role: None,
+                owner: "alice".into(),
+                admin_signature: sig,
+                agents: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // The epoch advanced, and the commit describing that advance is in the
+        // shared log. If the two ever come apart, every other device is
+        // stranded on the previous epoch and can decrypt nothing.
+        assert!(epoch(&fx) > before, "approval must advance the MLS epoch");
+        assert_eq!(commit_count(&fx), 1, "the commit must be published");
+        assert!(map_has(&fx, MEMBER_LIST_KEY, &peer), "member recorded");
+        assert!(map_has(&fx, MLS_WELCOMES_KEY, &peer), "welcome published");
+    }
+
+    #[tokio::test]
+    async fn approve_with_a_bad_signature_changes_nothing() {
+        let fx = fixture();
+        let peer = candidate(&fx, "alice");
+        let before = epoch(&fx);
+
+        let resp = approve_member(
+            axum::extract::State(fx.daemon.clone()),
+            axum::extract::Path(CIRCLE.into()),
+            axum::Json(ApproveMemberRequest {
+                peer_id: peer.clone(),
+                role: None,
+                owner: "alice".into(),
+                admin_signature: sign(&fx.admin, "add:someone-else:member:owner:alice"),
+                agents: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        // Nothing irreversible may happen before the signature is checked.
+        assert_eq!(
+            epoch(&fx),
+            before,
+            "a refused approval must not advance the epoch"
+        );
+        assert_eq!(commit_count(&fx), 0);
+        assert!(!map_has(&fx, MEMBER_LIST_KEY, &peer));
+    }
+
+    #[tokio::test]
+    async fn approve_without_a_key_package_changes_nothing() {
+        let fx = fixture();
+        let peer = "12D3KooWNeverRegistered".to_string();
+        let sig = sign(&fx.admin, &format!("add:{peer}:member:owner:alice"));
+
+        let resp = approve_member(
+            axum::extract::State(fx.daemon.clone()),
+            axum::extract::Path(CIRCLE.into()),
+            axum::Json(ApproveMemberRequest {
+                peer_id: peer.clone(),
+                role: None,
+                owner: "alice".into(),
+                admin_signature: sig,
+                agents: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(epoch(&fx), 0);
+        assert_eq!(commit_count(&fx), 0);
+    }
+
+    // ── Removal ──────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn removal_tombstones_the_peer_and_clears_its_records() {
+        let fx = fixture();
+        let peer = candidate(&fx, "alice");
+        let added = approve_member(
+            axum::extract::State(fx.daemon.clone()),
+            axum::extract::Path(CIRCLE.into()),
+            axum::Json(ApproveMemberRequest {
+                peer_id: peer.clone(),
+                role: None,
+                owner: "alice".into(),
+                admin_signature: sign(&fx.admin, &format!("add:{peer}:member:owner:alice")),
+                agents: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(added.status(), StatusCode::OK);
+        assert!(map_has(&fx, MEMBER_LIST_KEY, &peer));
+        let after_add = epoch(&fx);
+
+        let resp = remove_member(
+            axum::extract::State(fx.daemon.clone()),
+            axum::extract::Path(CIRCLE.into()),
+            axum::Json(RemoveMemberRequest {
+                peer_id: peer.clone(),
+                admin_signature: sign(&fx.admin, &format!("remove:{peer}")),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        assert!(map_has(&fx, MLS_REMOVED_KEY, &peer), "tombstone written");
+        assert!(
+            !map_has(&fx, MEMBER_LIST_KEY, &peer),
+            "member entry cleared"
+        );
+        assert!(
+            !map_has(&fx, MLS_KEY_PACKAGES_KEY, &peer),
+            "key package cleared"
+        );
+        // The removal commit must reach the remaining members too.
+        assert!(epoch(&fx) > after_add, "removal must advance the epoch");
+        assert_eq!(
+            commit_count(&fx),
+            2,
+            "add and remove commits both published"
+        );
+    }
+
+    #[tokio::test]
+    async fn removal_with_a_bad_signature_changes_nothing() {
+        let fx = fixture();
+        let peer = candidate(&fx, "alice");
+
+        let resp = remove_member(
+            axum::extract::State(fx.daemon.clone()),
+            axum::extract::Path(CIRCLE.into()),
+            axum::Json(RemoveMemberRequest {
+                peer_id: peer.clone(),
+                admin_signature: sign(&fx.admin, "remove:a-different-peer"),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert!(
+            !map_has(&fx, MLS_REMOVED_KEY, &peer),
+            "no tombstone on refusal"
+        );
+    }
+
+    // ── Grants ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_grant_from_the_admin_is_well_formed() {
+        let fx = fixture();
+        let g = grant(&fx);
+        let as_invite = crate::invite::InviteGrant {
+            inviter_pubkey_hex: g.inviter_pubkey_hex.clone(),
+            nonce: g.nonce.clone(),
+            sig: g.sig.clone(),
+        };
+        assert!(crate::invite::verify_grant(CIRCLE, &as_invite, g.expires_at).is_ok());
+    }
+}
