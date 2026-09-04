@@ -68,7 +68,7 @@ dashmap = "6"
 yrs = "0.26"
 axum = { version = "0.8", features = ["ws", "macros"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tower-http = { version = "0.7", features = ["cors", "trace", "fs"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 
 # Phase 1 — File watcher
