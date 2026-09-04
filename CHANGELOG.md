@@ -39,6 +39,19 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- `enox agent install suzent` is the whole setup for `@suzent`, which is now a
+  built-in agent rather than something to wire up by hand. Nothing is downloaded
+  and nothing is pinned — enabling it only points the handle at the Suzent CLI
+  you already have — and it appears in Device Settings beside the adapters,
+  reporting **READY** or asking for the CLI, never for Node.js.
+- Plugin manifests in `~/.enoxian/plugins/` accept `kind = "native"` for any CLI
+  that speaks ACP itself: `binary` is resolved on `PATH`, `args` carries the
+  subcommand, `install_url` says where to get it, and `package`/`version` are
+  omitted. Third-party agents no longer need to ship an npm adapter to be a
+  first-class plugin.
+
 ### Fixed
 
 - The Windows installer works again on Windows 10 machines without .NET
@@ -52,19 +65,6 @@ refuses to publish a version whose section is missing or empty.
   and because the CLI ignored the response status, a rejected request still
   printed `✦ done` while nothing changed. Member operations now report failures
   with the daemon's reason and exit non-zero.
-
-### Security
-
-- Invites are now signed by the member who issues them, and are checked against
-  that member's standing at the moment they are redeemed. Removing a member
-  therefore invalidates every invite they issued, and an invite admits one
-  device rather than any number. Previously an invite was a bearer credential
-  that anyone holding the Circle's key could mint, with an expiry nothing
-  enforced, and no later change to the Circle could withdraw it. Any member can
-  still issue invites — what changed is that the invite now records who did.
-
-### Fixed
-
 - Typing Chinese, Japanese or Korean in chat no longer sends the message
   mid-word. Enter selects a candidate from the input method's popup, and that
   keypress was being read as "send" — so a sentence went out half-finished on
@@ -73,7 +73,6 @@ refuses to publish a version whose section is missing or empty.
 - The join animation now names the Circle being joined rather than the name you
   chose for your own device, which made joining "SUZENT-dev" as "suzy" announce
   "joining circle suzy".
-
 - Messages sent just after two devices connect are no longer lost. The initial
   catch-up sends what a peer is missing and the live stream carries everything
   after it, but the two were started in the wrong order, leaving a gap in
@@ -130,6 +129,16 @@ refuses to publish a version whose section is missing or empty.
   so a Circle that has silently stopped syncing is now visible in the daemon
   log.
 
+### Security
+
+- Invites are now signed by the member who issues them, and are checked against
+  that member's standing at the moment they are redeemed. Removing a member
+  therefore invalidates every invite they issued, and an invite admits one
+  device rather than any number. Previously an invite was a bearer credential
+  that anyone holding the Circle's key could mint, with an expiry nothing
+  enforced, and no later change to the Circle could withdraw it. Any member can
+  still issue invites — what changed is that the invite now records who did.
+
 ## [0.5.0] — 2026-08-26
 
 ### Added
@@ -162,18 +171,11 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
-- **`@suzent` is a built-in agent.** `enox agent install suzent` is the whole
-  setup and it then works like `@claude`, running on your own Suzent install
-  with its memory, skills, and model configuration, in the circle workspace.
-  Nothing is downloaded and nothing is pinned: Suzent speaks ACP itself, so
-  enabling it only points the handle at the CLI you installed. It appears in
-  Device Settings beside the adapters, reporting **READY** or asking for the
-  CLI — never for Node.js, which it does not use.
-- Plugin manifests in `~/.enoxian/plugins/` accept `kind = "native"` for any
-  CLI that speaks ACP itself: `binary` is resolved on `PATH`, `args` carries the
-  subcommand, `install_url` says where to get it, and `package`/`version` are
-  omitted. Third-party agents no longer need to ship an npm adapter to be a
-  first-class plugin.
+- Suzent can be driven as an agent with no adapter plugin and no Node.js: it
+  speaks ACP itself, so `enox agent add suzent --driver acp -- suzent acp` is
+  the whole setup and `@suzent` then works like `@claude`. The turn runs on your
+  own Suzent install, with its memory, skills, and model configuration, in the
+  circle workspace.
 - Custom agents in Device Settings now show whether they can actually start —
   **READY**, **MISSING** with the command that could not be found, or
   **DOWNLOADS** for a `npx …` command — plus a description for agents Enoxian
