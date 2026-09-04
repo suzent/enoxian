@@ -140,6 +140,8 @@ refuses to publish a version whose section is missing or empty.
   that anyone holding the Circle's key could mint, with an expiry nothing
   enforced, and no later change to the Circle could withdraw it. Any member can
   still issue invites — what changed is that the invite now records who did.
+  Invites minted by 0.5.0 and earlier carry no grant and are refused, so
+  re-issue any that are still outstanding after upgrading.
 
 ## [0.5.0] — 2026-08-26
 
