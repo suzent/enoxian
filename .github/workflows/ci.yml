@@ -129,7 +129,9 @@ jobs:
       - name: Installer architecture detection stays portable
         run: |
           set -euo pipefail
-          if grep -n 'RuntimeInformation' scripts/install.ps1; then
+          # Match code only: `[^#]*` cannot cross a `#`, so the comment above
+          # the fix explaining why the API is banned does not trip its own guard.
+          if grep -nE '^[^#]*RuntimeInformation' scripts/install.ps1; then
             echo "::error::install.ps1 must not use RuntimeInformation (needs .NET Framework 4.7.1, absent on older Windows 10)."
             exit 1
           fi
