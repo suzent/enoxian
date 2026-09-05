@@ -7,6 +7,11 @@ import CircleGlyph from './CircleGlyph'
 import MentionPopup, { buildMentionItems, type MentionItem } from './MentionPopup'
 import MentionInput, { type MentionInputHandle } from './MentionInput'
 
+// Backfill retry budget: ~0.5s + 1s + 1.5s + 2s before giving up and telling
+// the user, rather than rendering an empty transcript as if it were loaded.
+const CATCH_UP_MAX_ATTEMPTS = 5
+const CATCH_UP_BACKOFF_MS = 500
+
 interface Props {
   onMessage?: () => void
   variant?: 'rail' | 'main'
@@ -144,6 +149,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [chatLoaded, setChatLoaded] = useState(false)
+  const [chatError, setChatError] = useState<string | null>(null)
   const [members, setMembers] = useState<Member[]>([])
   const [presence, setPresence] = useState<Presence[]>([])
   const [activities, setActivities] = useState<Record<string, ChatActivity>>({})
@@ -193,6 +199,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     latestTsRef.current = null
     setMessages([])
     setChatLoaded(false)
+    setChatError(null)
     setMembers([])
     setPresence([])
     setActivities({})
@@ -206,20 +213,45 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
       .then(items => { if (!cancelled) items.forEach(ingestActivity) })
       .catch(() => {})
 
+    // This is the only backfill path — there is no chat poll, and the SSE
+    // stream stays healthy — so a swallowed failure here used to leave an empty
+    // transcript marked as loaded, with nothing to correct it short of a page
+    // reload. The daemon answers 503 circle_busy whenever the control doc is
+    // locked, which is common right after load. Retry, and never claim the
+    // transcript is loaded on a request that failed.
+    let catchUpTimer: number | undefined
+    let catchUpAttempts = 0
+
+    const finishCatchUp = () => {
+      if (cancelled) return
+      window.requestAnimationFrame(() => {
+        if (cancelled) return
+        const list = messageListRef.current
+        if (list) list.scrollTo({ top: list.scrollHeight, behavior: 'auto' })
+        hydratingChatRef.current = false
+        setChatLoaded(true)
+      })
+    }
+
     const catchUp = () => {
       const since = latestTsRef.current === null ? undefined : Math.max(0, latestTsRef.current - 1)
       getChat(activeCircleId, since)
-        .then(msgs => { if (cancelled) return; msgs.forEach(addMsg) })
-        .catch(() => {})
-        .finally(() => {
+        .then(msgs => {
           if (cancelled) return
-          window.requestAnimationFrame(() => {
-            if (cancelled) return
-            const list = messageListRef.current
-            if (list) list.scrollTo({ top: list.scrollHeight, behavior: 'auto' })
-            hydratingChatRef.current = false
-            setChatLoaded(true)
-          })
+          catchUpAttempts = 0
+          setChatError(null)
+          msgs.forEach(addMsg)
+          finishCatchUp()
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return
+          catchUpAttempts += 1
+          if (catchUpAttempts >= CATCH_UP_MAX_ATTEMPTS) {
+            const msg = err instanceof Error ? err.message : String(err)
+            setChatError(msg)
+            return
+          }
+          catchUpTimer = window.setTimeout(catchUp, CATCH_UP_BACKOFF_MS * catchUpAttempts)
         })
     }
 
@@ -238,6 +270,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     catchUp()
     return () => {
       cancelled = true
+      if (catchUpTimer !== undefined) window.clearTimeout(catchUpTimer)
       es.close()
     }
   }, [activeCircleId, addMsg, ingestActivity])
@@ -469,10 +502,16 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
       )}
 
       <div ref={messageListRef} className="chat-message-list">
-        {messages.length === 0 && chatLoaded && (
+        {messages.length === 0 && chatLoaded && !chatError && (
           <div className="chat-empty-state">
             <span>NO MESSAGES YET</span>
             <strong>Send the first message.</strong>
+          </div>
+        )}
+        {chatError && (
+          <div className="chat-empty-state">
+            <span>COULD NOT LOAD MESSAGES</span>
+            <strong>{chatError}</strong>
           </div>
         )}
         {messages.map((msg, i) => {
