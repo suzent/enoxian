@@ -39,6 +39,19 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- The editor no longer gets stuck showing an empty file with the connection
+  reading "connecting". When the daemon leaves a sync request unanswered
+  because the file is momentarily busy, the web UI now asks again instead of
+  waiting forever, so opening a file no longer needs a page reload to work.
+- Chat no longer shows "no messages yet" for a conversation that actually has
+  messages. If the transcript cannot be loaded on the first try the web UI
+  retries, and says so plainly when it still cannot load rather than showing an
+  empty room.
+- Devices joining a Circle now appear in the roster right away instead of after
+  a delay of up to fifteen seconds.
+
 ## [0.6.0] — 2026-09-04
 
 ### Added
