@@ -39,6 +39,14 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- Devices no longer stop syncing with each other after about half an hour on
+  the relay. A relayed connection is closed by the relay once it hits its
+  duration or size cap, and nothing rebuilt it, so two devices on different
+  networks drifted apart until a daemon restart. Connections are now rebuilt
+  automatically within about thirty seconds.
+
 ## [0.6.0] — 2026-09-04
 
 ### Added
