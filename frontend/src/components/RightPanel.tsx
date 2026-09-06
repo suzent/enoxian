@@ -239,7 +239,7 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
         ) {
           scheduleTasksRefresh()
         }
-        if (data.type === 'member_joined' || data.type === 'member_removed' || data.type === 'member_pending') {
+        if (data.type === 'member_added' || data.type === 'member_removed' || data.type === 'member_pending') {
           refreshMembers()
         }
         if (data.type === 'proposal_created' || data.type === 'proposal_updated') {
