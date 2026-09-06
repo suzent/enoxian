@@ -81,7 +81,7 @@ open = "5"
 rust-embed = "8.12"
 
 # M11 — MLS group key management (RFC 9420)
-openmls = "0.8"
+openmls = "0.9"
 openmls_basic_credential = { version = "0.5", features = ["clonable"] }
 openmls_rust_crypto = "0.5"
 openmls_traits = "0.5"
