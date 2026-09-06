@@ -7,6 +7,15 @@ import * as decoding from 'lib0/decoding'
 const MSG_SYNC = 0
 const MSG_AWARENESS = 1
 
+// The daemon drops its SyncStep2 reply if the doc is locked by a peer or the
+// file watcher when SyncStep1 arrives. That leaves the socket OPEN with no
+// content and no error, so the reconnect-on-close path never runs and the
+// editor sits on 'connecting' until the user reloads the page. Re-ask instead;
+// SyncStep1 is idempotent. After the last attempt, close so the normal
+// reconnect path takes over.
+const SYNC_TIMEOUT_MS = 5_000
+const SYNC_MAX_ATTEMPTS = 3
+
 export type YjsConnectionStatus = 'connecting' | 'synced' | 'disconnected'
 
 export class YjsProvider {
@@ -17,6 +26,12 @@ export class YjsProvider {
   private onStatusChange: ((status: YjsConnectionStatus) => void) | undefined
   private awarenessHeartbeat: number | undefined
   private synced = false
+  private syncTimer: number | undefined
+  private syncAttempts = 0
+  // Distinct from `synced`, which also flips on the daemon's own SyncStep1
+  // (it opens the handshake with one). Only SyncStep2/Update carry actual
+  // state, so only those prove our SyncStep1 was answered.
+  private stateReceived = false
 
   constructor(
     private url: string,
@@ -35,6 +50,37 @@ export class YjsProvider {
 
   private emitStatus(status: YjsConnectionStatus) {
     this.onStatusChange?.(status)
+  }
+
+  private clearSyncTimeout() {
+    if (this.syncTimer !== undefined) {
+      window.clearTimeout(this.syncTimer)
+      this.syncTimer = undefined
+    }
+  }
+
+  /** Ask the daemon for its state. Safe to repeat: the reply is a full diff. */
+  private sendSyncStep1(ws: WebSocket) {
+    if (ws.readyState !== WebSocket.OPEN) return
+    const enc = encoding.createEncoder()
+    encoding.writeVarUint(enc, MSG_SYNC)
+    syncProtocol.writeSyncStep1(enc, this.doc)
+    ws.send(encoding.toUint8Array(enc))
+    this.armSyncTimeout(ws)
+  }
+
+  private armSyncTimeout(ws: WebSocket) {
+    this.clearSyncTimeout()
+    this.syncTimer = window.setTimeout(() => {
+      if (this.destroyed || this.stateReceived || ws.readyState !== WebSocket.OPEN) return
+      this.syncAttempts += 1
+      if (this.syncAttempts >= SYNC_MAX_ATTEMPTS) {
+        console.warn('[yjs] no sync reply after retries; reconnecting', this.url)
+        ws.close()
+        return
+      }
+      this.sendSyncStep1(ws)
+    }, SYNC_TIMEOUT_MS)
   }
 
   private markSynced() {
@@ -74,15 +120,14 @@ export class YjsProvider {
   private connect() {
     if (this.destroyed) return
     this.emitStatus('connecting')
+    this.syncAttempts = 0
+    this.stateReceived = false
     const ws = new WebSocket(this.url)
     ws.binaryType = 'arraybuffer'
     this.ws = ws
 
     ws.onopen = () => {
-      const enc = encoding.createEncoder()
-      encoding.writeVarUint(enc, MSG_SYNC)
-      syncProtocol.writeSyncStep1(enc, this.doc)
-      ws.send(encoding.toUint8Array(enc))
+      this.sendSyncStep1(ws)
 
       // Send initial awareness
       this.sendAwarenessUpdate([this.doc.clientID], ws)
@@ -106,6 +151,14 @@ export class YjsProvider {
           ws.send(encoding.toUint8Array(replyEnc))
         }
         if (
+          syncType === syncProtocol.messageYjsSyncStep2 ||
+          syncType === syncProtocol.messageYjsUpdate
+        ) {
+          // The daemon answered with real state — stop asking.
+          this.stateReceived = true
+          this.clearSyncTimeout()
+        }
+        if (
           syncType === syncProtocol.messageYjsSyncStep1 ||
           syncType === syncProtocol.messageYjsSyncStep2 ||
           syncType === syncProtocol.messageYjsUpdate
@@ -119,8 +172,10 @@ export class YjsProvider {
     }
 
     ws.onclose = () => {
+      this.clearSyncTimeout()
       if (!this.destroyed) {
         this.synced = false
+        this.stateReceived = false
         this.emitStatus('disconnected')
         setTimeout(() => this.connect(), 2000)
       }
@@ -161,6 +216,7 @@ export class YjsProvider {
 
   destroy() {
     this.destroyed = true
+    this.clearSyncTimeout()
     if (this.awarenessHeartbeat !== undefined) {
       window.clearInterval(this.awarenessHeartbeat)
       this.awarenessHeartbeat = undefined
