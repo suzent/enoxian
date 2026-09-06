@@ -41,6 +41,11 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Devices no longer stop syncing with each other after about half an hour on
+  the relay. A relayed connection is closed by the relay once it hits its
+  duration or size cap, and nothing rebuilt it, so two devices on different
+  networks drifted apart until a daemon restart. Connections are now rebuilt
+  automatically within about thirty seconds.
 - The editor no longer gets stuck showing an empty file with the connection
   reading "connecting". When the daemon leaves a sync request unanswered
   because the file is momentarily busy, the web UI now asks again instead of

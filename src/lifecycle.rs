@@ -22,6 +22,14 @@ use tracing::{info, warn};
 const PENDING_REMOVE_RETRIES: u32 = 10;
 const PENDING_REMOVE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// How often the swarm loop sweeps for connections it needs to rebuild.
+/// Bounds how long a circle stays split after a relayed circuit hits the
+/// relay's duration or byte cap.
+const RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+/// Cap on the backoff exponent, so a peer that stays offline is still retried
+/// every `RECONNECT_INTERVAL * 2^RECONNECT_MAX_BACKOFF_EXP` (30s * 16 = 8 min).
+const RECONNECT_MAX_BACKOFF_EXP: u32 = 4;
+
 use yrs::{Array, Observable};
 
 use crate::{
@@ -776,6 +784,11 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     // address into the running swarm event loop.
     let rendezvous_peers: std::sync::Arc<std::sync::RwLock<HashSet<PeerId>>> =
         std::sync::Arc::new(std::sync::RwLock::new(HashSet::new()));
+    // Addresses for those peers. `rendezvous_peers` alone is not enough to
+    // recover from a dropped rendezvous connection: redialing needs an address,
+    // and kad may not have one for a server we only ever dialed by config.
+    let rendezvous_addrs: std::sync::Arc<std::sync::RwLock<HashMap<PeerId, Multiaddr>>> =
+        std::sync::Arc::new(std::sync::RwLock::new(HashMap::new()));
 
     let (rdvz_tx, mut rdvz_rx) = tokio::sync::mpsc::channel::<(Multiaddr, PeerId)>(4);
 
@@ -791,6 +804,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     }
                 }) {
                     rendezvous_peers.write().unwrap().insert(pid);
+                    rendezvous_addrs.write().unwrap().insert(pid, addr.clone());
                     if relay_peer_ids.contains(&pid) {
                         info!(
                             "[{}] rendezvous shares relay peer {pid}; using relay TCP connection",
@@ -955,6 +969,23 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         let mut reregister = tokio::time::interval(std::time::Duration::from_secs(3600));
         reregister.tick().await; // skip the immediate first tick
 
+        // Reconnect sweep. Nothing else redials a peer once its connection
+        // closes: `ConnectionClosed` only records the drop, and `discover` was
+        // previously issued only when we first connected to a rendezvous
+        // server. Relayed circuits are capped (30 min / 64 MB in
+        // `relay_server_config`), so every relayed peer connection is torn down
+        // periodically by design — without this sweep, two devices on different
+        // networks stop syncing within half an hour and stay stopped until the
+        // daemon restarts.
+        let mut reconnect = tokio::time::interval(RECONNECT_INTERVAL);
+        reconnect.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        reconnect.tick().await; // skip the immediate first tick
+
+        // Consecutive failed sweeps per peer, so a peer that is simply offline
+        // is retried with a widening gap instead of every tick forever.
+        let mut redial_misses: HashMap<PeerId, u32> = HashMap::new();
+        let mut sweep: u64 = 0;
+
         // The background resolver tasks feeding these channels drop their senders
         // once they finish (resolve or fail). A closed `mpsc::Receiver` returns
         // `recv() => Ready(None)` *immediately and forever*, so without these
@@ -976,6 +1007,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 item = rdvz_rx.recv(), if rdvz_open => match item {
                     Some((addr, peer_id)) => {
                         rendezvous_peers.write().unwrap().insert(peer_id);
+                        rendezvous_addrs.write().unwrap().insert(peer_id, addr.clone());
                         info!("[{}] dialing background-resolved rendezvous: {addr}", circle_id);
                         let _ = swarm.dial(addr);
                     }
@@ -1004,7 +1036,9 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     None => relay_open = false, // sender dropped — stop polling this branch
                 },
                 _ = reregister.tick() => {
-                    for &rdvz_peer in &*rendezvous_peers.read().unwrap() {
+                    let peers: Vec<PeerId> =
+                        rendezvous_peers.read().unwrap().iter().copied().collect();
+                    for rdvz_peer in peers {
                         if swarm.is_connected(&rdvz_peer) {
                             if let Err(e) = swarm.behaviour_mut().rendezvous.register(
                                 rendezvous_namespace.clone(), rdvz_peer, None,
@@ -1012,6 +1046,57 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                                 warn!("[{}] rendezvous re-register: {e}", circle_id);
                             }
                         }
+                    }
+                }
+                _ = reconnect.tick() => {
+                    sweep = sweep.wrapping_add(1);
+
+                    // Rendezvous servers: rediscover over live links, redial dead
+                    // ones. Re-running discovery is what surfaces peers whose
+                    // reachable address changed (a new relay circuit, say) while
+                    // we were disconnected from them.
+                    let peers: Vec<PeerId> =
+                        rendezvous_peers.read().unwrap().iter().copied().collect();
+                    for rdvz_peer in peers {
+                        if swarm.is_connected(&rdvz_peer) {
+                            swarm.behaviour_mut().rendezvous.discover(
+                                Some(rendezvous_namespace.clone()), None, None, rdvz_peer,
+                            );
+                            continue;
+                        }
+                        let addr = rendezvous_addrs.read().unwrap().get(&rdvz_peer).cloned();
+                        let Some(addr) = addr else { continue };
+                        if !should_retry(&mut redial_misses, rdvz_peer, sweep) {
+                            continue;
+                        }
+                        info!("[{}] rendezvous {rdvz_peer} disconnected; redialing", circle_id);
+                        let _ = swarm.dial(
+                            DialOpts::peer_id(rdvz_peer)
+                                .addresses(vec![addr])
+                                .condition(PeerCondition::DisconnectedAndNotDialing)
+                                .build(),
+                        );
+                    }
+
+                    // Circle members: redial anyone in the roster we have lost.
+                    let local = *swarm.local_peer_id();
+                    for member in member_peer_ids(&state_for_swarm) {
+                        if member == local || swarm.is_connected(&member) {
+                            redial_misses.remove(&member);
+                            continue;
+                        }
+                        if state_for_swarm.is_foreign_peer(member.to_string().as_str()) {
+                            continue;
+                        }
+                        if !should_retry(&mut redial_misses, member, sweep) {
+                            continue;
+                        }
+                        tracing::debug!("[{}] redialing lost peer {member}", circle_id);
+                        let _ = swarm.dial(
+                            DialOpts::peer_id(member)
+                                .condition(PeerCondition::DisconnectedAndNotDialing)
+                                .build(),
+                        );
                     }
                 }
                 event = swarm.select_next_some() => match event {
@@ -1082,6 +1167,8 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             connection_id,
                             route_addr,
                         );
+                        // Back off from scratch next time this peer drops.
+                        redial_misses.remove(&peer_id);
                         // If this is a rendezvous server, register + discover immediately.
                         if rendezvous_peers.read().unwrap().contains(&peer_id) {
                             if let Err(e) = swarm.behaviour_mut().rendezvous.register(
@@ -1833,6 +1920,37 @@ fn stable_listen_port(circle_id: &str) -> u16 {
     49_152 + (hash % 12_000) as u16
 }
 
+/// Peer ids in the circle roster, or an empty list if the control doc is busy
+/// (the next sweep picks it up — never block the swarm loop on a lock).
+fn member_peer_ids(state: &AppState) -> Vec<PeerId> {
+    use yrs::{Map, ReadTxn, Transact};
+
+    let Ok(txn) = state.control.try_transact() else {
+        return Vec::new();
+    };
+    let Some(member_map) = txn.get_map(MEMBER_LIST_KEY) else {
+        return Vec::new();
+    };
+    member_map
+        .iter(&txn)
+        .filter_map(|(peer_id, _)| peer_id.parse::<PeerId>().ok())
+        .collect()
+}
+
+/// Exponential backoff for reconnect attempts, keyed on the sweep counter.
+///
+/// Returns true when `peer` is due for another dial, and records the attempt.
+/// A peer is retried on sweeps 1, 2, 4, 8, 16, then every 16th sweep.
+fn should_retry(misses: &mut HashMap<PeerId, u32>, peer: PeerId, sweep: u64) -> bool {
+    let failures = misses.entry(peer).or_insert(0);
+    let stride = 1u64 << (*failures).min(RECONNECT_MAX_BACKOFF_EXP);
+    if !sweep.is_multiple_of(stride) {
+        return false;
+    }
+    *failures = failures.saturating_add(1);
+    true
+}
+
 /// Returns true for listen addresses worth tracking for invite embedding:
 /// rejects loopback, unspecified, link-local, and p2p-circuit relay addresses.
 /// RFC1918 and Tailscale CGNAT addresses are kept — `enox invite` sorts them
@@ -1866,6 +1984,51 @@ mod tests {
     use crate::control::MLS_PENDING_KEY;
     use crate::state::AppState;
     use yrs::{Map, ReadTxn, Transact, WriteTxn};
+
+    /// Sweeps on which `should_retry` lets `peer` through, over `sweeps` ticks.
+    fn retry_sweeps(sweeps: u64) -> Vec<u64> {
+        let peer = PeerId::random();
+        let mut misses = HashMap::new();
+        (1..=sweeps)
+            .filter(|&sweep| should_retry(&mut misses, peer, sweep))
+            .collect()
+    }
+
+    #[test]
+    fn reconnect_backoff_widens_then_settles() {
+        // 1, 2, 4, 8, 16 then every 16th sweep: a peer that is simply offline
+        // stops being dialed every tick, but is never abandoned.
+        assert_eq!(
+            retry_sweeps(80),
+            vec![1, 2, 4, 8, 16, 32, 48, 64, 80],
+            "backoff should double up to the cap, then hold at every 16th sweep"
+        );
+    }
+
+    #[test]
+    fn reconnect_backoff_is_per_peer() {
+        let mut misses = HashMap::new();
+        let a = PeerId::random();
+        let b = PeerId::random();
+        // Burning `a`'s budget must not delay `b`'s first attempt.
+        assert!(should_retry(&mut misses, a, 1));
+        assert!(should_retry(&mut misses, a, 2));
+        assert!(should_retry(&mut misses, b, 2));
+    }
+
+    #[test]
+    fn reconnect_backoff_resets_when_peer_returns() {
+        let mut misses = HashMap::new();
+        let peer = PeerId::random();
+        for sweep in [1, 2, 4, 8] {
+            assert!(should_retry(&mut misses, peer, sweep));
+        }
+        assert!(!should_retry(&mut misses, peer, 9), "should be backed off");
+
+        // ConnectionEstablished clears the entry; the next drop retries at once.
+        misses.remove(&peer);
+        assert!(should_retry(&mut misses, peer, 9));
+    }
 
     fn test_state() -> AppState {
         AppState::new(
