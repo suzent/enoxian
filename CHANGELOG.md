@@ -39,6 +39,10 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep MLS bootstrap messages intact across periodic updates on slow connections, preventing framing errors that interrupt Circle sync.
+
 ## [0.6.1] — 2026-09-06
 
 ### Fixed
