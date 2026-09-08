@@ -247,6 +247,53 @@ impl SnapshotReader {
     }
 }
 
+impl Drop for SnapshotReader {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+pub async fn run(peer: PeerId, stream: Stream, state: AppState, initiator: bool) {
+    if let Err(error) = run_inner(peer, stream, &state, initiator).await {
+        warn!("[mls-bootstrap] {peer}: bootstrap ended: {error}");
+    }
+}
+
+async fn run_inner(peer: PeerId, stream: Stream, state: &AppState, initiator: bool) -> Result<()> {
+    let (mut reader, mut writer) = tokio::io::split(stream.compat());
+    let first = snapshot(state, &peer).await?;
+    let remote = if initiator {
+        write_snapshot(&mut writer, &first).await?;
+        read_snapshot(&mut reader).await?
+    } else {
+        let remote = read_snapshot(&mut reader).await?;
+        write_snapshot(&mut writer, &first).await?;
+        remote
+    };
+    apply_snapshot(state, peer, remote).await?;
+
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_sent = serde_json::to_vec(&first)?;
+    // read_exact is not cancellation-safe: a timer tick after consuming part
+    // of a frame would discard its progress and interpret JSON as a length.
+    // Only the channel receive competes with ticks; the socket reader persists.
+    let mut incoming = SnapshotReader::spawn(reader);
+    loop {
+        tokio::select! {
+            remote = incoming.recv() => apply_snapshot(state, peer, remote?).await?,
+            _ = interval.tick() => {
+                let next = snapshot(state, &peer).await?;
+                let encoded = serde_json::to_vec(&next)?;
+                if encoded != last_sent {
+                    write_snapshot(&mut writer, &next).await?;
+                    last_sent = encoded;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,52 +433,5 @@ mod tests {
                 .unwrap(),
             0
         );
-    }
-}
-
-impl Drop for SnapshotReader {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-pub async fn run(peer: PeerId, stream: Stream, state: AppState, initiator: bool) {
-    if let Err(error) = run_inner(peer, stream, &state, initiator).await {
-        warn!("[mls-bootstrap] {peer}: bootstrap ended: {error}");
-    }
-}
-
-async fn run_inner(peer: PeerId, stream: Stream, state: &AppState, initiator: bool) -> Result<()> {
-    let (mut reader, mut writer) = tokio::io::split(stream.compat());
-    let first = snapshot(state, &peer).await?;
-    let remote = if initiator {
-        write_snapshot(&mut writer, &first).await?;
-        read_snapshot(&mut reader).await?
-    } else {
-        let remote = read_snapshot(&mut reader).await?;
-        write_snapshot(&mut writer, &first).await?;
-        remote
-    };
-    apply_snapshot(state, peer, remote).await?;
-
-    let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut last_sent = serde_json::to_vec(&first)?;
-    // read_exact is not cancellation-safe: a timer tick after consuming part
-    // of a frame would discard its progress and interpret JSON as a length.
-    // Only the channel receive competes with ticks; the socket reader persists.
-    let mut incoming = SnapshotReader::spawn(reader);
-    loop {
-        tokio::select! {
-            remote = incoming.recv() => apply_snapshot(state, peer, remote?).await?,
-            _ = interval.tick() => {
-                let next = snapshot(state, &peer).await?;
-                let encoded = serde_json::to_vec(&next)?;
-                if encoded != last_sent {
-                    write_snapshot(&mut writer, &next).await?;
-                    last_sent = encoded;
-                }
-            }
-        }
     }
 }
