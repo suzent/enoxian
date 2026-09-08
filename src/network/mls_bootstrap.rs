@@ -219,6 +219,182 @@ async fn read_snapshot<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Snapsh
     serde_json::from_slice(&bytes).context("decoding MLS bootstrap snapshot")
 }
 
+struct SnapshotReader {
+    incoming: tokio::sync::mpsc::Receiver<Result<Snapshot>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl SnapshotReader {
+    fn spawn<R: AsyncReadExt + Unpin + Send + 'static>(mut reader: R) -> Self {
+        let (sender, incoming) = tokio::sync::mpsc::channel(16);
+        let task = tokio::spawn(async move {
+            loop {
+                let result = read_snapshot(&mut reader).await;
+                let stop = result.is_err();
+                if sender.send(result).await.is_err() || stop {
+                    break;
+                }
+            }
+        });
+        Self { incoming, task }
+    }
+
+    async fn recv(&mut self) -> Result<Snapshot> {
+        self.incoming
+            .recv()
+            .await
+            .context("MLS bootstrap reader stopped")?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::{
+        pin::Pin,
+        task::{Context as TaskContext, Poll},
+        time::Duration,
+    };
+    use tokio::io::{AsyncRead, ReadBuf};
+
+    struct CountReads {
+        inner: tokio::io::DuplexStream,
+        consumed: Arc<AtomicUsize>,
+    }
+
+    impl AsyncRead for CountReads {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut TaskContext<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let before = buf.filled().len();
+            let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+            self.consumed
+                .fetch_add(buf.filled().len() - before, Ordering::SeqCst);
+            result
+        }
+    }
+
+    fn snapshot_value(circle: &str) -> Snapshot {
+        Snapshot {
+            circle_id: circle.into(),
+            sender_peer_id: "peer".into(),
+            key_packages: vec![],
+            owner_claims: vec![],
+            pending: vec![],
+            members: vec![],
+            removed: vec![],
+            welcome: None,
+            commits: vec![],
+        }
+    }
+
+    async fn fragmented_snapshot(split: usize) {
+        let (mut writer, reader) = tokio::io::duplex(4096);
+        let consumed = Arc::new(AtomicUsize::new(0));
+        let mut reader = SnapshotReader::spawn(CountReads {
+            inner: reader,
+            consumed: consumed.clone(),
+        });
+        let value = snapshot_value("enoxian");
+        let payload = serde_json::to_vec(&value).unwrap();
+        let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(&payload);
+        writer.write_all(&frame[..split]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while consumed.load(Ordering::SeqCst) < split {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        // Force several timer wins after the socket has consumed a partial
+        // header/payload. Each win cancels recv, but must not cancel the read.
+        let mut ticks = tokio::time::interval(Duration::from_millis(1));
+        for _ in 0..3 {
+            tokio::select! {
+                result = reader.recv() => panic!("partial frame completed: {result:?}"),
+                _ = ticks.tick() => {}
+            }
+        }
+        writer.write_all(&frame[split..]).await.unwrap();
+        write_snapshot(&mut writer, &snapshot_value("second"))
+            .await
+            .unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(2), reader.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.circle_id, "enoxian");
+        let second = tokio::time::timeout(Duration::from_secs(2), reader.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.circle_id, "second");
+        drop(writer);
+        assert!(tokio::time::timeout(Duration::from_secs(2), reader.recv())
+            .await
+            .unwrap()
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn partial_header_survives_timer_ticks() {
+        fragmented_snapshot(2).await;
+    }
+
+    #[tokio::test]
+    async fn partial_payload_survives_timer_ticks() {
+        fragmented_snapshot(8).await;
+    }
+
+    #[tokio::test]
+    async fn truncated_frame_and_oversized_frame_report_errors() {
+        for header in [32u32, MAX_FRAME as u32 + 1] {
+            let (mut writer, stream) = tokio::io::duplex(64);
+            let mut reader = SnapshotReader::spawn(stream);
+            writer.write_all(&header.to_be_bytes()).await.unwrap();
+            drop(writer);
+            let error = tokio::time::timeout(Duration::from_secs(2), reader.recv())
+                .await
+                .unwrap()
+                .unwrap_err();
+            if header > MAX_FRAME as u32 {
+                assert!(error.to_string().contains("frame too large"));
+            } else {
+                assert!(error.to_string().contains("early eof"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_reader_closes_pending_socket() {
+        let (mut writer, stream) = tokio::io::duplex(64);
+        let reader = SnapshotReader::spawn(stream);
+        drop(reader);
+        let mut byte = [0];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), writer.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+}
+
+impl Drop for SnapshotReader {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 pub async fn run(peer: PeerId, stream: Stream, state: AppState, initiator: bool) {
     if let Err(error) = run_inner(peer, stream, &state, initiator).await {
         warn!("[mls-bootstrap] {peer}: bootstrap ended: {error}");
@@ -241,9 +417,13 @@ async fn run_inner(peer: PeerId, stream: Stream, state: &AppState, initiator: bo
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_sent = serde_json::to_vec(&first)?;
+    // read_exact is not cancellation-safe: a timer tick after consuming part
+    // of a frame would discard its progress and interpret JSON as a length.
+    // Only the channel receive competes with ticks; the socket reader persists.
+    let mut incoming = SnapshotReader::spawn(reader);
     loop {
         tokio::select! {
-            incoming = read_snapshot(&mut reader) => apply_snapshot(state, peer, incoming?).await?,
+            remote = incoming.recv() => apply_snapshot(state, peer, remote?).await?,
             _ = interval.tick() => {
                 let next = snapshot(state, &peer).await?;
                 let encoded = serde_json::to_vec(&next)?;
