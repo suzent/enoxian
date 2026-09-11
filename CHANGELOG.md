@@ -39,6 +39,12 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Changed
+
+- Documented that a Circle with no rendezvous or relay configured falls back to
+  a project-operated default server (`relay.enoxian.com`) for peer discovery and
+  circuit relay. Behavior is unchanged; it was previously undocumented.
+
 ### Fixed
 
 - A mentioned agent now sees what was said in the circle between its turns.
