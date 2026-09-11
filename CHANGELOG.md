@@ -39,6 +39,10 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in daily stable relay updates with checksum verification, peer-identity health checks, and rollback on failed upgrades.
+
 ### Fixed
 
 - Keep MLS bootstrap messages intact across periodic updates on slow connections, preventing framing errors that interrupt Circle sync.
