@@ -1,5 +1,6 @@
 pub mod actor;
 pub mod agent_config;
+pub mod attachments;
 pub mod auth;
 pub mod chat;
 pub mod connectivity;
@@ -121,6 +122,19 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
         .route(
             "/circles/{circle_id}/api/chat/activity",
             get(chat::get_activity).post(chat::post_activity),
+        )
+        // Chat attachments. The upload route carries its own body limit; the
+        // blob route is on the authed router so attachment bytes are never
+        // reachable without a circle token.
+        .route(
+            "/circles/{circle_id}/api/chat/attachments",
+            post(attachments::upload_attachment).layer(axum::extract::DefaultBodyLimit::max(
+                attachments::MAX_ATTACHMENT_BYTES,
+            )),
+        )
+        .route(
+            "/circles/{circle_id}/api/blobs/{hash}",
+            get(attachments::get_blob),
         )
         // M4 lifecycle
         .route("/circles/{circle_id}/stop", post(lifecycle::stop_circle))

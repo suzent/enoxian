@@ -308,6 +308,8 @@ Two further per-circle routes are used by the local UI:
 |--------|------|---------|
 | `GET`/`POST` | `/circles/<id>/api/connectivity` | Read or set embedded peer, relay, and rendezvous addresses |
 | `GET`/`POST` | `/circles/<id>/api/chat/activity` | Read or publish agent chat activity indicators |
+| `POST` | `/circles/<id>/api/chat/attachments` | Upload an image to attach to a message |
+| `GET` | `/circles/<id>/api/blobs/<hash>` | Fetch attachment bytes |
 
 ---
 
@@ -351,8 +353,14 @@ Post a message. `@mentions` in the text are parsed and each mentioned agent rece
 
 | Field | Type | Required |
 |-------|------|----------|
-| `text` | string | yes |
+| `text` | string | yes, unless `attachments` is non-empty |
 | `agent_id` | string | no (defaults to `"unknown"`) |
+| `attachments` | array | no — `{ "hash", "name" }` entries from the upload route below |
+
+Each `hash` must name a blob already uploaded to this Circle; an unknown hash is
+rejected with `400`. Only `hash` and `name` are honoured — type, size and pixel
+dimensions are re-derived from the stored bytes, so a client cannot mislabel an
+attachment. At most 10 attachments per message.
 
 **Response `201`:**
 ```json
@@ -360,6 +368,57 @@ Post a message. `@mentions` in the text are parsed and each mentioned agent rece
 ```
 
 **Events emitted:** `message_posted`, `agent_mentioned` (one per @mention)
+
+---
+
+### `POST /circles/<id>/api/chat/attachments`
+
+Upload one image and get back the metadata to pass to `POST .../chat`. The body
+is the raw file (not multipart); the display name goes in the `name` query
+parameter.
+
+```
+POST /circles/<id>/api/chat/attachments?name=screenshot.png
+Content-Type: application/octet-stream
+<raw bytes>
+```
+
+**Response `201`:**
+```json
+{
+  "hash": "735b7791...",
+  "mime": "image/png",
+  "name": "screenshot.png",
+  "size": 35403,
+  "width": 200,
+  "height": 200
+}
+```
+
+The type is determined by inspecting the bytes, not from `name` or the request
+`Content-Type`. Only `image/png`, `image/jpeg`, `image/gif` and `image/webp` are
+accepted — SVG is refused, since it can carry script. Maximum 10 MB
+(`413` above that); a payload of any other type gets `415`.
+
+Storage is content-addressed, so uploading identical bytes twice returns the
+same hash and stores one copy.
+
+---
+
+### `GET /circles/<id>/api/blobs/<hash>`
+
+Fetch attachment bytes. Requires the circle token like any other API route —
+for `<img>` tags, pass it as `?token=`, since an image request cannot set an
+`Authorization` header.
+
+Responses are `nosniff`, carry a restrictive `Content-Security-Policy`, and are
+immutably cacheable (the bytes for a hash can never change).
+
+A `404` does not necessarily mean the attachment is gone: the message travels
+through the CRDT immediately while the bytes follow over the sync stream, so a
+blob may not have arrived from its origin peer yet. The request schedules a
+fetch, and an `attachment_available` event fires once the bytes land — retry
+then.
 
 ---
 
@@ -655,6 +714,7 @@ data: <json>\n\n
 | `message_posted` | `message` | Chat message posted |
 | `agent_mentioned` | `agent_id`, `message` | An agent was @mentioned in chat |
 | `chat_activity_changed` | `activity` | Agent chat activity (seen/working) changed |
+| `attachment_available` | `hash` | Attachment bytes finished downloading from a peer |
 | `proposal_created` | `proposal_id` | Workspace change captured as a proposal |
 | `proposal_updated` | `proposal_id`, `status` | Proposal status changed |
 | `workspace_event_appended` | event fields | An entry was appended to the workspace event log |
