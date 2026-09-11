@@ -4,7 +4,7 @@ use anyhow::Result;
 use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
 use hkdf::Hkdf;
-use rand::RngCore;
+use rand::TryRng;
 use sha2::Sha256;
 use std::time::Duration;
 
@@ -137,8 +137,10 @@ fn seal_with_secret(
 ) -> Result<Vec<u8>> {
     let key = derive_key(root, circle_id, kind)?;
     let cipher = ChaCha20Poly1305::new((&key).into());
-    let mut nonce = [0; 12];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let mut nonce = [0u8; 12];
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut nonce)
+        .map_err(|e| anyhow::anyhow!("reading OS entropy for a content nonce failed: {e}"))?;
     let mut frame = Vec::with_capacity(HEADER_LEN + plaintext.len() + TAG_LEN);
     frame.extend_from_slice(MAGIC);
     frame.push(VERSION);
