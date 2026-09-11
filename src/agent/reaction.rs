@@ -198,7 +198,8 @@ async fn react(
     // Give the agent enough context about where it is. On a resumed session the
     // agent already has history, so we send a lean per-turn header; on a fresh
     // session we include the standing brief about the enoxian environment.
-    let prompt = super::context::build_prompt(state, agent_id, sender, task, resume.is_some());
+    let prompt =
+        super::context::build_prompt(state, agent_id, sender, task, resume.as_ref(), message_id);
     let (actor_token, _) = state
         .actor_tokens
         .issue(&state.circle_id, &state.peer_id, agent_id);
@@ -213,7 +214,7 @@ async fn react(
         circle_dir: &state.circle_dir,
         actor_token: Some(&actor_token),
         initiator,
-        resume: resume.as_deref(),
+        resume: resume.as_ref().map(|r| r.session_id.as_str()),
     });
     tokio::pin!(launch);
 
@@ -237,7 +238,7 @@ async fn react(
 
     // Remember the ACP session so the next mention continues the conversation.
     if let Some(sid) = &outcome.acp_session_id {
-        if let Err(e) = super::memory::save(&state.circle_dir, agent_id, sid) {
+        if let Err(e) = super::memory::save_session(&state.circle_dir, agent_id, sid) {
             tracing::warn!("[agent] failed to persist session for `{agent_id}`: {e}");
         }
     }
@@ -261,10 +262,12 @@ async fn react(
         // Post under the agent's name WITHOUT firing mention triggers: an
         // agent's reply must never wake another agent, or two agents ping-pong
         // forever. (fire_mentions = false)
-        let _ =
+        let posted =
             crate::api::chat::post_message(state, agent_id.to_string(), reply.to_string(), false);
+        mark_seen(state, agent_id, posted.as_deref().unwrap_or(message_id));
     } else {
         tracing::debug!("[agent] `{agent_id}` produced no text reply to post");
+        mark_seen(state, agent_id, message_id);
     }
     publish_agent_activity(
         state,
@@ -274,6 +277,16 @@ async fn react(
         false,
     );
     Ok(())
+}
+
+/// Remember the last chat line this agent has seen — its own reply, or the
+/// mention it just handled when it said nothing — so the next turn carries only
+/// what the room said in between. Best-effort: a failure here costs the next
+/// prompt a few already-seen lines, not correctness.
+fn mark_seen(state: &AppState, agent_id: &str, message_id: &str) {
+    if let Err(e) = super::memory::save_seen(&state.circle_dir, agent_id, message_id) {
+        tracing::debug!("[agent] failed to persist seen-mark for `{agent_id}`: {e}");
+    }
 }
 
 fn publish_agent_activity(

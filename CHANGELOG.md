@@ -39,6 +39,13 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- A mentioned agent now sees what was said in the circle between its turns.
+  Previously only its first turn carried the room's conversation, so anything
+  members or other agents said while it was away never reached it, and a
+  follow-up like "ok go ahead" arrived with no idea what had been decided.
+
 ## [0.6.2] — 2026-09-11
 
 ### Added
