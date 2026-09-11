@@ -152,6 +152,29 @@ Practical guidance:
 
 ## Relay And Rendezvous
 
+### Default Infrastructure
+
+A Circle with no rendezvous or relay address configured does **not** stay
+LAN-only. On daemon start, each such Circle resolves a project-operated default
+— `relay.enoxian.com` — over HTTP (`GET /peer-id`, 5s timeout) and uses it for
+discovery and as a circuit-relay fallback. This is a fallback, not an override:
+configuring `rendezvous_addrs`, or reserving any relay, suppresses it entirely,
+and an unreachable default is non-fatal (the Circle degrades to LAN-only).
+
+The practical consequence is that the default posture contacts third-party
+infrastructure. The trust properties below apply to it exactly as they do to a
+bootstrap server you run yourself — it never holds the PSK and cannot decrypt
+content — but it does observe the metadata listed under *Residual Metadata
+Leakage*, including your peer IDs, IP addresses, and connection timing.
+
+To avoid it, run your own (`enox bootstrap serve`, see
+[../reference/rendezvous-setup.md](../reference/rendezvous-setup.md)) and set
+the Circle's rendezvous/relay addresses. The defaults live in
+`src/defaults.rs`; a build with them set to `None` disables the behavior
+outright.
+
+### Trust Properties
+
 The bootstrap server (`enox bootstrap serve`) is centralized network
 infrastructure, not a centralized trust core. It learns metadata such as peer
 IDs, circle UUID namespaces, timing, addresses, and traffic volume. It does not

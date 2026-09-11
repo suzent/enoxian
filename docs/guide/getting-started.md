@@ -264,6 +264,13 @@ enox invite MyCircle --rendezvous enox.yourdomain.com
 enox enter enoxian://v1/...
 ```
 
+A Circle with no rendezvous or relay configured falls back to a
+project-operated default server (`relay.enoxian.com`) for discovery and relay,
+contacted on daemon start. It never holds your Circle's key and cannot read
+content, but it does see peer IDs, addresses, and connection timing. Configure
+your own addresses — or run `enox bootstrap serve` — to avoid it; see
+[../concepts/security.md](../concepts/security.md#relay-and-rendezvous).
+
 See [invite.md](invite.md) and
 [rendezvous-setup.md](../reference/rendezvous-setup.md) for WAN setup.
 
