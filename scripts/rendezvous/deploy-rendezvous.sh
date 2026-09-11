@@ -28,6 +28,7 @@ ARCH="x86_64"
 UPDATE_ONLY=false
 BUILD_ON_REMOTE=false
 LOCAL=false
+AUTO_UPDATE=""
 REPO="suzent/enoxian"
 TOKEN="${GITHUB_TOKEN:-}"
 
@@ -40,6 +41,7 @@ while [[ $# -gt 0 ]]; do
         --build-on-remote) BUILD_ON_REMOTE=true; shift ;;
         --local)           LOCAL=true; shift ;;
         --update)          UPDATE_ONLY=true; shift ;;
+        --auto-update)     AUTO_UPDATE="$2"; shift 2 ;;
         --token)           TOKEN="$2"; shift 2 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
@@ -55,6 +57,9 @@ if [[ -n "$ADVERTISE_HOST" && ! "$ADVERTISE_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
 fi
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+if [[ -n "$AUTO_UPDATE" ]]; then
+    [[ "$AUTO_UPDATE" == stable || "$AUTO_UPDATE" == off ]] || { echo 'Expected --auto-update stable|off'; exit 1; }
+fi
 ASSET="enoxian-linux-$ARCH.tar.gz"
 
 # Load GITHUB_TOKEN from .env if not already set
@@ -125,6 +130,7 @@ else
 fi
 
 # ── Install on the VPS ────────────────────────────────────────────────────────
+scp "$REPO_DIR/scripts/rendezvous/setup-relay-updates.sh" "$REPO_DIR/scripts/rendezvous/update-relay.py" "$SSH_TARGET:/tmp/"
 if $UPDATE_ONLY && [[ -z "$ADVERTISE_HOST" ]]; then
     echo "▶ Updating binary and restarting service..."
     ssh "$SSH_TARGET" "
@@ -136,6 +142,9 @@ if $UPDATE_ONLY && [[ -z "$ADVERTISE_HOST" ]]; then
         systemctl is-active enoxian-bootstrap && echo '✦ Service restarted' \
             || { journalctl -u enoxian-bootstrap -n 10 --no-pager; exit 1; }
     "
+    if [[ -n "$AUTO_UPDATE" ]]; then
+        ssh "$SSH_TARGET" "bash /tmp/setup-relay-updates.sh $AUTO_UPDATE enoxian-bootstrap $PORT"
+    fi
 else
     echo "▶ Running setup on $SSH_TARGET..."
     scp "$REPO_DIR/scripts/rendezvous/setup-rendezvous.sh" "$SSH_TARGET:/tmp/setup-rendezvous.sh"
@@ -143,5 +152,7 @@ else
     if [[ -n "$ADVERTISE_HOST" ]]; then
         ADVERTISE_ARG=" --advertise-host $ADVERTISE_HOST"
     fi
-    ssh "$SSH_TARGET" "bash /tmp/setup-rendezvous.sh --port $PORT --relay-port $RELAY_PORT$ADVERTISE_ARG"
+    UPDATE_ARG=""
+    if [[ -n "$AUTO_UPDATE" ]]; then UPDATE_ARG=" --auto-update $AUTO_UPDATE"; fi
+    ssh "$SSH_TARGET" "bash /tmp/setup-rendezvous.sh --port $PORT --relay-port $RELAY_PORT$ADVERTISE_ARG$UPDATE_ARG"
 fi
