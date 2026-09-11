@@ -507,7 +507,7 @@ impl<H: ClientHooks> AcpSession<H> {
     }
 
     async fn send(&mut self, msg: Value) -> Result<()> {
-        let mut line = serde_json::to_string(&msg)?;
+        let mut line = to_ascii_json(&msg)?;
         line.push('\n');
         self.stdin.write_all(line.as_bytes()).await?;
         self.stdin.flush().await?;
@@ -558,6 +558,42 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// Serialize `msg` as JSON with every non-ASCII character written as a `\uXXXX`
+/// escape, so the line we put on the agent's stdin is pure ASCII.
+///
+/// JSON is defined over text, but this transport is a byte pipe, and an agent
+/// that decodes its stdin chunk by chunk can split a multi-byte UTF-8 sequence
+/// across two reads. A Python agent doing that with `errors="surrogateescape"`
+/// turns the orphaned tail byte into a lone surrogate, which then fails to
+/// re-encode: an em dash (`e2 80 94`) split after its second byte is reported
+/// back to us as `'utf-8' codec can't encode character '\udc94'`. Our prompts
+/// carry em dashes and whatever Unicode members type in chat, so a single
+/// unlucky buffer boundary was enough to fail a whole turn.
+///
+/// Escaping keeps the payload byte-identical in meaning while making every byte
+/// ASCII, so no chunk boundary can land inside a character. Correct agents are
+/// unaffected: `\uXXXX` is ordinary JSON that every parser already handles.
+fn to_ascii_json(msg: &Value) -> Result<String> {
+    let raw = serde_json::to_string(msg)?;
+    if raw.is_ascii() {
+        return Ok(raw);
+    }
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii() {
+            out.push(ch);
+        } else {
+            // `encode_utf16` yields one unit for the BMP and a surrogate pair
+            // above it, which is exactly what JSON's `\uXXXX` form expects.
+            let mut buf = [0u16; 2];
+            for unit in ch.encode_utf16(&mut buf) {
+                out.push_str(&format!("\\u{unit:04x}"));
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn compact(v: &Value) -> String {
     serde_json::to_string(v).unwrap_or_default()
 }
@@ -605,5 +641,32 @@ mod tests {
         // Non-message updates yield nothing.
         let tool = json!({ "sessionUpdate": "tool_call", "content": { "text": "x" } });
         assert_eq!(agent_message_text(&tool), None);
+    }
+
+    #[test]
+    fn outgoing_json_is_ascii_only() {
+        // An em dash split across the agent's stdin reads is what produced the
+        // lone-surrogate encode failure; escaping keeps every byte ASCII.
+        let msg =
+            json!({ "prompt": "revert \u{2014} so make focused changes", "emoji": "\u{1f600}" });
+        let line = to_ascii_json(&msg).unwrap();
+        assert!(
+            line.is_ascii(),
+            "line still carries multi-byte text: {line}"
+        );
+        assert!(line.contains("\\u2014"), "{line}");
+        // Above the BMP is escaped as a surrogate pair.
+        assert!(line.contains("\\ud83d\\ude00"), "{line}");
+        // And it still parses back to exactly what we sent.
+        assert_eq!(serde_json::from_str::<Value>(&line).unwrap(), msg);
+    }
+
+    #[test]
+    fn ascii_payloads_are_passed_through_unchanged() {
+        let msg = json!({ "sessionId": "s1", "text": "plain \"quoted\" ascii\n" });
+        assert_eq!(
+            to_ascii_json(&msg).unwrap(),
+            serde_json::to_string(&msg).unwrap()
+        );
     }
 }
