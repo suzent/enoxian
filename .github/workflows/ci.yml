@@ -104,6 +104,13 @@ jobs:
       - name: Validate POSIX shell installer
         run: sh -n scripts/install.sh
 
+      - name: Validate relay setup and updater
+        run: |
+          bash -n scripts/rendezvous/setup-rendezvous.sh
+          bash -n scripts/rendezvous/setup-relay-updates.sh
+          bash -n scripts/rendezvous/deploy-rendezvous.sh
+          python3 scripts/rendezvous/test-update-relay.py
+
       # install.ps1 had no validation of any kind, which is how an unavailable
       # .NET API reached users and stopped the installer before it downloaded
       # anything. Parsing is the floor — it would not have caught that bug,

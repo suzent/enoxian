@@ -3,7 +3,7 @@
 # The enox binary must be available at /tmp/enox unless BINARY_SRC overrides it.
 #
 # Usage:
-#   bash setup-rendezvous.sh [--port PORT] [--relay-port PORT] [--advertise-host HOST]
+#   bash setup-rendezvous.sh [--port PORT] [--relay-port PORT] [--advertise-host HOST] [--auto-update stable|off]
 #
 # Defaults:
 #   PORT=36521
@@ -13,15 +13,29 @@ set -euo pipefail
 PORT=36521
 RELAY_PORT=""
 ADVERTISE_HOST=""
+AUTO_UPDATE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --port) PORT="$2"; shift 2 ;;
         --relay-port) RELAY_PORT="$2"; shift 2 ;;
         --advertise-host) ADVERTISE_HOST="$2"; shift 2 ;;
+        --auto-update) AUTO_UPDATE="$2"; shift 2 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
+
+# Preserve enabled updates when setup migrates a legacy relay unit name.
+if [[ -z "$AUTO_UPDATE" ]] && systemctl is-enabled --quiet enoxian-relay-update.timer 2>/dev/null; then
+    AUTO_UPDATE=stable
+fi
+
+if [[ -n "$AUTO_UPDATE" ]]; then
+    [[ "$AUTO_UPDATE" == stable || "$AUTO_UPDATE" == off ]] || { echo 'Expected --auto-update stable|off'; exit 1; }
+    test -f "$(dirname "$0")/setup-relay-updates.sh"
+    test -f "$(dirname "$0")/update-relay.py"
+    command -v python3 >/dev/null
+fi
 
 if [[ -z "$RELAY_PORT" ]]; then
     RELAY_PORT=$((PORT + 1))
@@ -133,4 +147,8 @@ else
     echo "Error: service failed to start"
     journalctl -u "$SERVICE_NAME" -n 20 --no-pager
     exit 1
+fi
+
+if [[ -n "$AUTO_UPDATE" ]]; then
+    bash "$(dirname "$0")/setup-relay-updates.sh" "$AUTO_UPDATE" "$SERVICE_NAME" "$PORT"
 fi

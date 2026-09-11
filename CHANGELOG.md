@@ -46,6 +46,16 @@ refuses to publish a version whose section is missing or empty.
   members or other agents said while it was away never reached it, and a
   follow-up like "ok go ahead" arrived with no idea what had been decided.
 
+## [0.6.2] — 2026-09-11
+
+### Added
+
+- Opt-in daily stable relay updates with checksum verification, peer-identity health checks, and rollback on failed upgrades.
+
+### Fixed
+
+- Keep MLS bootstrap messages intact across periodic updates on slow connections, preventing framing errors that interrupt Circle sync.
+
 ## [0.6.1] — 2026-09-06
 
 ### Fixed
@@ -490,7 +500,8 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/suzent/enoxian/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/suzent/enoxian/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/suzent/enoxian/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/suzent/enoxian/compare/v0.4.4...v0.5.0

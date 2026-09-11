@@ -21,6 +21,7 @@ param(
     [switch]$BuildOnRemote,
     [switch]$Local,
     [switch]$Update,
+    [ValidateSet("stable", "off")][string]$AutoUpdate,
     [string]$Token = $env:GITHUB_TOKEN
 )
 
@@ -142,6 +143,8 @@ cargo build --release --bin enox --target $LinuxTarget 2>&1
 }
 
 # ── Install on the VPS ────────────────────────────────────────────────────────
+scp (Join-Path $PSScriptRoot 'setup-relay-updates.sh') (Join-Path $PSScriptRoot 'update-relay.py') "${Target}:/tmp/"
+if ($LASTEXITCODE -ne 0) { throw 'Failed to copy relay updater' }
 if ($Update -and -not $AdvertiseHost) {
     Write-Host "▶ Updating binary and restarting service..."
     ssh $Target @'
@@ -153,13 +156,18 @@ sleep 1
 systemctl is-active enoxian-bootstrap && echo "✦ Service restarted" \
     || { journalctl -u enoxian-bootstrap -n 10 --no-pager; exit 1; }
 '@
+    if ($LASTEXITCODE -ne 0) { throw 'Remote update failed' }
+    if ($AutoUpdate) {
+        ssh $Target "bash /tmp/setup-relay-updates.sh $AutoUpdate enoxian-bootstrap $Port"
+    }
 } else {
     Write-Host "▶ Running setup on $Target..."
     $SetupScript = Join-Path $PSScriptRoot "setup-rendezvous.sh"
     scp $SetupScript "${Target}:/tmp/setup-rendezvous.sh"
     if ($LASTEXITCODE -ne 0) { throw "scp of setup script failed" }
     $AdvertiseArg = if ($AdvertiseHost) { " --advertise-host '$AdvertiseHost'" } else { "" }
-    ssh $Target "BINARY_SRC='$RemoteBinary' bash /tmp/setup-rendezvous.sh --port $Port --relay-port $RelayPort$AdvertiseArg"
+    $UpdateArg = if ($AutoUpdate) { " --auto-update $AutoUpdate" } else { "" }
+    ssh $Target "BINARY_SRC='$RemoteBinary' bash /tmp/setup-rendezvous.sh --port $Port --relay-port $RelayPort$AdvertiseArg$UpdateArg"
 }
 
 if ($LASTEXITCODE -ne 0) { throw "Remote setup failed" }
