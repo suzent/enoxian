@@ -56,6 +56,12 @@ refuses to publish a version whose section is missing or empty.
   type in chat, and an agent that read its input in chunks could split such a
   character in half and abort the whole turn.
 
+### Security
+
+- Upgraded the ChaCha20-Poly1305 implementation used for encrypted content
+  frames to 0.11. No vulnerability is fixed and the frame format is unchanged;
+  the upgrade keeps the cipher on a maintained release line.
+
 ## [0.6.2] — 2026-09-11
 
 ### Added
