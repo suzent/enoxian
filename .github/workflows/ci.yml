@@ -39,6 +39,9 @@ jobs:
     name: Changelog entry
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,22 +51,36 @@ jobs:
       # `## [Unreleased]`. Release notes are cut from that section, so a missed
       # entry silently ships an undocumented change. Apply the `no-changelog`
       # label for internal-only work (refactors, tests, CI).
+      #
+      # The label is read from the API rather than `github.event.pull_request`,
+      # because the payload is a snapshot of the event that started the run:
+      # a label applied after a failure is absent from it, and re-running the
+      # job replays that same stale payload. Reading it live makes the
+      # documented escape hatch work without an empty commit to raise a fresh
+      # event — and keeps label changes off the workflow triggers, so applying
+      # one cannot cancel and restart the whole matrix.
       - name: Require a CHANGELOG entry
         if: >-
           github.event_name == 'pull_request'
           && github.event.pull_request.user.login != 'dependabot[bot]'
-          && !contains(github.event.pull_request.labels.*.name, 'no-changelog')
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" \
+               --jq '.[].name' | grep -qx 'no-changelog'; then
+            echo "Exempt: 'no-changelog' label applied."
+            exit 0
+          fi
           git fetch --no-tags origin "$BASE_REF"
           base="$(git merge-base FETCH_HEAD HEAD)"
           if git diff --name-only "$base" HEAD | grep -qx 'CHANGELOG.md'; then
             echo "CHANGELOG.md updated."
             exit 0
           fi
-          echo "::error file=CHANGELOG.md::This pull request changes no CHANGELOG entry. Add one under '## [Unreleased]', or apply the 'no-changelog' label if users cannot observe the change."
+          echo "::error file=CHANGELOG.md::This pull request changes no CHANGELOG entry. Add one under '## [Unreleased]', or apply the 'no-changelog' label if users cannot observe the change, then re-run this check."
           exit 1
 
   dependency-audit:
