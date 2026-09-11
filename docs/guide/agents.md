@@ -29,7 +29,7 @@ local execution layer
       │
       ▼
 results
-      ├── file changes  ─▶  a reviewable proposal (CHANGES tab / `enox proposal list`)
+      ├── file changes  ─▶  a reviewable proposal (HISTORY tab / `enox proposal list`)
       └── text reply     ─▶  posted back into circle chat as the agent
 ```
 
@@ -244,7 +244,7 @@ A run produces up to two independent results:
 1. **Accepted proposal history** for any files the agent changed. Agent writes
    already land in the live workspace, so enoxian records the resulting diff as
    accepted rather than presenting a misleading approval gate. Inspect it in the
-   frontend **CHANGES** tab or with `enox proposal list` / `show`, and undo it at
+   frontend **HISTORY** tab or with `enox proposal list` / `show`, and undo it at
    any time with `enox proposal revert`. The pending status remains supported for
    historical records and future isolated/staged workflows.
 

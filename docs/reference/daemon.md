@@ -201,6 +201,7 @@ can resolve the server's peer ID. Its stable keypair is stored at
 |----------|--------|
 | `RUST_LOG` | Tracing log filter |
 | `ENOXIAN_AGENT_ID` | Local presence/agent ID prefix |
+| `ENOXIAN_HOME` | Override the enoxian state directory (default `~/.enoxian`) |
 | `ENOXIAN_API` | Base URL used by the `enox` CLI |
 | `ENOXIAN_CIRCLE` | Default circle target used by the `enox` CLI |
 | `ENOXIAN_SRC` | Source path used by `enox update --dev` |

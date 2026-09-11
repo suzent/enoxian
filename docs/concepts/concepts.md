@@ -10,7 +10,7 @@ Each installation owns an Ed25519 signing identity. Its public key is the stable
 
 ## Workspace
 
-A workspace is the ordinary directory watched by `enoxd`. Editors and agents access it through native file I/O. enoxian synchronizes what happens there; it does not replace the filesystem.
+A workspace is the ordinary directory watched by the daemon. Editors and agents access it through native file I/O. enoxian synchronizes what happens there; it does not replace the filesystem.
 
 ## Per-file CRDT
 

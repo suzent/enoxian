@@ -81,7 +81,11 @@ Agent presence list.
     "agent_id":    "mymac-KRhAf4ug",
     "status":      "online",
     "last_seen":   "2026-05-15T10:00:00Z",
-    "current_file": null
+    "current_file": null,
+    "peer_id":     "12D3KooW...",
+    "connections": [
+      { "kind": "direct", "address": "/ip4/192.168.1.24/tcp/36521" }
+    ]
   }
 ]
 ```
@@ -297,6 +301,13 @@ absolute paths and `..` segments are rejected.
 | `POST` | `/circles/<id>/api/files/create` | Create a file with optional `content` |
 | `POST` | `/circles/<id>/api/files/rename` | Rename a file from `from` to `to` |
 | `POST` | `/circles/<id>/api/files/delete` | Delete a file |
+
+Two further per-circle routes are used by the local UI:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET`/`POST` | `/circles/<id>/api/connectivity` | Read or set embedded peer, relay, and rendezvous addresses |
+| `GET`/`POST` | `/circles/<id>/api/chat/activity` | Read or publish agent chat activity indicators |
 
 ---
 
@@ -600,6 +611,9 @@ configuration and identity.
 | `POST` | `/api/agent-config/reaction` | Set mention reaction: `pull` or `push` |
 | `POST` | `/api/agent-config/agents` | Add or replace an agent launcher |
 | `POST` | `/api/agent-config/agents/remove` | Remove an agent launcher |
+| `GET` | `/api/agent-config/discover` | Probe the machine for installed agent CLIs |
+| `GET` | `/api/agent-plugins` | List built-in and installed agent plugins |
+| `POST` | `/api/agent-plugins/{plugin_id}/install` | Install an agent plugin |
 | `POST` | `/api/init` | Frontend helper for `enox init` |
 | `POST` | `/api/enter` | Frontend helper for `enox enter` |
 
@@ -632,14 +646,18 @@ data: <json>\n\n
 | `lock_released` | `path`, `agent_id` | File lock released |
 | `task_created` | `task_id` | New task created |
 | `task_claimed` | `task_id`, `agent_id` | Task claimed |
+| `task_unclaimed` | `task_id`, `agent_id` | Task released back to open |
 | `task_done` | `task_id` | Task marked done |
 | `presence_changed` | `agent_id` | Agent presence updated |
 | `member_added` | `peer_id` | Member added to circle |
 | `member_removed` | `peer_id` | Member removed from circle |
+| `member_pending` | `peer_id` | Member awaiting admission |
 | `message_posted` | `message` | Chat message posted |
 | `agent_mentioned` | `agent_id`, `message` | An agent was @mentioned in chat |
+| `chat_activity_changed` | `activity` | Agent chat activity (seen/working) changed |
 | `proposal_created` | `proposal_id` | Workspace change captured as a proposal |
 | `proposal_updated` | `proposal_id`, `status` | Proposal status changed |
+| `workspace_event_appended` | event fields | An entry was appended to the workspace event log |
 
 **`message` object shape:**
 ```json

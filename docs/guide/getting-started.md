@@ -129,10 +129,12 @@ You can also start it in the background:
 enox start
 ```
 
-By default the daemon identifies its local editor/user presence as
-`human-<peer-suffix>`. To run multiple agents from the same machine or give the
-local user a stable custom name, set `ENOXIAN_AGENT_ID` before starting the
-daemon:
+By default the daemon names its local editor/user presence after the device
+identity — your user handle if set, otherwise the device label, otherwise the
+system hostname — with a short peer suffix appended so two machines sharing a
+name stay distinct (`macbook-pro-Kj4R`). To run multiple agents from the same
+machine or give the local user a stable custom name, set `ENOXIAN_AGENT_ID`
+before starting the daemon:
 
 ```bash
 ENOXIAN_AGENT_ID=codex ./target/debug/enox daemon run
