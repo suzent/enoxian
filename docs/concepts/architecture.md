@@ -1,6 +1,6 @@
 # Architecture
 
-enoxian is a local-first collaboration daemon. Editors, coding agents, and scripts keep using ordinary files; `enoxd` observes those files, synchronizes their state, and records enough history to explain or reverse changes.
+enoxian is a local-first collaboration daemon. Editors, coding agents, and scripts keep using ordinary files; the daemon observes those files, synchronizes their state, and records enough history to explain or reverse changes.
 
 ## System Shape
 

@@ -93,12 +93,16 @@ enox daemon run [--port 36521] [--bind-lan] [--bind <IP>]
 Install and manage an opt-in per-user login service:
 
 ```bash
-enox service install [--port 36521] [--force]
+enox service install [--port 36521] [--bind-lan] [--bind <IP>] [--force]
 enox service status
 enox service start|stop|restart
 enox service logs
 enox service uninstall
 ```
+
+`--bind-lan` exposes the local API beyond loopback; `--bind <IP>` sets an
+explicit bind address and overrides it. Both widen access to a privileged API —
+see [../concepts/security.md](../concepts/security.md).
 
 Linux uses a systemd user unit, macOS uses a LaunchAgent, and Windows uses a
 login Scheduled Task. Agent mention execution remains independently controlled
@@ -158,7 +162,8 @@ enox update --dev
 Create a new Circle, generate a workspace directory, and print a shareable invite link.
 
 ```bash
-enox init --name <NAME> [--ttl <DURATION>] [--dir <PATH>]
+enox init --name <NAME> [--ttl <DURATION>] [--dir <PATH>] [--owner <NAME>]
+          [--join-policy auto|manual]
 ```
 
 | Flag | Default | Description |
@@ -166,6 +171,8 @@ enox init --name <NAME> [--ttl <DURATION>] [--dir <PATH>]
 | `--name` | required | Human-readable circle name |
 | `--ttl` | `7d` | Validity of the generated invite link (`7d`, `24h`, etc.) |
 | `--dir` | `~/enoxian/<name>` | Workspace directory |
+| `--owner` | device user handle or label | Owner name recorded for the Circle |
+| `--join-policy` | `auto` | `auto` admits invited peers; `manual` holds them as pending |
 
 **Output:**
 ```
@@ -642,12 +649,18 @@ is explicit; handling an `@mention` never downloads packages.
 enox agent plugins
 enox agent install codex-acp
 enox agent install claude
+enox agent install suzent
 ```
 
 `enox agent install claude` checks for the official Claude Code CLI and a valid
 `claude auth status`, plus system Node.js 22+ with npm, before installing the
 pinned ACP bridge. It does not install or manage Node.js. It accepts
 `claude-code-acp` as a legacy alias for migration.
+
+`suzent` is a *native* plugin: Suzent speaks ACP itself, so nothing is
+downloaded or pinned — installing only writes the chat handle, and the `suzent`
+binary is resolved on `PATH`. A Suzent backend must be running
+(`suzent serve` or `suzent start`).
 
 ### `agent add`
 
