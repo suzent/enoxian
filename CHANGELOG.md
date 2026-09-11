@@ -51,6 +51,10 @@ refuses to publish a version whose section is missing or empty.
   Previously only its first turn carried the room's conversation, so anything
   members or other agents said while it was away never reached it, and a
   follow-up like "ok go ahead" arrived with no idea what had been decided.
+- Mentioning an agent no longer fails with a Unicode encoding error when the
+  prompt contains non-ASCII text. Prompts carry em dashes, and anything members
+  type in chat, and an agent that read its input in chunks could split such a
+  character in half and abort the whole turn.
 
 ## [0.6.2] — 2026-09-11
 
