@@ -1,6 +1,6 @@
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
-use rand::RngCore;
+use rand::Rng;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -38,7 +38,7 @@ impl ActorTokenRegistry {
         // 256 bits of randomness. Public peer IDs alone must never be bearer
         // credentials.
         let mut random = [0_u8; 32];
-        rand::thread_rng().fill_bytes(&mut random);
+        rand::rng().fill_bytes(&mut random);
         let mut digest = Sha256::new();
         digest.update(b"enoxian-actor-token-v1\0");
         digest.update(circle_id.as_bytes());

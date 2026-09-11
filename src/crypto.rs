@@ -1,10 +1,10 @@
 use anyhow::{bail, Result};
 use libp2p::identity::Keypair;
-use rand::RngCore;
+use rand::Rng;
 
 pub fn generate_psk() -> [u8; 32] {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     bytes
 }
 
