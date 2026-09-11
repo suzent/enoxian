@@ -237,13 +237,13 @@ pub async fn run(
         circle_dir: &circle_dir,
         actor_token: Some(actor_token),
         initiator: Initiator::Local,
-        resume: resume.as_deref(),
+        resume: resume.as_ref().map(|r| r.session_id.as_str()),
     })
     .await
     .context("agent run failed")?;
 
     if let Some(sid) = &outcome.acp_session_id {
-        let _ = crate::agent::memory::save(&circle_dir, &agent, sid);
+        let _ = crate::agent::memory::save_session(&circle_dir, &agent, sid);
     }
 
     println!("✓ agent finished ({})", outcome.detail);
