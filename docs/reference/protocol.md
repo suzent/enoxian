@@ -3,8 +3,12 @@
 ## WebSocket — Yjs Document Sync
 
 ```
-ws://<host>:<port>/ws/yjs?path=<relative-file-path>
+ws://<host>:<port>/circles/<circle-id>/ws/yjs?path=<relative-file-path>
 ```
+
+Every route below is circle-scoped: a daemon serves many Circles, so the
+Circle's UUID is part of the path. Get yours from `enox status` or
+`GET /circles`.
 
 Synchronizes a single Yjs document (Y.Text file) between the server and a client. Uses the **y-sync v1 binary protocol** over WebSocket binary frames.
 
@@ -49,7 +53,7 @@ All frames are **binary**. Messages are encoded with yrs `EncoderV1`. The leadin
 ### Example flow
 
 ```
-connect → ws://localhost:36521/ws/yjs?path=src/notes.txt
+connect → ws://localhost:36521/circles/<circle-id>/ws/yjs?path=src/notes.txt
 
 S→C  SyncStep1([state_vector bytes])
 C→S  SyncStep2([diff bytes])
@@ -68,7 +72,7 @@ C→S  Update([incremental update bytes])
 ## SSE — Circle Event Stream
 
 ```
-GET /api/events
+GET /circles/<circle-id>/api/events
 Accept: text/event-stream
 ```
 
@@ -80,6 +84,8 @@ data: {"type":"task_created","task_id":"4873c16e-..."}\n\n
 
 ### Event types
 
+Paths below are relative to `/circles/<circle-id>`.
+
 | `type` | Additional fields | Emitted by |
 |--------|-------------------|------------|
 | `task_created` | `task_id` | `POST /api/tasks` |
@@ -89,6 +95,14 @@ data: {"type":"task_created","task_id":"4873c16e-..."}\n\n
 | `lock_acquired` | `path`, `agent_id` | `POST /api/bind` |
 | `lock_released` | `path`, `agent_id` | `POST /api/release` |
 | `file_updated` | `path` | File watcher (disk write detected) |
+| `file_deleted` | `path` | File watcher (deletion detected) |
+| `presence_changed` | — | Peer presence updates |
+| `member_added` / `member_removed` / `member_pending` | member fields | Membership changes |
+| `message_posted` | `message` | `POST /api/chat` |
+| `agent_mentioned` | `agent_id`, `message` | An `@mention` in a posted message |
+| `chat_activity_changed` | `activity` | `POST /api/chat/activity` |
+| `proposal_created` / `proposal_updated` | proposal fields | Proposal engine |
+| `workspace_event_appended` | event fields | Workspace event log |
 
 ### Delivery semantics
 
@@ -111,7 +125,8 @@ enox watch
 ```python
 import httpx
 
-with httpx.stream("GET", "http://127.0.0.1:36521/api/events",
+url = "http://127.0.0.1:36521/circles/<circle-id>/api/events"
+with httpx.stream("GET", url,
                   headers={"Accept": "text/event-stream"}) as r:
     for line in r.iter_lines():
         if line.startswith("data: "):
@@ -120,6 +135,8 @@ with httpx.stream("GET", "http://127.0.0.1:36521/api/events",
 ```
 
 ```javascript
-const source = new EventSource("http://127.0.0.1:36521/api/events");
+const source = new EventSource(
+  "http://127.0.0.1:36521/circles/<circle-id>/api/events",
+);
 source.onmessage = (e) => console.log(JSON.parse(e.data));
 ```
