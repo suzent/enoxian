@@ -39,6 +39,8 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-09-11
+
 ### Added
 
 - Opt-in daily stable relay updates with checksum verification, peer-identity health checks, and rollback on failed upgrades.
@@ -491,7 +493,8 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/suzent/enoxian/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/suzent/enoxian/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/suzent/enoxian/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/suzent/enoxian/compare/v0.4.4...v0.5.0
