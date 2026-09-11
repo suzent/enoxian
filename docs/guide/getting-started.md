@@ -32,7 +32,7 @@ see below.
 
 ## Prerequisites (build from source)
 
-- Rust 1.88 or newer
+- Rust 1.91 or newer
 - Cargo
 - Node.js (only for building the frontend in release mode)
 

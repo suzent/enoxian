@@ -5,7 +5,7 @@ documentation fixes, and pull requests are welcome.
 
 ## Development setup
 
-Install Rust 1.88 or newer. Node.js 22 is required only for frontend work.
+Install Rust 1.91 or newer. Node.js 22 is required only for frontend work.
 
 ```sh
 git clone https://github.com/suzent/enoxian.git

@@ -2,7 +2,7 @@
 name = "enoxian"
 version = "0.6.2"
 edition = "2021"
-rust-version = "1.88.0"
+rust-version = "1.91.0"
 publish = false
 description = "Peer-to-peer collaboration layer for humans and AI agents"
 license = "MIT"
@@ -81,11 +81,11 @@ open = "5"
 rust-embed = "8.12"
 
 # M11 — MLS group key management (RFC 9420)
-openmls = "0.8"
-openmls_basic_credential = { version = "0.5", features = ["clonable"] }
-openmls_rust_crypto = "0.5"
-openmls_traits = "0.5"
-tls_codec = "0.4"
+openmls = "0.9"
+openmls_basic_credential = { version = "0.6", features = ["clonable"] }
+openmls_rust_crypto = "0.6"
+openmls_traits = "0.6"
+tls_codec = "0.5"
 
 [dev-dependencies]
 tempfile = "3"

@@ -41,6 +41,10 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
+- Building enoxian from source now requires Rust 1.91 or newer, up from 1.88.
+  The MLS implementation raised its own minimum, and the protocol stack has to
+  move with it. Installing a released binary is unaffected.
+
 - Documented that a Circle with no rendezvous or relay configured falls back to
   a project-operated default server (`relay.enoxian.com`) for peer discovery and
   circuit relay. Behavior is unchanged; it was previously undocumented.
