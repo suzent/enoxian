@@ -15,7 +15,7 @@ It is read by Claude Code, Cursor, Codex, and any other coding agent that respec
 **File IO stays native. enoxian only coordinates intent.**
 
 - Read and write files using your own native tools (`read_file`, `edit_file`, `bash`, etc.)
-- Use `enoxd` CLI only to signal coordination: claiming tasks, acquiring locks, reporting completion
+- Use the `enox` CLI only to signal coordination: claiming tasks, acquiring locks, reporting completion
 - Never route file content through the CLI — it is not a file proxy
 
 ---
@@ -71,7 +71,7 @@ For routine files that only you are likely to touch, the lock is optional — th
 
 ### 4. Do your work
 
-Use your native file tools. Edit files normally. `enoxd` watches for changes via filesystem events and syncs them to the Circle automatically.
+Use your native file tools. Edit files normally. The daemon watches for changes via filesystem events and syncs them to the Circle automatically.
 
 ### 5. Release locks and mark done
 
@@ -98,9 +98,7 @@ A locked file will be set to read-only (`chmod 444` on Unix) by the daemon. Your
 ## Task Lifecycle
 
 ```
-open ⇄ claimed → in_progress → done
-                         ↓
-                      blocked  (waiting on another task or lock)
+open ⇄ claimed → done
 ```
 
 ```bash
@@ -108,7 +106,7 @@ enox tasks                     # list all tasks with status
 enox tasks --status open       # filter by status
 enox claim <task-id>           # open → claimed
 enox unclaim <task-id>         # claimed → open; releases it for others
-enox done <task-id>            # in_progress → done
+enox done <task-id>            # claimed → done
 ```
 
 ---
@@ -128,8 +126,8 @@ Presence updates are broadcast automatically — you do not need to announce you
 
 | ❌ Don't | ✅ Do instead |
 |---------|--------------|
-| Read files via `enox read <path>` | Use your native `read_file` / `cat` |
-| Write files via `enox write <path>` | Use your native `edit_file` / `write` |
+| Route file content through the CLI | Use your native `read_file` / `cat` |
+| Treat the CLI as a file proxy | Use your native `edit_file` / `write` |
 | Start a task without claiming | `enox claim <task-id>` first |
 | Hold a lock after finishing | `enox release <path>` immediately |
 | Ignore a locked file and write anyway | Wait for the lock to be released |
@@ -155,9 +153,11 @@ Use these environment variables to target a daemon and circle from the CLI:
 |------|-------------|--------------|
 | **Unmanaged** | Agent edits files; daemon syncs changes | File sync, passive lock protection |
 | **CLI** | Agent uses `enox` CLI for coordination | + Task claiming, explicit locking, presence |
-| **Native (Suzent)** | Direct Yjs connection via `y-py` | + Streaming write, reactive subscriptions, awareness, planner |
+| **ACP** | Daemon runs the agent over the Agent Client Protocol | + Chat replies, session-resumed conversation memory, attributed writes |
 
-Most third-party agents operate in **CLI mode**. This file defines the CLI mode contract.
+Most third-party agents operate in **CLI mode**. This file defines the CLI mode
+contract. ACP mode is configured by the operator, not by the agent — see
+[docs/guide/agents.md](docs/guide/agents.md).
 
 ---
 
