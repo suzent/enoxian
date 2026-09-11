@@ -30,7 +30,8 @@ If frontend dependencies or source changed, also run `npm audit` and
 - Keep each pull request focused and explain the user-visible behavior.
 - Add tests for behavior changes and update documentation where needed.
 - Add user-visible changes under `Unreleased` in `CHANGELOG.md`. CI enforces
-  this; apply the `no-changelog` label when a change is purely internal.
+  this; apply the `no-changelog` label when a change is purely internal, then
+  re-run the failed check — the label is read live, so no new commit is needed.
 - Do not commit credentials, Circle secrets, invite URLs, local state under
   `~/.enoxian`, build output, or generated frontend assets.
 
