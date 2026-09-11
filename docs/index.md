@@ -37,6 +37,13 @@ exact CLI/API behavior.
 | [concepts/storage.md](concepts/storage.md) | Workspace and circle persistence, retention, and at-rest limitations |
 | [concepts/security.md](concepts/security.md) | Trust model, identity, PSK, Noise, and MLS content protection |
 
-The documentation describes current behavior. Completed design plans and old
-roadmaps are retained in Git history rather than kept as a second, stale source
-of truth.
+## Development
+
+| File | Description |
+|------|-------------|
+| [development/](development/) | Design specs for work not yet built — the one part of these docs that describes things that do not exist |
+
+Everything outside `development/` describes current behavior. Completed design
+plans and old roadmaps are retained in Git history rather than kept as a
+second, stale source of truth; a spec is folded into the guides and deleted
+once it ships.
