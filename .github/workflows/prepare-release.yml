@@ -15,13 +15,25 @@ on:
   workflow_dispatch:
     inputs:
       level:
-        description: "Version bump"
+        description: "Version bump (auto derives it from the commits)"
         required: true
-        default: patch
+        default: auto
         type: choice
-        options: [patch, minor, major]
+        options: [auto, patch, minor, major]
       version:
         description: "Exact version instead of a bump (for example 0.5.0)"
+        required: false
+        type: string
+  # Callable so the scheduled readiness job can reuse this rather than
+  # duplicating it. `workflow_call` does not support `choice`, so the level is a
+  # plain string here; `resolve` below validates it either way.
+  workflow_call:
+    inputs:
+      level:
+        required: false
+        default: auto
+        type: string
+      version:
         required: false
         type: string
 
@@ -54,10 +66,35 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      # `auto` reads the conventional-commit types since the last release tag.
+      # A breaking change must still be released deliberately: `!` and
+      # `BREAKING CHANGE` have never been used here, so `auto` will not produce
+      # a major on its own, and a silent major would be worse than a manual one.
+      - id: resolve
+        name: Resolve the bump level
+        env:
+          LEVEL: ${{ inputs.level }}
+        run: |
+          set -euo pipefail
+          case "${LEVEL:-auto}" in
+            auto)
+              level="$(./scripts/derive-bump.sh)"
+              echo "Derived bump level from commits: $level"
+              ;;
+            patch|minor|major)
+              level="$LEVEL"
+              ;;
+            *)
+              echo "Unknown bump level: $LEVEL" >&2
+              exit 1
+              ;;
+          esac
+          echo "level=$level" >> "$GITHUB_OUTPUT"
+
       - id: bump
         name: Run the bump script
         env:
-          LEVEL: ${{ inputs.level }}
+          LEVEL: ${{ steps.resolve.outputs.level }}
           EXACT: ${{ inputs.version }}
         run: |
           set -euo pipefail
