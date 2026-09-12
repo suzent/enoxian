@@ -61,6 +61,30 @@ frame. A dedicated reader prevents cancellation in the middle of a frame. If a
 broadcast receiver lags, the sender transmits full idempotent CRDT state. P2P
 updates use a `p2p` transaction origin to prevent echo.
 
+Reserved paths (prefixed with a NUL byte, so they cannot collide with a real
+file) carry control messages on the same stream: awareness, deletions,
+revocation, session hello, and chat attachment transfer.
+
+### Chat attachment transfer
+
+Chat attachments ride this stream rather than the proposal protocol, because
+proposal reconciliation runs only once per connection — an image posted
+mid-session would otherwise not reach peers until the next reconnect.
+
+```text
+\0blob-want/<sha256>   ->   \0blob-data/<sha256> + raw bytes
+```
+
+A want is broadcast to every connected peer; any of them may answer, and a
+duplicate answer is discarded. A peer serves only blobs it actually holds, and
+silence is a valid response. Received content is rejected unless it hashes to
+the name it arrived under, so a peer cannot substitute different bytes for an
+attachment another member posted. Frames are binary-safe, so unlike proposal
+bundles the payload needs no base64 expansion.
+
+On stream setup each side re-requests any attachment still missing from its
+transcript, which backfills a device that was offline or joined late.
+
 ## `/enoxian/proposals/2.0.0`
 
 Once per connection, both peers reconcile their durable proposal stores:

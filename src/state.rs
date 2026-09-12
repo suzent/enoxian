@@ -101,6 +101,14 @@ pub struct AppState {
     /// Per-path flag: set to true before flush_to_disk writes, cleared by watcher on receipt.
     /// Shared between the file watcher and flush_to_disk so they operate on the same flag.
     pub self_write_flags: Arc<DashMap<String, Arc<AtomicBool>>>,
+    /// Content-addressed store for chat attachments (images and other binary
+    /// payloads). Lives under the circle dir, not the workspace, so the file
+    /// watcher never sees it and blobs never enter the CRDT.
+    blobs: Arc<std::sync::OnceLock<Arc<crate::proposal::blob::BlobStore>>>,
+    /// Blob hashes this node wants but does not have. Live sync streams
+    /// subscribe and forward each want to their peer, so an attachment posted
+    /// mid-session is fetched immediately instead of on the next reconnect.
+    pub blob_wants: broadcast::Sender<String>,
     pub join_policy: crate::config::JoinPolicy,
     pub owner: String,
     pub mls: crate::mls::SharedMlsState,
@@ -146,6 +154,7 @@ impl AppState {
         let (all_updates_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_awareness_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_deletes_tx, _) = broadcast::channel(EVENT_CAPACITY);
+        let (blob_wants_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let control = Arc::new(Doc::new());
 
         // Forward control doc updates to P2P peers (skip updates that arrived from peers).
@@ -165,6 +174,10 @@ impl AppState {
         let chat_arr = control.get_or_insert_array(CHAT_KEY);
         let events_for_chat = events_tx.clone();
         let seen_chat_ids = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        // A message arriving from a peer references attachment bytes we do not
+        // have yet. Ask for them now rather than waiting for a reconnect.
+        let blob_wants_for_chat = blob_wants_tx.clone();
+        let blob_dir_for_chat = circle_dir.join("blobs");
         let chat_sub = chat_arr.observe(
             move |txn: &yrs::TransactionMut, event: &yrs::types::array::ArrayEvent| {
                 let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
@@ -176,6 +189,18 @@ impl AppState {
                                 if let Ok(msg) = serde_json::from_str::<ChatMessage>(s) {
                                     if !seen.insert(msg.id.clone()) || !is_p2p {
                                         continue;
+                                    }
+                                    if !msg.attachments.is_empty() {
+                                        if let Ok(store) = crate::proposal::blob::BlobStore::open(
+                                            &blob_dir_for_chat,
+                                        ) {
+                                            for att in &msg.attachments {
+                                                if !store.contains(&att.hash) {
+                                                    let _ =
+                                                        blob_wants_for_chat.send(att.hash.clone());
+                                                }
+                                            }
+                                        }
                                     }
                                     let _ = events_for_chat.send(CircleEvent::MessagePosted {
                                         message: msg.clone(),
@@ -410,11 +435,45 @@ impl AppState {
             interactive_writes: interactive_writes_tx,
             review_writes: review_writes_tx,
             self_write_flags: Arc::new(DashMap::new()),
+            blobs: Arc::new(std::sync::OnceLock::new()),
+            blob_wants: blob_wants_tx,
             join_policy,
             owner,
             mls,
             recent_conn_errors: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             foreign_peers: Arc::new(RwLock::new(std::collections::HashSet::new())),
+        }
+    }
+
+    /// Content-addressed blob store for chat attachments, opened on first use.
+    ///
+    /// Rooted at `<circle_dir>/blobs` rather than in the workspace: attachments
+    /// are circle data, not synced files, and keeping them outside the
+    /// workspace means the watcher cannot pick them up (it would drop them
+    /// anyway — it is UTF-8 only) and they never bloat the control doc.
+    pub fn blobs(&self) -> Result<Arc<crate::proposal::blob::BlobStore>, anyhow::Error> {
+        if let Some(store) = self.blobs.get() {
+            return Ok(store.clone());
+        }
+        let store = Arc::new(crate::proposal::blob::BlobStore::open(
+            self.circle_dir.join("blobs"),
+        )?);
+        // Racing callers: whoever loses keeps the winner's handle. Both point
+        // at the same directory, so either is correct.
+        let _ = self.blobs.set(store);
+        Ok(self.blobs.get().expect("blob store just set").clone())
+    }
+
+    /// Ask connected peers for any attachment hash we do not hold locally.
+    /// No-op for blobs already on disk, so replaying history is cheap.
+    pub fn request_missing_blobs(&self, hashes: impl IntoIterator<Item = String>) {
+        let Ok(store) = self.blobs() else {
+            return;
+        };
+        for hash in hashes {
+            if !store.contains(&hash) {
+                let _ = self.blob_wants.send(hash);
+            }
         }
     }
 

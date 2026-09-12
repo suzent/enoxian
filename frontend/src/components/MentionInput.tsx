@@ -28,6 +28,9 @@ interface Props {
   disabled?: boolean
   onChange: (text: string, fragment: string | null) => void
   onKeyDown: (e: React.KeyboardEvent) => void
+  /** Given first refusal on paste. If it calls `preventDefault` (as the file
+   *  handler does), the plaintext insert below is skipped. */
+  onPaste?: (e: React.ClipboardEvent) => void
 }
 
 const CHIP_ATTR = 'data-mention'
@@ -82,7 +85,7 @@ function activeFragment(): string | null {
 }
 
 const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput(
-  { placeholder, className, disabled = false, onChange, onKeyDown },
+  { placeholder, className, disabled = false, onChange, onKeyDown, onPaste },
   ref,
 ) {
   const elRef = useRef<HTMLDivElement>(null)
@@ -178,8 +181,15 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
 
   // Paste as plain text only (no rich HTML sneaking in).
   const handlePaste = (e: React.ClipboardEvent) => {
+    if (disabled) {
+      e.preventDefault()
+      return
+    }
+    // An image paste is consumed by the parent; inserting the clipboard's text
+    // fallback (often the filename) on top of it would be wrong.
+    onPaste?.(e)
+    if (e.defaultPrevented) return
     e.preventDefault()
-    if (disabled) return
     const text = e.clipboardData.getData('text/plain')
     document.execCommand('insertText', false, text)
     emit()

@@ -262,6 +262,7 @@ mod tests {
             mentions: Vec::new(),
             ts: 0,
             peer_id: String::new(),
+            attachments: Vec::new(),
         }
     }
 

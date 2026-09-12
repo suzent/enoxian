@@ -1,4 +1,4 @@
-import type { Circle, Status, Presence, ChatMessage, ChatActivity, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin, ConnectivitySettings } from './types'
+import type { Circle, Status, Presence, ChatMessage, Attachment, ChatActivity, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin, ConnectivitySettings } from './types'
 
 const api = (circleId: string) => `/circles/${circleId}/api`
 
@@ -82,8 +82,43 @@ export const setForceRelay = (id: string, forceRelay: boolean) =>
 export const getWho = (id: string) => get<Presence[]>(`${api(id)}/who`)
 export const getChat = (id: string, since?: number) =>
   get<ChatMessage[]>(`${api(id)}/chat${since ? `?since=${since}` : ''}`)
-export const postChat = (id: string, text: string, agentId: string) =>
-  post(`${api(id)}/chat`, { text, agent_id: agentId })
+export const postChat = (
+  id: string,
+  text: string,
+  agentId: string,
+  attachments: { hash: string; name: string }[] = [],
+) => post(`${api(id)}/chat`, { text, agent_id: agentId, attachments })
+
+/** Largest upload the daemon will accept. Mirrors MAX_ATTACHMENT_BYTES. */
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+
+/** Blob bytes URL. The token rides as a query param because <img> cannot send
+ *  an Authorization header. */
+export const blobUrl = (id: string, hash: string) =>
+  withToken(`${api(id)}/blobs/${hash}`)
+
+/** Upload one attachment. Bypasses the shared `request` helper: uploads send a
+ *  raw body and can legitimately outlast the 10s JSON timeout. */
+export async function uploadAttachment(
+  id: string,
+  file: File,
+): Promise<Attachment> {
+  const url = `${api(id)}/chat/attachments?name=${encodeURIComponent(file.name)}`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/octet-stream' }),
+    body: file,
+  })
+  if (!res.ok) {
+    let msg = `Upload failed (${res.status})`
+    try {
+      const data = await res.json()
+      if (data.error) msg = data.error
+    } catch {}
+    throw new Error(msg)
+  }
+  return res.json()
+}
 export const getChatActivity = (id: string) =>
   get<ChatActivity[]>(`${api(id)}/chat/activity`)
 export const setChatTyping = (id: string, actorId: string, typing: boolean) =>

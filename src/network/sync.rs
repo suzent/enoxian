@@ -31,6 +31,12 @@ const AWARENESS_PATH_PREFIX: &str = "\0awareness/";
 const DELETE_PATH_PREFIX: &str = "\0delete/";
 const REVOKED_PATH: &str = "\0revoked";
 const SESSION_PATH: &str = "\0session";
+/// A peer asking us for one content-addressed blob by hash.
+const BLOB_WANT_PATH_PREFIX: &str = "\0blob-want/";
+/// The answer: raw blob bytes. Frames are length-prefixed and sealed, so the
+/// payload is binary-safe and needs no base64 (unlike the proposal bundle
+/// path, which embeds blobs in JSON).
+const BLOB_DATA_PATH_PREFIX: &str = "\0blob-data/";
 const SESSION_HELLO_MAGIC: &[u8] = b"enoxian-sync-session-v2\0";
 
 /// Doc-lock contention retry budget.
@@ -267,6 +273,7 @@ async fn read_session_hello<R: AsyncReadExt + Unpin>(
 
 // ── Events from the reader task to the writer loop ───────────────────────────
 
+#[derive(Debug)]
 enum IncomingEvent {
     /// Peer sent an Update or SyncStep2 — apply locally
     Apply { path: String, raw_update: Vec<u8> },
@@ -276,6 +283,10 @@ enum IncomingEvent {
     Awareness { path: String, data: Vec<u8> },
     /// Peer deleted a file doc.
     Delete { path: String },
+    /// Peer wants a blob we may hold.
+    BlobWant { hash: String },
+    /// Peer sent blob bytes we asked for.
+    BlobData { hash: String, bytes: Vec<u8> },
     /// The remote peer has revoked this device's Circle membership.
     Revoked,
     /// Stream closed
@@ -289,6 +300,18 @@ fn parse_frame(path: String, data: &[u8]) -> IncomingEvent {
     if let Some(doc_path) = path.strip_prefix(DELETE_PATH_PREFIX) {
         return IncomingEvent::Delete {
             path: doc_path.to_string(),
+        };
+    }
+
+    if let Some(hash) = path.strip_prefix(BLOB_WANT_PATH_PREFIX) {
+        return IncomingEvent::BlobWant {
+            hash: hash.to_string(),
+        };
+    }
+    if let Some(hash) = path.strip_prefix(BLOB_DATA_PATH_PREFIX) {
+        return IncomingEvent::BlobData {
+            hash: hash.to_string(),
+            bytes: data.to_vec(),
         };
     }
 
@@ -312,6 +335,34 @@ fn parse_frame(path: String, data: &[u8]) -> IncomingEvent {
         },
         _ => IncomingEvent::Closed,
     }
+}
+
+/// Store a blob delivered by a peer.
+///
+/// The hash is the identity *and* the integrity check: content that does not
+/// hash to the name it arrived under is dropped, so a peer cannot substitute
+/// different bytes for an attachment another member posted.
+fn apply_blob(state: &AppState, hash: &str, bytes: &[u8]) {
+    let Ok(store) = state.blobs() else {
+        return;
+    };
+    if store.contains(hash) {
+        return;
+    }
+    if crate::proposal::blob::BlobStore::hash(bytes) != hash {
+        warn!("[sync] discarded blob {hash}: content hash mismatch");
+        return;
+    }
+    if let Err(error) = store.put(bytes) {
+        warn!("[sync] storing blob {hash}: {error}");
+        return;
+    }
+    // Wake any transcript that rendered a placeholder for this attachment.
+    let _ = state
+        .events
+        .send(crate::control::CircleEvent::AttachmentAvailable {
+            hash: hash.to_string(),
+        });
 }
 
 // ── Apply an update to the local CRDT ────────────────────────────────────────
@@ -935,6 +986,12 @@ async fn sync_inner(
     });
 
     let mut circle_events_rx = state.events.subscribe();
+    let mut blob_wants_rx = state.blob_wants.subscribe();
+
+    // Backfill: wants raised while this device had no peers reached nobody.
+    // Re-ask now that a stream is up, so attachments posted while we were
+    // offline (or before we joined) resolve without user action.
+    state.request_missing_blobs(crate::api::chat::transcript_attachment_hashes(state));
     let remote_peer_id = peer_id.to_string();
 
     loop {
@@ -982,6 +1039,19 @@ async fn sync_inner(
                     }
                     IncomingEvent::Delete { path } => {
                         apply_delete(state, &path).await;
+                    }
+                    IncomingEvent::BlobWant { hash } => {
+                        // Serve only what we actually hold; silence is a valid
+                        // answer, and the asker will retry against other peers.
+                        if let Ok(store) = state.blobs() {
+                            if let Ok(bytes) = store.get(&hash) {
+                                let path = format!("{BLOB_DATA_PATH_PREFIX}{hash}");
+                                write_frame(&mut tx, state, &path, &bytes).await?;
+                            }
+                        }
+                    }
+                    IncomingEvent::BlobData { hash, bytes } => {
+                        apply_blob(state, &hash, &bytes);
                     }
                     IncomingEvent::Revoked => {
                         mark_self_removed(state);
@@ -1054,6 +1124,27 @@ async fn sync_inner(
                     Err(RecvError::Closed) => break,
                 }
             }
+
+            // ── Outgoing blob requests ────────────────────────────────────
+            // Broadcast to every connected peer: any one of them may hold the
+            // bytes, and a duplicate answer is discarded by the hash check.
+            result = blob_wants_rx.recv() => {
+                if sync_revoked(state, &peer_id) {
+                    break;
+                }
+                match result {
+                    Ok(hash) => {
+                        let path = format!("{BLOB_WANT_PATH_PREFIX}{hash}");
+                        write_frame(&mut tx, state, &path, &[]).await?;
+                    }
+                    Err(RecvError::Lagged(n)) => {
+                        // A dropped want is recoverable: the UI re-requests on
+                        // the next failed load of that attachment.
+                        debug!("[sync] lagged {n} blob wants to {peer_id}");
+                    }
+                    Err(RecvError::Closed) => break,
+                }
+            }
         }
     }
 
@@ -1081,6 +1172,52 @@ mod tests {
                 None,
             ),
         )
+    }
+
+    /// Blob control frames must classify by their reserved path prefix, not be
+    /// mistaken for CRDT updates (which would fail to decode and close the
+    /// stream).
+    #[test]
+    fn blob_frames_are_classified_by_prefix() {
+        let hash = "a".repeat(64);
+        match parse_frame(format!("{BLOB_WANT_PATH_PREFIX}{hash}"), &[]) {
+            IncomingEvent::BlobWant { hash: got } => assert_eq!(got, hash),
+            other => panic!("want frame misparsed as {other:?}"),
+        }
+        match parse_frame(format!("{BLOB_DATA_PATH_PREFIX}{hash}"), b"bytes") {
+            IncomingEvent::BlobData { hash: got, bytes } => {
+                assert_eq!(got, hash);
+                assert_eq!(bytes, b"bytes");
+            }
+            other => panic!("data frame misparsed as {other:?}"),
+        }
+        // A real file path must still route to the CRDT decoder.
+        assert!(!matches!(
+            parse_frame("src/main.rs".into(), &[]),
+            IncomingEvent::BlobWant { .. } | IncomingEvent::BlobData { .. }
+        ));
+    }
+
+    /// A peer must not be able to substitute different bytes for an attachment
+    /// another member posted: content that does not hash to the name it
+    /// arrived under is dropped.
+    #[test]
+    fn blob_with_mismatched_hash_is_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = test_state();
+        state.circle_dir = dir.path().to_path_buf();
+        let store = state.blobs().unwrap();
+
+        let honest = crate::proposal::blob::BlobStore::hash(b"real bytes");
+        apply_blob(&state, &honest, b"tampered bytes");
+        assert!(
+            !store.contains(&honest),
+            "content not matching its hash must be rejected"
+        );
+
+        apply_blob(&state, &honest, b"real bytes");
+        assert!(store.contains(&honest), "honest content should be stored");
+        assert_eq!(store.get(&honest).unwrap(), b"real bytes");
     }
 
     /// Regression: a momentarily locked control doc must not read as
