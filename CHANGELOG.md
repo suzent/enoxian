@@ -54,15 +54,6 @@ refuses to publish a version whose section is missing or empty.
   a project-operated default server (`relay.enoxian.com`) for peer discovery and
   circuit relay. Behavior is unchanged; it was previously undocumented.
 
-### Security
-
-- Chat attachments are typed by inspecting their actual bytes, never by the
-  name or content type the sender supplied, and only raster image formats are
-  accepted — SVG is refused outright, since it can carry script. Attachment
-  bytes are served only to authenticated Circle members, and content that does
-  not match the hash it arrived under is discarded, so a peer cannot substitute
-  a different image for the one a member posted.
-
 ### Fixed
 
 - A mentioned agent now sees what was said in the circle between its turns.
@@ -76,6 +67,12 @@ refuses to publish a version whose section is missing or empty.
 
 ### Security
 
+- Chat attachments are typed by inspecting their actual bytes, never by the
+  name or content type the sender supplied, and only raster image formats are
+  accepted — SVG is refused outright, since it can carry script. Attachment
+  bytes are served only to authenticated Circle members, and content that does
+  not match the hash it arrived under is discarded, so a peer cannot substitute
+  a different image for the one a member posted.
 - Upgraded the ChaCha20-Poly1305 implementation used for encrypted content
   frames to 0.11. No vulnerability is fixed and the frame format is unchanged;
   the upgrade keeps the cipher on a maintained release line.
