@@ -1,10 +1,10 @@
+use ::tls_codec::Serialize as _;
 use anyhow::{Context, Result};
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tls_codec::Serialize as _;
 
 use super::CIPHERSUITE;
 

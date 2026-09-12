@@ -1,10 +1,10 @@
+use ::tls_codec::{Deserialize as _, Serialize as _};
 use anyhow::{Context, Result};
 use base64::prelude::*;
 use openmls::prelude::GroupId;
 use openmls::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
-use tls_codec::{Deserialize as _, Serialize as _};
 
 use super::{identity::MlsIdentity, CIPHERSUITE};
 
