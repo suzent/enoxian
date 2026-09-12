@@ -287,6 +287,47 @@ pub async fn get_blob(
         .into_response()
 }
 
+/// Reclaim attachment blobs no retained chat message refers to.
+///
+/// Chat messages expire (30 days, or the message cap) but their blobs did not,
+/// so every image ever posted stayed on every device for good. Reachability is
+/// the transcript: a blob no surviving message names is unreachable.
+///
+/// Mirrors the proposal collector's two safety rules — a blob younger than
+/// [`MIN_BLOB_AGE`] is never swept, because it is written before the message
+/// naming it is committed, and the transcript's own retention window is what
+/// keeps a blob available long enough for an absent peer to fetch it.
+pub fn collect_unreferenced_blobs(state: &crate::state::AppState) -> anyhow::Result<(usize, u64)> {
+    let blobs = state.blobs()?;
+    let live: std::collections::BTreeSet<String> = super::chat::transcript_attachment_hashes(state)
+        .into_iter()
+        .collect();
+
+    let now = std::time::SystemTime::now();
+    let mut removed = 0usize;
+    let mut bytes = 0u64;
+    for (hash, size, modified) in blobs.list()? {
+        if live.contains(&hash) {
+            continue;
+        }
+        // An upload is stored before the message referencing it is posted, so a
+        // just-uploaded blob is legitimately unreferenced for a moment.
+        match now.duration_since(modified) {
+            Ok(age) if age >= MIN_BLOB_AGE => {}
+            // Too young, or a clock we cannot reason about.
+            _ => continue,
+        }
+        if blobs.remove(&hash).is_ok() {
+            removed += 1;
+            bytes += size;
+        }
+    }
+    Ok((removed, bytes))
+}
+
+/// A blob younger than this is never swept. Matches the proposal collector.
+pub const MIN_BLOB_AGE: std::time::Duration = crate::proposal::gc::MIN_BLOB_AGE;
+
 #[cfg(test)]
 mod tests {
     use super::*;

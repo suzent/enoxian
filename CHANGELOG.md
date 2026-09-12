@@ -41,6 +41,13 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Storage is now reclaimed instead of growing forever. Decided proposals older
+  than 30 days are dropped along with the snapshots and file contents only they
+  referenced, and chat images no longer kept by any message are removed too.
+  Nothing in either store was ever deleted before, so a long-lived Circle grew
+  without bound — one had reached 1.6 GB. A proposal still waiting on a person
+  is never collected, however old.
+
 - Build output is no longer synced. Circles now respect `.gitignore` (and
   `.ignore`, and a new `.enoxignore` for enoxian-specific rules), plus a short
   built-in list — `target/`, `node_modules/`, `__pycache__/`, `.venv/`, `venv/` —

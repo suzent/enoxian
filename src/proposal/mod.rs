@@ -12,6 +12,7 @@ pub mod adapters;
 pub mod blob;
 pub mod diff;
 pub mod engine;
+pub mod gc;
 pub mod journal;
 pub mod merge;
 pub mod model;
