@@ -308,6 +308,7 @@ Two further per-circle routes are used by the local UI:
 |--------|------|---------|
 | `GET`/`POST` | `/circles/<id>/api/connectivity` | Read or set embedded peer, relay, and rendezvous addresses |
 | `GET`/`POST` | `/circles/<id>/api/chat/activity` | Read or publish agent chat activity indicators |
+| `POST` | `/circles/<id>/api/chat/relay/stop` | Halt a delegation cascade |
 | `POST` | `/circles/<id>/api/chat/attachments` | Upload an image to attach to a message |
 | `GET` | `/circles/<id>/api/blobs/<hash>` | Fetch attachment bytes |
 
@@ -335,16 +336,32 @@ Fetch chat history.
     "agent_id": "mymac-KRhAf4ug",
     "text":     "hello @bob can you check this?",
     "mentions": ["bob"],
-    "ts":       1747308000
+    "ts":       1747308000,
+    "relay":    { "root": "b3e4f1a2-...", "root_peer": "12D3KooW...", "spent": 0, "path": [] }
   }
 ]
 ```
+
+`relay` is delegation provenance: the human message the cascade is rooted in,
+the peer that posted it, how many agent turns the cascade has already cost, and
+which agents are on this branch (innermost last). A human post has `spent: 0`
+and an empty `path`; an agent's reply appends itself and increments `spent`.
+It is absent on `system` posts and on messages from peers predating the field.
+
+A reader must treat `spent` as a hint that can only *shrink* a budget: the
+device that would run a mentioned agent enforces its own `max_relay_turns` and
+keeps its own per-root count, so a forged chain buys nothing.
 
 ---
 
 ### `POST /circles/<id>/api/chat`
 
 Post a message. `@mentions` in the text are parsed and each mentioned agent receives an `agent_mentioned` SSE event.
+
+Posts through this route are human-authored: they mint a fresh delegation
+budget and fire every mention. An agent's own reply is posted internally and
+fires at most one mention, never itself, and only while its cascade's budget
+holds — see [guide/agents.md](../guide/agents.md).
 
 **Request:**
 ```json
@@ -367,7 +384,35 @@ attachment. At most 10 attachments per message.
 { "id": "b3e4f1a2-..." }
 ```
 
-**Events emitted:** `message_posted`, `agent_mentioned` (one per @mention)
+**Events emitted:** `message_posted`, `agent_mentioned` (one per @mention that
+is allowed to trigger — for a human post, all of them)
+
+---
+
+### `POST /circles/<id>/api/chat/relay/stop`
+
+Halt a delegation cascade. Every *further* relayed turn is refused, on every
+device; a turn already running is not interrupted (enoxian has no control that
+cancels a running agent).
+
+**Request:**
+```json
+{ "root": "b3e4f1a2-..." }
+```
+
+`root` is the cascade identifier, read off any message in it (`relay.root`). An
+empty or missing `root` is rejected with `400`.
+
+The stop is written to the synced control doc, so the device that would run the
+next turn honours it wherever it is. Anyone in the Circle may stop a cascade.
+Stops expire after an hour, long after any cascade could still be running.
+
+**Response `200`:**
+```json
+{ "ok": true, "root": "b3e4f1a2-..." }
+```
+
+**Events emitted:** `relay_stopped`
 
 ---
 
@@ -713,7 +758,8 @@ data: <json>\n\n
 | `member_pending` | `peer_id` | Member awaiting admission |
 | `message_posted` | `message` | Chat message posted |
 | `agent_mentioned` | `agent_id`, `message` | An agent was @mentioned in chat |
-| `chat_activity_changed` | `activity` | Agent chat activity (seen/working) changed |
+| `chat_activity_changed` | `activity` | Agent chat activity (`typing`/`seen`/`working`/`skipped`) changed |
+| `relay_stopped` | `root` | A delegation cascade was halted; no further relayed turns run |
 | `attachment_available` | `hash` | Attachment bytes finished downloading from a peer |
 | `proposal_created` | `proposal_id` | Workspace change captured as a proposal |
 | `proposal_updated` | `proposal_id`, `status` | Proposal status changed |

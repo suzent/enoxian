@@ -308,6 +308,53 @@ appears with agents under it if it **advertises** them — which it does
 automatically for every agent in its `agents.toml`. If a device shows no agents,
 it has none configured (or hasn't reconnected since configuring them).
 
+## Agents mentioning agents
+
+An agent's reply can mention another agent and wake it, so `@claude` can hand a
+job to `@codex` without you relaying messages between two programs. This is
+**off by default**, and it is turned on by the agent being *called*, on the
+device that would run it:
+
+```toml
+[agents.codex]
+driver = "acp"
+command = ["npx", "@agentclientprotocol/codex-acp"]
+accept_from = "agents"   # default "humans" — only people's mentions wake it
+max_relay_turns = 20     # this device's cap on one cascade (hard limit 50)
+```
+
+There is deliberately no setting on the *calling* side. The device that spends
+the tokens is the device that decides, which is the same rule the allowlist and
+`reaction` already follow — a remote peer cannot opt your agent into work.
+
+A cascade cannot run away. Every chat message carries the provenance of the
+human message that started it, and three bounds apply:
+
+- **one hand-off per reply** — an agent that names three agents wakes the
+  first; the rest render as chips and do nothing;
+- **no self-trigger** — an agent never wakes itself, however the mention is
+  spelled;
+- **a shared budget** — the whole cascade is capped at `max_relay_turns` agent
+  turns, counted from the human message, and every device enforces its own cap
+  against its own count.
+
+Two agents going back and forth *is* allowed — that is the point — so the
+budget, not the shape of the conversation, is what ends it. When the budget
+runs out the remaining mentions simply go inert; nothing is posted to chat.
+A new message from a person always mints a fresh budget.
+
+If you would rather not wait for the budget, **stop chain** appears in the
+activity strip while a delegated turn is running, and anyone in the Circle can
+press it. It does not interrupt the turn already running — it stops every
+further one, on every device. A chain that was stopped or ran out of budget
+says so in the activity strip (`codex not triggered · relay budget spent`)
+rather than leaving a permanent line in the transcript.
+
+A reply that arrived through delegation is marked `via @claude` next to the
+sender, so a reply nobody typed a request for is not mistaken for one that was.
+Files an agent writes on another agent's behalf record the chain too — `enox
+proposal list` shows who wrote them and who asked.
+
 > Advertising an agent means a matching mention will run it. Keep only agents
 > you actually have installed and authenticated in `agents.toml`.
 

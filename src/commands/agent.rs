@@ -152,7 +152,9 @@ pub fn add(
             command,
             driver,
             working_dir,
-        },
+            ..Default::default()
+        }
+        .inheriting_delegation(cfg.resolve(&name)),
     );
     cfg.save()?;
     println!(
@@ -236,6 +238,7 @@ pub async fn run(
         circle_id: &circle_id,
         circle_dir: &circle_dir,
         actor_token: Some(actor_token),
+        relay_path: Vec::new(),
         initiator: Initiator::Local,
         resume: resume.as_ref().map(|r| r.session_id.as_str()),
     })

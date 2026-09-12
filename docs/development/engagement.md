@@ -341,17 +341,30 @@ message, which reads as "no allowance", the current behaviour.
 
 Three bounds, because each one alone has a shape it does not catch:
 
-- **Budget.** `spent < max_relay_turns` (default **3**). This is the only bound
-  that holds regardless of the cascade's shape — depth limits alone do nothing
-  about a wide fan-out, and fan-out limits alone do nothing about a long chain.
-  It is a whole-cascade counter, not a per-branch one.
+- **Budget.** `spent < max_relay_turns` (default **20**, hard ceiling 50). This
+  is the only bound that holds regardless of the cascade's shape — depth limits
+  alone do nothing about a wide fan-out, and fan-out limits alone do nothing
+  about a long chain. It is a whole-cascade counter, not a per-branch one.
 - **Fan-out.** At most **one** agent-level mention in an agent reply is honoured
-  — the first. An agent that names three agents gets one trigger and two chips.
-  Without this, a budget of 3 is a budget of 3 *levels*, i.e. exponential.
-- **Path acyclicity.** An agent already in `path` is never re-triggered on that
-  branch. `A → B → A` stops at the second `A`. This is what makes ping-pong
-  structurally impossible instead of merely expensive, and it is per-branch
-  rather than global so `A → B` and `A → C` both still run.
+  — the first that is not the agent itself. An agent that names three agents
+  gets one trigger and two chips. Without this, a budget of N is a budget of N
+  *levels*, i.e. exponential rather than linear.
+- **No self-trigger.** An agent never wakes itself, however it phrases the
+  mention (`@claude` and `@alice/laptop/claude` both resolve to the same agent).
+  This kills the degenerate one-agent loop outright, and it is the only cycle
+  worth forbidding structurally.
+
+An earlier draft added **path acyclicity** — an agent already on the branch is
+never re-triggered — which makes `A → B → A` impossible rather than merely
+budgeted. It was dropped, and the budget raised from 3 to 20 in exchange. The
+reason is that acyclicity forbids exactly the thing delegation is *for*: two
+agents iterating on a problem. With acyclicity in force, a budget above 3 is
+close to meaningless, because spending it requires a chain of that many
+*distinct* agents. Ping-pong is therefore allowed and bounded by arithmetic:
+20 turns is roughly ten exchanges between two agents, which is a real working
+session and still a bill a person can absorb if they walk away from the
+keyboard. The ceiling of 50 exists so a mistyped config cannot hand one chat
+message an unbounded bill.
 
 A human message always re-mints a full budget — including a human message that
 arrives mid-cascade. Humans are not rate-limited by their agents' spending.
@@ -391,7 +404,7 @@ command = [...]
 engagement = "mention"      # §2.2, unchanged
 accept_from = "humans"      # default: only human mentions wake this agent
 # accept_from = "agents"    # also wake on another agent's mention
-max_relay_turns = 3         # this device's clamp on §3.4
+max_relay_turns = 20        # this device's clamp on §3.4
 ```
 
 There is deliberately no sender-side switch. An agent's reply always *carries* a
@@ -411,8 +424,12 @@ What changes is attribution. `TriggerOrigin` resolves from the **root human**,
 not from the mentioning agent — a cascade rooted in a local user's message is
 `LocalUser` throughout, one rooted in a remote member's is `RemoteMember`. An
 agent must not be able to launder a remote member's request into a local one by
-relaying it. The proposal record additionally stores `path`, so "who actually
-wrote this" is answerable after the fact.
+relaying it. The proposal record additionally stores the branch as
+`relay_path` — the agents that relayed the work, *excluding* the one that wrote
+the files, which is already `actor_id`. A proposal reading
+`actor_id: "codex", relay_path: ["claude"]` says a person asked claude and
+claude asked codex. Without it a delegated change is indistinguishable from one
+the user asked for.
 
 ### 3.7 Legibility
 
@@ -423,10 +440,34 @@ are the minimum:
   can see that a turn they did not ask for was asked for on their behalf.
 - Exhausting the budget posts nothing to chat (a `system` post per dead mention
   is exactly the transcript noise §1.3 is trying to remove) but *is* surfaced in
-  the activity indicator: `relay budget spent — @codex not triggered`.
-- A cascade is interruptible. The stop control that cancels a running agent
-  cancels the rest of its cascade, and cancelling clears the `root` counter so a
-  retry is not charged twice.
+  the activity indicator as a `skipped` activity carrying its reason:
+  `codex not triggered · relay budget spent`. A stopped cascade reports itself
+  the same way. An agent that simply has not opted in (`accept_from`) stays
+  silent — that is this device's configuration, not an event in the room, and
+  announcing it on every mention would leak local config as chatter.
+- A cascade is stoppable: `POST /api/chat/relay/stop` with the cascade's
+  `root`, surfaced as a **stop chain** button that appears while a relayed turn
+  is running. Anyone in the Circle may stop one — the person watching is not
+  always the person who started it, and a wrongful stop costs a re-mention.
+
+  Note what this is *not*. It does not interrupt the turn in flight, because
+  enoxian has no control that cancels a running agent; it stops every
+  **further** turn, which is what actually bounds the spend. The draft here
+  assumed a per-agent cancel existed to hang this on. It does not, and building
+  one is its own piece of work.
+
+  The stop is written into the **synced control doc**, not held in one daemon's
+  memory: the device that would run the next turn is usually not the device
+  whose user hit stop, so a local flag would stop nothing.
+
+One decision fell out of building it. Reading the stop list needs a
+transaction on the control doc, which is routinely busy, and the first cut
+treated "cannot read" as "stopped". That is the instinctive choice for a brake
+and it was wrong: every busy moment silently refused a delegation, so the
+feature broke at random. It now fails **open** with a warning. The asymmetry
+justifies it — spend is bounded by the budget and the per-root ledger, neither
+of which touches this doc, so a missed stop costs one extra turn, while a false
+stop costs the whole feature.
 
 ### 3.8 Interaction with ambient
 

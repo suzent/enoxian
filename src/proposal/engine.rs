@@ -427,6 +427,7 @@ fn apply_session_attribution(proposal: &mut Proposal, session: &LocalChangeSessi
     proposal.confidence = session.confidence;
     proposal.trigger_id = session.trigger_id.clone();
     proposal.session_id = Some(session.session_id.clone());
+    proposal.relay_path = session.relay_path.clone();
 }
 
 /// Full workspace walk — used for the startup baseline and lag recovery.

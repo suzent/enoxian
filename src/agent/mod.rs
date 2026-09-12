@@ -22,4 +22,5 @@ pub mod mention;
 pub mod plugin;
 pub mod probe;
 pub mod reaction;
+pub mod relay;
 pub mod spawn;

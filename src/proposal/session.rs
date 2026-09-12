@@ -51,6 +51,11 @@ pub struct LocalChangeSession {
     pub actor_id: Option<String>,
     pub actor_hint: Option<String>,
     pub confidence: Confidence,
+    /// Agents that relayed this work, innermost last. Empty for a turn a
+    /// person asked for directly. `actor_id` says who wrote the files; this
+    /// says who asked, which for a delegated turn is a different answer.
+    #[serde(default)]
+    pub relay_path: Vec<String>,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -67,6 +72,7 @@ impl LocalChangeSession {
             actor_id: None,
             actor_hint: None,
             confidence: mode.default_confidence(),
+            relay_path: Vec::new(),
             started_at: chrono::Utc::now(),
             finished_at: None,
         }

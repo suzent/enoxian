@@ -581,7 +581,9 @@ fn configure_handle(manifest: &PluginManifest, executable: &Path) -> Result<Agen
         command: manifest.handle_command(executable),
         driver: manifest.driver,
         working_dir,
-    };
+        ..Default::default()
+    }
+    .inheriting_delegation(cfg.resolve(&manifest.agent));
     cfg.set_agent(&manifest.agent, command.clone());
     cfg.save()?;
     Ok(command)

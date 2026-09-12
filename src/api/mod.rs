@@ -123,6 +123,10 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
             "/circles/{circle_id}/api/chat/activity",
             get(chat::get_activity).post(chat::post_activity),
         )
+        .route(
+            "/circles/{circle_id}/api/chat/relay/stop",
+            post(chat::stop_relay),
+        )
         // Chat attachments. The upload route carries its own body limit; the
         // blob route is on the authed router so attachment bytes are never
         // reachable without a circle token.

@@ -180,6 +180,7 @@ mod tests {
             confidence: Confidence::Unknown,
             trigger_id: None,
             session_id: None,
+            relay_path: Vec::new(),
             origin_peer_id: String::new(),
             origin_device: String::new(),
             created_at: when,

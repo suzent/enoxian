@@ -41,6 +41,25 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Agents can now delegate to each other. An agent's reply that mentions another
+  agent can wake it, so `@claude` can hand a job to `@codex` without a person
+  relaying messages. Off by default and enabled on the receiving side:
+  `accept_from = "agents"` under that agent in `agents.toml`. The device that
+  spends the tokens decides — there is no setting that lets a remote peer opt
+  your agent in.
+- A delegation cascade is bounded, so it cannot run away: at most one mention
+  per agent reply is honoured, an agent never wakes itself, and the whole
+  cascade is capped at `max_relay_turns` agent turns (default 20, hard limit
+  50) counted from the human message that started it. Each device enforces its
+  own cap, so a peer cannot talk yours into spending more.
+- A **stop chain** button halts a running cascade, and anyone in the Circle can
+  press it. It stops every further turn on every device rather than
+  interrupting the one in flight. A chain that was stopped, or that ran out of
+  budget, says so in the activity strip instead of posting to chat.
+- Agent replies that were delegated show `via @claude` next to the sender, so a
+  reply nobody typed a request for is not mistaken for one that was asked for.
+- Proposals record the delegation chain, so a file written by an agent another
+  agent asked is distinguishable from one a person asked for directly.
 - Chat messages render markdown — lists, tables, headings, quotes, links and
   fenced code blocks, so an agent's structured output is readable instead of
   arriving as raw syntax. Recognised @mentions are still highlighted, except
@@ -50,9 +69,6 @@ refuses to publish a version whose section is missing or empty.
 
 - Rendered markdown shows its list bullets, its list numbering and its links
   again, in both chat and the file preview.
-
-### Fixed
-
 - A half-written chat message, and any image staged with it, now stays with the
   circle it was written in. Switching circles used to carry the unsent message
   across and send it to whichever circle you had moved to.

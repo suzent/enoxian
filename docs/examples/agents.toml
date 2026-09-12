@@ -35,6 +35,13 @@ command = ["<enoxian-home>/adapters/claude-agent-acp/0.69.0/node_modules/.bin/cl
 [agents.codex]
 driver = "acp"
 command = ["npx", "@agentclientprotocol/codex-acp"]
+# Let another agent delegate to this one: if @claude's reply mentions @codex,
+# codex runs. Off by default — the device that spends the tokens decides. The
+# cascade is bounded: at most one mention per agent reply is honoured, an agent
+# never wakes itself, and the whole cascade is capped at max_relay_turns agent
+# turns, counted from the human message that started it.
+# accept_from = "agents"
+# max_relay_turns = 20
 
 # ── Suzent over ACP (a built-in "native" plugin) ───────────────────────────────
 # Suzent speaks ACP itself, so there is no adapter bridge, no Node.js, and
