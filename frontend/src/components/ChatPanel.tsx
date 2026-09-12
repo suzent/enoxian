@@ -5,7 +5,7 @@ import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 import CircleGlyph from './CircleGlyph'
 import MentionPopup, { buildMentionItems, type MentionItem } from './MentionPopup'
-import MentionInput, { type MentionInputHandle } from './MentionInput'
+import MentionInput, { draftText, type DraftNode, type MentionInputHandle } from './MentionInput'
 import Lightbox from './Lightbox'
 
 // Backfill retry budget: ~0.5s + 1s + 1.5s + 2s before giving up and telling
@@ -233,6 +233,14 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
   )
 }
 
+/** A message composed but not yet sent, held for one circle. */
+interface Draft {
+  nodes: DraftNode[]
+  attachments: Attachment[]
+}
+
+const EMPTY_DRAFT: Draft = { nodes: [], attachments: [] }
+
 export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircleGlyph = false }: Props) {
   const { activeCircleId, circles, status } = useApp()
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
@@ -271,6 +279,46 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   const latestTsRef = useRef<number | null>(null)
   const typingLastSentRef = useRef(0)
   const typingClearRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Last plaintext the composer reported, so a report that merely repeats the
+  // current contents can be told apart from someone actually typing.
+  const lastTypedTextRef = useRef('')
+  // Unsent composer contents, one entry per circle. The panel stays mounted
+  // across a circle switch, so without this a half-written message and any
+  // staged image would follow you into the next circle — and send there.
+  const draftsRef = useRef<Record<string, Draft>>({})
+  // The circle the composer's current contents belong to. Only the switch
+  // effect below moves it, so every write attributes to the right circle even
+  // when it lands in the same commit as a switch.
+  const draftCircleRef = useRef<string | null>(activeCircleId)
+
+  const writeDraft = useCallback((patch: Partial<Draft>) => {
+    const id = draftCircleRef.current
+    if (!id) return
+    draftsRef.current[id] = { ...(draftsRef.current[id] ?? EMPTY_DRAFT), ...patch }
+  }, [])
+
+  // Staged attachments change through several paths (upload, send, failed
+  // send), so mirror them into the draft from one place rather than each.
+  useEffect(() => { writeDraft({ attachments: pending }) }, [pending, writeDraft])
+
+  // Park the outgoing circle's draft and bring back the incoming one. The
+  // outgoing draft is already stored — every edit above writes it as it
+  // happens — so this only has to swap what the composer is showing.
+  useEffect(() => {
+    if (draftCircleRef.current === activeCircleId) return
+    draftCircleRef.current = activeCircleId
+    const draft = (activeCircleId && draftsRef.current[activeCircleId]) || EMPTY_DRAFT
+    const text = draftText(draft.nodes)
+    inputRef.current?.restore(draft.nodes)
+    setInput(text)
+    setPending(draft.attachments)
+    setFragment(null)
+    setMentionActive(false)
+    setMentionIndex(0)
+    setAttachError(null)
+    // A restore is not a keystroke: keep the typing indicator out of it.
+    lastTypedTextRef.current = text
+  }, [activeCircleId])
 
   const ingestActivity = useCallback((activity: ChatActivity) => {
     setActivities(prev => {
@@ -531,13 +579,22 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   const mentionOpen = fragment !== null
 
   // MentionInput reports the plaintext value and the active @fragment together.
-  const onInputChange = (text: string, frag: string | null) => {
+  const onInputChange = (text: string, frag: string | null, nodes: DraftNode[]) => {
     setInput(text)
     setFragment(frag)
+    writeDraft({ nodes })
     // Typing changes the filter — reset navigation so Enter sends until the
     // user explicitly arrows into the list again.
     setMentionActive(false)
     setMentionIndex(0)
+
+    // The composer reports its value on every render, not only on a keystroke,
+    // and a circle switch replays the restored draft through the same path.
+    // Only a real change to the text is someone typing — otherwise opening a
+    // circle that has a saved draft would announce you as typing in it.
+    const edited = text !== lastTypedTextRef.current
+    lastTypedTextRef.current = text
+    if (!edited) return
 
     if (!activeCircleId || !status?.agent_id || activeCircle?.disabled) return
     if (typingClearRef.current) clearTimeout(typingClearRef.current)
