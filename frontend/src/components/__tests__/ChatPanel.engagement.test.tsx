@@ -103,3 +103,45 @@ describe('the follow-up strip', () => {
     expect(await screen.findByText(/will be queued/)).toBeTruthy()
   })
 })
+
+describe('explicit reply-to', () => {
+  it('outranks the window: pointing beats guessing', async () => {
+    // The window says codex; the user points at claude's message.
+    getEngagement.mockResolvedValue({ agent: 'codex', peer_id: 'p1', window_secs: 180 })
+    const { getChat, getMembers } = await import('../../api')
+    // The panel resolves an agent message through the roster, so the posting
+    // device has to be in it for the message to read as agent-authored.
+    ;(getMembers as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        peer_id: 'p1',
+        owner: 'suzy',
+        agent_id: 'suzy-mac',
+        device_label: 'mac',
+        agents: ['claude'],
+        role: 'admin',
+        added_at: '',
+        signature: '',
+      },
+    ])
+    ;(getChat as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        id: 'a1',
+        agent_id: 'claude',
+        text: 'from claude',
+        mentions: [],
+        ts: Math.floor(Date.now() / 1000),
+        peer_id: 'p1',
+        author: 'agent',
+        relay: { root: 'r', root_peer: 'p1', spent: 1, path: ['claude'] },
+      },
+    ])
+    render(<ChatPanel />)
+
+    const reply = await screen.findByRole('button', { name: 'reply' })
+    await userEvent.click(reply)
+
+    expect(await screen.findByText('@claude')).toBeTruthy()
+    expect(await screen.findByText(/this message only/)).toBeTruthy()
+    expect(screen.queryByText('@codex')).toBeNull()
+  })
+})

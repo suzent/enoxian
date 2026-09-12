@@ -1,8 +1,13 @@
 # Agent engagement
 
 How an agent in a Circle decides that a chat message is *for it*, and what it is
-allowed to do once it decides. Forward-looking: only mention routing exists
-today.
+allowed to do once it decides.
+
+**Status: implemented.** Every section below has shipped. Where the built thing
+diverges from the original design the section says so and why — the notable
+ones are §1.1 (derived from the transcript rather than stored per device),
+§1.3 (the Circle-wide lock kept, per the spec's own fallback), and §3.3 (path
+acyclicity dropped for a larger budget).
 
 Background reading, not restated here: [guide/agents.md](../guide/agents.md)
 for how mentions, targeting, and the per-device execution gate work, and
@@ -51,6 +56,20 @@ Goal: a reply to an agent should not need a mention.
 
 ### 1.1 Active-engagement window
 
+**As built, this is derived from the transcript rather than stored.** The map
+below works on one machine and breaks across several: the composer that must
+show "replying to @claude" runs on the *speaker's* device, which would know
+nothing about a map held on the agent's device. So the rule is evaluated
+identically by every device — *the most recent agent reply to a cascade you
+started, within the window, that you have not dismissed.* Both halves this
+section asks for turn out to be on the wire already: `relay.root_peer` says who
+the agent was replying to, and the reply's `peer_id` is the machine that must
+run the follow-up, which is exactly the `scope` described below. Dismissal is
+the exception — an intention, not an event — so it lives in the control doc
+beside the delegation stop.
+
+The original design, for reference:
+
 When an agent posts a reply, the device that ran it records an **engagement**:
 
 ```
@@ -80,10 +99,14 @@ message, so an explicit mention and a follow-up never both fire.
 The engagement ends on the first of:
 
 - **Timeout.** Default 3 minutes since the agent's last reply, renewed by each
-  reply. Configurable; `0` disables the feature.
+  reply. Configurable as `engagement_window_secs` in `agents.toml`; `0`
+  disables the feature.
 - **Redirection.** The speaker mentions any agent — including the same one.
   Explicit addressing always wins and re-arms the window.
-- **Exit.** The speaker dismisses it in the composer (below).
+- **Exit.** The speaker dismisses it in the composer (below). A dismissal
+  records *which* reply it dismissed, not just when: chat timestamps have
+  one-second resolution, so a dismissal and the reply that re-arms the window
+  can share one, and comparing by time alone swallowed it.
 
 Notably it does **not** end because someone else spoke. Engagements are keyed
 per speaker, so two people can hold separate conversations with separate agents
@@ -133,6 +156,13 @@ mutual exclusion that is missing:
 - Queue subsequent messages for a busy agent in arrival order and deliver them
   as separate turns, rather than failing them into chat. Cap the depth (say 4),
   dropping the oldest with a visible note.
+
+**As built, the lock stayed Circle-wide and the queue sits across it** — the
+fallback this section names. Narrowing it needs `LocalChangeSession` to hold
+more than one open managed session and the proposal baseline to tolerate two
+concurrent writers, neither of which is true today. A single worker drains the
+queue in arrival order, four deep per agent, which also means the Circle-wide
+lock is never contended from the reaction loop at all.
 
 A rejected alternative: coalescing queued messages into one turn. It reads well
 in the transcript but loses the boundary between "and another thing" and a
@@ -245,9 +275,18 @@ hook is already anticipated: see the `TODO(M14)` in `proposal/policy.rs`.
 (§3.6 explains why a *relayed* turn is not an ambient one and keeps the
 existing acceptance path.)
 
-If that proves too invasive, the fallback is narrower and still safe: an
-ambient turn that wants to change files says so in chat, and a person mentions
-the agent to actually do the work.
+**Both landed.** An ambient turn runs as `Initiator::Ambient`, which maps to
+the `SessionMode::AmbientTriggered` that already existed but was unused; the
+proposal engine reads that mode and records the proposal as `pending` instead of
+`accepted`. That is `pending`'s first use as a real gate. And the ambient prompt
+states the narrower rule too — the turn is conversational, so say what needs
+doing rather than doing it — because a marker after the fact is weaker than not
+writing the files.
+
+Worth being honest about what `pending` does and does not mean here: the files
+are still live on disk, as they are for every other proposal. Pending marks them
+for review rather than isolating them, and revert remains the undo. It is a
+flag, not a staging area.
 
 ### 2.5 Cost
 
@@ -275,8 +314,11 @@ expensive turn is worth taking. The architecture constrains the options:
   the *agent's* runtime does the cheap pass. Out of our control, but worth
   leaving room for.
 
-Recommendation: ship the heuristic debounce with the feature, measure real
-Circles, and only then decide whether anything smarter is warranted.
+**Shipped with the heuristic gate**, as recommended: messages under 24
+characters with no attachment are skipped, an agent that spoke in the last 30
+seconds is left alone, and at most one ambient reply is offered per message. All
+three run before any model is asked, so the traffic that dominates the volume
+costs nothing. Measure real Circles before reaching for anything smarter.
 
 ### 2.6 Privacy posture
 
@@ -289,8 +331,10 @@ sentence.
 That is a defensible trade for a working Circle and an unpleasant surprise for
 a social one. It needs to be stated plainly at the point of opt-in, and the
 roster must mark ambient agents so *all* peers can see who is listening — not
-just the device that configured one. This is a trust-model change and belongs
-in [concepts/security.md](../concepts/security.md) when it ships.
+just the device that configured one.
+
+**Shipped:** `MemberEntry.ambient_agents` is advertised alongside `agents`, so
+every peer sees which agents on which devices are reading the room.
 
 ## 3. Agent-to-agent delegation
 
@@ -482,21 +526,25 @@ message's budget. An ambient agent that passes (§2.3) spends nothing.
 
 ## 4. Phasing
 
+All shipped. The order actually taken put **delegation (§3) first**, out of the
+sequence below, because it was independently useful and did not depend on the
+rest. That skipping had a cost worth recording: §1.3 describes the Circle-wide
+lock as too coarse and too loud, and running delegation over it produced exactly
+the failure the section predicts — `@agent failed to start · already running`
+in the transcript, for something a user is entitled to do.
+
 1. **Run queue** (§1.3) — independently useful, and a prerequisite for the
    rest.
 2. **Engagement window + composer affordance** (§1.1, §1.2) — the bulk of
-   the UX win, backend-shaped, no schema change.
+   the UX win.
 3. **`author` field** (§2.1) — small, defaulted, unlocks §2 and is useful on
    its own for rendering.
 4. **Ambient engagement behind per-agent opt-in** (§2) — with the heuristic
-   debounce from day one, and §2.4 settled before any of it lands.
+   gate from day one, and §2.4 settled before any of it landed.
 5. **Agent-to-agent delegation** (§3) — the relay chain, the three bounds, and
-   `accept_from`. Depends on the `author` field from step 3 to know what mints a
-   budget, and on the run queue from step 1 because a cascade is the fastest way
-   to find a busy agent. Independent of §2: it is worth shipping even if ambient
-   never is.
-6. **Reply-threading** (§1.4) — when the window's guesses prove annoying in
-   practice.
+   `accept_from`.
+6. **Reply-threading** (§1.4) — the explicit form, for when the window guesses
+   wrong.
 
 ## 5. Explicitly not doing
 

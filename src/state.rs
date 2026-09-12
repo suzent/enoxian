@@ -889,6 +889,7 @@ mod tests {
             agent_id: format!("suzy-{peer_id}"),
             device_label: "macbook-pro".into(),
             agents: agents.iter().map(|a| a.to_string()).collect(),
+            ambient_agents: Vec::new(),
             role: MemberRole::Member,
             added_at: chrono::Utc::now(),
             signature: String::new(),

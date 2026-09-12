@@ -82,6 +82,10 @@ pub struct PostChatRequest {
     /// from the stored bytes so a client cannot mislabel an attachment.
     #[serde(default)]
     pub attachments: Vec<AttachmentRef>,
+    /// Id of the message being replied to (§1.4). Routes the turn to whichever
+    /// agent posted it, with no timer and no ambiguity.
+    #[serde(default)]
+    pub reply_to: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -171,7 +175,14 @@ pub async fn post_chat(
             .into_response();
     }
     // A user/UI post fires mention triggers.
-    match post_message_with_attachments(&state, sender, req.text, attachments, Trigger::Human) {
+    match post_reply(
+        &state,
+        sender,
+        req.text,
+        attachments,
+        Trigger::Human,
+        req.reply_to,
+    ) {
         Ok(id) => (StatusCode::CREATED, Json(json!({ "id": id }))).into_response(),
         Err(error) if error.to_string().contains("state busy") => super::circle_busy(),
         Err(error) => (
@@ -351,6 +362,19 @@ pub fn post_message(
     post_message_with_attachments(state, sender, text, Vec::new(), trigger)
 }
 
+/// As [`post_message_with_attachments`], but threading the post as a reply to
+/// an earlier message (§1.4).
+pub fn post_reply(
+    state: &crate::state::AppState,
+    sender: String,
+    text: String,
+    attachments: Vec<crate::control::Attachment>,
+    trigger: Trigger,
+    reply_to: Option<String>,
+) -> anyhow::Result<String> {
+    post_inner(state, sender, text, attachments, trigger, reply_to)
+}
+
 /// As [`post_message`], but carries attachment metadata. The bytes must already
 /// be in the local blob store — only the reference travels in the control doc.
 pub fn post_message_with_attachments(
@@ -360,11 +384,27 @@ pub fn post_message_with_attachments(
     attachments: Vec<crate::control::Attachment>,
     trigger: Trigger,
 ) -> anyhow::Result<String> {
+    post_inner(state, sender, text, attachments, trigger, None)
+}
+
+fn post_inner(
+    state: &crate::state::AppState,
+    sender: String,
+    text: String,
+    attachments: Vec<crate::control::Attachment>,
+    trigger: Trigger,
+    reply_to: Option<String>,
+) -> anyhow::Result<String> {
     let mentions = crate::agent::mention::extract(&text);
     let id = uuid::Uuid::new_v4().to_string();
     // A human post roots a new cascade at itself; an agent reply extends the
     // one that woke it. A system post carries none, so nothing downstream can
     // spend a budget on its behalf.
+    let author = match &trigger {
+        Trigger::Human => crate::control::Author::Human,
+        Trigger::AgentReply { .. } => crate::control::Author::Agent,
+        Trigger::System => crate::control::Author::System,
+    };
     let relay = match &trigger {
         Trigger::Human => Some(crate::agent::relay::mint(&id, &state.peer_id)),
         Trigger::AgentReply { agent, parent } => Some(crate::agent::relay::extend(
@@ -387,6 +427,8 @@ pub fn post_message_with_attachments(
         peer_id: state.peer_id.clone(),
         attachments,
         relay,
+        author,
+        reply_to,
     };
 
     let json_str = serde_json::to_string(&msg)?;

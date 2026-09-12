@@ -32,6 +32,10 @@ pub enum Initiator {
     Local,
     /// Another circle member's mention this device chose to react to.
     RemoteMember,
+    /// An unaddressed turn this device volunteered for (engagement spec §2).
+    /// Nobody asked, so whatever it writes is held for review rather than
+    /// accepted outright.
+    Ambient,
 }
 
 /// Outcome of a launch.
@@ -162,6 +166,9 @@ pub async fn launch(req: LaunchRequest<'_>) -> Result<LaunchOutcome> {
     let mode = match req.initiator {
         // A managed run enoxian owns the process tree for → verified process.
         Initiator::Local | Initiator::RemoteMember => SessionMode::ManagedProcess,
+        // Still a managed process, but one nobody asked for. The distinct mode
+        // is what lets the proposal engine hold its writes for review.
+        Initiator::Ambient => SessionMode::AmbientTriggered,
     };
     let mut session = LocalChangeSession::start(
         req.circle_id.to_string(),

@@ -64,6 +64,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                         continue;
                     }
                     let cfg = AgentConfig::load();
+                    offer_ambient(&state, &handled, &ledger, &queue, &cfg, &message);
                     let Some(engagement) = resolve_followup(&state, &message, &cfg) else {
                         continue;
                     };
@@ -85,6 +86,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                                 &message.peer_id,
                             )),
                             implicit: true,
+                            ambient: false,
                         },
                     );
                 }
@@ -127,6 +129,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                             message: &message,
                             relay: message.relay.clone(),
                             implicit: false,
+                            ambient: false,
                         },
                     );
                 }
@@ -154,6 +157,9 @@ struct DispatchRequest<'a> {
     relay: Option<Relay>,
     /// True when routed by the engagement window rather than addressed.
     implicit: bool,
+    /// True when nobody addressed this agent at all — it is being offered the
+    /// room's conversation and may decline (§2).
+    ambient: bool,
 }
 
 /// The shared gate: allowlist, delegation budget, dedup, then enqueue.
@@ -176,7 +182,7 @@ fn dispatch(
 
     // Delegation gate. Only an agent-authored trigger is budgeted; a follow-up
     // is a human's message and mints its own (§3.3).
-    if !req.implicit {
+    if !req.implicit && !req.ambient {
         let delegated = req
             .relay
             .as_ref()
@@ -249,7 +255,10 @@ fn dispatch(
     // resolves from the *root human*, not the agent that mentioned us —
     // otherwise an agent could launder a remote member's request into a local
     // one by relaying it.
-    let initiator = if attributed_local(state, req.message) {
+    let initiator = if req.ambient {
+        // Nobody asked. Whatever it writes is held for review (§2.4).
+        Initiator::Ambient
+    } else if attributed_local(state, req.message) {
         Initiator::Local
     } else {
         Initiator::RemoteMember
@@ -264,6 +273,7 @@ fn dispatch(
         message_id: req.message.id.clone(),
         initiator,
         relay: req.relay,
+        ambient: req.ambient,
     });
     if let Some(dropped_id) = dropped {
         // Dropping a message the user wrote is lossy, and rare by construction
@@ -282,18 +292,79 @@ fn dispatch(
     }
 }
 
+/// Offer an unaddressed message to this device's ambient agents (§2).
+fn offer_ambient(
+    state: &AppState,
+    handled: &super::handled::HandledMentions,
+    ledger: &RelayLedger,
+    queue: &RunQueue,
+    cfg: &AgentConfig,
+    message: &crate::control::ChatMessage,
+) {
+    let ambient: Vec<String> = cfg
+        .agents
+        .iter()
+        .filter(|(_, cmd)| cmd.is_ambient())
+        .map(|(name, _)| name.clone())
+        .collect();
+    if ambient.is_empty() {
+        return;
+    }
+    if let Some(reason) = super::ambient::skip_reason(message, mentions_an_agent(message)) {
+        tracing::trace!("[agent] no ambient turn for {}: {reason}", message.id);
+        return;
+    }
+    let history = state.transcript();
+    let mut offered = 0;
+    for agent in ambient {
+        if offered >= super::ambient::MAX_AMBIENT_REPLIES_PER_MESSAGE {
+            tracing::debug!(
+                "[agent] ambient cap reached for {} — `{agent}` not offered",
+                message.id
+            );
+            break;
+        }
+        if super::ambient::spoke_recently(&history, &agent, message.ts) {
+            continue;
+        }
+        dispatch(
+            state,
+            handled,
+            ledger,
+            queue,
+            cfg,
+            DispatchRequest {
+                agent: &agent,
+                mention_key: &format!("~ambient:{agent}"),
+                task: message.text.clone(),
+                message,
+                // An ambient turn is rooted in the human message it reads, so a
+                // hand-off from it spends that message's budget (§3.8).
+                relay: Some(super::relay::mint(&message.id, &message.peer_id)),
+                implicit: false,
+                ambient: true,
+            },
+        );
+        offered += 1;
+    }
+}
+
+/// Does this message address an agent (rather than a person or nobody)?
+fn mentions_an_agent(message: &crate::control::ChatMessage) -> bool {
+    message.mentions.iter().any(|m| {
+        Mention::parse(m)
+            .and_then(|parsed| parsed.agent_target().map(|_| ()))
+            .is_some()
+    })
+}
+
 /// Resolve a follow-up for a message that named no agent.
 fn resolve_followup(
     state: &AppState,
     message: &crate::control::ChatMessage,
     cfg: &AgentConfig,
 ) -> Option<super::engagement::Engagement> {
-    let mentions_an_agent = message.mentions.iter().any(|m| {
-        Mention::parse(m)
-            .and_then(|parsed| parsed.agent_target().map(|_| ()))
-            .is_some()
-    });
-    if !super::engagement::is_followup_candidate(message, mentions_an_agent) {
+    if !super::engagement::is_followup_candidate(message, mentions_an_agent(message)) {
         return None;
     }
     let history: Vec<_> = state
@@ -301,6 +372,12 @@ fn resolve_followup(
         .into_iter()
         .filter(|m| m.id != message.id)
         .collect();
+    // An explicit reply-to wins outright: the user pointed at a message, which
+    // is addressing, so no window and no recency guess applies (§1.4).
+    if let Some(reply_to) = &message.reply_to {
+        let target = super::engagement::resolve_reply_to(&history, reply_to);
+        return target.filter(|e| e.peer_id == state.peer_id);
+    }
     let engagement = super::engagement::resolve(
         &history,
         &message.peer_id,
@@ -324,6 +401,7 @@ struct QueuedTurn {
     message_id: String,
     initiator: Initiator,
     relay: Option<Relay>,
+    ambient: bool,
 }
 
 /// How many turns may wait for one agent before the oldest is dropped.
@@ -432,6 +510,7 @@ async fn run_one(state: &AppState, turn: QueuedTurn) {
         message_id,
         initiator,
         relay,
+        ambient,
     } = turn;
     if let Err(e) = react(
         state,
@@ -443,6 +522,7 @@ async fn run_one(state: &AppState, turn: QueuedTurn) {
             message_id: &message_id,
             initiator,
             relay,
+            ambient,
         },
     )
     .await
@@ -519,6 +599,8 @@ struct Turn<'a> {
     /// The cascade that woke this turn, carried forward onto its reply so a
     /// mention in that reply spends from the same budget.
     relay: Option<Relay>,
+    /// An unaddressed turn, which may decline with PASS.
+    ambient: bool,
 }
 
 async fn react(state: &AppState, turn: Turn<'_>) -> anyhow::Result<()> {
@@ -530,6 +612,7 @@ async fn react(state: &AppState, turn: Turn<'_>) -> anyhow::Result<()> {
         message_id,
         initiator,
         relay,
+        ambient,
     } = turn;
     publish_agent_activity(state, agent_id, message_id, ChatActivityKind::Working, true);
 
@@ -545,8 +628,12 @@ async fn react(state: &AppState, turn: Turn<'_>) -> anyhow::Result<()> {
     // Give the agent enough context about where it is. On a resumed session the
     // agent already has history, so we send a lean per-turn header; on a fresh
     // session we include the standing brief about the enoxian environment.
-    let prompt =
+    let mut prompt =
         super::context::build_prompt(state, agent_id, sender, task, resume.as_ref(), message_id);
+    if ambient {
+        prompt.push_str("\n\n");
+        prompt.push_str(super::ambient::ambient_instruction());
+    }
     let (actor_token, _) = state
         .actor_tokens
         .issue(&state.circle_id, &state.peer_id, agent_id);
@@ -601,6 +688,27 @@ async fn react(state: &AppState, turn: Turn<'_>) -> anyhow::Result<()> {
     // reads like a conversation. File changes still surface separately as a
     // proposal (via the ambient engine + pull protocol); this is the
     // conversational half.
+    // An unaddressed agent that declines says PASS (§2.3). Suppress the post,
+    // but still advance its seen-mark and say so in the activity indicator —
+    // "considered and passed" must not look like "never ran".
+    if ambient
+        && outcome
+            .reply
+            .as_deref()
+            .is_some_and(super::ambient::is_pass)
+    {
+        tracing::info!("[agent] `{agent_id}` passed on {message_id}");
+        mark_seen(state, agent_id, message_id);
+        publish_agent_activity_detailed(
+            state,
+            agent_id,
+            message_id,
+            ChatActivityKind::Skipped,
+            true,
+            Some("nothing to add".to_string()),
+        );
+        return Ok(());
+    }
     if let Some(reply) = outcome
         .reply
         .as_deref()
@@ -832,6 +940,7 @@ mod tests {
             agent_id: format!("{owner}-{device}"),
             device_label: device.into(),
             agents: vec!["suzent".into()],
+            ambient_agents: Vec::new(),
             role: MemberRole::Admin,
             added_at: chrono::Utc::now(),
             signature: String::new(),
@@ -911,6 +1020,7 @@ mod tests {
             message_id: message_id.into(),
             initiator: Initiator::Local,
             relay: None,
+            ambient: false,
         }
     }
 

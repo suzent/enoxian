@@ -92,6 +92,10 @@ export interface ChatMessage {
   attachments?: Attachment[]
   /** Delegation provenance; absent on system posts and older peers. */
   relay?: Relay
+  /** Who wrote this. Defaults to 'human' for messages from older peers. */
+  author?: 'human' | 'agent' | 'system'
+  /** The message this replies to — explicit addressing, no timer. */
+  reply_to?: string | null
 }
 
 export interface Proposal {

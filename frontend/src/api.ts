@@ -118,7 +118,8 @@ export const postChat = (
   text: string,
   agentId: string,
   attachments: { hash: string; name: string }[] = [],
-) => post(`${api(id)}/chat`, { text, agent_id: agentId, attachments })
+  replyTo?: string | null,
+) => post(`${api(id)}/chat`, { text, agent_id: agentId, attachments, reply_to: replyTo ?? null })
 
 /** Largest upload the daemon will accept. Mirrors MAX_ATTACHMENT_BYTES. */
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024

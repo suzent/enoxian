@@ -298,6 +298,8 @@ mod tests {
             peer_id: String::new(),
             attachments: Vec::new(),
             relay: None,
+            author: crate::control::Author::Human,
+            reply_to: None,
         }
     }
 

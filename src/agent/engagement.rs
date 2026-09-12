@@ -54,14 +54,34 @@ pub fn is_followup_candidate(msg: &ChatMessage, mention_targets_agent: bool) -> 
     if mention_targets_agent {
         return false;
     }
-    if msg.agent_id == "system" {
-        return false;
+    // `author` is the durable signal. Fall back to the relay shape for peers
+    // predating it: an agent reply carries a relay whose path names the agent
+    // that posted it.
+    match msg.author {
+        crate::control::Author::Agent | crate::control::Author::System => false,
+        crate::control::Author::Human => match &msg.relay {
+            Some(relay) => relay.path.is_empty(),
+            None => msg.agent_id != "system",
+        },
     }
-    // An agent reply carries a relay whose path names the agent that posted it.
-    match &msg.relay {
-        Some(relay) => relay.path.is_empty(),
-        None => true,
+}
+
+/// Resolve an explicit reply-to into a target (§1.4).
+///
+/// Unlike [`resolve`] this consults no window and no recency: the user pointed
+/// at a message, which is addressing. It is the only thing that works when two
+/// agents are mid-conversation with the same person, where recency guesses.
+pub fn resolve_reply_to(history: &[ChatMessage], reply_to: &str) -> Option<Engagement> {
+    let target = history.iter().find(|m| m.id == reply_to)?;
+    let agent = target.relay.as_ref()?.path.last()?;
+    if target.peer_id.is_empty() {
+        return None;
     }
+    Some(Engagement {
+        agent: agent.clone(),
+        peer_id: target.peer_id.clone(),
+        message_id: target.id.clone(),
+    })
 }
 
 /// Resolve the engagement for `speaker` from the transcript.
@@ -164,6 +184,8 @@ mod tests {
             peer_id: peer.into(),
             attachments: vec![],
             relay: Some(crate::agent::relay::mint(id, peer)),
+            author: crate::control::Author::Human,
+            reply_to: None,
         }
     }
 
@@ -178,6 +200,8 @@ mod tests {
             peer_id: ran_on.into(),
             attachments: vec![],
             relay: Some(crate::agent::relay::extend(&parent, agent)),
+            author: crate::control::Author::Agent,
+            reply_to: None,
         }
     }
 
@@ -299,6 +323,38 @@ mod tests {
         let mut m = human("m1", "peer-suzy", 100);
         m.relay = None; // predates the relay field
         assert!(is_followup_candidate(&m, false));
+    }
+
+    #[test]
+    fn replying_to_a_message_addresses_its_agent_directly() {
+        let h = vec![
+            agent_reply("a1", "claude", "dev-mac", "peer-suzy", 100),
+            agent_reply("a2", "codex", "dev-air", "peer-suzy", 105),
+        ];
+        // Recency would say codex. Pointing at a1 says claude, and wins.
+        let e = resolve_reply_to(&h, "a1").unwrap();
+        assert_eq!(e.agent, "claude");
+        assert_eq!(e.peer_id, "dev-mac");
+    }
+
+    #[test]
+    fn reply_to_ignores_the_window_entirely() {
+        // Hours old: the window is long gone, the pointer is not.
+        let h = vec![agent_reply("a1", "claude", "dev-mac", "peer-suzy", 0)];
+        assert!(resolve(&h, "peer-suzy", 100_000, 180, None).is_none());
+        assert!(resolve_reply_to(&h, "a1").is_some());
+    }
+
+    #[test]
+    fn replying_to_a_human_message_routes_nowhere() {
+        let h = vec![human("m1", "peer-suzy", 100)];
+        assert!(resolve_reply_to(&h, "m1").is_none());
+    }
+
+    #[test]
+    fn replying_to_an_unknown_message_routes_nowhere() {
+        let h = vec![agent_reply("a1", "claude", "dev-mac", "peer-suzy", 100)];
+        assert!(resolve_reply_to(&h, "nope").is_none());
     }
 
     #[test]

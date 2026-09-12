@@ -984,6 +984,29 @@ button[role="tab"][aria-selected="true"] {
   font-weight: 700;
 }
 
+/* Reply affordance on an agent message. Quiet until hovered — it is an
+   occasional precision tool, not the primary way to answer. */
+.chat-message__reply {
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-slate);
+  font: inherit;
+  font-size: 9px;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.chat-message:hover .chat-message__reply,
+.chat-message__reply:focus-visible {
+  opacity: 0.7;
+}
+
+.chat-message__reply:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
 /* The follow-up window. Sits directly above the composer because it describes
    what the next keystroke will do, not what the room is doing. */
 .chat-engagement {

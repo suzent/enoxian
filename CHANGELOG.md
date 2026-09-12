@@ -41,6 +41,17 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Agents can be asked to read the room. An agent set `engagement = "ambient"` in
+  `agents.toml` is offered every human message and may answer or stay quiet.
+  Off by default and per device, because it sends every human line to that
+  agent's model provider — the roster marks ambient agents so everyone in the
+  Circle can see who is listening. Short messages, agents that just spoke, and
+  anything already addressed are skipped without asking a model, and at most one
+  ambient reply is offered per message. Files written by an unaddressed turn are
+  held for review instead of accepted.
+- Agent messages now have a **reply** action. Replying routes to that agent with
+  no mention and no timer, which is the only thing that works when two agents are
+  mid-conversation with you.
 - Replying to an agent no longer needs a mention. For a few minutes after an
   agent answers you, your next message goes back to it — on the same machine
   that ran it — and the composer says so before you press Enter, with Esc to

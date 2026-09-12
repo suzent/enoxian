@@ -71,7 +71,10 @@ pub fn load(circle_dir: &Path, agent: &str) -> Option<Record> {
         session_id: raw.to_string(),
         last_seen_message: String::new(),
     });
-    (!record.session_id.is_empty()).then_some(record)
+    // Useful when *either* field is set. Requiring a session id discarded the
+    // record of an agent that has only ever passed (§2.3) — it has a seen-mark
+    // and no session, and dropping it made the mark unreadable.
+    (!record.session_id.is_empty() || !record.last_seen_message.is_empty()).then_some(record)
 }
 
 /// Persist the ACP session id, preserving any seen-mark already stored.
@@ -81,13 +84,15 @@ pub fn save_session(circle_dir: &Path, agent: &str, session_id: &str) -> std::io
     write(circle_dir, agent, &record)
 }
 
-/// Record the last chat message this agent has seen, preserving its session id.
-/// Skipped when we have no session to resume — without one the next turn is
-/// fresh and sends the full context block anyway.
+/// Advance an agent's seen-mark, preserving any session id.
+///
+/// Creates the record when there is none. It used to return early instead,
+/// which was invisible while every turn came from a mention — an agent that
+/// replies gets a session id, and the record exists from then on. An agent that
+/// *passes* on its very first turn (engagement spec §2.3) never writes one, so
+/// the mark never advanced and it re-read the same history on every later turn.
 pub fn save_seen(circle_dir: &Path, agent: &str, message_id: &str) -> std::io::Result<()> {
-    let Some(mut record) = load(circle_dir, agent) else {
-        return Ok(());
-    };
+    let mut record = load(circle_dir, agent).unwrap_or_default();
     record.last_seen_message = message_id.to_string();
     write(circle_dir, agent, &record)
 }
@@ -182,10 +187,21 @@ mod tests {
     }
 
     #[test]
-    fn seen_mark_without_a_session_is_a_no_op() {
+    fn a_seen_mark_is_kept_even_with_no_session() {
+        // An agent that passes on its very first turn (§2.3) has a mark and no
+        // session. Dropping the record made the mark unreadable, so it re-read
+        // the same history on every later turn.
         let tmp = tmpdir();
         save_seen(&tmp, "claude", "msg-1").unwrap();
-        assert!(load(&tmp, "claude").is_none());
+        let record = load(&tmp, "claude").expect("a mark alone is worth keeping");
+        assert_eq!(record.last_seen_message, "msg-1");
+        assert!(record.session_id.is_empty());
+
+        // And a session id arriving later joins it rather than replacing it.
+        save_session(&tmp, "claude", "sess-1").unwrap();
+        let record = load(&tmp, "claude").unwrap();
+        assert_eq!(record.session_id, "sess-1");
+        assert_eq!(record.last_seen_message, "msg-1");
         std::fs::remove_dir_all(&tmp).ok();
     }
 }
