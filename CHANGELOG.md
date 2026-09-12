@@ -60,9 +60,15 @@ refuses to publish a version whose section is missing or empty.
   reply nobody typed a request for is not mistaken for one that was asked for.
 - Proposals record the delegation chain, so a file written by an agent another
   agent asked is distinguishable from one a person asked for directly.
+- Chat messages render markdown — lists, tables, headings, quotes, links and
+  fenced code blocks, so an agent's structured output is readable instead of
+  arriving as raw syntax. Recognised @mentions are still highlighted, except
+  inside code, where an `@name` is part of the snippet rather than a ping.
 
 ### Fixed
 
+- Rendered markdown shows its list bullets, its list numbering and its links
+  again, in both chat and the file preview.
 - A half-written chat message, and any image staged with it, now stays with the
   circle it was written in. Switching circles used to carry the unsent message
   across and send it to whichever circle you had moved to.

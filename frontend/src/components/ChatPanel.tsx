@@ -1,4 +1,4 @@
-import { Fragment, useState, useEffect, useRef, useCallback } from 'react'
+import { Fragment, useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import type { Attachment, ChatActivity, ChatMessage, Member, Presence } from '../types'
 import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, MAX_ATTACHMENT_BYTES } from '../api'
 import { useApp } from '../context/AppContext'
@@ -7,6 +7,7 @@ import CircleGlyph from './CircleGlyph'
 import MentionPopup, { buildMentionItems, type MentionItem } from './MentionPopup'
 import MentionInput, { draftText, type DraftNode, type MentionInputHandle } from './MentionInput'
 import Lightbox from './Lightbox'
+import { renderChatMarkdown } from '../lib/markdown'
 
 // Backfill retry budget: ~0.5s + 1s + 1.5s + 2s before giving up and telling
 // the user, rather than rendering an empty transcript as if it were loaded.
@@ -19,32 +20,21 @@ interface Props {
   hideActiveCircleGlyph?: boolean
 }
 
-/**
- * Render message text with recognized @mentions as chips. `mentions` is the
- * server-parsed list (owner/device/agent bodies) — the ground truth for "this
- * registered as a mention". A `@token` in the text is chipped only if it is in
- * that list, so a typo that matched nothing stays plain text.
+/** A message body. Markdown, because agents post structured output — lists,
+ *  code blocks, tables — and a wall of raw syntax is unreadable in a bubble.
+ *
+ *  Parsing is memoised: the transcript re-renders on every incoming message,
+ *  presence tick and typing update, and re-parsing every bubble each time makes
+ *  a long scrollback crawl.
  */
-function renderWithMentions(text: string, mentions: string[]): React.ReactNode {
-  if (!mentions || mentions.length === 0) return text
-  // Match @ followed by mention-body chars (letters, digits, -, _, /).
-  const parts: React.ReactNode[] = []
-  const re = /@([A-Za-z0-9_\-/]+)/g
-  let last = 0
-  let m: RegExpExecArray | null
-  let key = 0
-  while ((m = re.exec(text)) !== null) {
-    const body = m[1]
-    if (!mentions.includes(body)) continue // unrecognized — leave as plain text
-    if (m.index > last) parts.push(text.slice(last, m.index))
-    parts.push(
-      <span key={key++} className="mention-chip mention-chip--msg">@{body}</span>,
-    )
-    last = m.index + m[0].length
-  }
-  if (last === 0) return text // nothing chipped
-  if (last < text.length) parts.push(text.slice(last))
-  return parts
+function MessageText({ text, mentions }: { text: string; mentions: string[] }) {
+  const html = useMemo(() => renderChatMarkdown(text, mentions), [text, mentions])
+  return (
+    <div
+      className="chat-message__text markdown-preview markdown-preview--chat"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  )
 }
 
 function formatTime(ts: number) {
@@ -229,11 +219,7 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
             </time>
           </header>
         )}
-        {msg.text.trim() && (
-          <div className="chat-message__text">
-            {renderWithMentions(msg.text, msg.mentions)}
-          </div>
-        )}
+        {msg.text.trim() && <MessageText text={msg.text} mentions={msg.mentions} />}
         {!!msg.attachments?.length && (
           <div className="chat-message__attachments">
             {msg.attachments.map(att => (

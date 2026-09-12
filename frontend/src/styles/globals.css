@@ -839,6 +839,10 @@ button[role="tab"][aria-selected="true"] {
   letter-spacing: 0.05em;
 }
 
+/* Typography lives in .markdown-preview--chat, not here: the bubble carries
+   both classes, and the .markdown-preview base is declared further down this
+   file, so at equal specificity it would win any font rule set here. */
+
 /* Delegation provenance. Quieter than the AGENT badge on purpose: it answers
    "who asked for this?" for a reply nobody in the room typed a request for,
    without competing with the speaker's own identity. */
@@ -854,10 +858,6 @@ button[role="tab"][aria-selected="true"] {
 .chat-message__text {
   max-width: 100%;
   padding: 1px 0 2px;
-  color: var(--fg-obsidian);
-  font-size: var(--ui-small);
-  line-height: 1.52;
-  white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
 }
@@ -2169,8 +2169,19 @@ button[role="tab"][aria-selected="true"] {
 .markdown-preview pre,
 .markdown-preview table { margin: 0 0 1.15em; }
 
+/* Tailwind's preflight resets `list-style: none` and `text-decoration: inherit`
+   globally, which quietly strips rendered markdown of its bullets, its list
+   numbering and its links. Put them back — a numbered list that renders without
+   numbers has lost part of what was written. */
+.markdown-preview ul,
+.markdown-preview ol { padding-left: 1.6em; }
+.markdown-preview ul { list-style: disc outside; }
+.markdown-preview ul ul { list-style: circle outside; }
+.markdown-preview ol { list-style: decimal outside; }
+
 .markdown-preview a {
   color: inherit;
+  text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
@@ -3183,6 +3194,62 @@ body {
 .markdown-preview--compact .markdown-preview__image {
   min-height: 90px;
   padding: 16px;
+}
+
+/* Chat bubbles render the same markdown as the file preview, at message scale:
+   the shared rules give lists, code, tables and quotes their look, and these
+   pull the document-sized type and spacing down to something that reads as a
+   message rather than a page. */
+.markdown-preview--chat {
+  width: auto;
+  max-width: 100%;
+  min-height: 0;
+  margin-inline: 0;
+  color: var(--fg-obsidian);
+  font-family: inherit;
+  font-size: var(--ui-small);
+  line-height: 1.52;
+}
+
+.markdown-preview--chat h1,
+.markdown-preview--chat h2,
+.markdown-preview--chat h3,
+.markdown-preview--chat h4 {
+  margin: 0.7em 0 0.3em;
+  border: 0;
+  padding-bottom: 0;
+  line-height: 1.3;
+}
+
+.markdown-preview--chat h1 { font-size: 1.3em; }
+.markdown-preview--chat h2 { font-size: 1.18em; }
+.markdown-preview--chat h3 { font-size: 1.08em; }
+.markdown-preview--chat h4 { font-size: 1em; }
+
+.markdown-preview--chat p,
+.markdown-preview--chat ul,
+.markdown-preview--chat ol,
+.markdown-preview--chat blockquote,
+.markdown-preview--chat pre,
+.markdown-preview--chat table { margin: 0 0 0.5em; }
+
+.markdown-preview--chat ul,
+.markdown-preview--chat ol { padding-left: 1.4em; }
+
+.markdown-preview--chat li { margin: 0.1em 0; }
+
+.markdown-preview--chat pre { padding: 8px 10px; }
+.markdown-preview--chat pre code { font-size: 11px; }
+.markdown-preview--chat blockquote { padding: 4px 10px; }
+.markdown-preview--chat hr { margin: 0.8em 0; }
+
+.markdown-preview--chat th,
+.markdown-preview--chat td { padding: 3px 6px; }
+
+.markdown-preview--chat .markdown-preview__image {
+  min-height: 0;
+  margin: 0.4em 0;
+  padding: 10px;
 }
 
 .file-actions button,
