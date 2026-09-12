@@ -1,6 +1,6 @@
 import { Fragment, useState, useEffect, useRef, useCallback } from 'react'
-import type { ChatActivity, ChatMessage, Member, Presence } from '../types'
-import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho } from '../api'
+import type { Attachment, ChatActivity, ChatMessage, Member, Presence } from '../types'
+import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, MAX_ATTACHMENT_BYTES } from '../api'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 import CircleGlyph from './CircleGlyph'
@@ -94,15 +94,72 @@ function senderInitial(label: SenderLabel) {
   return source.match(/[\p{L}\p{N}]/u)?.[0]?.toUpperCase() || '·'
 }
 
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+interface AttachmentImageProps {
+  circleId: string
+  att: Attachment
+  /** Bumped when the daemon reports this blob finished downloading, which
+   *  re-requests a URL that previously 404'd. */
+  nonce: number
+}
+
+/** One image in the transcript.
+ *
+ *  The bytes may not have arrived yet — a peer posts the message through the
+ *  CRDT immediately, while the blob travels separately over the sync stream.
+ *  So a miss is an expected transient state, not an error: we show a
+ *  placeholder sized from the stored dimensions and swap in the image when the
+ *  `attachment_available` event bumps `nonce`. */
+function AttachmentImage({ circleId, att, nonce }: AttachmentImageProps) {
+  const [failed, setFailed] = useState(false)
+  useEffect(() => { setFailed(false) }, [nonce])
+
+  // Reserve the real aspect ratio up front so arriving images don't reflow the
+  // transcript under the reader.
+  const ratio = att.width && att.height ? `${att.width} / ${att.height}` : undefined
+
+  if (failed) {
+    return (
+      <div className="chat-attachment chat-attachment--pending" style={{ aspectRatio: ratio }} role="img" aria-label={`${att.name} — not downloaded yet`}>
+        <span className="chat-attachment__pending-label">
+          Waiting for image…
+          <small>{att.name} · {formatBytes(att.size)}</small>
+        </span>
+      </div>
+    )
+  }
+
+  return (
+    <a className="chat-attachment" href={blobUrl(circleId, att.hash)} target="_blank" rel="noreferrer noopener" style={{ aspectRatio: ratio }}>
+      <img
+        src={`${blobUrl(circleId, att.hash)}&v=${nonce}`}
+        alt={att.name}
+        width={att.width}
+        height={att.height}
+        loading="lazy"
+        decoding="async"
+        onError={() => setFailed(true)}
+      />
+    </a>
+  )
+}
+
 interface BubbleProps {
   msg: ChatMessage
   isMine: boolean  // true for all devices owned by self
   isThisDevice: boolean  // true only for the current device
   label: SenderLabel
   showSender: boolean
+  circleId: string
+  blobNonces: Record<string, number>
 }
 
-function Bubble({ msg, isMine, isThisDevice, label, showSender }: BubbleProps) {
+function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNonces }: BubbleProps) {
   if (msg.agent_id === 'system') {
     return (
       <div className="chat-system-event" role="status">
@@ -136,9 +193,23 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender }: BubbleProps) {
             </time>
           </header>
         )}
-        <div className="chat-message__text">
-          {renderWithMentions(msg.text, msg.mentions)}
-        </div>
+        {msg.text.trim() && (
+          <div className="chat-message__text">
+            {renderWithMentions(msg.text, msg.mentions)}
+          </div>
+        )}
+        {!!msg.attachments?.length && (
+          <div className="chat-message__attachments">
+            {msg.attachments.map(att => (
+              <AttachmentImage
+                key={att.hash}
+                circleId={circleId}
+                att={att}
+                nonce={blobNonces[att.hash] ?? 0}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </article>
   )
@@ -162,6 +233,15 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   // True once the user has navigated the popup with arrows — only then does
   // Enter accept a suggestion instead of sending the message.
   const [mentionActive, setMentionActive] = useState(false)
+  // Attachments uploaded and awaiting send with the next message.
+  const [pending, setPending] = useState<Attachment[]>([])
+  const [uploading, setUploading] = useState(0)
+  const [attachError, setAttachError] = useState<string | null>(null)
+  // Per-hash counter bumped when the daemon finishes fetching a blob, so an
+  // image that 404'd on first render retries.
+  const [blobNonces, setBlobNonces] = useState<Record<string, number>>({})
+  const [dragging, setDragging] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<MentionInputHandle>(null)
   const messageListRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -262,6 +342,9 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
         const data = JSON.parse(e.data)
         if (data.type === 'message_posted') addMsg(data.message)
         if (data.type === 'chat_activity_changed') ingestActivity(data.activity)
+        if (data.type === 'attachment_available' && data.hash) {
+          setBlobNonces(prev => ({ ...prev, [data.hash]: (prev[data.hash] ?? 0) + 1 }))
+        }
         if (data.type === 'member_added' || data.type === 'member_removed' || data.type === 'presence_changed') {
           refreshRoster()
         }
@@ -341,15 +424,71 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     }
   }, [members, selfOwner])
 
+  /** Upload dropped/pasted/picked files and stage them for the next send.
+   *  Each upload is independent: one rejected file does not discard the rest. */
+  const addFiles = useCallback(async (files: File[]) => {
+    if (!activeCircleId || activeCircle?.disabled) return
+    const images = files.filter(f => f.type.startsWith('image/'))
+    if (!images.length) {
+      if (files.length) setAttachError('Only images can be attached.')
+      return
+    }
+    setAttachError(null)
+    for (const file of images) {
+      // Check client-side too, so an oversized paste fails instantly instead of
+      // after uploading megabytes the daemon will reject.
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        setAttachError(`${file.name} is too large (max ${formatBytes(MAX_ATTACHMENT_BYTES)}).`)
+        continue
+      }
+      setUploading(n => n + 1)
+      try {
+        const att = await uploadAttachment(activeCircleId, file)
+        // Same bytes twice is the same blob — don't stage a duplicate.
+        setPending(prev => prev.some(p => p.hash === att.hash) ? prev : [...prev, att])
+      } catch (error) {
+        setAttachError(error instanceof Error ? error.message : 'Upload failed.')
+      } finally {
+        setUploading(n => n - 1)
+      }
+    }
+  }, [activeCircleId, activeCircle?.disabled])
+
+  const onPaste = useCallback((e: React.ClipboardEvent) => {
+    const files = Array.from(e.clipboardData?.files ?? [])
+    if (files.length) {
+      // Don't also paste the image's filename as text.
+      e.preventDefault()
+      void addFiles(files)
+    }
+  }, [addFiles])
+
+  const onDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setDragging(false)
+    void addFiles(Array.from(e.dataTransfer?.files ?? []))
+  }, [addFiles])
+
   const send = () => {
     const text = input.trim()
-    if (!text || !activeCircleId || !status || activeCircle?.disabled) return
+    if (!activeCircleId || !status || activeCircle?.disabled) return
+    // An image on its own is a valid message; empty text with nothing staged
+    // is not. Block send while an upload is still in flight so the attachment
+    // isn't silently dropped from the message.
+    if ((!text && pending.length === 0) || uploading > 0) return
     inputRef.current?.clear()
     setInput('')
     setFragment(null)
     setMentionActive(false)
     stopTyping()
-    postChat(activeCircleId, text, status.agent_id).catch(() => {})
+    const attachments = pending.map(a => ({ hash: a.hash, name: a.name }))
+    setPending([])
+    setAttachError(null)
+    postChat(activeCircleId, text, status.agent_id, attachments).catch(() => {
+      // Restore the staged images so the user can retry rather than losing them.
+      setPending(prev => [...pending, ...prev])
+      setAttachError('Message failed to send.')
+    })
   }
 
   const mentionOpen = fragment !== null
@@ -539,6 +678,8 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
                 isThisDevice={isThisDevice}
                 label={label}
                 showSender={showSender || startsNewDay}
+                circleId={activeCircleId ?? ''}
+                blobNonces={blobNonces}
               />
             </Fragment>
           )
@@ -546,7 +687,15 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
         <div ref={bottomRef} />
       </div>
 
-      <div className="chat-composer">
+      <div
+        className={`chat-composer${dragging ? ' chat-composer--dragging' : ''}`}
+        onDragOver={e => { e.preventDefault(); if (!activeCircle?.disabled) setDragging(true) }}
+        onDragLeave={e => {
+          // Ignore bubbling leaves from children, which would flicker the state.
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
+        }}
+        onDrop={onDrop}
+      >
         {mentionOpen && (
           <MentionPopup
             members={members}
@@ -568,6 +717,53 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
             {liveActivities.length > 3 && <span>+{liveActivities.length - 3} active</span>}
           </div>
         )}
+        {(pending.length > 0 || uploading > 0 || attachError) && (
+          <div className="chat-composer__attachments">
+            {pending.map(att => (
+              <div key={att.hash} className="chat-staged">
+                <img src={blobUrl(activeCircleId ?? '', att.hash)} alt={att.name} />
+                <button
+                  type="button"
+                  className="chat-staged__remove"
+                  aria-label={`Remove ${att.name}`}
+                  onClick={() => setPending(prev => prev.filter(p => p.hash !== att.hash))}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            {uploading > 0 && (
+              <span className="chat-staged chat-staged--busy" role="status">
+                Uploading{uploading > 1 ? ` ${uploading}` : ''}…
+              </span>
+            )}
+            {attachError && (
+              <span className="chat-composer__attach-error" role="alert">{attachError}</span>
+            )}
+          </div>
+        )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          multiple
+          hidden
+          onChange={e => {
+            void addFiles(Array.from(e.target.files ?? []))
+            // Reset so picking the same file twice still fires a change event.
+            e.target.value = ''
+          }}
+        />
+        <button
+          type="button"
+          className="enox-btn chat-composer__attach"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={activeCircle?.disabled}
+          title="Attach an image"
+          aria-label="Attach an image"
+        >
+          +
+        </button>
         <MentionInput
           ref={inputRef}
           onChange={onInputChange}
@@ -575,8 +771,9 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
           placeholder={activeCircle?.disabled ? 'Circle disabled — enable to resume' : 'Message the circle...  (@ to mention)'}
           className={`chat-composer__input${activeCircle?.disabled ? ' chat-composer__input--disabled' : ''}`}
           disabled={activeCircle?.disabled}
+          onPaste={onPaste}
         />
-        <button onClick={send} disabled={activeCircle?.disabled} className="enox-btn chat-composer__send">
+        <button onClick={send} disabled={activeCircle?.disabled || uploading > 0} className="enox-btn chat-composer__send">
           {activeCircle?.disabled ? 'VOID' : variant === 'main' ? 'SEND' : 'EXEC'}
         </button>
       </div>

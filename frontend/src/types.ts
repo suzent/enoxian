@@ -52,6 +52,19 @@ export interface PeerConnection {
   address: string
 }
 
+/** A blob referenced by a chat message. Bytes live in the content-addressed
+ *  store and are fetched over the sync stream; only this metadata is in CRDT. */
+export interface Attachment {
+  hash: string
+  mime: string
+  name: string
+  size: number
+  /** Intrinsic pixel size, when the server could read it from the header.
+   *  Used to reserve layout space so the transcript doesn't jump on load. */
+  width?: number
+  height?: number
+}
+
 export interface ChatMessage {
   id: string
   agent_id: string
@@ -61,6 +74,8 @@ export interface ChatMessage {
   /** Peer that posted the message. Disambiguates agent replies, whose agent_id
    *  is a bare name several devices may share. Empty from older peers. */
   peer_id?: string
+  /** Absent on messages from peers predating attachment support. */
+  attachments?: Attachment[]
 }
 
 export interface Proposal {

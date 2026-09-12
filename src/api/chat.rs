@@ -16,6 +16,10 @@ use serde_json::json;
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 use yrs::{Any, Array, Map, Out, ReadTxn, Transact, WriteTxn};
 
+/// A message carries a handful of images at most; the cap keeps one post
+/// from fanning out an unbounded number of blob fetches to every peer.
+const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
+
 const TYPING_TTL_SECS: i64 = 6;
 pub(crate) const AGENT_ACTIVITY_TTL_SECS: i64 = 45;
 
@@ -67,6 +71,56 @@ pub struct PostChatRequest {
     pub text: String,
     pub agent_id: Option<String>,
     pub actor_token: Option<String>,
+    /// Blobs already uploaded via `POST .../chat/attachments`. Only the hash
+    /// and display name are honoured — type, size and dimensions are re-derived
+    /// from the stored bytes so a client cannot mislabel an attachment.
+    #[serde(default)]
+    pub attachments: Vec<AttachmentRef>,
+}
+
+#[derive(Deserialize)]
+pub struct AttachmentRef {
+    pub hash: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Turn client-supplied references into trustworthy [`Attachment`] metadata by
+/// reading each blob back out of the local store.
+fn resolve_attachments(
+    state: &crate::state::AppState,
+    refs: &[AttachmentRef],
+) -> Result<Vec<crate::control::Attachment>, String> {
+    if refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    if refs.len() > MAX_ATTACHMENTS_PER_MESSAGE {
+        return Err(format!(
+            "too many attachments (max {MAX_ATTACHMENTS_PER_MESSAGE})"
+        ));
+    }
+    let blobs = state.blobs().map_err(|e| e.to_string())?;
+    refs.iter()
+        .map(|r| {
+            let bytes = blobs
+                .get(&r.hash)
+                .map_err(|_| format!("unknown attachment {}", r.hash))?;
+            let mime = super::attachments::sniff_mime(&bytes)
+                .ok_or_else(|| format!("unsupported attachment {}", r.hash))?;
+            let (width, height) = match super::attachments::image_dimensions(mime, &bytes) {
+                Some((w, h)) => (Some(w), Some(h)),
+                None => (None, None),
+            };
+            Ok(crate::control::Attachment {
+                hash: r.hash.clone(),
+                mime: mime.to_string(),
+                name: super::attachments::sanitize_name(r.name.as_deref().unwrap_or(""), mime),
+                size: bytes.len() as u64,
+                width,
+                height,
+            })
+        })
+        .collect()
 }
 
 pub async fn post_chat(
@@ -95,8 +149,23 @@ pub async fn post_chat(
         Err(error) => return error.into_response(),
     };
     let sender = actor.agent_id;
+    let attachments = match resolve_attachments(&state, &req.attachments) {
+        Ok(a) => a,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response()
+        }
+    };
+    // An attachment-only post is legitimate, but a post with neither text nor
+    // attachment is not — it would render as an empty bubble.
+    if req.text.trim().is_empty() && attachments.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "message must have text or an attachment"})),
+        )
+            .into_response();
+    }
     // A user/UI post fires mention triggers.
-    match post_message(&state, sender, req.text, true) {
+    match post_message_with_attachments(&state, sender, req.text, attachments, true) {
         Ok(id) => (StatusCode::CREATED, Json(json!({ "id": id }))).into_response(),
         Err(error) if error.to_string().contains("state busy") => super::circle_busy(),
         Err(error) => (
@@ -252,6 +321,18 @@ pub fn post_message(
     text: String,
     fire_mentions: bool,
 ) -> anyhow::Result<String> {
+    post_message_with_attachments(state, sender, text, Vec::new(), fire_mentions)
+}
+
+/// As [`post_message`], but carries attachment metadata. The bytes must already
+/// be in the local blob store — only the reference travels in the control doc.
+pub fn post_message_with_attachments(
+    state: &crate::state::AppState,
+    sender: String,
+    text: String,
+    attachments: Vec<crate::control::Attachment>,
+    fire_mentions: bool,
+) -> anyhow::Result<String> {
     let mentions = crate::agent::mention::extract(&text);
     let msg = ChatMessage {
         id: uuid::Uuid::new_v4().to_string(),
@@ -260,6 +341,7 @@ pub fn post_message(
         mentions: mentions.clone(),
         ts: chrono::Utc::now().timestamp(),
         peer_id: state.peer_id.clone(),
+        attachments,
     };
 
     let json_str = serde_json::to_string(&msg)?;
@@ -285,6 +367,27 @@ pub fn post_message(
     }
 
     Ok(msg.id)
+}
+
+/// Every attachment hash referenced anywhere in the transcript.
+///
+/// Used to backfill a late joiner: a want broadcast while no peer was connected
+/// reaches nobody, so a freshly established sync stream re-asks for whatever is
+/// still missing.
+pub fn transcript_attachment_hashes(state: &crate::state::AppState) -> Vec<String> {
+    let Ok(txn) = state.control.try_transact() else {
+        return Vec::new();
+    };
+    let Some(arr) = txn.get_array(CHAT_KEY) else {
+        return Vec::new();
+    };
+    arr.iter(&txn)
+        .filter_map(|item| match item {
+            Out::Any(Any::String(s)) => serde_json::from_str::<ChatMessage>(&s).ok(),
+            _ => None,
+        })
+        .flat_map(|m| m.attachments.into_iter().map(|a| a.hash))
+        .collect()
 }
 
 pub async fn chat_stream(
@@ -314,6 +417,7 @@ pub async fn chat_stream(
                 CircleEvent::MessagePosted { .. }
                     | CircleEvent::AgentMentioned { .. }
                     | CircleEvent::ChatActivityChanged { .. }
+                    | CircleEvent::AttachmentAvailable { .. }
                     | CircleEvent::MemberAdded { .. }
                     | CircleEvent::MemberRemoved { .. }
                     | CircleEvent::PresenceChanged { .. }

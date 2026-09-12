@@ -39,11 +39,33 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- Chat supports images. Paste, drag, or pick a PNG, JPEG, GIF, or WebP in the
+  web UI and it posts with the message; an image on its own, with no text, is a
+  valid message. Attachments replicate to every device in the Circle, arriving
+  within seconds rather than waiting for the next reconnect, and a device that
+  joins later backfills the images it missed. Images are stored once per Circle
+  by content, so posting the same picture twice costs nothing extra.
+
 ### Changed
+
+- Building enoxian from source now requires Rust 1.91 or newer, up from 1.88.
+  The MLS implementation raised its own minimum, and the protocol stack has to
+  move with it. Installing a released binary is unaffected.
 
 - Documented that a Circle with no rendezvous or relay configured falls back to
   a project-operated default server (`relay.enoxian.com`) for peer discovery and
   circuit relay. Behavior is unchanged; it was previously undocumented.
+
+### Security
+
+- Chat attachments are typed by inspecting their actual bytes, never by the
+  name or content type the sender supplied, and only raster image formats are
+  accepted — SVG is refused outright, since it can carry script. Attachment
+  bytes are served only to authenticated Circle members, and content that does
+  not match the hash it arrived under is discarded, so a peer cannot substitute
+  a different image for the one a member posted.
 
 ### Fixed
 

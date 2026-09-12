@@ -76,7 +76,7 @@ The source build creates one `target/debug/enox` binary. CLI commands are
 short-lived, while `enox daemon run` is the foreground daemon used internally
 by `enox start` and managed login services.
 
-Rust 1.88 or newer is required. Node.js is only needed when building the
+Rust 1.91 or newer is required. Node.js is only needed when building the
 frontend in release mode.
 
 ---

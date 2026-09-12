@@ -227,6 +227,36 @@ pub struct ChatMessage {
     /// the field (readers fall back to name matching).
     #[serde(default)]
     pub peer_id: String,
+    /// Images and other binary payloads posted with this message.
+    ///
+    /// Only the metadata travels in the control doc — the bytes live in the
+    /// content-addressed blob store and are fetched over the sync stream. A
+    /// message may carry attachments with no text.
+    ///
+    /// `#[serde(default)]` keeps messages written by peers predating the field
+    /// parseable, and keeps stored `control.json` transcripts readable after
+    /// an upgrade.
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
+}
+
+/// A blob referenced by a chat message. `hash` is the SHA-256 of the bytes,
+/// which is both the identity and the integrity check — a receiver verifies it
+/// before storing, so a peer cannot serve different content than it advertised.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub hash: String,
+    /// Server-sniffed content type, never the value the uploader claimed.
+    pub mime: String,
+    /// Original filename, for download and as the accessible fallback label.
+    pub name: String,
+    pub size: u64,
+    /// Pixel dimensions when the blob is a decodable image. Used to reserve
+    /// layout space before the bytes arrive, so the transcript does not jump.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
 }
 
 /// A short-lived, non-transcript signal shown alongside chat. `activity_id`
@@ -307,6 +337,11 @@ pub enum CircleEvent {
     AgentMentioned {
         agent_id: String,
         message: ChatMessage,
+    },
+    /// Attachment bytes finished downloading from a peer. Viewers showing a
+    /// placeholder for this hash can now load it.
+    AttachmentAvailable {
+        hash: String,
     },
     /// Ephemeral typing / agent lifecycle state. This is never a chat message.
     ChatActivityChanged {
