@@ -90,6 +90,16 @@ function relayDelegator(msg: ChatMessage): string | null {
   return path[path.length - 2] ?? null
 }
 
+/** What to tell the user when a send fails.
+ *
+ *  The daemon's own wording is better than a generic line whenever it has one
+ *  — "Circle state is busy syncing" tells the user to retry; "Message failed
+ *  to send" implies something is broken. */
+function sendErrorText(error: unknown): string {
+  const detail = error instanceof Error ? error.message.trim() : ''
+  return detail ? `Not sent — ${detail}` : 'Message failed to send.'
+}
+
 function senderInitial(label: SenderLabel) {
   const source = label.agent || label.device || label.user
   return source.match(/[\p{L}\p{N}]/u)?.[0]?.toUpperCase() || '·'
@@ -566,18 +576,40 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     // is not. Block send while an upload is still in flight so the attachment
     // isn't silently dropped from the message.
     if ((!text && pending.length === 0) || Object.keys(uploads).length > 0) return
+
+    // Capture what the composer holds before clearing it. The clear is
+    // optimistic — it has to be, or sending feels laggy — so the only way a
+    // failure does not cost the user their message is to keep a copy.
+    const sentNodes = (activeCircleId && draftsRef.current[activeCircleId]?.nodes) || []
+    const sentCircleId = activeCircleId
+
     inputRef.current?.clear()
     setInput('')
     setFragment(null)
     setMentionActive(false)
     stopTyping()
     const attachments = pending.map(a => ({ hash: a.hash, name: a.name }))
+    const sentAttachments = pending
     setPending([])
+    writeDraft({ nodes: [] })
     setAttachError(null)
-    postChat(activeCircleId, text, status.agent_id, attachments).catch(() => {
-      // Restore the staged images so the user can retry rather than losing them.
-      setPending(prev => [...pending, ...prev])
-      setAttachError('Message failed to send.')
+    postChat(activeCircleId, text, status.agent_id, attachments).catch(error => {
+      // Put the message back exactly as it was — text included. Losing a long
+      // message to a moment of contention is worse than any error copy.
+      //
+      // Only restore into the composer if the user is still looking at the
+      // circle they sent from; otherwise park it in that circle's draft, where
+      // switching back will bring it up.
+      const restored = { nodes: sentNodes, attachments: sentAttachments }
+      if (draftCircleRef.current === sentCircleId) {
+        inputRef.current?.restore(sentNodes)
+        setInput(text)
+        setPending(prev => [...sentAttachments, ...prev])
+        lastTypedTextRef.current = text
+        setAttachError(sendErrorText(error))
+      } else if (sentCircleId) {
+        draftsRef.current[sentCircleId] = restored
+      }
     })
   }
 

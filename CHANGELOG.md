@@ -67,6 +67,15 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- A chat message is no longer lost when sending fails. The composer used to
+  clear itself and keep only the staged images, so a long message typed during
+  a moment of sync contention was simply gone. The text comes back, and if you
+  have since switched circles it waits in that circle's draft.
+- A send refused because the Circle was busy syncing now retries by itself
+  instead of failing. The daemon asks for a retry in that case and always
+  refuses before writing anything, so nothing can be posted twice. Failures
+  that are not transient still surface immediately, now with the daemon's own
+  explanation rather than a generic "failed to send".
 - The service log no longer grows without limit. Routine peer-to-peer churn —
   dial attempts to addresses that were never reachable, and connections closing
   while others to the same peer stay open — was being logged as warnings tens

@@ -18,7 +18,24 @@ export function withToken(url: string): string {
   return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN)
 }
 
-async function request<T>(url: string, init: RequestInit): Promise<T> {
+/** An HTTP failure that kept the status and the daemon's error `code`.
+ *
+ *  Throwing a bare `Error(data.error)` loses both, which left callers unable
+ *  to tell a transient refusal from a permanent one — every failure looked
+ *  equally final. */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
+/** How many times a `circle_busy` refusal is retried before giving up. */
+const BUSY_RETRIES = 3
+
+const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
+
+async function request<T>(url: string, init: RequestInit, attempt = 0): Promise<T> {
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   let res: Response
@@ -34,11 +51,25 @@ async function request<T>(url: string, init: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     let msg = `${res.status} ${url}`
+    let code: string | undefined
     try {
       const data = await res.json()
       if (data.error) msg = data.error
+      if (data.code) code = data.code
     } catch {}
-    throw new Error(msg)
+
+    // `circle_busy` means the daemon could not open a transaction on the
+    // control document, so it refused *before* changing anything. That makes
+    // it the one failure worth retrying automatically even on a POST: there is
+    // no half-applied write to duplicate, and the daemon says so itself with a
+    // Retry-After header. Contention lasts a moment; a message lost to it is
+    // the user's, and permanent.
+    if (code === 'circle_busy' && attempt < BUSY_RETRIES) {
+      const after = Number(res.headers.get('Retry-After')) || 1
+      await sleep(Math.min(after * 1000, 2000) * (attempt + 1))
+      return request<T>(url, init, attempt + 1)
+    }
+    throw new ApiError(msg, res.status, code)
   }
   return res.json()
 }
