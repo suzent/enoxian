@@ -1232,7 +1232,18 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         }
                     }
                     SwarmEvent::ConnectionClosed { peer_id, connection_id, cause, num_established, .. } => {
-                        info!("[{}] P2P disconnected: {peer_id}: {cause:?}", circle_id);
+                        // One of several connections to a peer closing is
+                        // churn. The *last* one is a state change — the peer
+                        // goes offline — so that keeps INFO, logged below where
+                        // num_established is known to be zero.
+                        if num_established == 0 {
+                            info!("[{}] P2P disconnected: {peer_id}: {cause:?}", circle_id);
+                        } else {
+                            tracing::debug!(
+                                "[{}] P2P connection closed: {peer_id} ({num_established} left): {cause:?}",
+                                circle_id
+                            );
+                        }
                         state_for_swarm.remove_peer_connection(
                             peer_id.to_string().as_str(),
                             connection_id,
@@ -1381,19 +1392,25 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         tracing::debug!("[{}] Ping: {e:?}", circle_id);
                     }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                        let msg = error.to_string();
-                        // A connection reset during/just after the noise handshake (right
-                        // after the pnet pre-shared-key cipher is set up) almost always
-                        // means the two sides have different circle PSKs — the dialed
-                        // address belongs to a different circle, or one side re-created
-                        // the circle with a new key. pnet is unauthenticated, so the
-                        // cipher "succeeds" and the failure only shows up here.
-                        let hint = if msg.contains("reset") || msg.contains("ConnectionReset") {
-                            " — likely PSK mismatch (different circle key, or the dialed address belongs to another circle)"
+                        let hint = psk_mismatch_hint(&error.to_string());
+                        // A failed dial is ordinary here. Peers advertise every
+                        // address they have, including LAN ones nobody outside
+                        // their subnet can reach, so most dials to most
+                        // addresses time out and the swarm simply tries the
+                        // next. Logging each at WARN produced hundreds of
+                        // thousands of lines a day and buried the events that
+                        // do mean something.
+                        //
+                        // A PSK mismatch is the exception: that is a real
+                        // misconfiguration a user can act on, so it keeps the
+                        // warning. Either way the error is recorded for
+                        // `recent_conn_errors`, which is where a user looks for
+                        // it — the detail is not lost, only the spam.
+                        if hint.is_empty() {
+                            tracing::debug!("[{}] outgoing connection to {peer_id:?} failed: {error}", circle_id);
                         } else {
-                            ""
-                        };
-                        tracing::warn!("[{}] outgoing connection to {peer_id:?} failed: {error}{hint}", circle_id);
+                            tracing::warn!("[{}] outgoing connection to {peer_id:?} failed: {error}{hint}", circle_id);
+                        }
                         state_for_swarm.record_conn_error(format!("{error}{hint}"));
                     }
                     _ => {}
@@ -1417,6 +1434,58 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
 /// delayed so it never competes with startup — a device that has just come
 /// online is busy reconciling, and that is also when blobs are most likely to
 /// be about to become reachable again.
+/// The hint appended to a dial failure that looks like a circle-key mismatch,
+/// or an empty string when the failure is ordinary.
+///
+/// A connection reset during or just after the noise handshake (right after the
+/// pnet pre-shared-key cipher is set up) almost always means the two sides have
+/// different circle PSKs — the dialed address belongs to a different circle, or
+/// one side re-created the circle with a new key. pnet is unauthenticated, so
+/// the cipher "succeeds" and the failure only surfaces here.
+///
+/// This also decides the log level: a mismatch is a real misconfiguration and
+/// is worth a warning, while an ordinary unreachable address is routine P2P
+/// behaviour and belongs at debug.
+fn psk_mismatch_hint(error: &str) -> &'static str {
+    if error.contains("reset") || error.contains("ConnectionReset") {
+        " — likely PSK mismatch (different circle key, or the dialed address belongs to another circle)"
+    } else {
+        ""
+    }
+}
+
+#[cfg(test)]
+mod log_level_tests {
+    use super::psk_mismatch_hint;
+
+    #[test]
+    fn an_unreachable_address_stays_quiet() {
+        // The overwhelmingly common case: peers advertise LAN addresses that
+        // nobody outside their subnet can reach, and every dial times out.
+        for routine in [
+            "Timeout has been reached",
+            "Failed to negotiate transport protocol(s)",
+            "Relay has no reservation for destination.",
+            "Handshake with the remote timed out.",
+        ] {
+            assert_eq!(psk_mismatch_hint(routine), "", "{routine} should not warn");
+        }
+    }
+
+    #[test]
+    fn a_key_mismatch_still_warns_with_the_reason() {
+        for mismatch in [
+            "Handshake failed: Connection reset by peer (os error 54)",
+            "IO(ConnectionReset)",
+        ] {
+            assert!(
+                psk_mismatch_hint(mismatch).contains("PSK mismatch"),
+                "{mismatch} is actionable and must keep its warning"
+            );
+        }
+    }
+}
+
 fn spawn_storage_gc(state: AppState, token: CancellationToken) {
     tokio::spawn(async move {
         // Six hours: often enough that storage cannot run away, rare enough to

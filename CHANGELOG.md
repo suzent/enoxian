@@ -76,6 +76,15 @@ refuses to publish a version whose section is missing or empty.
   refuses before writing anything, so nothing can be posted twice. Failures
   that are not transient still surface immediately, now with the daemon's own
   explanation rather than a generic "failed to send".
+- The service log no longer grows without limit. Routine peer-to-peer churn —
+  dial attempts to addresses that were never reachable, and connections closing
+  while others to the same peer stay open — was being logged as warnings tens
+  of thousands of times a day, which buried the events that do mean something
+  and grew the log to gigabytes. Those are now debug-level. A dial that fails
+  in the way a mismatched circle key looks still warns, and every failure is
+  still listed in `enox status` as before.
+- Service logs are rotated when the service starts, keeping three previous
+  runs and discarding the oldest, so the log directory stays bounded.
 - Rendered markdown shows its list bullets, its list numbering and its links
   again, in both chat and the file preview.
 - A half-written chat message, and any image staged with it, now stays with the

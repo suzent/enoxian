@@ -37,14 +37,71 @@ pub async fn run(action: ServiceAction, client: &reqwest::Client, daemon_root: &
     }
 }
 
+/// Roll a service log over once it passes this size. Small enough that the
+/// worst case (this times `LOG_GENERATIONS`, plus one live file) stays well
+/// under a gigabyte, large enough to hold a useful amount of history.
+const MAX_LOG_BYTES: u64 = 32 * 1024 * 1024;
+
+/// How many rolled generations to keep before the oldest is discarded.
+const LOG_GENERATIONS: u32 = 3;
+
 pub fn is_installed() -> bool {
     service_definition().is_file()
+}
+
+/// Roll the service logs over if they have grown past [`MAX_LOG_BYTES`].
+///
+/// This runs *before* the supervisor is started, and that timing is the whole
+/// design. launchd and the Windows wrapper open the log file themselves and
+/// hold the descriptor for the life of the process, so a rotation performed
+/// from inside the daemon would rename the file out from under a writer that
+/// keeps appending to the same inode — the old data would move and the new
+/// file would never be written to. Rotating between runs sidesteps that
+/// entirely: whatever opens the log next opens a fresh one.
+///
+/// The trade is that a daemon which runs for months without a restart still
+/// grows one file. That is acceptable now that the volume is bounded at the
+/// source; it would not have been before.
+///
+/// Best-effort throughout: failing to rotate a log must never stop the service
+/// from starting.
+fn rotate_logs() {
+    rotate_logs_in(&state_dir().join("logs"));
+}
+
+fn rotate_logs_in(log_dir: &Path) {
+    for name in ["service.log", "service.err.log"] {
+        let current = log_dir.join(name);
+        let Ok(meta) = fs::metadata(&current) else {
+            continue;
+        };
+        if meta.len() <= MAX_LOG_BYTES {
+            continue;
+        }
+        // Drop the oldest, then shift each generation down one.
+        let _ = fs::remove_file(log_dir.join(format!("{name}.{LOG_GENERATIONS}")));
+        for gen in (1..LOG_GENERATIONS).rev() {
+            let _ = fs::rename(
+                log_dir.join(format!("{name}.{gen}")),
+                log_dir.join(format!("{name}.{}", gen + 1)),
+            );
+        }
+        match fs::rename(&current, log_dir.join(format!("{name}.1"))) {
+            Ok(()) => eprintln!(
+                "rotated {} ({} MB)",
+                current.display(),
+                meta.len() / 1_048_576
+            ),
+            Err(error) => eprintln!("could not rotate {}: {error}", current.display()),
+        }
+    }
 }
 
 pub fn start() -> Result<()> {
     if !is_installed() {
         bail!("managed service is not installed — run `enox service install`");
     }
+    rotate_logs();
 
     #[cfg(target_os = "linux")]
     run_checked(
@@ -119,6 +176,10 @@ fn install(port: u16, bind_lan: bool, bind: Option<IpAddr>, force: bool) -> Resu
 
     let exe = std::env::current_exe().context("failed to locate the enox executable")?;
     let daemon_args = daemon_args(port, bind_lan, bind);
+    // On Linux and macOS install starts the service directly rather than going
+    // through `start()`, so rotate here too — still before any supervisor has
+    // opened the log.
+    rotate_logs();
 
     #[cfg(target_os = "linux")]
     {
@@ -670,6 +731,98 @@ fn remove_if_exists(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write(dir: &Path, name: &str, bytes: u64) {
+        fs::write(dir.join(name), vec![b'x'; bytes as usize]).unwrap();
+    }
+
+    #[test]
+    fn a_small_log_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "service.log", 1024);
+        rotate_logs_in(dir.path());
+        assert!(dir.path().join("service.log").exists());
+        assert!(
+            !dir.path().join("service.log.1").exists(),
+            "rotating a log that is not big enough only loses context"
+        );
+    }
+
+    #[test]
+    fn an_oversized_log_is_rolled_aside_so_the_next_run_starts_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "service.log", MAX_LOG_BYTES + 1);
+        rotate_logs_in(dir.path());
+        // The supervisor creates the live file when it next opens it; what
+        // matters here is that the old one moved out of the way intact.
+        assert!(!dir.path().join("service.log").exists());
+        assert_eq!(
+            fs::metadata(dir.path().join("service.log.1"))
+                .unwrap()
+                .len(),
+            MAX_LOG_BYTES + 1
+        );
+    }
+
+    #[test]
+    fn generations_shift_down_without_overwriting_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        // Distinct sizes stand in for distinct content, so a generation that
+        // silently overwrote another would show up as the wrong length.
+        write(dir.path(), "service.log", MAX_LOG_BYTES + 1);
+        write(dir.path(), "service.log.1", 11);
+        write(dir.path(), "service.log.2", 22);
+        rotate_logs_in(dir.path());
+
+        let len = |n: &str| fs::metadata(dir.path().join(n)).unwrap().len();
+        assert_eq!(
+            len("service.log.1"),
+            MAX_LOG_BYTES + 1,
+            "live log becomes .1"
+        );
+        assert_eq!(len("service.log.2"), 11, "old .1 becomes .2");
+        assert_eq!(len("service.log.3"), 22, "old .2 becomes .3");
+    }
+
+    #[test]
+    fn the_oldest_generation_is_discarded_rather_than_kept_forever() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "service.log", MAX_LOG_BYTES + 1);
+        for gen in 1..=LOG_GENERATIONS {
+            write(dir.path(), &format!("service.log.{gen}"), 10 + gen as u64);
+        }
+        rotate_logs_in(dir.path());
+
+        // Bounded: one live slot plus LOG_GENERATIONS, never more.
+        assert!(!dir
+            .path()
+            .join(format!("service.log.{}", LOG_GENERATIONS + 1))
+            .exists());
+        assert_eq!(
+            fs::metadata(dir.path().join(format!("service.log.{LOG_GENERATIONS}")))
+                .unwrap()
+                .len(),
+            10 + (LOG_GENERATIONS - 1) as u64,
+            "the discarded generation is the oldest, not an arbitrary one"
+        );
+    }
+
+    #[test]
+    fn both_streams_rotate_and_a_missing_one_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "service.err.log", MAX_LOG_BYTES + 1);
+        // service.log is absent entirely — rotation must simply skip it.
+        rotate_logs_in(dir.path());
+        assert!(dir.path().join("service.err.log.1").exists());
+        assert!(!dir.path().join("service.log.1").exists());
+    }
+
+    #[test]
+    fn rotating_an_empty_directory_does_nothing_and_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        rotate_logs_in(dir.path());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
 
     #[test]
     fn daemon_arguments_keep_loopback_as_the_default() {
