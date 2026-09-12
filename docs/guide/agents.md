@@ -343,6 +343,18 @@ budget, not the shape of the conversation, is what ends it. When the budget
 runs out the remaining mentions simply go inert; nothing is posted to chat.
 A new message from a person always mints a fresh budget.
 
+If you would rather not wait for the budget, **stop chain** appears in the
+activity strip while a delegated turn is running, and anyone in the Circle can
+press it. It does not interrupt the turn already running — it stops every
+further one, on every device. A chain that was stopped or ran out of budget
+says so in the activity strip (`codex not triggered · relay budget spent`)
+rather than leaving a permanent line in the transcript.
+
+A reply that arrived through delegation is marked `via @claude` next to the
+sender, so a reply nobody typed a request for is not mistaken for one that was.
+Files an agent writes on another agent's behalf record the chain too — `enox
+proposal list` shows who wrote them and who asked.
+
 > Advertising an agent means a matching mention will run it. Keep only agents
 > you actually have installed and authenticated in `agents.toml`.
 

@@ -163,6 +163,10 @@ export const getChatActivity = (id: string) =>
   get<ChatActivity[]>(`${api(id)}/chat/activity`)
 export const setChatTyping = (id: string, actorId: string, typing: boolean) =>
   post<{ok: boolean}>(`${api(id)}/chat/activity`, { actor_id: actorId, typing })
+/** Halt a delegation cascade: no further relayed turns run, on any device.
+ *  `root` comes off any message in the cascade (`msg.relay.root`). */
+export const stopRelay = (id: string, root: string) =>
+  post<{ok: boolean, root: string}>(`${api(id)}/chat/relay/stop`, { root })
 export const getTasks = (id: string) => get<Task[]>(`${api(id)}/tasks`)
 export const createTask = (id: string, title: string, description: string, agentId: string) =>
   post(`${api(id)}/tasks`, { title, description, created_by: agentId })

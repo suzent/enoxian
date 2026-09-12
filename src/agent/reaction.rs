@@ -109,12 +109,27 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                             continue;
                         }
                         let relay = relay.as_ref().expect("delegated implies a relay");
+                        // A person pulled the brake on this cascade — anywhere
+                        // in the Circle, not necessarily on this device.
+                        if crate::api::chat::relay_is_stopped(&state, &relay.root) {
+                            tracing::info!(
+                                "[agent] cascade {} was stopped — not waking `{agent}`",
+                                relay.root
+                            );
+                            publish_relay_skipped(&state, agent, &message.id, "cascade stopped");
+                            continue;
+                        }
                         if !super::relay::has_budget(relay, cmd.max_relay_turns) {
                             tracing::info!(
                                 "[agent] relay budget spent on cascade {} — not waking `{agent}`",
                                 relay.root
                             );
-                            publish_relay_exhausted(&state, agent, &message.id, &relay.root);
+                            publish_relay_skipped(
+                                &state,
+                                agent,
+                                &message.id,
+                                "relay budget spent",
+                            );
                             continue;
                         }
                         if !ledger.charge(&relay.root, cmd.max_relay_turns) {
@@ -122,7 +137,12 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                                 "[agent] cascade {} has spent this device's budget — not waking `{agent}`",
                                 relay.root
                             );
-                            publish_relay_exhausted(&state, agent, &message.id, &relay.root);
+                            publish_relay_skipped(
+                                &state,
+                                agent,
+                                &message.id,
+                                "relay budget spent",
+                            );
                             continue;
                         }
                     }
@@ -297,6 +317,7 @@ async fn react(state: &AppState, turn: Turn<'_>) -> anyhow::Result<()> {
         circle_id: &state.circle_id,
         circle_dir: &state.circle_dir,
         actor_token: Some(&actor_token),
+        relay_path: relay.as_ref().map(|r| r.path.clone()).unwrap_or_default(),
         initiator,
         resume: resume.as_ref().map(|r| r.session_id.as_str()),
     });
@@ -387,12 +408,24 @@ fn publish_agent_activity(
     kind: ChatActivityKind,
     live: bool,
 ) {
+    publish_agent_activity_detailed(state, agent_id, message_id, kind, live, None)
+}
+
+fn publish_agent_activity_detailed(
+    state: &AppState,
+    agent_id: &str,
+    message_id: &str,
+    kind: ChatActivityKind,
+    live: bool,
+    detail: Option<String>,
+) {
     let now = chrono::Utc::now().timestamp();
     let activity = ChatActivity {
         activity_id: format!("agent:{message_id}:{agent_id}:{}", state.peer_id),
         actor_id: agent_id.to_string(),
         peer_id: state.peer_id.clone(),
         kind,
+        detail,
         message_id: Some(message_id.to_string()),
         updated_at: now,
         expires_at: if live {
@@ -448,15 +481,21 @@ fn attributed_local(state: &AppState, message: &crate::control::ChatMessage) -> 
     }
 }
 
-/// Surface a cascade that hit its ceiling.
+/// Surface a delegation that was considered and not run.
 ///
 /// Deliberately *not* a `system` chat post: a failure notice per dead mention
-/// is exactly the transcript noise the run queue exists to remove. It shows in
-/// the activity indicator instead, where a truncated cascade is legible without
-/// being permanent.
-fn publish_relay_exhausted(state: &AppState, agent: &str, message_id: &str, root: &str) {
-    tracing::debug!("[agent] cascade {root} exhausted before `{agent}`");
-    publish_agent_activity(state, agent, message_id, ChatActivityKind::Seen, false);
+/// is exactly the transcript noise a busy cascade would fill the room with. It
+/// shows in the activity indicator instead, where it is legible while it
+/// matters and gone afterwards.
+fn publish_relay_skipped(state: &AppState, agent: &str, message_id: &str, reason: &str) {
+    publish_agent_activity_detailed(
+        state,
+        agent,
+        message_id,
+        ChatActivityKind::Skipped,
+        true,
+        Some(reason.to_string()),
+    );
 }
 
 #[cfg(test)]

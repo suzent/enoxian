@@ -75,12 +75,13 @@ pub fn has_budget(relay: &Relay, max: u8) -> bool {
     relay.spent < max.min(RELAY_TURNS_CEILING)
 }
 
-/// Which mentions on `msg` may fire a trigger.
+/// Which mentions on an **agent reply** may fire a trigger: at most the first
+/// that does not name the agent itself, and only while the budget holds.
 ///
-/// A human-authored post (no relay, or a relay with an empty path) fires all
-/// of its mentions, as it always has — fan-out and self-trigger limits are
-/// about agents, not people. An agent reply fires at most its first mention,
-/// and never one naming itself.
+/// Callers decide the human and system cases themselves — see
+/// [`crate::api::chat::Trigger`]. They cannot be inferred from the relay
+/// being absent: a system post and a message from a peer predating the field
+/// both lack one, and they need opposite answers.
 ///
 /// This is the *sender-side* filter. It is a courtesy, not the gate: the
 /// device that would actually run the agent re-checks the budget against its

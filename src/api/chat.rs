@@ -1,5 +1,6 @@
 use crate::control::{
     ChatActivity, ChatActivityKind, ChatMessage, CircleEvent, CHAT_ACTIVITY_KEY, CHAT_KEY,
+    RELAY_STOPS_KEY,
 };
 use crate::daemon::DaemonState;
 use axum::{
@@ -19,6 +20,11 @@ use yrs::{Any, Array, Map, Out, ReadTxn, Transact, WriteTxn};
 /// A message carries a handful of images at most; the cap keeps one post
 /// from fanning out an unbounded number of blob fetches to every peer.
 const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
+
+/// How long a cascade stop is honoured. A cascade is minutes long at the very
+/// outside, so an hour is generous; past that the entry is dead weight and the
+/// next write prunes it.
+const RELAY_STOP_TTL_SECS: i64 = 3600;
 
 const TYPING_TTL_SECS: i64 = 6;
 pub(crate) const AGENT_ACTIVITY_TTL_SECS: i64 = 45;
@@ -235,6 +241,7 @@ pub async fn post_activity(
         actor_id: actor_id.to_string(),
         peer_id: state.peer_id.clone(),
         kind: ChatActivityKind::Typing,
+        detail: None,
         message_id: None,
         updated_at: now,
         expires_at,
@@ -395,13 +402,23 @@ pub fn post_message_with_attachments(
     let _ = state.events.send(CircleEvent::MessagePosted {
         message: msg.clone(),
     });
-    // Which of those mentions actually wake anything is the relay's call. This
-    // is the sender-side filter only — the device that would run the agent
+    // Which of those mentions actually wake anything depends on who posted.
+    // A system post never triggers: `@claude failed to start` naming the agent
+    // it is about would wake that agent, which is a loop. An absent relay
+    // cannot stand in for this — a message from a peer predating the field has
+    // no relay either, and those must still fire.
+    //
+    // This is the sender-side filter only; the device that would run the agent
     // re-checks the budget against its own config, which is the real gate.
-    for mentioned in crate::agent::relay::triggerable_mentions(
-        &msg,
-        crate::agent::relay::DEFAULT_MAX_RELAY_TURNS,
-    ) {
+    let to_fire = match &trigger {
+        Trigger::System => Vec::new(),
+        Trigger::Human => mentions.clone(),
+        Trigger::AgentReply { .. } => crate::agent::relay::triggerable_mentions(
+            &msg,
+            crate::agent::relay::DEFAULT_MAX_RELAY_TURNS,
+        ),
+    };
+    for mentioned in to_fire {
         let _ = state.events.send(CircleEvent::AgentMentioned {
             agent_id: mentioned,
             message: msg.clone(),
@@ -542,6 +559,7 @@ mod tests {
             actor_id: "alice".to_string(),
             peer_id: "peer-alice".to_string(),
             kind: ChatActivityKind::Typing,
+            detail: None,
             message_id: None,
             updated_at: 10,
             expires_at,
@@ -565,4 +583,114 @@ mod tests {
         assert_eq!(value["activity"]["kind"], "typing");
         assert_eq!(value["activity"]["actor_id"], "alice");
     }
+}
+
+// ── Cascade stops ────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct StopRelayRequest {
+    /// The cascade to halt: the id of the human message that started it. A
+    /// client reads it off any message in the cascade (`relay.root`).
+    pub root: String,
+}
+
+/// Halt a delegation cascade.
+///
+/// This is the runaway kill switch. It does not interrupt a turn already in
+/// flight — enoxian has no control that does — but it stops every *further*
+/// turn, on every device, which is what actually bounds the spend.
+///
+/// Writing it into the synced control doc is the point: the device that would
+/// run the next turn is usually not this one, so a local flag would stop
+/// nothing. Anyone in the Circle may stop a cascade. That is deliberate — the
+/// people paying attention are not always the person who started it, and the
+/// worst a wrongful stop costs is a re-mention.
+pub async fn stop_relay(
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
+    Json(req): Json<StopRelayRequest>,
+) -> impl IntoResponse {
+    let state = match daemon.get(&circle_id) {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
+    };
+    if req.root.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "root is required"})),
+        )
+            .into_response();
+    }
+    match mark_relay_stopped(&state, &req.root) {
+        Ok(()) => Json(json!({"ok": true, "root": req.root})).into_response(),
+        Err(error) if error.to_string().contains("state busy") => super::circle_busy(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+pub(crate) fn mark_relay_stopped(state: &crate::state::AppState, root: &str) -> anyhow::Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    let mut txn = state
+        .control
+        .try_transact_mut()
+        .map_err(|_| anyhow::anyhow!("circle state busy"))?;
+    let map = txn.get_or_insert_map(RELAY_STOPS_KEY);
+    let stale = map
+        .iter(&txn)
+        .filter_map(|(key, value)| match value {
+            Out::Any(Any::BigInt(ts)) if now - ts > RELAY_STOP_TTL_SECS => Some(key.to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for key in stale {
+        map.remove(&mut txn, key.as_str());
+    }
+    map.insert(&mut txn, root, Any::BigInt(now));
+    drop(txn);
+    let _ = state.events.send(CircleEvent::RelayStopped {
+        root: root.to_string(),
+    });
+    Ok(())
+}
+
+/// Has anyone in the Circle halted this cascade?
+///
+/// Read on the receiving device before each relayed turn, so a stop from any
+/// peer is honoured wherever the next turn would have run.
+pub fn relay_is_stopped(state: &crate::state::AppState, root: &str) -> bool {
+    let Ok(txn) = state.control.try_transact() else {
+        // The doc is momentarily busy. Fail *open* — and deliberately so, even
+        // though this is a brake.
+        //
+        // Treating unreadable as "stopped" was the first cut and it was wrong
+        // in practice: contention here is routine, not exceptional, so every
+        // busy moment silently refused a delegation and the feature appeared
+        // to break at random. The asymmetry favours reading it this way. Spend
+        // is bounded by the budget and the per-root ledger, neither of which
+        // touches this doc, so a missed stop costs one extra turn before the
+        // next check catches it — while a false stop costs the whole feature.
+        tracing::warn!(
+            "[agent] could not read the stop list for cascade {root}; \
+             allowing this turn — the relay budget still bounds it"
+        );
+        return false;
+    };
+    let Some(map) = txn.get_map(RELAY_STOPS_KEY) else {
+        return false;
+    };
+    let now = chrono::Utc::now().timestamp();
+    matches!(
+        map.get(&txn, root),
+        Some(Out::Any(Any::BigInt(ts))) if now - ts <= RELAY_STOP_TTL_SECS
+    )
 }

@@ -424,8 +424,12 @@ What changes is attribution. `TriggerOrigin` resolves from the **root human**,
 not from the mentioning agent — a cascade rooted in a local user's message is
 `LocalUser` throughout, one rooted in a remote member's is `RemoteMember`. An
 agent must not be able to launder a remote member's request into a local one by
-relaying it. The proposal record additionally stores `path`, so "who actually
-wrote this" is answerable after the fact.
+relaying it. The proposal record additionally stores the branch as
+`relay_path` — the agents that relayed the work, *excluding* the one that wrote
+the files, which is already `actor_id`. A proposal reading
+`actor_id: "codex", relay_path: ["claude"]` says a person asked claude and
+claude asked codex. Without it a delegated change is indistinguishable from one
+the user asked for.
 
 ### 3.7 Legibility
 
@@ -436,10 +440,34 @@ are the minimum:
   can see that a turn they did not ask for was asked for on their behalf.
 - Exhausting the budget posts nothing to chat (a `system` post per dead mention
   is exactly the transcript noise §1.3 is trying to remove) but *is* surfaced in
-  the activity indicator: `relay budget spent — @codex not triggered`.
-- A cascade is interruptible. The stop control that cancels a running agent
-  cancels the rest of its cascade, and cancelling clears the `root` counter so a
-  retry is not charged twice.
+  the activity indicator as a `skipped` activity carrying its reason:
+  `codex not triggered · relay budget spent`. A stopped cascade reports itself
+  the same way. An agent that simply has not opted in (`accept_from`) stays
+  silent — that is this device's configuration, not an event in the room, and
+  announcing it on every mention would leak local config as chatter.
+- A cascade is stoppable: `POST /api/chat/relay/stop` with the cascade's
+  `root`, surfaced as a **stop chain** button that appears while a relayed turn
+  is running. Anyone in the Circle may stop one — the person watching is not
+  always the person who started it, and a wrongful stop costs a re-mention.
+
+  Note what this is *not*. It does not interrupt the turn in flight, because
+  enoxian has no control that cancels a running agent; it stops every
+  **further** turn, which is what actually bounds the spend. The draft here
+  assumed a per-agent cancel existed to hang this on. It does not, and building
+  one is its own piece of work.
+
+  The stop is written into the **synced control doc**, not held in one daemon's
+  memory: the device that would run the next turn is usually not the device
+  whose user hit stop, so a local flag would stop nothing.
+
+One decision fell out of building it. Reading the stop list needs a
+transaction on the control doc, which is routinely busy, and the first cut
+treated "cannot read" as "stopped". That is the instinctive choice for a brake
+and it was wrong: every busy moment silently refused a delegation, so the
+feature broke at random. It now fails **open** with a warning. The asymmetry
+justifies it — spend is bounded by the budget and the per-root ledger, neither
+of which touches this doc, so a missed stop costs one extra turn, while a false
+stop costs the whole feature.
 
 ### 3.8 Interaction with ambient
 

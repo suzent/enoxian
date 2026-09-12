@@ -52,6 +52,14 @@ refuses to publish a version whose section is missing or empty.
   cascade is capped at `max_relay_turns` agent turns (default 20, hard limit
   50) counted from the human message that started it. Each device enforces its
   own cap, so a peer cannot talk yours into spending more.
+- A **stop chain** button halts a running cascade, and anyone in the Circle can
+  press it. It stops every further turn on every device rather than
+  interrupting the one in flight. A chain that was stopped, or that ran out of
+  budget, says so in the activity strip instead of posting to chat.
+- Agent replies that were delegated show `via @claude` next to the sender, so a
+  reply nobody typed a request for is not mistaken for one that was asked for.
+- Proposals record the delegation chain, so a file written by an agent another
+  agent asked is distinguishable from one a person asked for directly.
 
 ## [0.8.0] — 2026-09-12
 

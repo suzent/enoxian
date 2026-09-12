@@ -58,6 +58,18 @@ pub struct Proposal {
     pub confidence: Confidence,
     pub trigger_id: Option<String>,
     pub session_id: Option<String>,
+    /// The agents that relayed this work, innermost last, *excluding* the one
+    /// that wrote the files (that is `actor_id`). `relay_path: ["claude"]`
+    /// with `actor_id: "codex"` means a person asked claude and claude asked
+    /// codex. Empty for work a person asked for directly, and absent on
+    /// records written before delegation existed.
+    ///
+    /// Attribution (`TriggerOrigin`) resolves from the human at the root of
+    /// the cascade, so this is the record of *how* the request got here —
+    /// without it, a delegated change is indistinguishable from one the user
+    /// asked for, and the chain is unreconstructable after the fact.
+    #[serde(default)]
+    pub relay_path: Vec<String>,
     /// Peer ID of the device whose daemon captured this proposal.
     #[serde(default)]
     pub origin_peer_id: String,
@@ -96,6 +108,7 @@ impl Proposal {
             confidence: Confidence::Unknown,
             trigger_id: None,
             session_id: None,
+            relay_path: Vec::new(),
             origin_peer_id: String::new(),
             origin_device: String::new(),
             created_at: chrono::Utc::now(),

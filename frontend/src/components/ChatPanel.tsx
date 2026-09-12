@@ -1,6 +1,6 @@
 import { Fragment, useState, useEffect, useRef, useCallback } from 'react'
 import type { Attachment, ChatActivity, ChatMessage, Member, Presence } from '../types'
-import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, MAX_ATTACHMENT_BYTES } from '../api'
+import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, MAX_ATTACHMENT_BYTES } from '../api'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 import CircleGlyph from './CircleGlyph'
@@ -88,6 +88,16 @@ interface SenderLabel {
   user: string    // "you" or owner name
   device: string | null  // shown when owner has multiple devices
   agent: string | null   // shown when a registered agent (not device primary) is speaking
+}
+
+/** The agent that delegated to the one posting this message, if any.
+ *
+ *  Provenance has to be visible: a reply nobody asked for reads as the Circle
+ *  talking to itself unless you can see who asked. */
+function relayDelegator(msg: ChatMessage): string | null {
+  const path = msg.relay?.path
+  if (!path || path.length < 2) return null
+  return path[path.length - 2] ?? null
 }
 
 function senderInitial(label: SenderLabel) {
@@ -187,6 +197,10 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
   }
 
   const isAgent = !!label.agent
+  // Who handed this agent the job, if anyone. The relay path ends with the
+  // agent that posted, so the one before it is the delegator. A turn a person
+  // asked for directly has nothing before it, and shows no chip.
+  const delegatedBy = relayDelegator(msg)
   const timestamp = formatTime(msg.ts)
   const fullTimestamp = formatFullTimestamp(msg.ts)
 
@@ -205,6 +219,11 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
             <span className="chat-message__owner">{label.user}</span>
             {label.device && <span className="chat-message__device">· {label.device}</span>}
             {label.agent && <span className="chat-message__agent">AGENT / {label.agent}</span>}
+            {delegatedBy && (
+              <span className="chat-message__via" title={`Delegated by @${delegatedBy}. Nobody typed this request.`}>
+                via @{delegatedBy}
+              </span>
+            )}
             <time className="chat-message__time" dateTime={new Date(msg.ts * 1000).toISOString()} title={fullTimestamp} aria-label={fullTimestamp}>
               {timestamp}
             </time>
@@ -624,6 +643,35 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     .filter(activity => activity.expires_at > activityClock && activity.actor_id !== status?.agent_id)
     .sort((a, b) => a.updated_at - b.updated_at)
 
+  // A delegation cascade currently running: an agent is working on a message
+  // that an agent (not a person) asked for. This is the only case that needs a
+  // brake — a turn a person typed is one they are waiting for.
+  //
+  // Stopping does not interrupt the turn in flight; it stops every further one,
+  // on every device, which is what actually bounds the spend.
+  const runningCascadeRoot = (() => {
+    for (const activity of liveActivities) {
+      if (activity.kind !== 'working' || !activity.message_id) continue
+      const source = messages.find(m => m.id === activity.message_id)
+      const relay = source?.relay
+      if (relay?.root && (relay.path?.length ?? 0) > 0) return relay.root
+    }
+    return null
+  })()
+
+  const [stoppingRoot, setStoppingRoot] = useState<string | null>(null)
+  const haltCascade = useCallback(async (root: string) => {
+    if (!activeCircleId) return
+    setStoppingRoot(root)
+    try {
+      await stopRelay(activeCircleId, root)
+    } catch {
+      // A failed stop must not look like a successful one — clearing the
+      // pending state puts the button back so the user can try again.
+      setStoppingRoot(null)
+    }
+  }, [activeCircleId])
+
   const describeActivity = (activity: ChatActivity) => {
     const label = getSenderLabel(activity.actor_id, activity.peer_id)
     const host = activity.peer_id ? members.find(member => member.peer_id === activity.peer_id) : undefined
@@ -632,6 +680,11 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
       : `${label.user}${label.device ? ` · ${label.device}` : ''}`
     if (activity.kind === 'typing') return `${actor} is typing…`
     if (activity.kind === 'seen') return `${actor} saw the message`
+    // Considered and not run. Saying so is the whole point: silence that looks
+    // identical to a crashed adapter is what stops people trusting the Circle.
+    if (activity.kind === 'skipped') {
+      return `${actor} not triggered${activity.detail ? ` · ${activity.detail}` : ''}`
+    }
     return `${actor} is working…`
   }
 
@@ -753,6 +806,17 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
               </span>
             ))}
             {liveActivities.length > 3 && <span>+{liveActivities.length - 3} active</span>}
+            {runningCascadeRoot && (
+              <button
+                type="button"
+                className="chat-activity__stop"
+                onClick={() => haltCascade(runningCascadeRoot)}
+                disabled={stoppingRoot === runningCascadeRoot}
+                title="Agents are handing work to each other. Stop the rest of this chain."
+              >
+                {stoppingRoot === runningCascadeRoot ? 'stopping…' : 'stop chain'}
+              </button>
+            )}
           </div>
         )}
         {(pending.length > 0 || uploadEntries.length > 0 || attachError) && (

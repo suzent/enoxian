@@ -308,6 +308,7 @@ Two further per-circle routes are used by the local UI:
 |--------|------|---------|
 | `GET`/`POST` | `/circles/<id>/api/connectivity` | Read or set embedded peer, relay, and rendezvous addresses |
 | `GET`/`POST` | `/circles/<id>/api/chat/activity` | Read or publish agent chat activity indicators |
+| `POST` | `/circles/<id>/api/chat/relay/stop` | Halt a delegation cascade |
 | `POST` | `/circles/<id>/api/chat/attachments` | Upload an image to attach to a message |
 | `GET` | `/circles/<id>/api/blobs/<hash>` | Fetch attachment bytes |
 
@@ -385,6 +386,33 @@ attachment. At most 10 attachments per message.
 
 **Events emitted:** `message_posted`, `agent_mentioned` (one per @mention that
 is allowed to trigger — for a human post, all of them)
+
+---
+
+### `POST /circles/<id>/api/chat/relay/stop`
+
+Halt a delegation cascade. Every *further* relayed turn is refused, on every
+device; a turn already running is not interrupted (enoxian has no control that
+cancels a running agent).
+
+**Request:**
+```json
+{ "root": "b3e4f1a2-..." }
+```
+
+`root` is the cascade identifier, read off any message in it (`relay.root`). An
+empty or missing `root` is rejected with `400`.
+
+The stop is written to the synced control doc, so the device that would run the
+next turn honours it wherever it is. Anyone in the Circle may stop a cascade.
+Stops expire after an hour, long after any cascade could still be running.
+
+**Response `200`:**
+```json
+{ "ok": true, "root": "b3e4f1a2-..." }
+```
+
+**Events emitted:** `relay_stopped`
 
 ---
 
@@ -730,7 +758,8 @@ data: <json>\n\n
 | `member_pending` | `peer_id` | Member awaiting admission |
 | `message_posted` | `message` | Chat message posted |
 | `agent_mentioned` | `agent_id`, `message` | An agent was @mentioned in chat |
-| `chat_activity_changed` | `activity` | Agent chat activity (seen/working) changed |
+| `chat_activity_changed` | `activity` | Agent chat activity (`typing`/`seen`/`working`/`skipped`) changed |
+| `relay_stopped` | `root` | A delegation cascade was halted; no further relayed turns run |
 | `attachment_available` | `hash` | Attachment bytes finished downloading from a peer |
 | `proposal_created` | `proposal_id` | Workspace change captured as a proposal |
 | `proposal_updated` | `proposal_id`, `status` | Proposal status changed |

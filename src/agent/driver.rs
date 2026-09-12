@@ -142,6 +142,9 @@ pub struct LaunchRequest<'a> {
     /// from the managed process tree. It is never placed in the prompt.
     pub actor_token: Option<&'a str>,
     pub initiator: Initiator,
+    /// Agents that relayed this work, innermost last; empty when a person
+    /// asked directly. Recorded on the resulting proposal.
+    pub relay_path: Vec<String>,
     /// Prior ACP session id to resume, if one is remembered for this agent.
     pub resume: Option<&'a str>,
 }
@@ -166,6 +169,7 @@ pub async fn launch(req: LaunchRequest<'_>) -> Result<LaunchOutcome> {
         mode,
     );
     session.requested_agent = Some(req.agent_name.to_string());
+    session.relay_path = req.relay_path.clone();
     session.actor_id = Some(req.agent_name.to_string());
     if let Some(existing) = LocalChangeSession::load_managed(req.circle_dir) {
         if existing.is_open() {

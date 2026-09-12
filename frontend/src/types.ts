@@ -65,6 +65,20 @@ export interface Attachment {
   height?: number
 }
 
+/** Delegation provenance. Present from the daemon that posted the message;
+ *  absent on system posts and on messages from peers predating the field. */
+export interface Relay {
+  /** Id of the human message this cascade is rooted in. */
+  root: string
+  /** Peer that posted that human message. */
+  root_peer?: string
+  /** Agent turns the cascade has cost so far. */
+  spent: number
+  /** Agents on this branch, innermost last. A human post has none; a reply
+   *  from an agent ends with that agent, so the one before it is who asked. */
+  path?: string[]
+}
+
 export interface ChatMessage {
   id: string
   agent_id: string
@@ -76,6 +90,8 @@ export interface ChatMessage {
   peer_id?: string
   /** Absent on messages from peers predating attachment support. */
   attachments?: Attachment[]
+  /** Delegation provenance; absent on system posts and older peers. */
+  relay?: Relay
 }
 
 export interface Proposal {
@@ -91,6 +107,10 @@ export interface Proposal {
   confidence: string
   origin_peer_id: string
   origin_device: string
+  /** Agents that relayed this work, innermost last, excluding the actor that
+   *  wrote the files. `["claude"]` with actor_id "codex" = a person asked
+   *  claude, claude asked codex. Empty or absent for direct work. */
+  relay_path?: string[]
   created_at: string
 }
 
@@ -160,7 +180,9 @@ export interface ChatActivity {
   activity_id: string
   actor_id: string
   peer_id: string
-  kind: 'typing' | 'seen' | 'working'
+  kind: 'typing' | 'seen' | 'working' | 'skipped'
+  /** Why, for 'skipped' — e.g. "relay budget spent". */
+  detail?: string | null
   message_id: string | null
   updated_at: number
   expires_at: number
