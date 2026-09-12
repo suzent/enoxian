@@ -39,6 +39,12 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- A half-written chat message, and any image staged with it, now stays with the
+  circle it was written in. Switching circles used to carry the unsent message
+  across and send it to whichever circle you had moved to.
+
 ## [0.8.0] — 2026-09-12
 
 ### Changed
