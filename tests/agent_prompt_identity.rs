@@ -39,6 +39,7 @@ fn member(peer_id: &str, device: &str, agents: &[&str]) -> MemberEntry {
         agent_id: format!("suzy-{device}"),
         device_label: device.into(),
         agents: agents.iter().map(|s| s.to_string()).collect(),
+        ambient_agents: Vec::new(),
         role: MemberRole::Admin,
         added_at: chrono::Utc::now(),
         signature: String::new(),

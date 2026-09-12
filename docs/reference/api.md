@@ -308,6 +308,8 @@ Two further per-circle routes are used by the local UI:
 |--------|------|---------|
 | `GET`/`POST` | `/circles/<id>/api/connectivity` | Read or set embedded peer, relay, and rendezvous addresses |
 | `GET`/`POST` | `/circles/<id>/api/chat/activity` | Read or publish agent chat activity indicators |
+| `GET` | `/circles/<id>/api/chat/engagement` | What the next mention-less message will do |
+| `POST` | `/circles/<id>/api/chat/engagement/exit` | Dismiss the follow-up window |
 | `POST` | `/circles/<id>/api/chat/relay/stop` | Halt a delegation cascade |
 | `POST` | `/circles/<id>/api/chat/attachments` | Upload an image to attach to a message |
 | `GET` | `/circles/<id>/api/blobs/<hash>` | Fetch attachment bytes |
@@ -337,10 +339,21 @@ Fetch chat history.
     "text":     "hello @bob can you check this?",
     "mentions": ["bob"],
     "ts":       1747308000,
+    "author":   "human",
+    "reply_to": null,
     "relay":    { "root": "b3e4f1a2-...", "root_peer": "12D3KooW...", "spent": 0, "path": [] }
   }
 ]
 ```
+
+`author` is `human`, `agent` or `system` — the durable signal behind "only human
+messages trigger an unaddressed turn". It defaults to `human` on messages from
+peers predating the field. Neither `agent_id` (a display label a person may
+share) nor `peer_id` (the device, which an agent and its user post from alike)
+can answer this.
+
+`reply_to` is the id of the message being replied to, routing the turn to
+whichever agent posted it with no window and no recency guess.
 
 `relay` is delegation provenance: the human message the cascade is rooted in,
 the peer that posted it, how many agent turns the cascade has already cost, and
@@ -373,6 +386,7 @@ holds — see [guide/agents.md](../guide/agents.md).
 | `text` | string | yes, unless `attachments` is non-empty |
 | `agent_id` | string | no (defaults to `"unknown"`) |
 | `attachments` | array | no — `{ "hash", "name" }` entries from the upload route below |
+| `reply_to` | string | no — id of the message being replied to |
 
 Each `hash` must name a blob already uploaded to this Circle; an unknown hash is
 rejected with `400`. Only `hash` and `name` are honoured — type, size and pixel
@@ -386,6 +400,43 @@ attachment. At most 10 attachments per message.
 
 **Events emitted:** `message_posted`, `agent_mentioned` (one per @mention that
 is allowed to trigger — for a human post, all of them)
+
+---
+
+### `GET /circles/<id>/api/chat/engagement`
+
+What the next message will do if it names no agent. The composer uses this:
+implicit routing that is invisible is a bug.
+
+**Response `200`:**
+```json
+{
+  "agent": "claude",
+  "peer_id": "12D3KooW...",
+  "message_id": "b3e4f1a2-...",
+  "window_secs": 180
+}
+```
+
+`agent` is `null` when nothing would be routed. `peer_id` is the device that ran
+the reply, and that a follow-up must wake — a follow-up goes to the same
+machine, not to whichever device configures an agent by that name.
+`window_secs` is this device's `engagement_window_secs`; `0` means follow-up
+routing is off.
+
+---
+
+### `POST /circles/<id>/api/chat/engagement/exit`
+
+Dismiss the follow-up window — the composer's Esc. The next message needs a
+mention again, until an agent replies to you afresh.
+
+Recorded in the synced control doc rather than locally, because the device that
+would route the follow-up is not necessarily this one. It records *which* reply
+was dismissed, not just when: chat timestamps have one-second resolution, so a
+dismissal and the reply that re-arms the window can share one.
+
+**Response `200`:** `{ "ok": true }`
 
 ---
 
@@ -760,6 +811,7 @@ data: <json>\n\n
 | `agent_mentioned` | `agent_id`, `message` | An agent was @mentioned in chat |
 | `chat_activity_changed` | `activity` | Agent chat activity (`typing`/`seen`/`working`/`skipped`) changed |
 | `relay_stopped` | `root` | A delegation cascade was halted; no further relayed turns run |
+| `engagement_changed` | `peer_id` | A peer dismissed its follow-up window |
 | `attachment_available` | `hash` | Attachment bytes finished downloading from a peer |
 | `proposal_created` | `proposal_id` | Workspace change captured as a proposal |
 | `proposal_updated` | `proposal_id`, `status` | Proposal status changed |

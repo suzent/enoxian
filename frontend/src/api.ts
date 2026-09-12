@@ -1,4 +1,4 @@
-import type { Circle, Status, Presence, ChatMessage, Attachment, ChatActivity, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin, ConnectivitySettings } from './types'
+import type { Circle, Status, Presence, ChatMessage, Attachment, ChatActivity, EngagementView, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin, ConnectivitySettings } from './types'
 
 const api = (circleId: string) => `/circles/${circleId}/api`
 
@@ -118,7 +118,8 @@ export const postChat = (
   text: string,
   agentId: string,
   attachments: { hash: string; name: string }[] = [],
-) => post(`${api(id)}/chat`, { text, agent_id: agentId, attachments })
+  replyTo?: string | null,
+) => post(`${api(id)}/chat`, { text, agent_id: agentId, attachments, reply_to: replyTo ?? null })
 
 /** Largest upload the daemon will accept. Mirrors MAX_ATTACHMENT_BYTES. */
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
@@ -194,6 +195,13 @@ export const getChatActivity = (id: string) =>
   get<ChatActivity[]>(`${api(id)}/chat/activity`)
 export const setChatTyping = (id: string, actorId: string, typing: boolean) =>
   post<{ok: boolean}>(`${api(id)}/chat/activity`, { actor_id: actorId, typing })
+/** What the next mention-less message will do: route to an agent, or nothing. */
+export const getEngagement = (id: string) =>
+  get<EngagementView>(`${api(id)}/chat/engagement`)
+/** Dismiss the follow-up window — the composer's Esc. */
+export const exitEngagement = (id: string) =>
+  post<{ ok: boolean }>(`${api(id)}/chat/engagement/exit`, {})
+
 /** Halt a delegation cascade: no further relayed turns run, on any device.
  *  `root` comes off any message in the cascade (`msg.relay.root`). */
 export const stopRelay = (id: string, root: string) =>

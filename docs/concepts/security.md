@@ -201,6 +201,36 @@ epochs and nonces are visible in encrypted frame headers. File paths are inside
 the encrypted CRDT frame and proposal/event metadata and blobs are encrypted as
 one authenticated payload.
 
+## What Agents Send Out
+
+An agent is a model provider's CLI running on someone's machine, so anything it
+reads leaves the Circle. Two settings change how much, and both are deliberately
+per device, in the never-synced `agents.toml`: the device that pays for an
+agent's tokens is the device that decides what they are spent on. A remote peer
+cannot opt another device's agent into anything.
+
+**Mentions (default).** Chat reaches a provider only when someone deliberately
+summons an agent, plus the recent-context window that mention carries.
+
+**Follow-up routing.** The same, for a few minutes after a reply, without the
+mention. It changes when an agent is woken, not what it can see.
+
+**Ambient (`engagement = "ambient"`, off by default).** Every human line in the
+Circle is sent to that agent's provider — possibly several vendors at once, for
+the same sentence. That is a defensible trade for a working Circle and an
+unpleasant surprise for a social one, so the roster advertises
+`ambient_agents`: every peer can see which agents on which devices are reading
+the room, not just the device that configured one.
+
+**Delegation (`accept_from = "agents"`, off by default).** Lets one agent's
+reply wake another, which means a message can reach a provider nobody addressed
+it to. Bounded by the relay budget, and the switch is on the receiving side.
+
+A forged `relay` chain on the wire is not an escalation. Enforcement is local:
+the receiving device clamps the budget to its own configuration and keeps its
+own per-cascade count, so a hostile peer inflating `spent` buys nothing it could
+not already get by posting a mention in a loop.
+
 ## Local Daemon API
 
 The managed daemon also exposes a local HTTP/WebSocket API for the CLI and web UI. This API

@@ -19,6 +19,7 @@
 //! [agents.codex]
 //! driver = "argv"          # default
 //! command = ["codex", "{{task}}"]
+//! engagement = "ambient"   # also read messages that name no agent
 //! accept_from = "agents"   # let another agent delegate to this one
 //! max_relay_turns = 20     # this device's ceiling on one cascade
 //! ```
@@ -54,6 +55,22 @@ pub enum Reaction {
     Pull,
 }
 
+/// Whether this agent reads the room, or only what is addressed to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Engagement {
+    /// Only explicit mentions and follow-ups. The default.
+    #[default]
+    Mention,
+    /// Also offered every human message in the Circle, to answer or decline.
+    ///
+    /// Never a global switch and never a Circle-wide setting: the device that
+    /// pays for an agent's tokens is the device that decides whether it reads
+    /// idle chat. A synced property here would let a remote peer spend another
+    /// device's budget.
+    Ambient,
+}
+
 /// Whose mention may wake this agent on this device.
 ///
 /// The switch lives on the *callee*, not the caller: the device that spends
@@ -84,6 +101,9 @@ pub struct AgentCommand {
     /// Working directory relative to the workspace root; defaults to the root.
     #[serde(default)]
     pub working_dir: Option<String>,
+    /// Whether this agent is offered unaddressed messages. See [`Engagement`].
+    #[serde(default)]
+    pub engagement: Engagement,
     /// Whether another agent's mention may wake this one. See [`AcceptFrom`].
     #[serde(default)]
     pub accept_from: AcceptFrom,
@@ -92,6 +112,10 @@ pub struct AgentCommand {
     /// [`crate::agent::relay::RELAY_TURNS_CEILING`].
     #[serde(default = "default_max_relay_turns")]
     pub max_relay_turns: u8,
+}
+
+fn default_engagement_window() -> i64 {
+    DEFAULT_ENGAGEMENT_WINDOW_SECS
 }
 
 fn default_max_relay_turns() -> u8 {
@@ -104,6 +128,7 @@ impl Default for AgentCommand {
             command: Vec::new(),
             driver: Driver::default(),
             working_dir: None,
+            engagement: Engagement::default(),
             accept_from: AcceptFrom::default(),
             max_relay_turns: default_max_relay_turns(),
         }
@@ -116,10 +141,17 @@ impl AgentCommand {
     /// silently reset whether it accepts work from other agents.
     pub fn inheriting_delegation(mut self, previous: Option<&AgentCommand>) -> Self {
         if let Some(prev) = previous {
+            self.engagement = prev.engagement;
             self.accept_from = prev.accept_from;
             self.max_relay_turns = prev.max_relay_turns;
         }
         self
+    }
+
+    /// Agents on this device that read the room rather than waiting to be
+    /// addressed.
+    pub fn is_ambient(&self) -> bool {
+        self.engagement == Engagement::Ambient
     }
 }
 
@@ -134,12 +166,38 @@ impl AgentCommand {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+/// Default follow-up window: how long after an agent's reply a message from the
+/// same person is routed back to it without a mention.
+///
+/// Three minutes is long enough to read a reply and type a considered answer,
+/// short enough that a conversation abandoned mid-thread does not silently
+/// capture an unrelated message later.
+pub const DEFAULT_ENGAGEMENT_WINDOW_SECS: i64 = 180;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AgentConfig {
     #[serde(default)]
     pub reaction: Reaction,
+    /// Seconds an agent stays "in conversation" with whoever it replied to, so
+    /// a follow-up needs no mention. `0` disables follow-up routing entirely;
+    /// every message then needs an explicit mention, as before.
+    #[serde(default = "default_engagement_window")]
+    pub engagement_window_secs: i64,
     #[serde(default)]
     pub agents: BTreeMap<String, AgentCommand>,
+}
+
+impl Default for AgentConfig {
+    /// Matches the serde defaults field for field. A derived `Default` would
+    /// give `engagement_window_secs = 0`, silently disabling follow-up routing
+    /// on the fallback path while an empty `agents.toml` enabled it.
+    fn default() -> Self {
+        Self {
+            reaction: Reaction::default(),
+            engagement_window_secs: DEFAULT_ENGAGEMENT_WINDOW_SECS,
+            agents: BTreeMap::new(),
+        }
+    }
 }
 
 impl AgentConfig {

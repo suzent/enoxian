@@ -124,6 +124,14 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
             get(chat::get_activity).post(chat::post_activity),
         )
         .route(
+            "/circles/{circle_id}/api/chat/engagement",
+            get(chat::get_engagement),
+        )
+        .route(
+            "/circles/{circle_id}/api/chat/engagement/exit",
+            post(chat::exit_engagement),
+        )
+        .route(
             "/circles/{circle_id}/api/chat/relay/stop",
             post(chat::stop_relay),
         )

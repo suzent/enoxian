@@ -138,6 +138,8 @@ mod tests {
             peer_id: "p1".into(),
             attachments: Vec::new(),
             relay,
+            author: crate::control::Author::Human,
+            reply_to: None,
         }
     }
 

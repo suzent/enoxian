@@ -41,6 +41,26 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Agents can be asked to read the room. An agent set `engagement = "ambient"` in
+  `agents.toml` is offered every human message and may answer or stay quiet.
+  Off by default and per device, because it sends every human line to that
+  agent's model provider — the roster marks ambient agents so everyone in the
+  Circle can see who is listening. Short messages, agents that just spoke, and
+  anything already addressed are skipped without asking a model, and at most one
+  ambient reply is offered per message. Files written by an unaddressed turn are
+  held for review instead of accepted.
+- Agent messages now have a **reply** action. Replying routes to that agent with
+  no mention and no timer, which is the only thing that works when two agents are
+  mid-conversation with you.
+- Replying to an agent no longer needs a mention. For a few minutes after an
+  agent answers you, your next message goes back to it — on the same machine
+  that ran it — and the composer says so before you press Enter, with Esc to
+  leave the conversation. Windows are per person, so two people can hold
+  separate conversations with separate agents in one Circle. Configurable with
+  `engagement_window_secs` in `agents.toml`; `0` restores mention-only routing.
+- Messaging an agent that is already working now queues the message instead of
+  failing it into the transcript. Up to four wait per agent, delivered in order
+  as separate turns; beyond that the oldest is dropped and said so.
 - Agents can now delegate to each other. An agent's reply that mentions another
   agent can wake it, so `@claude` can hand a job to `@codex` without a person
   relaying messages. Off by default and enabled on the receiving side:
@@ -73,6 +93,13 @@ refuses to publish a version whose section is missing or empty.
   this Circle" — naming an agent that was not running. Such a lock is now
   cleared when the daemon starts, since the agent it refers to died with the
   previous one.
+- A mention addressed to one device is no longer answered by another. Targeting
+  compared the mention against this machine's local identity file, while the
+  mention itself is composed from the Circle roster; when the two disagreed —
+  after a device rename, or an `~/.enoxian` copied between machines — the
+  addressed device ignored the mention and a different one replied in its
+  place. Both sides now come from the roster. A device that cannot establish
+  what the Circle calls it stays quiet rather than answering for another.
 - Agents are now told which device they are running on and how to address a
   specific one. An agent knew its own name but not its machine, so in a Circle
   where two devices run an agent of the same name it could not say which one it

@@ -251,9 +251,19 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                         }
                     }
                     if !managed_paths.is_empty() {
+                        // An unaddressed turn is a conversational turn, not a
+                        // work order: an agent nobody asked to do anything
+                        // should not have its files accepted on sight. This is
+                        // `pending`'s first use as a real gate (§2.4).
+                        let status = match managed_session.as_ref().map(|s| s.mode) {
+                            Some(crate::proposal::session::SessionMode::AmbientTriggered) => {
+                                ProposalStatus::Pending
+                            }
+                            _ => ProposalStatus::Accepted,
+                        };
                         create_proposal(
                             &state, &store, &baseline, &result, managed_paths, &device_label,
-                            ProposalSource::ManagedProcess, ProposalStatus::Accepted,
+                            ProposalSource::ManagedProcess, status,
                             managed_session.as_ref(),
                         )?;
                         if let Some(session) = managed_session.as_ref().filter(|s| !s.is_open()) {

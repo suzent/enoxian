@@ -195,24 +195,10 @@ fn standing_brief(state: &AppState, agent_id: &str) -> String {
     )
 }
 
-/// This device's own `(owner, device_label)`, matched by peer id.
-///
-/// `peer_id` is the identity that distinguishes machines; `agent_id` is a
-/// display label several devices may share, which is exactly why it cannot be
-/// used here.
+/// This device's own `(owner, device_label)` as the Circle knows it.
 fn self_identity(state: &AppState) -> Option<(String, String)> {
-    let txn = state.control.try_transact().ok()?;
-    let map = txn.get_map(MEMBER_LIST_KEY)?;
-    for (_key, val) in map.iter(&txn) {
-        if let Out::Any(Any::String(s)) = val {
-            if let Ok(m) = serde_json::from_str::<MemberEntry>(&s) {
-                if m.peer_id == state.peer_id && !m.owner.is_empty() && !m.device_label.is_empty() {
-                    return Some((m.owner, m.device_label));
-                }
-            }
-        }
-    }
-    None
+    let me = state.self_member()?;
+    (!me.owner.is_empty() && !me.device_label.is_empty()).then_some((me.owner, me.device_label))
 }
 
 /// Member display labels (owner + device) for the roster line.
@@ -312,6 +298,8 @@ mod tests {
             peer_id: String::new(),
             attachments: Vec::new(),
             relay: None,
+            author: crate::control::Author::Human,
+            reply_to: None,
         }
     }
 

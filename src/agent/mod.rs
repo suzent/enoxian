@@ -13,9 +13,11 @@
 //!   the coding agent is the agent).
 
 pub mod acp;
+pub mod ambient;
 pub mod config;
 pub mod context;
 pub mod driver;
+pub mod engagement;
 pub mod handled;
 pub mod memory;
 pub mod mention;

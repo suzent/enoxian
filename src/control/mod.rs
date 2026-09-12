@@ -19,6 +19,12 @@ pub const CHAT_KEY: &str = "chat";
 /// is usually not the machine whose user hit stop. Entries are dropped once no
 /// live cascade could still reference them.
 pub const RELAY_STOPS_KEY: &str = "relay_stops";
+/// Follow-up windows a speaker has dismissed: `peer id -> dismissed-at ts`.
+///
+/// Like [`RELAY_STOPS_KEY`] this is synced rather than local, because the
+/// device that would route a follow-up is not necessarily the device whose user
+/// pressed Esc — the agent may be running on another machine entirely.
+pub const ENGAGEMENT_EXITS_KEY: &str = "engagement_exits";
 /// Path deletions, as a CRDT map of `rel_path -> Deletion`.
 ///
 /// Deletion used to exist only as a live broadcast frame, which meant it had no
@@ -220,6 +226,15 @@ pub struct MemberEntry {
     /// Pure labels — no separate keys. File edits are attributed to the device (peer_id).
     #[serde(default)]
     pub agents: Vec<String>,
+    /// Which of `agents` read every human message rather than waiting to be
+    /// addressed (engagement spec §2.2).
+    ///
+    /// Advertised so *all* peers can see who is listening, not just the device
+    /// that configured it. Ambient engagement sends every human line to a model
+    /// provider; the room is entitled to know that is happening, and by whom.
+    /// Empty for peers predating the field, and for devices with none.
+    #[serde(default)]
+    pub ambient_agents: Vec<String>,
     pub role: MemberRole,
     pub added_at: DateTime<Utc>,
     /// Hex-encoded Ed25519 admin signature of "add:{peer_id}:{role}"
@@ -265,6 +280,42 @@ pub struct ChatMessage {
     /// chain from a hostile peer buys nothing.
     #[serde(default)]
     pub relay: Option<Relay>,
+    /// Who wrote this message.
+    ///
+    /// Neither existing field answers this. `agent_id` is a display label — a
+    /// person may legitimately be called `codex`. `peer_id` identifies the
+    /// *device*, which does not separate a person from the agent running on
+    /// their machine; both post from the same peer.
+    ///
+    /// Defaults to [`Author::Human`] for messages from peers predating the
+    /// field, which is the safe reading: a human message is the one that may
+    /// trigger work, and treating an old peer's agent reply as human at worst
+    /// offers one unaddressed turn, where the reverse would silently stop
+    /// answering people.
+    #[serde(default)]
+    pub author: Author,
+    /// The message this one replies to, if any (engagement spec §1.4).
+    ///
+    /// Explicit addressing without a mention. The follow-up window (§1.1)
+    /// guesses from recency and will sometimes guess wrong in a busy room;
+    /// this is the form that cannot, and the only one that works when two
+    /// agents are mid-conversation with the same person.
+    ///
+    /// Absent on messages from peers predating the field, which simply fall
+    /// back to the window.
+    #[serde(default)]
+    pub reply_to: Option<String>,
+}
+
+/// Authorship of a chat message. The durable signal behind "only human
+/// messages trigger an unaddressed turn" (engagement spec §2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Author {
+    #[default]
+    Human,
+    Agent,
+    System,
 }
 
 /// Provenance of one delegation cascade. See `docs/development/engagement.md`
@@ -423,6 +474,10 @@ pub enum CircleEvent {
     /// this root on any device.
     RelayStopped {
         root: String,
+    },
+    /// A peer dismissed its follow-up window.
+    EngagementChanged {
+        peer_id: String,
     },
     ChatActivityChanged {
         activity: ChatActivity,

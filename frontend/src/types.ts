@@ -92,6 +92,10 @@ export interface ChatMessage {
   attachments?: Attachment[]
   /** Delegation provenance; absent on system posts and older peers. */
   relay?: Relay
+  /** Who wrote this. Defaults to 'human' for messages from older peers. */
+  author?: 'human' | 'agent' | 'system'
+  /** The message this replies to — explicit addressing, no timer. */
+  reply_to?: string | null
 }
 
 export interface Proposal {
@@ -186,6 +190,18 @@ export interface ChatActivity {
   message_id: string | null
   updated_at: number
   expires_at: number
+}
+
+/** The follow-up window for this device, from `GET /api/chat/engagement`. */
+export interface EngagementView {
+  /** Agent the next mention-less message routes to, or null if none. */
+  agent: string | null
+  /** Device that ran the reply, and that a follow-up must wake. */
+  peer_id?: string
+  /** The agent reply this was resolved from. */
+  message_id?: string
+  /** Seconds the window lasts; 0 means follow-up routing is off. */
+  window_secs: number
 }
 
 export interface AgentConfigView {

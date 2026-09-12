@@ -308,6 +308,59 @@ appears with agents under it if it **advertises** them — which it does
 automatically for every agent in its `agents.toml`. If a device shows no agents,
 it has none configured (or hasn't reconnected since configuring them).
 
+## Replying without a mention
+
+After an agent answers you, your next message goes back to it for a few
+minutes — no mention needed — and to the *same machine* that ran it. The
+composer says so before you press Enter:
+
+```text
+replying to @claude · no mention needed          [ esc to exit ]
+```
+
+Esc leaves the conversation; the next message needs a mention again. Mentioning
+any agent also re-arms the window, and windows are per person, so two people can
+hold separate conversations with separate agents in one Circle without
+disturbing each other.
+
+Set `engagement_window_secs` in `agents.toml` to change the timeout, or `0` to
+turn follow-up routing off and require a mention every time.
+
+If the agent is already working, your message is **queued** rather than refused
+— up to four per agent, delivered in order as separate turns. The strip says so:
+`working, your message will be queued`.
+
+When the window guesses wrong — two agents mid-conversation with you — use the
+**reply** action on an agent's message instead. That routes to exactly that
+agent, with no timer.
+
+## Agents that read the room
+
+An agent can be given `engagement = "ambient"` so it sees every human message in
+the Circle and decides for itself whether to answer:
+
+```toml
+[agents.claude]
+driver = "acp"
+command = [...]
+engagement = "ambient"   # default is "mention"
+```
+
+**This is off by default, and it is a real trade.** Under mentions, your chat
+reaches a model provider only when you summon an agent. Under ambient, every
+human line is sent to that agent's provider — so the roster marks ambient
+agents, and everyone in the Circle can see who is listening.
+
+The cost is managed without asking a model: messages under about two dozen
+characters are skipped, an agent that spoke in the last 30 seconds is left
+alone, and at most one ambient reply is offered per message. An agent with
+nothing to add replies `PASS`, which posts nothing and shows as *considered and
+passed* rather than silence.
+
+An unaddressed turn is conversational, not a work order. Files it writes are
+recorded as **pending** for review rather than accepted outright, and the agent
+is told to say what needs doing rather than do it.
+
 ## Agents mentioning agents
 
 An agent's reply can mention another agent and wake it, so `@claude` can hand a

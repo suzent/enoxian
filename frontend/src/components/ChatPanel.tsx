@@ -1,6 +1,6 @@
 import { Fragment, useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import type { Attachment, ChatActivity, ChatMessage, Member, Presence } from '../types'
-import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, MAX_ATTACHMENT_BYTES } from '../api'
+import type { Attachment, ChatActivity, ChatMessage, EngagementView, Member, Presence } from '../types'
+import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, getEngagement, exitEngagement, MAX_ATTACHMENT_BYTES } from '../api'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 import CircleGlyph from './CircleGlyph'
@@ -184,9 +184,10 @@ interface BubbleProps {
   circleId: string
   blobNonces: Record<string, number>
   onOpenImage: (hash: string) => void
+  onReply?: (msg: ChatMessage) => void
 }
 
-function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNonces, onOpenImage }: BubbleProps) {
+function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNonces, onOpenImage, onReply }: BubbleProps) {
   if (msg.agent_id === 'system') {
     return (
       <div className="chat-system-event" role="status">
@@ -227,6 +228,19 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
             <time className="chat-message__time" dateTime={new Date(msg.ts * 1000).toISOString()} title={fullTimestamp} aria-label={fullTimestamp}>
               {timestamp}
             </time>
+            {isAgent && onReply && (
+              // Explicit addressing: pointing at a reply beats guessing from
+              // recency, and is the only thing that works when two agents are
+              // mid-conversation with you.
+              <button
+                type="button"
+                className="chat-message__reply"
+                onClick={() => onReply(msg)}
+                title={`Reply to @${label.agent} — routes there with no mention`}
+              >
+                reply
+              </button>
+            )}
           </header>
         )}
         {msg.text.trim() && <MessageText text={msg.text} mentions={msg.mentions} />}
@@ -266,6 +280,9 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   const [presence, setPresence] = useState<Presence[]>([])
   const [activities, setActivities] = useState<Record<string, ChatActivity>>({})
   const [activityClock, setActivityClock] = useState(() => Math.floor(Date.now() / 1000))
+  // What the next message will do if it names no agent. Implicit routing that
+  // is invisible is a bug, so the composer says so before you press Enter.
+  const [engagement, setEngagement] = useState<EngagementView | null>(null)
   // Plaintext value of the input, mirrored from MentionInput for send.
   const [input, setInput] = useState('')
   // The active `@fragment` under the caret (drives the popup), or null.
@@ -593,7 +610,9 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     setPending([])
     writeDraft({ nodes: [] })
     setAttachError(null)
-    postChat(activeCircleId, text, status.agent_id, attachments).catch(error => {
+    const sentReplyTo = replyTo
+    setReplyTo(null)
+    postChat(activeCircleId, text, status.agent_id, attachments, sentReplyTo?.id).catch(error => {
       // Put the message back exactly as it was — text included. Losing a long
       // message to a moment of contention is worse than any error copy.
       //
@@ -605,6 +624,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
         inputRef.current?.restore(sentNodes)
         setInput(text)
         setPending(prev => [...sentAttachments, ...prev])
+        setReplyTo(sentReplyTo)
         lastTypedTextRef.current = text
         setAttachError(sendErrorText(error))
       } else if (sentCircleId) {
@@ -704,6 +724,18 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
         }
       }
     }
+    if (e.key === 'Escape' && replyTo) {
+      e.preventDefault()
+      setReplyTo(null)
+      return
+    }
+    if (e.key === 'Escape' && engagement?.agent) {
+      // Esc with no popup open leaves the conversation: the next message needs
+      // a mention again.
+      e.preventDefault()
+      dismissEngagement()
+      return
+    }
     if (e.key === 'Enter') {
       e.preventDefault()
       send()
@@ -733,6 +765,38 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     }
     return null
   })()
+
+  // An explicit reply target, set by the "reply" affordance on an agent
+  // message. Outranks the follow-up window: pointing beats guessing.
+  const [replyTo, setReplyTo] = useState<{ id: string; agent: string } | null>(null)
+  const startReply = useCallback((msg: ChatMessage) => {
+    const path = msg.relay?.path ?? []
+    const agent = path.length > 0 ? path[path.length - 1] : msg.agent_id
+    setReplyTo({ id: msg.id, agent })
+    inputRef.current?.focus()
+  }, [])
+
+  const refreshEngagement = useCallback(() => {
+    if (!activeCircleId) return
+    getEngagement(activeCircleId).then(setEngagement).catch(() => {})
+  }, [activeCircleId])
+
+  // Re-read whenever the transcript changes: a reply opens the window, and
+  // sending into it moves it on.
+  useEffect(() => {
+    refreshEngagement()
+  }, [refreshEngagement, messages.length])
+
+  const dismissEngagement = useCallback(async () => {
+    if (!activeCircleId) return
+    // Clear locally first so Esc feels instant; the daemon is the record.
+    setEngagement(prev => (prev ? { ...prev, agent: null } : prev))
+    try {
+      await exitEngagement(activeCircleId)
+    } finally {
+      refreshEngagement()
+    }
+  }, [activeCircleId, refreshEngagement])
 
   const [stoppingRoot, setStoppingRoot] = useState<string | null>(null)
   const haltCascade = useCallback(async (root: string) => {
@@ -846,6 +910,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
                 circleId={activeCircleId ?? ''}
                 blobNonces={blobNonces}
                 onOpenImage={setLightboxHash}
+                onReply={startReply}
               />
             </Fragment>
           )
@@ -871,6 +936,29 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
             onSelect={applyMention}
             onHover={setMentionIndex}
           />
+        )}
+        {replyTo && (
+          <div className="chat-engagement" role="status" aria-live="polite">
+            <span>
+              replying to <strong>@{replyTo.agent}</strong> · this message only
+            </span>
+            <button type="button" onClick={() => setReplyTo(null)} title="Cancel this reply">
+              cancel
+            </button>
+          </div>
+        )}
+        {!replyTo && engagement?.agent && (
+          <div className="chat-engagement" role="status" aria-live="polite">
+            <span>
+              replying to <strong>@{engagement.agent}</strong>
+              {liveActivities.some(a => a.actor_id === engagement.agent && a.kind === 'working')
+                ? ' · working, your message will be queued'
+                : ' · no mention needed'}
+            </span>
+            <button type="button" onClick={dismissEngagement} title="Stop replying to this agent (Esc)">
+              esc to exit
+            </button>
+          </div>
         )}
         {liveActivities.length > 0 && (
           <div className="chat-activity" role="status" aria-live="polite">

@@ -11,6 +11,10 @@
 #   "push"            — when a mention names an agent below, launch it.
 reaction = "push"
 
+# How long an agent stays "in conversation" with whoever it replied to, so a
+# follow-up needs no mention. Set 0 to require an explicit mention every time.
+engagement_window_secs = 180
+
 # ── Claude Code over ACP ──────────────────────────────────────────────────────
 # enoxian speaks ACP to a transport bridge that drives the real Claude Code CLI.
 # First install the official `claude` CLI, run `claude auth login`, then run
@@ -42,6 +46,13 @@ command = ["npx", "@agentclientprotocol/codex-acp"]
 # turns, counted from the human message that started it.
 # accept_from = "agents"
 # max_relay_turns = 20
+
+# Read every human message in the Circle and answer or decline, instead of
+# waiting to be addressed. OFF by default, and per device on purpose: this sends
+# every human line to this agent's model provider, which the whole Circle can
+# see (the roster marks ambient agents). Unaddressed turns are conversational —
+# whatever files they write are held for review rather than accepted.
+# engagement = "ambient"
 
 # ── Suzent over ACP (a built-in "native" plugin) ───────────────────────────────
 # Suzent speaks ACP itself, so there is no adapter bridge, no Node.js, and

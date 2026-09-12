@@ -194,6 +194,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 agent_id: agent_id.clone(),
                 device_label,
                 agents,
+                ambient_agents: Vec::new(),
                 role,
                 added_at: chrono::Utc::now(),
                 signature,
@@ -1795,6 +1796,7 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                     agent_id,
                     device_label,
                     agents,
+                    ambient_agents: Vec::new(),
                     role: MemberRole::Member,
                     added_at: chrono::Utc::now(),
                     signature: format!("add:{peer_id_str}:member:owner:{owner}"),
@@ -1999,6 +2001,14 @@ pub fn readvertise_local_agents(daemon: &DaemonState) {
     use yrs::{Any, Map, Out, ReadTxn, Transact, WriteTxn};
 
     let current_agents = crate::identity::read_local_agents();
+    // Which of them read the room. Advertised so every peer can see who is
+    // listening, not just the device that opted in (§2.6).
+    let current_ambient = crate::agent::config::AgentConfig::load()
+        .agents
+        .iter()
+        .filter(|(_, cmd)| cmd.is_ambient())
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
     let current_label = crate::identity::read_identity_display()
         .map(|(label, _)| label)
         .unwrap_or_default();
@@ -2020,8 +2030,12 @@ pub fn readvertise_local_agents(daemon: &DaemonState) {
         };
 
         if let Some(mut entry) = existing {
-            if entry.agents != current_agents || entry.device_label != current_label {
+            if entry.agents != current_agents
+                || entry.device_label != current_label
+                || entry.ambient_agents != current_ambient
+            {
                 entry.agents = current_agents.clone();
+                entry.ambient_agents = current_ambient.clone();
                 entry.device_label = current_label.clone();
                 if let Ok(json_str) = serde_json::to_string(&entry) {
                     {

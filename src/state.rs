@@ -1,6 +1,7 @@
 use crate::control::{
-    ChatActivity, ChatMessage, CircleEvent, Presence, Task, TaskStatus, CHAT_ACTIVITY_KEY,
-    CHAT_KEY, MEMBER_LIST_KEY, MLS_PENDING_KEY, MLS_REMOVED_KEY, PRESENCE_KEY, TASKS_KEY,
+    ChatActivity, ChatMessage, CircleEvent, MemberEntry, Presence, Task, TaskStatus,
+    CHAT_ACTIVITY_KEY, CHAT_KEY, MEMBER_LIST_KEY, MLS_PENDING_KEY, MLS_REMOVED_KEY, PRESENCE_KEY,
+    TASKS_KEY,
 };
 use dashmap::DashMap;
 use libp2p::{multiaddr::Protocol, swarm::ConnectionId, Multiaddr};
@@ -10,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
-use yrs::{Any, Doc, Map, Observable, Out, Transact};
+use yrs::{Any, Array, Doc, Map, Observable, Out, ReadTxn, Transact};
 
 pub const EVENT_CAPACITY: usize = 256;
 
@@ -136,6 +137,70 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// This device's own entry in the Circle roster, matched by `peer_id`.
+    ///
+    /// `peer_id` is the only field that identifies a machine: `agent_id` is a
+    /// display label and `device_label` is chosen by the user, so several
+    /// devices can share either.
+    ///
+    /// This is the Circle's view of who this device is, and it is what other
+    /// members address it by. Anything comparing against an incoming mention
+    /// must use this rather than the local `identity.toml`, since the two can
+    /// drift.
+    /// The Circle transcript in chronological order, deduplicated.
+    pub fn transcript(&self) -> Vec<ChatMessage> {
+        let Ok(txn) = self.control.try_transact() else {
+            return Vec::new();
+        };
+        let Some(arr) = txn.get_array(CHAT_KEY) else {
+            return Vec::new();
+        };
+        let mut seen = std::collections::HashSet::new();
+        arr.iter(&txn)
+            .filter_map(|item| match item {
+                Out::Any(Any::String(s)) => serde_json::from_str::<ChatMessage>(&s).ok(),
+                _ => None,
+            })
+            .filter(|m| seen.insert(m.id.clone()))
+            .collect()
+    }
+
+    /// What this peer last dismissed, if anything.
+    pub fn engagement_dismissed(
+        &self,
+        peer_id: &str,
+    ) -> Option<crate::agent::engagement::Dismissal> {
+        let txn = self.control.try_transact().ok()?;
+        let map = txn.get_map(crate::control::ENGAGEMENT_EXITS_KEY)?;
+        let Some(Out::Any(Any::String(raw))) = map.get(&txn, peer_id) else {
+            return None;
+        };
+        let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        Some(crate::agent::engagement::Dismissal {
+            at: value.get("at")?.as_i64()?,
+            message_id: value
+                .get("message_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        })
+    }
+
+    pub fn self_member(&self) -> Option<MemberEntry> {
+        let txn = self.control.try_transact().ok()?;
+        let map = txn.get_map(MEMBER_LIST_KEY)?;
+        for (_key, val) in map.iter(&txn) {
+            if let Out::Any(Any::String(s)) = val {
+                if let Ok(m) = serde_json::from_str::<MemberEntry>(&s) {
+                    if m.peer_id == self.peer_id {
+                        return Some(m);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         circle_id: String,
@@ -824,6 +889,7 @@ mod tests {
             agent_id: format!("suzy-{peer_id}"),
             device_label: "macbook-pro".into(),
             agents: agents.iter().map(|a| a.to_string()).collect(),
+            ambient_agents: Vec::new(),
             role: MemberRole::Member,
             added_at: chrono::Utc::now(),
             signature: String::new(),
