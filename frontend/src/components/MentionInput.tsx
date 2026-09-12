@@ -7,8 +7,9 @@ import { useRef, useCallback, useImperativeHandle, forwardRef, useEffect } from 
  * before it is committed) is normal editable text.
  *
  * The component is a thin contentEditable wrapper. It reports two things up:
- *  - `onChange(text, fragment)` — the plaintext value, and the active `@fragment`
- *    the caret is currently in (or null), so the parent can drive the popup.
+ *  - `onChange(text, fragment, nodes)` — the plaintext value, the active
+ *    `@fragment` the caret is currently in (or null) so the parent can drive the
+ *    popup, and the same contents as structured `DraftNode`s.
  *  - `onSend()` / `onKey` — key handling the parent needs (Enter, popup nav).
  *
  * Chips are inserted via the imperative `insertMention(token)` handle, called
@@ -16,17 +17,30 @@ import { useRef, useCallback, useImperativeHandle, forwardRef, useEffect } from 
  * chip into `@token`, so the backend sees exactly the same string as before.
  */
 
+/**
+ * A composer's contents in a form that survives being put aside and brought
+ * back: chips stay chips instead of decaying into plain `@token` text. Used to
+ * keep an unsent message per circle across a circle switch.
+ */
+export type DraftNode =
+  | { kind: 'text'; value: string }
+  | { kind: 'mention'; token: string }
+
 export interface MentionInputHandle {
   insertMention: (token: string) => void
   clear: () => void
   focus: () => void
+  /** Replace the contents with a previously captured draft. Deliberately does
+   *  not fire `onChange`: the caller already holds this value, and re-emitting
+   *  it would look like the user typing (and broadcast a typing indicator). */
+  restore: (nodes: DraftNode[]) => void
 }
 
 interface Props {
   placeholder?: string
   className?: string
   disabled?: boolean
-  onChange: (text: string, fragment: string | null) => void
+  onChange: (text: string, fragment: string | null, nodes: DraftNode[]) => void
   onKeyDown: (e: React.KeyboardEvent) => void
   /** Given first refusal on paste. If it calls `preventDefault` (as the file
    *  handler does), the plaintext insert below is skipped. */
@@ -35,24 +49,33 @@ interface Props {
 
 const CHIP_ATTR = 'data-mention'
 
-/** Serialize the editable DOM to plaintext: chips → `@token`, text as-is. */
-function serialize(root: HTMLElement): string {
-  let out = ''
+/** Read the editable DOM into draft nodes. Empty text nodes are dropped so a
+ *  round-trip through `restore` leaves the element `:empty` (and therefore
+ *  showing its placeholder) when the draft is blank. */
+function snapshot(root: HTMLElement): DraftNode[] {
+  const out: DraftNode[] = []
+  const pushText = (value: string) => { if (value) out.push({ kind: 'text', value }) }
   root.childNodes.forEach(node => {
     if (node.nodeType === Node.TEXT_NODE) {
-      out += node.textContent ?? ''
+      pushText(node.textContent ?? '')
     } else if (node instanceof HTMLElement) {
       const token = node.getAttribute(CHIP_ATTR)
       if (token !== null) {
-        out += `@${token}`
+        out.push({ kind: 'mention', token })
       } else if (node.tagName === 'BR') {
         // ignore — Enter is send, not newline
       } else {
-        out += node.textContent ?? ''
+        pushText(node.textContent ?? '')
       }
     }
   })
   return out
+}
+
+/** Serialize draft nodes to plaintext: chips → `@token`, text as-is. This is
+ *  exactly what the backend receives, so a restored draft sends identically. */
+export function draftText(nodes: DraftNode[]): string {
+  return nodes.map(n => (n.kind === 'mention' ? `@${n.token}` : n.value)).join('')
 }
 
 /** Build a chip element for a committed mention. */
@@ -93,7 +116,8 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
   const emit = useCallback(() => {
     const el = elRef.current
     if (!el) return
-    onChange(serialize(el), activeFragment())
+    const nodes = snapshot(el)
+    onChange(draftText(nodes), activeFragment(), nodes)
   }, [onChange])
 
   useImperativeHandle(ref, () => ({
@@ -103,6 +127,26 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
         elRef.current.textContent = ''
         emit()
       }
+    },
+    restore: (nodes: DraftNode[]) => {
+      const el = elRef.current
+      if (!el) return
+      el.textContent = ''
+      for (const node of nodes) {
+        el.appendChild(
+          node.kind === 'mention' ? makeChip(node.token) : document.createTextNode(node.value),
+        )
+      }
+      // Only reposition the caret if the user is actually in this box — a
+      // restore triggered by a circle switch must not steal focus.
+      if (document.activeElement !== el) return
+      const sel = window.getSelection()
+      if (!sel) return
+      const range = document.createRange()
+      range.selectNodeContents(el)
+      range.collapse(false)
+      sel.removeAllRanges()
+      sel.addRange(range)
     },
     insertMention: (token: string) => {
       const el = elRef.current

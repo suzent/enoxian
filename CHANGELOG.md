@@ -61,6 +61,12 @@ refuses to publish a version whose section is missing or empty.
 - Proposals record the delegation chain, so a file written by an agent another
   agent asked is distinguishable from one a person asked for directly.
 
+### Fixed
+
+- A half-written chat message, and any image staged with it, now stays with the
+  circle it was written in. Switching circles used to carry the unsent message
+  across and send it to whichever circle you had moved to.
+
 ## [0.8.0] — 2026-09-12
 
 ### Changed
