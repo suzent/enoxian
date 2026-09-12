@@ -1188,6 +1188,11 @@ button[role="tab"][aria-selected="true"] {
   min-height: 0;
   max-width: 100%;
   max-height: 100%;
+  /* A favicon-sized image should still read as a framed object rather than a
+     stray speck of chrome. Never scales the image itself — only the mount. */
+  min-width: 120px;
+  align-items: center;
+  justify-content: center;
   padding: 6px;
   border: 2px solid var(--fg-obsidian);
   background: var(--surface-panel);

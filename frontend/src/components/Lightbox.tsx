@@ -153,7 +153,17 @@ export default function Lightbox({ circleId, items, index, onIndexChange, onClos
             ‹
           </button>
         )}
-        <figure className="lightbox__figure">
+        <figure
+          className="lightbox__figure"
+          // Hold the frame's shape while the next image decodes. Paging
+          // remounts the <img>, and without a reserved ratio the figure
+          // collapses to its padding and the viewer flashes an empty box.
+          style={
+            current.width && current.height
+              ? { aspectRatio: `${current.width} / ${current.height}` }
+              : undefined
+          }
+        >
           <img
             className="lightbox__img"
             // Keyed by hash so paging swaps the element rather than showing the
