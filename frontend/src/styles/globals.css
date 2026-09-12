@@ -1107,8 +1107,8 @@ button[role="tab"][aria-selected="true"] {
 .chat-staged__fill {
   position: absolute;
   inset: 0 auto 0 0;
-  background: var(--fg-obsidian);
-  opacity: 0.14;
+  background-image: var(--stripe-wide);
+  opacity: 0.5;
   transition: width 120ms linear;
 }
 
@@ -1119,24 +1119,39 @@ button[role="tab"][aria-selected="true"] {
 
 /* ── Lightbox ─────────────────────────────────────────────────────────────── */
 
+/* A paper scrim rather than a dark one: the app is a light, printed surface,
+   and a black overlay reads as a different application. The halftone dither
+   keeps it from looking like a plain wash. */
 .lightbox {
   position: fixed;
   inset: 0;
   z-index: 1000;
   display: flex;
   flex-direction: column;
-  background: rgba(0, 0, 0, 0.86);
+  gap: var(--shell-gap);
+  padding: var(--shell-padding);
+  background-color: rgba(244, 243, 239, 0.94);
+  background-image: var(--dither-fill);
+  background-size: 3px 3px;
 }
 
 .lightbox__bar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  color: #fff;
+  gap: var(--shell-gap);
+  min-height: 34px;
+  padding: 5px 9px;
+  border: 2px solid var(--fg-obsidian);
+  background-color: var(--bg-alabaster);
+  background-image: var(--stripe-soft);
+  box-shadow: 3px 3px 0 rgba(10, 10, 10, 0.13);
+  color: var(--fg-obsidian);
   font-family: var(--font-mono);
   font-size: var(--ui-tiny);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .lightbox__name {
@@ -1145,29 +1160,15 @@ button[role="tab"][aria-selected="true"] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* The filename is the one thing here that is not shouted. */
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
 }
 
 .lightbox__count {
-  opacity: 0.6;
-}
-
-.lightbox__btn {
-  flex: 0 0 auto;
-  padding: 5px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  background: transparent;
-  color: #fff;
-  font-family: var(--font-mono);
-  font-size: var(--ui-tiny);
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.lightbox__btn:hover,
-.lightbox__btn:focus-visible {
-  background: #fff;
-  color: #000;
-  outline: none;
+  color: var(--fg-slate);
+  font-variant-numeric: tabular-nums;
 }
 
 .lightbox__stage {
@@ -1175,50 +1176,50 @@ button[role="tab"][aria-selected="true"] {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--shell-gap);
   min-height: 0;
-  padding: 0 12px 16px;
+}
+
+/* Framed like every other surface in the app, which also keeps a pale image
+   legible against the pale scrim. */
+.lightbox__figure {
+  display: flex;
+  margin: 0;
+  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
+  padding: 6px;
+  border: 2px solid var(--fg-obsidian);
+  background: var(--surface-panel);
+  box-shadow: 3px 3px 0 rgba(10, 10, 10, 0.13);
 }
 
 .lightbox__img {
   max-width: 100%;
-  /* Bounded by the stage, so a tall image cannot push the bar off-screen. */
   max-height: 100%;
   width: auto;
   height: auto;
   object-fit: contain;
-  /* A pale image needs an edge against the dark backdrop. */
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
 }
 
 .lightbox__nav {
   flex: 0 0 auto;
-  width: 40px;
+  width: 34px;
   height: 56px;
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  background: transparent;
-  color: #fff;
-  font-size: 24px;
+  padding: 0;
+  font-size: 18px;
   line-height: 1;
-  cursor: pointer;
-}
-
-.lightbox__nav:hover:not(:disabled),
-.lightbox__nav:focus-visible {
-  background: #fff;
-  color: #000;
-  outline: none;
 }
 
 .lightbox__nav:disabled {
-  opacity: 0.25;
+  opacity: 0.3;
   cursor: default;
 }
 
 @media (max-width: 600px) {
-  /* Reclaim the width for the image itself; keyboard and swipe still page. */
+  /* Reclaim the width for the image itself; keyboard still pages. */
   .lightbox__nav {
-    width: 32px;
+    width: 26px;
   }
 }
 

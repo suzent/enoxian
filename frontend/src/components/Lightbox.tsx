@@ -130,14 +130,14 @@ export default function Lightbox({ circleId, items, index, onIndexChange, onClos
           )}
         </span>
         <a
-          className="lightbox__btn"
+          className="enox-btn lightbox__btn"
           href={blobUrl(circleId, current.hash)}
           download={current.name}
           onClick={e => e.stopPropagation()}
         >
           DOWNLOAD
         </a>
-        <button ref={closeRef} className="lightbox__btn" onClick={onClose} aria-label="Close viewer">
+        <button ref={closeRef} className="enox-btn lightbox__btn" onClick={onClose} aria-label="Close viewer">
           CLOSE ✕
         </button>
       </div>
@@ -145,7 +145,7 @@ export default function Lightbox({ circleId, items, index, onIndexChange, onClos
       <div className="lightbox__stage">
         {items.length > 1 && (
           <button
-            className="lightbox__nav lightbox__nav--prev"
+            className="enox-btn lightbox__nav"
             onClick={() => go(-1)}
             disabled={!hasPrev}
             aria-label="Previous image"
@@ -153,19 +153,21 @@ export default function Lightbox({ circleId, items, index, onIndexChange, onClos
             ‹
           </button>
         )}
-        <img
-          className="lightbox__img"
-          // Keyed by hash so paging swaps the element rather than showing the
-          // previous image stretched to the new one's dimensions.
-          key={current.hash}
-          src={blobUrl(circleId, current.hash)}
-          alt={current.name}
-          width={current.width}
-          height={current.height}
-        />
+        <figure className="lightbox__figure">
+          <img
+            className="lightbox__img"
+            // Keyed by hash so paging swaps the element rather than showing the
+            // previous image stretched to the new one's dimensions.
+            key={current.hash}
+            src={blobUrl(circleId, current.hash)}
+            alt={current.name}
+            width={current.width}
+            height={current.height}
+          />
+        </figure>
         {items.length > 1 && (
           <button
-            className="lightbox__nav lightbox__nav--next"
+            className="enox-btn lightbox__nav"
             onClick={() => go(1)}
             disabled={!hasNext}
             aria-label="Next image"
