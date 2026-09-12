@@ -87,6 +87,12 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- A killed or restarted daemon no longer leaves a Circle unable to run any
+  agent. A run interrupted mid-flight left a lock behind that nothing expired,
+  so every later mention failed with "managed agent '…' is already running in
+  this Circle" — naming an agent that was not running. Such a lock is now
+  cleared when the daemon starts, since the agent it refers to died with the
+  previous one.
 - A mention addressed to one device is no longer answered by another. Targeting
   compared the mention against this machine's local identity file, while the
   mention itself is composed from the Circle roster; when the two disagreed —
