@@ -540,6 +540,15 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         });
     }
 
+    // Before anything opens a store. A store that creates its directory first
+    // would leave the migration with nowhere to move the old one to, so this
+    // stays ahead of the watcher and the proposal/event stores below rather
+    // than relying on their internal ordering.
+    let moved = crate::store::layout::migrate_legacy_layout(&state.workspace);
+    if moved > 0 {
+        info!("[layout] consolidated {moved} legacy state director(ies) under .enox/");
+    }
+
     spawn_watcher(state.clone(), workspace, token.clone()).await?;
     // Upgrade pre-M15 proposal history into the append-only event log before
     // any peer event stream starts. Fresh proposals append events themselves.
@@ -563,6 +572,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     crate::agent::reaction::spawn_reaction(state.clone(), token.clone());
     presence::spawn_presence(state.clone(), agent_id, token.clone());
     spawn_control_persist(state.clone(), cdir.clone(), token.clone());
+    spawn_storage_gc(state.clone(), token.clone());
 
     // ── Build the P2P swarm ───────────────────────────────────────────────────
     let pnet_config = pnet::PnetConfig::new(pnet::PreSharedKey::new(psk_bytes));
@@ -1400,6 +1410,56 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
 /// disk, and once more on clean shutdown. Debounced by a fixed interval — the
 /// control doc changes often (presence heartbeats), but those are excluded from
 /// the snapshot, so a periodic full save is cheap and simple. See
+/// Periodically reclaim storage that nothing refers to any more.
+///
+/// Runs on a long interval rather than on every change: collection walks the
+/// blob directory, and the space it reclaims is not urgent. The first pass is
+/// delayed so it never competes with startup — a device that has just come
+/// online is busy reconciling, and that is also when blobs are most likely to
+/// be about to become reachable again.
+fn spawn_storage_gc(state: AppState, token: CancellationToken) {
+    tokio::spawn(async move {
+        // Six hours: often enough that storage cannot run away, rare enough to
+        // be invisible.
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 60 * 60));
+        interval.tick().await; // skip the immediate first tick
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = interval.tick() => {
+                    let workspace = state.workspace.clone();
+                    let proposal_report = tokio::task::spawn_blocking(move || {
+                        let store = crate::proposal::store::ProposalStore::open(&workspace)?;
+                        crate::proposal::gc::collect(&store)
+                    })
+                    .await;
+                    match proposal_report {
+                        Ok(Ok(report)) if !report.is_empty() => info!(
+                            "[gc] reclaimed {} proposal(s), {} snapshot(s), {} blob(s) ({:.1} MB)",
+                            report.proposals_removed,
+                            report.snapshots_removed,
+                            report.blobs_removed,
+                            report.bytes_reclaimed as f64 / 1_048_576.0,
+                        ),
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => warn!("[gc] proposal collection failed: {e}"),
+                        Err(e) => warn!("[gc] proposal collection panicked: {e}"),
+                    }
+
+                    match crate::api::attachments::collect_unreferenced_blobs(&state) {
+                        Ok((0, _)) => {}
+                        Ok((count, bytes)) => info!(
+                            "[gc] reclaimed {count} chat attachment(s) ({:.1} MB)",
+                            bytes as f64 / 1_048_576.0,
+                        ),
+                        Err(e) => warn!("[gc] attachment collection failed: {e}"),
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// `crate::store::control`.
 fn spawn_control_persist(
     state: AppState,

@@ -16,7 +16,9 @@ use super::snapshot::Snapshot;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-pub const STORE_DIR: &str = ".enox_proposals";
+/// Retained for the pre-consolidation layout; the live path comes from
+/// [`crate::store::layout`].
+pub const LEGACY_STORE_DIR: &str = ".enox_proposals";
 
 pub struct ProposalStore {
     root: PathBuf,
@@ -25,7 +27,7 @@ pub struct ProposalStore {
 
 impl ProposalStore {
     pub fn open(workspace: &Path) -> Result<Self> {
-        let root = workspace.join(STORE_DIR);
+        let root = crate::store::layout::proposals(workspace);
         let blobs = BlobStore::open(root.join("blobs"))?;
         std::fs::create_dir_all(root.join("snapshots"))?;
         std::fs::create_dir_all(root.join("proposals"))?;
@@ -79,6 +81,30 @@ impl ProposalStore {
     }
 
     /// All proposals, newest first.
+    /// Ids of every stored snapshot.
+    pub fn list_snapshot_ids(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(self.snapshots_dir()) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.strip_suffix(".json").map(str::to_string)
+            })
+            .collect()
+    }
+
+    /// Delete a snapshot manifest. Absent is success.
+    pub fn delete_snapshot(&self, id: &str) -> Result<()> {
+        remove_if_present(&self.snapshots_dir().join(format!("{id}.json")))
+    }
+
+    /// Delete a proposal record. Absent is success.
+    pub fn delete_proposal(&self, id: &str) -> Result<()> {
+        remove_if_present(&self.proposals_dir().join(format!("{id}.json")))
+    }
+
     pub fn list_proposals(&self) -> Vec<Proposal> {
         let mut proposals: Vec<Proposal> = std::fs::read_dir(self.proposals_dir())
             .map(|rd| {
@@ -92,6 +118,16 @@ impl ProposalStore {
             .unwrap_or_default();
         proposals.sort_by_key(|p| std::cmp::Reverse(p.created_at));
         proposals
+    }
+}
+
+/// Remove a file, treating "already gone" as success — the caller wants the
+/// path absent, not proof that it did the removing.
+fn remove_if_present(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
     }
 }
 

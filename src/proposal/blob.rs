@@ -56,6 +56,57 @@ impl BlobStore {
         self.blob_path(hash).map(|p| p.exists()).unwrap_or(false)
     }
 
+    /// Public path for a hash, for callers that need the file itself
+    /// (collection, tests). Returns an error for a malformed hash.
+    pub fn path_for(&self, hash: &str) -> Result<PathBuf> {
+        self.blob_path(hash)
+    }
+
+    /// Every stored blob as `(hash, size, modified)`.
+    ///
+    /// Entries whose name is not a valid hash are skipped rather than reported:
+    /// the only such files are the `.tmp-*` staging files `put` renames from,
+    /// and a concurrent `put` should not fail a sweep.
+    pub fn list(&self) -> Result<Vec<(String, u64, std::time::SystemTime)>> {
+        let mut out = Vec::new();
+        let Ok(shards) = std::fs::read_dir(&self.root) else {
+            return Ok(out);
+        };
+        for shard in shards.flatten() {
+            if !shard.path().is_dir() {
+                continue;
+            }
+            let prefix = shard.file_name().to_string_lossy().to_string();
+            let Ok(entries) = std::fs::read_dir(shard.path()) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let hash = format!("{prefix}{name}");
+                if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    continue;
+                }
+                let Ok(meta) = entry.metadata() else {
+                    continue;
+                };
+                let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                out.push((hash, meta.len(), modified));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Delete one blob. Removing a blob that is not there is success: the goal
+    /// state is "absent".
+    pub fn remove(&self, hash: &str) -> Result<()> {
+        let path = self.blob_path(hash)?;
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }

@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-pub const STORE_DIR: &str = ".enox_events";
+/// Retained for the pre-consolidation layout; the live path comes from
+/// [`crate::store::layout`].
+pub const LEGACY_STORE_DIR: &str = ".enox_events";
 pub const SCHEMA_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,7 +106,7 @@ pub struct EventStore {
 
 impl EventStore {
     pub fn open(workspace: &Path, circle_id: impl Into<String>) -> Result<Self> {
-        let root = workspace.join(STORE_DIR);
+        let root = crate::store::layout::events(workspace);
         std::fs::create_dir_all(root.join("events"))?;
         Ok(Self {
             root,
