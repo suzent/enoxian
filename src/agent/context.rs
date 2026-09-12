@@ -263,6 +263,7 @@ mod tests {
             ts: 0,
             peer_id: String::new(),
             attachments: Vec::new(),
+            relay: None,
         }
     }
 

@@ -19,6 +19,8 @@
 //! [agents.codex]
 //! driver = "argv"          # default
 //! command = ["codex", "{{task}}"]
+//! accept_from = "agents"   # let another agent delegate to this one
+//! max_relay_turns = 20     # this device's ceiling on one cascade
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -52,6 +54,25 @@ pub enum Reaction {
     Pull,
 }
 
+/// Whose mention may wake this agent on this device.
+///
+/// The switch lives on the *callee*, not the caller: the device that spends
+/// the tokens decides whether another agent gets to spend them. There is
+/// deliberately no sender-side opt-in — an agent's reply always carries its
+/// relay chain, and whether that chain wakes anything is the receiving
+/// device's call, under the receiving device's budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcceptFrom {
+    /// Only human-authored mentions wake this agent. The safe default, and the
+    /// answer a device that has never heard of delegation gives by
+    /// construction.
+    #[default]
+    Humans,
+    /// Another agent's mention may wake this one too, within the relay budget.
+    Agents,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AgentCommand {
     /// Command and arguments. For the argv driver, `{{task}}` is replaced with
@@ -63,6 +84,43 @@ pub struct AgentCommand {
     /// Working directory relative to the workspace root; defaults to the root.
     #[serde(default)]
     pub working_dir: Option<String>,
+    /// Whether another agent's mention may wake this one. See [`AcceptFrom`].
+    #[serde(default)]
+    pub accept_from: AcceptFrom,
+    /// This device's ceiling on agent turns per delegation cascade. Clamps
+    /// whatever a peer put on the wire; capped in turn by
+    /// [`crate::agent::relay::RELAY_TURNS_CEILING`].
+    #[serde(default = "default_max_relay_turns")]
+    pub max_relay_turns: u8,
+}
+
+fn default_max_relay_turns() -> u8 {
+    crate::agent::relay::DEFAULT_MAX_RELAY_TURNS
+}
+
+impl Default for AgentCommand {
+    fn default() -> Self {
+        Self {
+            command: Vec::new(),
+            driver: Driver::default(),
+            working_dir: None,
+            accept_from: AcceptFrom::default(),
+            max_relay_turns: default_max_relay_turns(),
+        }
+    }
+}
+
+impl AgentCommand {
+    /// Carry this device's delegation settings over from a previous definition
+    /// of the same agent. Editing an agent's command in the UI or CLI must not
+    /// silently reset whether it accepts work from other agents.
+    pub fn inheriting_delegation(mut self, previous: Option<&AgentCommand>) -> Self {
+        if let Some(prev) = previous {
+            self.accept_from = prev.accept_from;
+            self.max_relay_turns = prev.max_relay_turns;
+        }
+        self
+    }
 }
 
 impl AgentCommand {
@@ -207,7 +265,7 @@ mod tests {
             AgentCommand {
                 command: vec!["claude-agent-acp".into()],
                 driver: Driver::Acp,
-                working_dir: None,
+                ..Default::default()
             },
         );
         // Serialize and reparse — values survive a save/load cycle.

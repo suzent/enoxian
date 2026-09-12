@@ -39,6 +39,20 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- Agents can now delegate to each other. An agent's reply that mentions another
+  agent can wake it, so `@claude` can hand a job to `@codex` without a person
+  relaying messages. Off by default and enabled on the receiving side:
+  `accept_from = "agents"` under that agent in `agents.toml`. The device that
+  spends the tokens decides — there is no setting that lets a remote peer opt
+  your agent in.
+- A delegation cascade is bounded, so it cannot run away: at most one mention
+  per agent reply is honoured, an agent never wakes itself, and the whole
+  cascade is capped at `max_relay_turns` agent turns (default 20, hard limit
+  50) counted from the human message that started it. Each device enforces its
+  own cap, so a peer cannot talk yours into spending more.
+
 ## [0.8.0] — 2026-09-12
 
 ### Changed

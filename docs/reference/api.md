@@ -335,16 +335,32 @@ Fetch chat history.
     "agent_id": "mymac-KRhAf4ug",
     "text":     "hello @bob can you check this?",
     "mentions": ["bob"],
-    "ts":       1747308000
+    "ts":       1747308000,
+    "relay":    { "root": "b3e4f1a2-...", "root_peer": "12D3KooW...", "spent": 0, "path": [] }
   }
 ]
 ```
+
+`relay` is delegation provenance: the human message the cascade is rooted in,
+the peer that posted it, how many agent turns the cascade has already cost, and
+which agents are on this branch (innermost last). A human post has `spent: 0`
+and an empty `path`; an agent's reply appends itself and increments `spent`.
+It is absent on `system` posts and on messages from peers predating the field.
+
+A reader must treat `spent` as a hint that can only *shrink* a budget: the
+device that would run a mentioned agent enforces its own `max_relay_turns` and
+keeps its own per-root count, so a forged chain buys nothing.
 
 ---
 
 ### `POST /circles/<id>/api/chat`
 
 Post a message. `@mentions` in the text are parsed and each mentioned agent receives an `agent_mentioned` SSE event.
+
+Posts through this route are human-authored: they mint a fresh delegation
+budget and fire every mention. An agent's own reply is posted internally and
+fires at most one mention, never itself, and only while its cascade's budget
+holds — see [guide/agents.md](../guide/agents.md).
 
 **Request:**
 ```json
@@ -367,7 +383,8 @@ attachment. At most 10 attachments per message.
 { "id": "b3e4f1a2-..." }
 ```
 
-**Events emitted:** `message_posted`, `agent_mentioned` (one per @mention)
+**Events emitted:** `message_posted`, `agent_mentioned` (one per @mention that
+is allowed to trigger — for a human post, all of them)
 
 ---
 

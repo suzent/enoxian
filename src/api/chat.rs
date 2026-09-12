@@ -165,7 +165,7 @@ pub async fn post_chat(
             .into_response();
     }
     // A user/UI post fires mention triggers.
-    match post_message_with_attachments(&state, sender, req.text, attachments, true) {
+    match post_message_with_attachments(&state, sender, req.text, attachments, Trigger::Human) {
         Ok(id) => (StatusCode::CREATED, Json(json!({ "id": id }))).into_response(),
         Err(error) if error.to_string().contains("state busy") => super::circle_busy(),
         Err(error) => (
@@ -305,23 +305,43 @@ fn activity_is_live(activity: &ChatActivity, now: i64) -> bool {
     activity.expires_at > now
 }
 
-/// Post a chat message into the circle's control CRDT.
+/// Who is posting, and with what authority to wake other agents.
 ///
-/// `fire_mentions` controls whether an `AgentMentioned` trigger event is emitted
-/// for each mention in the text. User/UI posts pass `true` (a mention should
-/// wake an agent). **Agent replies pass `false`** — otherwise an agent that
-/// mentions another agent (or itself) in its reply sets off an endless
-/// trigger loop. Mentions are always *stored* on the message (for chip
-/// rendering) regardless; only the trigger side effect is gated.
+/// This replaces the old `fire_mentions: bool`. The flag answered "may this
+/// post trigger anything?" with a hard yes/no, and agent replies were always
+/// `false` because an agent that mentions another agent would otherwise set
+/// off an endless trigger loop. Delegation needs a middle answer: an agent
+/// reply may trigger, but only within the budget its cascade still has (see
+/// [`crate::agent::relay`] and `docs/development/engagement.md` §3).
+///
+/// Mentions are always *stored* on the message, for chip rendering, whatever
+/// the trigger decision is.
+pub enum Trigger {
+    /// A person posting through the UI or CLI. Mints a fresh relay budget and
+    /// fires every mention.
+    Human,
+    /// An agent's own reply, continuing the cascade that woke it. Fires at
+    /// most one mention, never itself, and only while the budget holds.
+    AgentReply {
+        agent: String,
+        /// The relay carried by the message that triggered this agent.
+        parent: Option<crate::control::Relay>,
+    },
+    /// A `system` post. Never triggers anything; a failure notice that wakes
+    /// an agent is a loop waiting to happen.
+    System,
+}
+
+/// Post a chat message into the circle's control CRDT.
 ///
 /// Returns the new message id.
 pub fn post_message(
     state: &crate::state::AppState,
     sender: String,
     text: String,
-    fire_mentions: bool,
+    trigger: Trigger,
 ) -> anyhow::Result<String> {
-    post_message_with_attachments(state, sender, text, Vec::new(), fire_mentions)
+    post_message_with_attachments(state, sender, text, Vec::new(), trigger)
 }
 
 /// As [`post_message`], but carries attachment metadata. The bytes must already
@@ -331,17 +351,35 @@ pub fn post_message_with_attachments(
     sender: String,
     text: String,
     attachments: Vec<crate::control::Attachment>,
-    fire_mentions: bool,
+    trigger: Trigger,
 ) -> anyhow::Result<String> {
     let mentions = crate::agent::mention::extract(&text);
+    let id = uuid::Uuid::new_v4().to_string();
+    // A human post roots a new cascade at itself; an agent reply extends the
+    // one that woke it. A system post carries none, so nothing downstream can
+    // spend a budget on its behalf.
+    let relay = match &trigger {
+        Trigger::Human => Some(crate::agent::relay::mint(&id, &state.peer_id)),
+        Trigger::AgentReply { agent, parent } => Some(crate::agent::relay::extend(
+            parent
+                .as_ref()
+                // An agent woken by a peer that predates the field has no
+                // parent chain. Root the cascade at the message it replies to
+                // rather than handing it an unbounded one.
+                .unwrap_or(&crate::agent::relay::mint(&id, &state.peer_id)),
+            agent,
+        )),
+        Trigger::System => None,
+    };
     let msg = ChatMessage {
-        id: uuid::Uuid::new_v4().to_string(),
+        id,
         agent_id: sender,
         text,
         mentions: mentions.clone(),
         ts: chrono::Utc::now().timestamp(),
         peer_id: state.peer_id.clone(),
         attachments,
+        relay,
     };
 
     let json_str = serde_json::to_string(&msg)?;
@@ -357,13 +395,17 @@ pub fn post_message_with_attachments(
     let _ = state.events.send(CircleEvent::MessagePosted {
         message: msg.clone(),
     });
-    if fire_mentions {
-        for mentioned in &mentions {
-            let _ = state.events.send(CircleEvent::AgentMentioned {
-                agent_id: mentioned.clone(),
-                message: msg.clone(),
-            });
-        }
+    // Which of those mentions actually wake anything is the relay's call. This
+    // is the sender-side filter only — the device that would run the agent
+    // re-checks the budget against its own config, which is the real gate.
+    for mentioned in crate::agent::relay::triggerable_mentions(
+        &msg,
+        crate::agent::relay::DEFAULT_MAX_RELAY_TURNS,
+    ) {
+        let _ = state.events.send(CircleEvent::AgentMentioned {
+            agent_id: mentioned,
+            message: msg.clone(),
+        });
     }
 
     Ok(msg.id)
@@ -462,7 +504,13 @@ mod tests {
     #[test]
     fn posted_message_records_the_posting_peer() {
         let state = test_state("peer-macbook");
-        post_message(&state, "codex".to_string(), "done".to_string(), false).unwrap();
+        post_message(
+            &state,
+            "codex".to_string(),
+            "done".to_string(),
+            Trigger::System,
+        )
+        .unwrap();
 
         let txn = state.control.transact();
         let arr = txn.get_array(CHAT_KEY).unwrap();

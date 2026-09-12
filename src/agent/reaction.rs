@@ -14,10 +14,10 @@
 //! does not configure is ignored. Files produced by an allowed run are already
 //! live in the workspace and are recorded as accepted, revertible history.
 
-use super::config::{AgentConfig, Reaction};
+use super::config::{AcceptFrom, AgentConfig, Reaction};
 use super::driver::{self, Initiator};
 use super::mention::Mention;
-use crate::control::{ChatActivity, ChatActivityKind, CircleEvent};
+use crate::control::{ChatActivity, ChatActivityKind, CircleEvent, Relay};
 use crate::proposal::store::ProposalStore;
 use crate::state::AppState;
 use tokio::sync::broadcast;
@@ -40,6 +40,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     // historical message; without a persisted guard, every past mention would
     // re-launch its agent on each restart. This survives restarts.
     let handled = super::handled::HandledMentions::load(&state.circle_dir);
+    let ledger = std::sync::Arc::new(RelayLedger::default());
 
     // Cheap first-line filter: a mention older than daemon start is almost
     // certainly replayed history. The durable set is the real guard; this just
@@ -92,6 +93,40 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                         continue;
                     };
 
+                    // Delegation gate. A mention posted by another agent only
+                    // wakes this one if this device opted in, and only while
+                    // this device's own budget for the cascade holds.
+                    let relay = message.relay.clone();
+                    let delegated = relay
+                        .as_ref()
+                        .and_then(|r| super::relay::poster(r))
+                        .map(str::to_string);
+                    if let Some(via) = &delegated {
+                        if cmd.accept_from != AcceptFrom::Agents {
+                            tracing::debug!(
+                                "[agent] `{agent}` does not accept delegation (mentioned by `{via}`) — skipping"
+                            );
+                            continue;
+                        }
+                        let relay = relay.as_ref().expect("delegated implies a relay");
+                        if !super::relay::has_budget(relay, cmd.max_relay_turns) {
+                            tracing::info!(
+                                "[agent] relay budget spent on cascade {} — not waking `{agent}`",
+                                relay.root
+                            );
+                            publish_relay_exhausted(&state, agent, &message.id, &relay.root);
+                            continue;
+                        }
+                        if !ledger.charge(&relay.root, cmd.max_relay_turns) {
+                            tracing::info!(
+                                "[agent] cascade {} has spent this device's budget — not waking `{agent}`",
+                                relay.root
+                            );
+                            publish_relay_exhausted(&state, agent, &message.id, &relay.root);
+                            continue;
+                        }
+                    }
+
                     // Only durable-dedup mentions that passed targeting, policy,
                     // and allowlist checks and are actually about to launch.
                     if !handled.mark_new(&message.id, &agent_id) {
@@ -112,10 +147,11 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                         true,
                     );
 
-                    // Sender-origin sets the acceptance-policy posture: a mention
-                    // posted from this very device is local; anything else is a
-                    // remote member's request.
-                    let initiator = if message.agent_id == state.agent_id {
+                    // Sender-origin sets the acceptance-policy posture. For a
+                    // relayed turn this resolves from the *root human*, not the
+                    // agent that mentioned us — otherwise an agent could launder
+                    // a remote member's request into a local one by relaying it.
+                    let initiator = if attributed_local(&state, &message) {
                         Initiator::Local
                     } else {
                         Initiator::RemoteMember
@@ -127,12 +163,15 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     tokio::spawn(async move {
                         if let Err(e) = react(
                             &state,
-                            &agent_id,
-                            &cmd,
-                            &task,
-                            &sender,
-                            &message_id,
-                            initiator,
+                            Turn {
+                                agent_id: &agent_id,
+                                cmd: &cmd,
+                                task: &task,
+                                sender: &sender,
+                                message_id: &message_id,
+                                initiator,
+                                relay,
+                            },
                         ).await {
                             publish_agent_activity(
                                 &state,
@@ -148,7 +187,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                                 &state,
                                 "system".to_string(),
                                 text,
-                                false,
+                                crate::api::chat::Trigger::System,
                             );
                         }
                     });
@@ -164,6 +203,37 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// This device's own count of agent turns it has run per cascade root.
+///
+/// The `spent` field on the wire is a hint from a peer that could have forged
+/// it, so it can only ever *shrink* a budget, never extend one. This ledger is
+/// the local truth: a cascade that re-enters this device several times cannot
+/// spend more turns here than this device allows in total, whatever the wire
+/// says.
+///
+/// Bounded by construction — an entry is only made for a root that actually
+/// ran something here, and the map is dropped with the daemon. A restart
+/// forgetting a cascade is acceptable: the cascade is long over.
+#[derive(Default)]
+struct RelayLedger {
+    spent: std::sync::Mutex<std::collections::HashMap<String, u8>>,
+}
+
+impl RelayLedger {
+    /// Charge one turn against `root` if this device's ceiling allows it.
+    /// Returns false when the cascade has already cost this device its limit.
+    fn charge(&self, root: &str, max: u8) -> bool {
+        let ceiling = max.min(crate::agent::relay::RELAY_TURNS_CEILING);
+        let mut spent = self.spent.lock().unwrap();
+        let entry = spent.entry(root.to_string()).or_insert(0);
+        if *entry >= ceiling {
+            return false;
+        }
+        *entry += 1;
+        true
+    }
+}
+
 fn concise_error(error: &anyhow::Error) -> String {
     let full = format!("{error:#}").replace(['\r', '\n'], " ");
     let mut chars = full.chars();
@@ -175,15 +245,29 @@ fn concise_error(error: &anyhow::Error) -> String {
     }
 }
 
-async fn react(
-    state: &AppState,
-    agent_id: &str,
-    cmd: &super::config::AgentCommand,
-    task: &str,
-    sender: &str,
-    message_id: &str,
+/// One agent turn: everything the run needs that is not the daemon state.
+struct Turn<'a> {
+    agent_id: &'a str,
+    cmd: &'a super::config::AgentCommand,
+    task: &'a str,
+    sender: &'a str,
+    message_id: &'a str,
     initiator: Initiator,
-) -> anyhow::Result<()> {
+    /// The cascade that woke this turn, carried forward onto its reply so a
+    /// mention in that reply spends from the same budget.
+    relay: Option<Relay>,
+}
+
+async fn react(state: &AppState, turn: Turn<'_>) -> anyhow::Result<()> {
+    let Turn {
+        agent_id,
+        cmd,
+        task,
+        sender,
+        message_id,
+        initiator,
+        relay,
+    } = turn;
     publish_agent_activity(state, agent_id, message_id, ChatActivityKind::Working, true);
 
     // Anchor the change session on the engine's current baseline (S0) so the
@@ -259,11 +343,18 @@ async fn react(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        // Post under the agent's name WITHOUT firing mention triggers: an
-        // agent's reply must never wake another agent, or two agents ping-pong
-        // forever. (fire_mentions = false)
-        let posted =
-            crate::api::chat::post_message(state, agent_id.to_string(), reply.to_string(), false);
+        // Post under the agent's name, carrying this cascade's relay forward.
+        // A mention in the reply may wake another agent, but only within the
+        // budget the rooting human message minted — see `agent::relay`.
+        let posted = crate::api::chat::post_message(
+            state,
+            agent_id.to_string(),
+            reply.to_string(),
+            crate::api::chat::Trigger::AgentReply {
+                agent: agent_id.to_string(),
+                parent: relay,
+            },
+        );
         mark_seen(state, agent_id, posted.as_deref().unwrap_or(message_id));
     } else {
         tracing::debug!("[agent] `{agent_id}` produced no text reply to post");
@@ -343,6 +434,31 @@ fn strip_mention(text: &str, mention_body: &str) -> String {
     }
 }
 
+/// Is this run attributable to the local user?
+///
+/// For a direct mention that is just "did this device post it". For a relayed
+/// turn the answer must come from the human at the root of the cascade: the
+/// agent that mentioned us may well be running on this device while the person
+/// who actually asked is a remote member.
+fn attributed_local(state: &AppState, message: &crate::control::ChatMessage) -> bool {
+    match &message.relay {
+        // A cascade rooted in a human message this device posted.
+        Some(relay) if !relay.root_peer.is_empty() => relay.root_peer == state.peer_id,
+        _ => message.agent_id == state.agent_id,
+    }
+}
+
+/// Surface a cascade that hit its ceiling.
+///
+/// Deliberately *not* a `system` chat post: a failure notice per dead mention
+/// is exactly the transcript noise the run queue exists to remove. It shows in
+/// the activity indicator instead, where a truncated cascade is legible without
+/// being permanent.
+fn publish_relay_exhausted(state: &AppState, agent: &str, message_id: &str, root: &str) {
+    tracing::debug!("[agent] cascade {root} exhausted before `{agent}`");
+    publish_agent_activity(state, agent, message_id, ChatActivityKind::Seen, false);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,5 +486,26 @@ mod tests {
         let text = concise_error(&error);
         assert!(!text.contains('\n'));
         assert!(text.chars().count() <= 241);
+    }
+
+    #[test]
+    fn ledger_stops_a_cascade_at_this_devices_ceiling() {
+        let ledger = RelayLedger::default();
+        for _ in 0..3 {
+            assert!(ledger.charge("root-a", 3));
+        }
+        assert!(!ledger.charge("root-a", 3));
+        // A different cascade is unaffected — the budget is per root, not
+        // per device-lifetime.
+        assert!(ledger.charge("root-b", 3));
+    }
+
+    #[test]
+    fn ledger_honours_the_hard_ceiling_over_config() {
+        let ledger = RelayLedger::default();
+        for _ in 0..crate::agent::relay::RELAY_TURNS_CEILING {
+            assert!(ledger.charge("root", 250));
+        }
+        assert!(!ledger.charge("root", 250));
     }
 }

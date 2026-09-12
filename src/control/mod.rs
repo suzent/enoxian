@@ -246,6 +246,36 @@ pub struct ChatMessage {
     /// an upgrade.
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+    /// Delegation provenance: which human message this cascade is rooted in,
+    /// how many agent turns it has already cost, and which agents are on this
+    /// branch. `None` on messages from peers predating the field, which reads
+    /// as "no allowance" — exactly the pre-delegation behaviour.
+    ///
+    /// This rides on the wire because the device that fires a trigger and the
+    /// device that runs the mentioned agent are routinely different machines.
+    /// It is a *hint that can only shrink*: the receiving device clamps it to
+    /// its own configured maximum and keeps its own per-root count, so a forged
+    /// chain from a hostile peer buys nothing.
+    #[serde(default)]
+    pub relay: Option<Relay>,
+}
+
+/// Provenance of one delegation cascade. See `docs/development/engagement.md`
+/// §3.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Relay {
+    /// Id of the human message at the base of the cascade.
+    pub root: String,
+    /// Peer that posted that human message. Attribution resolves from here,
+    /// not from the mentioning agent — otherwise an agent could launder a
+    /// remote member's request into a local one by relaying it.
+    #[serde(default)]
+    pub root_peer: String,
+    /// Agent turns this cascade has already cost, the posting turn included.
+    pub spent: u8,
+    /// Agents already on this branch, innermost last.
+    #[serde(default)]
+    pub path: Vec<String>,
 }
 
 /// A blob referenced by a chat message. `hash` is the SHA-256 of the bytes,

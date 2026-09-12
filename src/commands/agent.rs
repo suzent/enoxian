@@ -152,7 +152,9 @@ pub fn add(
             command,
             driver,
             working_dir,
-        },
+            ..Default::default()
+        }
+        .inheriting_delegation(cfg.resolve(&name)),
     );
     cfg.save()?;
     println!(

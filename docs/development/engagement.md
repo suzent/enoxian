@@ -341,17 +341,30 @@ message, which reads as "no allowance", the current behaviour.
 
 Three bounds, because each one alone has a shape it does not catch:
 
-- **Budget.** `spent < max_relay_turns` (default **3**). This is the only bound
-  that holds regardless of the cascade's shape — depth limits alone do nothing
-  about a wide fan-out, and fan-out limits alone do nothing about a long chain.
-  It is a whole-cascade counter, not a per-branch one.
+- **Budget.** `spent < max_relay_turns` (default **20**, hard ceiling 50). This
+  is the only bound that holds regardless of the cascade's shape — depth limits
+  alone do nothing about a wide fan-out, and fan-out limits alone do nothing
+  about a long chain. It is a whole-cascade counter, not a per-branch one.
 - **Fan-out.** At most **one** agent-level mention in an agent reply is honoured
-  — the first. An agent that names three agents gets one trigger and two chips.
-  Without this, a budget of 3 is a budget of 3 *levels*, i.e. exponential.
-- **Path acyclicity.** An agent already in `path` is never re-triggered on that
-  branch. `A → B → A` stops at the second `A`. This is what makes ping-pong
-  structurally impossible instead of merely expensive, and it is per-branch
-  rather than global so `A → B` and `A → C` both still run.
+  — the first that is not the agent itself. An agent that names three agents
+  gets one trigger and two chips. Without this, a budget of N is a budget of N
+  *levels*, i.e. exponential rather than linear.
+- **No self-trigger.** An agent never wakes itself, however it phrases the
+  mention (`@claude` and `@alice/laptop/claude` both resolve to the same agent).
+  This kills the degenerate one-agent loop outright, and it is the only cycle
+  worth forbidding structurally.
+
+An earlier draft added **path acyclicity** — an agent already on the branch is
+never re-triggered — which makes `A → B → A` impossible rather than merely
+budgeted. It was dropped, and the budget raised from 3 to 20 in exchange. The
+reason is that acyclicity forbids exactly the thing delegation is *for*: two
+agents iterating on a problem. With acyclicity in force, a budget above 3 is
+close to meaningless, because spending it requires a chain of that many
+*distinct* agents. Ping-pong is therefore allowed and bounded by arithmetic:
+20 turns is roughly ten exchanges between two agents, which is a real working
+session and still a bill a person can absorb if they walk away from the
+keyboard. The ceiling of 50 exists so a mistyped config cannot hand one chat
+message an unbounded bill.
 
 A human message always re-mints a full budget — including a human message that
 arrives mid-cascade. Humans are not rate-limited by their agents' spending.
@@ -391,7 +404,7 @@ command = [...]
 engagement = "mention"      # §2.2, unchanged
 accept_from = "humans"      # default: only human mentions wake this agent
 # accept_from = "agents"    # also wake on another agent's mention
-max_relay_turns = 3         # this device's clamp on §3.4
+max_relay_turns = 20        # this device's clamp on §3.4
 ```
 
 There is deliberately no sender-side switch. An agent's reply always *carries* a

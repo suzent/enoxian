@@ -214,7 +214,9 @@ pub async fn add_agent(
                 command: req.command.clone(),
                 driver,
                 working_dir: req.working_dir.clone(),
-            },
+                ..Default::default()
+            }
+            .inheriting_delegation(cfg.resolve(&name)),
         );
         Ok(())
     });
