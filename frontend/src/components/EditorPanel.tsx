@@ -16,8 +16,7 @@ import { YjsProvider, type YjsConnectionStatus } from '../lib/YjsProvider'
 import { agentColor, agentColorLight } from '../lib/agentColor'
 import { constrainCursorLabels } from '../lib/constrainCursorLabels'
 import { peerLabel, shortenAgentId } from '../lib/displayName'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
+import { renderMarkdown } from '../lib/markdown'
 import { Maximize2, X } from 'lucide-react'
 import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
 
@@ -123,32 +122,6 @@ function previewKind(path: string): PreviewKind {
   if (ext === 'md' || ext === 'markdown') return 'markdown'
   if (ext === 'html' || ext === 'htm') return 'html'
   return null
-}
-
-function renderMarkdown(source: string) {
-  const rendered = marked.parse(source, { async: false }) as string
-  const sanitized = DOMPurify.sanitize(rendered, {
-    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
-  })
-  const doc = new DOMParser().parseFromString(sanitized, 'text/html')
-
-  // Do not make a preview silently contact remote image hosts. A future asset
-  // route can resolve workspace-relative images without leaking repository reads.
-  doc.querySelectorAll('img').forEach(img => {
-    const placeholder = doc.createElement('figure')
-    placeholder.className = 'markdown-preview__image'
-    const label = doc.createElement('strong')
-    label.textContent = img.alt || 'IMAGE'
-    const sourceLabel = doc.createElement('figcaption')
-    sourceLabel.textContent = img.getAttribute('src') || ''
-    placeholder.append(label, sourceLabel)
-    img.replaceWith(placeholder)
-  })
-  doc.querySelectorAll('a').forEach(link => {
-    link.setAttribute('target', '_blank')
-    link.setAttribute('rel', 'noreferrer noopener')
-  })
-  return doc.body.innerHTML
 }
 
 function renderHtmlDocument(source: string) {
