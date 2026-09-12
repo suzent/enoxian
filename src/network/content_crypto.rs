@@ -105,7 +105,7 @@ pub async fn open(state: &AppState, expected: FrameKind, frame: &[u8]) -> Result
 struct ParsedHeader<'a> {
     kind: FrameKind,
     epoch: u64,
-    nonce: &'a [u8],
+    nonce: &'a [u8; 12],
     header: &'a [u8],
     ciphertext: &'a [u8],
 }
@@ -122,7 +122,7 @@ fn parse_header(frame: &[u8]) -> Result<ParsedHeader<'_>> {
     Ok(ParsedHeader {
         kind,
         epoch,
-        nonce: &frame[18..30],
+        nonce: frame[18..30].try_into().unwrap(),
         header: &frame[..HEADER_LEN],
         ciphertext: &frame[HEADER_LEN..],
     })
@@ -147,7 +147,7 @@ fn seal_with_secret(
     frame.extend_from_slice(&nonce);
     let ciphertext = cipher
         .encrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: plaintext,
                 aad: &aad(&frame, circle_id),
@@ -164,7 +164,7 @@ fn open_with_secret(circle_id: &str, root: &[u8; 32], frame: &[u8]) -> Result<Ve
     let cipher = ChaCha20Poly1305::new((&key).into());
     cipher
         .decrypt(
-            Nonce::from_slice(parsed.nonce),
+            &Nonce::from(*parsed.nonce),
             Payload {
                 msg: parsed.ciphertext,
                 aad: &aad(parsed.header, circle_id),
