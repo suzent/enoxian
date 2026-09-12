@@ -57,7 +57,9 @@ refuses to publish a version whose section is missing or empty.
   them on the device that deleted them, so a deletion could undo itself. A
   device that was away now applies the deletion when it comes back, emptied
   folders are removed rather than left behind, and deleting and re-creating a
-  file under the same name works as expected.
+  file under the same name works as expected. This holds however the folder was
+  removed — deleted outright, or moved to the Trash, which the system reports
+  as a single change to the folder rather than one per file.
 
 ## [0.7.0] — 2026-09-12
 

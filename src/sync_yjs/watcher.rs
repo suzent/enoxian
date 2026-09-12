@@ -197,16 +197,32 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
         }
 
         if matches!(event.kind, EventKind::Remove(_)) {
-            state.remove_doc(&rel);
-            crate::store::crdt::delete(&state.workspace, &rel).await;
+            // One event can stand for a whole tree. Deleting a folder is
+            // reported per-file on some platforms and as a single event for the
+            // directory on others (moving a folder to the Trash is one rename
+            // of the folder). Expanding to the documents beneath the path makes
+            // both shapes produce the same durable result, instead of a
+            // tombstone keyed `repo` that matches none of the 1713 documents
+            // keyed `repo/...`.
+            let mut paths = crate::deletions::docs_under(state, &rel);
+            if !paths.contains(&rel) {
+                paths.push(rel.clone());
+            }
+
             // Durable record first: the live frame below only reaches peers
             // connected at this instant, and a bulk delete overflows its
             // broadcast buffer. The tombstone is what makes the deletion
             // survive a disconnect and stop the file being re-created here on
             // the next handshake.
             crate::deletions::record(state, &rel);
-            let _ = state.all_deletes.send(rel.clone());
-            let _ = state.events.send(CircleEvent::FileDeleted { path: rel });
+
+            for path in paths {
+                state.remove_doc(&path);
+                crate::store::crdt::delete(&state.workspace, &path).await;
+                crate::deletions::record(state, &path);
+                let _ = state.all_deletes.send(path.clone());
+                let _ = state.events.send(CircleEvent::FileDeleted { path });
+            }
             continue;
         }
 
