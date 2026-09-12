@@ -5,14 +5,62 @@ release notes, installers, checksums, and prebuilt binaries.
 
 Cutting a release takes two actions, both in the browser:
 
-1. **Actions → Prepare release → Run workflow**, choosing `patch`, `minor`, or
-   `major`.
+1. **Actions → Prepare release → Run workflow.** Leave the level on `auto` to
+   derive it from the commits since the last tag; `patch`, `minor` and `major`
+   are still there when you want to override it.
 2. **Merge the release pull request** it opens, once required CI is green.
+
+Most weeks you do not need step 1. **Release readiness** runs every Monday at
+09:00 UTC and prepares the release for you when `[Unreleased]` has entries and
+no release pull request is already open, so a finished fix does not sit
+unreleased because nobody remembered to cut a version. Merging stays a person's
+decision either way — a release migrates on-disk layout and runs irreversible
+collection on every device that installs it.
+
+## How `auto` picks a level
+
+From the conventional-commit types since the last release tag, most significant
+winning: a `!` after the type or `BREAKING CHANGE` in a body gives `major`, any
+`feat` gives `minor`, anything else gives `patch`.
+
+Note that this repository has never used `!` or `BREAKING CHANGE`, so in
+practice `auto` will not produce a major on its own. That is deliberate — a
+silent major is worse than a manual one — but it does mean a breaking change
+must either adopt the marker or be released by choosing `major` explicitly.
+
+`scripts/derive-bump.sh` is the same logic, runnable locally to see what the
+next release would be:
+
+```bash
+./scripts/derive-bump.sh
+```
 
 Everything after that is automatic: the merge is tagged, all five platforms are
 built and attested, the release is published, the published installers are
 exercised on three operating systems, and only then is the release marked
 `latest`.
+
+## The `ENOXIAN_RELEASE_TOKEN` secret
+
+Without it, **Prepare release** pushes the release branch and prints a link for
+you to open the pull request by hand. With it, the job opens the pull request
+itself and the flow is genuinely one click.
+
+It cannot be `GITHUB_TOKEN`: pull requests opened by that token deliberately do
+not trigger workflows, so required checks would never report and the pull
+request could never merge.
+
+To set it, create a **fine-grained personal access token** scoped to this
+repository with **Contents: read and write** and **Pull requests: read and
+write**, then add it as a repository secret named `ENOXIAN_RELEASE_TOKEN`:
+
+```bash
+gh secret set ENOXIAN_RELEASE_TOKEN --repo suzent/enoxian
+```
+
+The command reads the value from stdin, so nothing is echoed to the terminal or
+kept in shell history. In the browser the same place is
+**Settings → Secrets and variables → Actions → New repository secret**.
 
 ## CI jobs and branch protection
 

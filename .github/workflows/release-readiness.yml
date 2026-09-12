@@ -1,0 +1,85 @@
+name: Release readiness
+#
+# Opens the release pull request when there is something to release, so a
+# finished fix does not sit unreleased because nobody remembered to cut a
+# version. Merging that pull request is still a person's decision — this only
+# makes sure the decision is always one click away, with CI already green.
+#
+# Deliberately stops short of publishing. A release migrates on-disk layout and
+# runs irreversible collection on every device that installs it, so the last
+# step stays human.
+
+on:
+  schedule:
+    # Mondays, 09:00 UTC — a week's work is visible and there is a working day
+    # left to react if the release turns out to be wrong.
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-readiness
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Is there anything to release?
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      ready: ${{ steps.decide.outputs.ready }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - id: decide
+        name: Check for unreleased changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # `[Unreleased]` is the source of truth for whether a release has
+          # anything in it: bump.sh refuses to run when it is empty, and a
+          # change with no entry is one users cannot observe anyway.
+          unreleased="$(awk '/^## \[Unreleased\]/{flag=1; next} /^## \[/{flag=0} flag' CHANGELOG.md \
+            | grep -c '^- ' || true)"
+          echo "Unreleased entries: $unreleased"
+
+          # Never open a second one on top of an existing release pull request.
+          open_release="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open \
+            --json headRefName --jq '[.[] | select(.headRefName | startswith("chore/release-v"))] | length')"
+          echo "Open release pull requests: $open_release"
+
+          if [ "$unreleased" -gt 0 ] && [ "$open_release" -eq 0 ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### No release prepared"
+              echo
+              if [ "$unreleased" -eq 0 ]; then
+                echo "\`[Unreleased]\` is empty — nothing user-visible has landed."
+              else
+                echo "A release pull request is already open."
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  prepare:
+    name: Prepare the release
+    needs: check
+    if: needs.check.outputs.ready == 'true'
+    # Reuses the manual workflow rather than duplicating the bump, so the
+    # scheduled and hand-run paths cannot drift apart.
+    uses: ./.github/workflows/prepare-release.yml
+    with:
+      level: auto
+    secrets: inherit
