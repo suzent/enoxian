@@ -73,6 +73,12 @@ refuses to publish a version whose section is missing or empty.
   this Circle" — naming an agent that was not running. Such a lock is now
   cleared when the daemon starts, since the agent it refers to died with the
   previous one.
+- Agents are now told which device they are running on and how to address a
+  specific one. An agent knew its own name but not its machine, so in a Circle
+  where two devices run an agent of the same name it could not say which one it
+  was, or hand work to a particular sibling — leaving the user to route by hand.
+  The brief also now explains that work can be handed to another agent, which
+  agents had no way to discover.
 - A chat message is no longer lost when sending fails. The composer used to
   clear itself and keep only the staged images, so a long message typed during
   a moment of sync contention was simply gone. The text comes back, and if you

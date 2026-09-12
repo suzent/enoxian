@@ -157,19 +157,62 @@ fn standing_brief(state: &AppState, agent_id: &str) -> String {
     } else {
         format!("Members in this circle: {}.\n", members.join(", "))
     };
+    // Which machine this agent is on, and how to address it exactly.
+    //
+    // Without this an agent knows its own *name* but not which device it runs
+    // on, and the roster shows several devices that may each configure an agent
+    // by that same name. It cannot then tell itself apart from its namesakes,
+    // answer "which one are you?", or address a specific one — the reason a
+    // user ends up saying "mention the one on <device>" by hand.
+    let addressing = match self_identity(state) {
+        Some((owner, device)) => format!(
+            "You are running on device \"{device}\" (owner \"{owner}\"). Your exact address is \
+             @{owner}/{device}/{agent}; a bare @{agent} may reach a different device's agent of \
+             the same name. Mentions take the form @owner/device/agent, and @owner or \
+             @owner/device notify a person or a machine without running anything.\n",
+            agent = agent_id,
+        ),
+        None => String::new(),
+    };
     format!(
         "You are \"{agent}\", an agent participating in an enoxian circle named \"{circle}\".\n\
          enoxian is a peer-to-peer workspace shared by the members below. You were woken by an \
          @mention in the circle's chat. You are working directly in the shared workspace at the \
          current directory.\n\
+         {addressing}\
          {roster}\
          Anything you write to files here is captured as a reviewable *proposal* that members can \
          accept, reject, or revert — so make focused, clear changes and explain what you did. \
-         Your text reply is posted back into the circle chat, so answer conversationally.\n",
+         Your text reply is posted back into the circle chat, so answer conversationally.\n\
+         If another agent is clearly better placed for part of the work, you may hand it over by \
+         mentioning it. Whether it actually runs is that device's own decision, only the first \
+         agent you mention is woken, and a chain of hand-offs shares a limited budget — so do the \
+         work yourself unless delegating is plainly better.\n",
         agent = agent_id,
         circle = state.circle_name,
+        addressing = addressing,
         roster = roster,
     )
+}
+
+/// This device's own `(owner, device_label)`, matched by peer id.
+///
+/// `peer_id` is the identity that distinguishes machines; `agent_id` is a
+/// display label several devices may share, which is exactly why it cannot be
+/// used here.
+fn self_identity(state: &AppState) -> Option<(String, String)> {
+    let txn = state.control.try_transact().ok()?;
+    let map = txn.get_map(MEMBER_LIST_KEY)?;
+    for (_key, val) in map.iter(&txn) {
+        if let Out::Any(Any::String(s)) = val {
+            if let Ok(m) = serde_json::from_str::<MemberEntry>(&s) {
+                if m.peer_id == state.peer_id && !m.owner.is_empty() && !m.device_label.is_empty() {
+                    return Some((m.owner, m.device_label));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Member display labels (owner + device) for the roster line.
@@ -190,6 +233,11 @@ fn member_labels(state: &AppState) -> Vec<String> {
                 }
                 if !m.agents.is_empty() {
                     label.push_str(&format!(" [agents: {}]", m.agents.join(", ")));
+                }
+                // Mark the agent's own machine, so it can locate itself in a
+                // roster where several devices may list the same agent name.
+                if m.peer_id == state.peer_id {
+                    label.push_str(" ← you are here");
                 }
                 if !label.is_empty() {
                     labels.push(label);
