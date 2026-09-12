@@ -68,6 +68,29 @@ The API contains compatibility endpoints for pending proposals. They do not impl
 
 Agent configuration, sessions, workspace association, process lifecycle, and memory are stored outside the synchronized project files. Agent output still reaches collaboration through native file writes and the watcher pipeline; agent-specific code does not bypass CRDT synchronization.
 
+**Deciding a turn.** The reaction loop turns chat into runs. Three entry paths
+converge on one gate: an explicit mention, a follow-up routed by the engagement
+window, and an unaddressed message offered to an ambient agent. The gate checks
+the allowlist, the delegation budget where one applies, and the durable
+`(message, key)` dedup before anything is enqueued.
+
+**Run queue.** Turns do not race. A single worker per Circle drains them in
+arrival order, four deep per agent, which is also why the Circle-wide managed
+change-session lock is never contended from here. A managed session still marked
+open when the daemon starts belongs to a process that died with the last one, so
+it is cleared at startup.
+
+**Engagement window.** Follow-up routing keeps no per-device state. It is derived
+from the transcript by a rule every device evaluates identically, using
+`relay.root_peer` (who the agent was replying to) and the reply's `peer_id` (the
+machine that must run the follow-up). Only dismissal is stored, in the control
+doc, because the device that would route the follow-up is usually not the one
+whose user dismissed it.
+
+**Per-root relay counters.** Each device keeps its own count of agent turns per
+delegation cascade. The `spent` field on the wire can only shrink a budget,
+never extend one.
+
 ## Failure Boundaries
 
 - A disconnected peer does not block local edits.

@@ -557,7 +557,7 @@ in the transcript, for something a user is entitled to do.
   engagement windows (§3.3), no ambient turns woken by agent output (§3.8).
 - **Coalescing queued messages** into a single turn (§1.3).
 
-## 6. Docs to update when this ships
+## 6. Docs updated when this shipped
 
 - [examples/agents.toml](../examples/agents.toml) — `engagement`,
   `accept_from` and `max_relay_turns` keys; the header comment about reacting
