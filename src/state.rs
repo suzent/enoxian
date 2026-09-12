@@ -1,6 +1,7 @@
 use crate::control::{
-    ChatActivity, ChatMessage, CircleEvent, Presence, Task, TaskStatus, CHAT_ACTIVITY_KEY,
-    CHAT_KEY, MEMBER_LIST_KEY, MLS_PENDING_KEY, MLS_REMOVED_KEY, PRESENCE_KEY, TASKS_KEY,
+    ChatActivity, ChatMessage, CircleEvent, MemberEntry, Presence, Task, TaskStatus,
+    CHAT_ACTIVITY_KEY, CHAT_KEY, MEMBER_LIST_KEY, MLS_PENDING_KEY, MLS_REMOVED_KEY, PRESENCE_KEY,
+    TASKS_KEY,
 };
 use dashmap::DashMap;
 use libp2p::{multiaddr::Protocol, swarm::ConnectionId, Multiaddr};
@@ -10,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
-use yrs::{Any, Doc, Map, Observable, Out, Transact};
+use yrs::{Any, Doc, Map, Observable, Out, ReadTxn, Transact};
 
 pub const EVENT_CAPACITY: usize = 256;
 
@@ -136,6 +137,31 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// This device's own entry in the Circle roster, matched by `peer_id`.
+    ///
+    /// `peer_id` is the only field that identifies a machine: `agent_id` is a
+    /// display label and `device_label` is chosen by the user, so several
+    /// devices can share either.
+    ///
+    /// This is the Circle's view of who this device is, and it is what other
+    /// members address it by. Anything comparing against an incoming mention
+    /// must use this rather than the local `identity.toml`, since the two can
+    /// drift.
+    pub fn self_member(&self) -> Option<MemberEntry> {
+        let txn = self.control.try_transact().ok()?;
+        let map = txn.get_map(MEMBER_LIST_KEY)?;
+        for (_key, val) in map.iter(&txn) {
+            if let Out::Any(Any::String(s)) = val {
+                if let Ok(m) = serde_json::from_str::<MemberEntry>(&s) {
+                    if m.peer_id == self.peer_id {
+                        return Some(m);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         circle_id: String,

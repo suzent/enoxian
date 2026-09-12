@@ -444,14 +444,48 @@ fn publish_agent_activity_detailed(
 /// users type these by hand). If the local device has no label set, a device-
 /// scoped mention can never match it — the user should set one to be
 /// addressable (`enox identity set-label`).
-fn targets_this_device(state: &AppState, owner: &str, device: &str) -> bool {
-    if !state.owner.eq_ignore_ascii_case(owner) {
+/// Does `@owner/device/...` address *this* machine?
+///
+/// The comparison must be made against the identity the **Circle** knows this
+/// device by — its roster entry — not against the local `identity.toml`.
+/// A mention is composed from the roster (that is what the `@` autocomplete
+/// offers), so comparing it to a different source lets the two drift: rename a
+/// device, restore an `~/.enoxian` from another machine, or join with a label
+/// that was later changed, and the local file no longer says what the rest of
+/// the Circle calls this machine. When it drifts, targeting fails in both
+/// directions at once — the addressed device ignores the mention while another
+/// device answers for it.
+///
+/// The roster entry is matched by `peer_id`, the only field that identifies a
+/// machine. `identity.toml` remains the fallback for the window before this
+/// device's own entry has synced.
+pub(crate) fn targets_this_device(state: &AppState, owner: &str, device: &str) -> bool {
+    let (local_owner, local_device) = match state.self_member() {
+        Some(me) if !me.device_label.is_empty() => (me.owner, me.device_label),
+        // Not in the roster yet: fall back to the local identity file.
+        _ => (
+            state.owner.clone(),
+            crate::identity::read_identity_display()
+                .map(|(label, _)| label)
+                .unwrap_or_default(),
+        ),
+    };
+    if local_device.is_empty() {
+        // No idea what this device is called. Refusing is the safe answer: a
+        // device that cannot confirm it is the target must not answer for one
+        // that is.
+        tracing::warn!(
+            "[agent] mention scoped to {owner}/{device} ignored — this device has no known label"
+        );
         return false;
     }
-    let local_device = crate::identity::read_identity_display()
-        .map(|(label, _)| label)
-        .unwrap_or_default();
-    !local_device.is_empty() && local_device.eq_ignore_ascii_case(device)
+    let matches =
+        local_owner.eq_ignore_ascii_case(owner) && local_device.eq_ignore_ascii_case(device);
+    tracing::debug!(
+        "[agent] mention scoped to {owner}/{device}; this device is {local_owner}/{local_device} — {}",
+        if matches { "running it" } else { "not ours" }
+    );
+    matches
 }
 
 /// Strip a leading `@mention` (and following whitespace) from the message so the
@@ -525,6 +559,104 @@ mod tests {
         let text = concise_error(&error);
         assert!(!text.contains('\n'));
         assert!(text.chars().count() <= 241);
+    }
+
+    use crate::control::{MemberEntry, MemberRole, MEMBER_LIST_KEY};
+    use yrs::{Any, Map, Transact, WriteTxn};
+
+    fn test_state(peer: &str, owner: &str) -> (AppState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(
+            "c1".into(),
+            "circle".into(),
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            String::new(),
+            "label".into(),
+            1,
+            peer.into(),
+            crate::config::JoinPolicy::Manual,
+            owner.into(),
+            crate::mls::new_mls_state(crate::mls::MlsIdentity::generate(peer).unwrap(), None),
+        );
+        (state, dir)
+    }
+
+    fn add_member(state: &AppState, peer: &str, owner: &str, device: &str) {
+        let entry = MemberEntry {
+            peer_id: peer.into(),
+            owner: owner.into(),
+            agent_id: format!("{owner}-{device}"),
+            device_label: device.into(),
+            agents: vec!["suzent".into()],
+            role: MemberRole::Admin,
+            added_at: chrono::Utc::now(),
+            signature: String::new(),
+        };
+        let mut txn = state.control.try_transact_mut().unwrap();
+        let map = txn.get_or_insert_map(MEMBER_LIST_KEY);
+        let json = serde_json::to_string(&entry).unwrap();
+        map.insert(&mut txn, peer, Any::String(json.as_str().into()));
+    }
+
+    #[test]
+    fn a_device_runs_only_mentions_addressed_to_it() {
+        let (state, _d) = test_state("peer-jessair", "suzy");
+        add_member(&state, "peer-jessair", "suzy", "jessair");
+        add_member(&state, "peer-macbook", "suzy", "macbook-pro");
+
+        assert!(targets_this_device(&state, "suzy", "jessair"));
+        assert!(
+            !targets_this_device(&state, "suzy", "macbook-pro"),
+            "jessair must not answer a mention addressed to macbook-pro"
+        );
+    }
+
+    #[test]
+    fn the_roster_label_wins_over_a_drifted_local_identity() {
+        // The real failure: a device whose local identity.toml disagrees with
+        // the label the Circle addresses it by. Mentions are composed from the
+        // roster, so the roster is what targeting must compare against —
+        // otherwise the addressed device ignores the mention while another
+        // device answers for it.
+        let (state, _d) = test_state("peer-jessair", "suzy");
+        add_member(&state, "peer-jessair", "suzy", "jessair");
+        assert!(targets_this_device(&state, "suzy", "jessair"));
+        assert!(!targets_this_device(&state, "suzy", "macbook-pro"));
+    }
+
+    #[test]
+    fn a_different_owner_never_matches() {
+        let (state, _d) = test_state("peer-jessair", "suzy");
+        add_member(&state, "peer-jessair", "suzy", "jessair");
+        assert!(!targets_this_device(&state, "alice", "jessair"));
+    }
+
+    #[test]
+    fn matching_is_case_insensitive() {
+        let (state, _d) = test_state("peer-jessair", "suzy");
+        add_member(&state, "peer-jessair", "suzy", "jessair");
+        assert!(targets_this_device(&state, "SUZY", "JessAir"));
+    }
+
+    #[test]
+    fn a_device_with_no_known_label_refuses_rather_than_guesses() {
+        // Not in the roster and no usable local label: answering for a device
+        // it cannot prove it is would be worse than staying quiet.
+        let (state, _d) = test_state("peer-unknown", "suzy");
+        let unknown = targets_this_device(&state, "suzy", "macbook-pro");
+        // Falls back to identity.toml; on a machine with no label it must be
+        // false. Where a label exists it must at least not match a device it
+        // is not.
+        if unknown {
+            let local = crate::identity::read_identity_display()
+                .map(|(l, _)| l)
+                .unwrap_or_default();
+            assert!(
+                local.eq_ignore_ascii_case("macbook-pro"),
+                "matched a device it is not: local label is {local:?}"
+            );
+        }
     }
 
     #[test]

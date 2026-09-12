@@ -67,6 +67,13 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- A mention addressed to one device is no longer answered by another. Targeting
+  compared the mention against this machine's local identity file, while the
+  mention itself is composed from the Circle roster; when the two disagreed —
+  after a device rename, or an `~/.enoxian` copied between machines — the
+  addressed device ignored the mention and a different one replied in its
+  place. Both sides now come from the roster. A device that cannot establish
+  what the Circle calls it stays quiet rather than answering for another.
 - Agents are now told which device they are running on and how to address a
   specific one. An agent knew its own name but not its machine, so in a Circle
   where two devices run an agent of the same name it could not say which one it
