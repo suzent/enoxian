@@ -39,6 +39,8 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-12
+
 ### Added
 
 - Chat supports images. Paste, drag, or pick a PNG, JPEG, GIF, or WebP in the
@@ -540,7 +542,8 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/suzent/enoxian/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/suzent/enoxian/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/suzent/enoxian/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/suzent/enoxian/compare/v0.5.0...v0.6.0
