@@ -79,9 +79,46 @@ pub fn get(state: &AppState, path: &str) -> Option<Deletion> {
     }
 }
 
-/// Whether `path` is currently tombstoned.
+/// Whether `path` is currently tombstoned, directly or by an ancestor.
+///
+/// A peer may record a deletion against a *directory* rather than each file in
+/// it — a folder moved to the Trash surfaces as one rename of the folder, not
+/// one event per file. Exact-key matching would then delete nothing, because
+/// no document is keyed `repo` while 1713 are keyed `repo/...`. Walking the
+/// ancestors also lets a device heal from a directory tombstone recorded by a
+/// peer that predates the expansion below.
 pub fn is_deleted(state: &AppState, path: &str) -> bool {
-    get(state, path).is_some()
+    if get(state, path).is_some() {
+        return true;
+    }
+    let Ok(txn) = state.control.try_transact() else {
+        return false;
+    };
+    let Some(m) = map(&txn) else {
+        return false;
+    };
+    let mut rest = path;
+    while let Some(cut) = rest.rfind('/') {
+        rest = &rest[..cut];
+        if m.get(&txn, rest).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Every tracked document at or beneath `path`.
+///
+/// `path` is a directory prefix; `repo` matches `repo/a.rs` but never
+/// `repository.rs`.
+pub fn docs_under(state: &AppState, path: &str) -> Vec<String> {
+    let prefix = format!("{path}/");
+    state
+        .docs
+        .iter()
+        .map(|e| e.key().clone())
+        .filter(|k| k == path || k.starts_with(&prefix))
+        .collect()
 }
 
 /// Every live tombstone.
@@ -131,6 +168,22 @@ pub async fn reconcile(state: &AppState) -> usize {
     for deletion in all(state) {
         if apply(state, &deletion).await {
             applied += 1;
+        }
+        // A tombstone naming a directory stands for everything beneath it.
+        // Applied one document at a time so a file re-created since the
+        // deletion is still individually spared by the mtime check.
+        for path in docs_under(state, &deletion.path) {
+            if path == deletion.path {
+                continue;
+            }
+            let child = Deletion {
+                path,
+                ts: deletion.ts,
+                peer_id: deletion.peer_id.clone(),
+            };
+            if apply(state, &child).await {
+                applied += 1;
+            }
         }
     }
     applied
@@ -219,6 +272,70 @@ mod tests {
             "owner".into(),
             mls::new_mls_state(mls::MlsIdentity::generate("peer-local").unwrap(), None),
         )
+    }
+
+    /// A peer may tombstone a *directory* rather than each file in it — moving
+    /// a folder to the Trash is one rename of the folder, not one event per
+    /// file. Exact-key matching deletes nothing in that case.
+    #[test]
+    fn a_directory_tombstone_covers_the_files_beneath_it() {
+        let state = test_state(PathBuf::new());
+        record(&state, "repo");
+
+        assert!(is_deleted(&state, "repo"));
+        assert!(is_deleted(&state, "repo/src/main.rs"));
+        assert!(is_deleted(&state, "repo/README.md"));
+
+        // Prefix matching must respect path boundaries.
+        assert!(!is_deleted(&state, "repository.rs"));
+        assert!(!is_deleted(&state, "repo-backup/a.rs"));
+        assert!(!is_deleted(&state, "other/repo.rs"));
+    }
+
+    #[test]
+    fn docs_under_matches_on_path_boundaries_only() {
+        let state = test_state(PathBuf::new());
+        for p in [
+            "repo/a.rs",
+            "repo/src/b.rs",
+            "repo",
+            "repository.rs",
+            "repo-backup/c.rs",
+            "elsewhere/repo/d.rs",
+        ] {
+            state.get_or_create_doc(p);
+        }
+        let mut found = docs_under(&state, "repo");
+        found.sort();
+        assert_eq!(found, vec!["repo", "repo/a.rs", "repo/src/b.rs"]);
+    }
+
+    #[tokio::test]
+    async fn reconcile_applies_a_directory_tombstone_to_every_file_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path().to_path_buf());
+        std::fs::create_dir_all(dir.path().join("repo/src")).unwrap();
+        for (p, body) in [("repo/a.rs", "a"), ("repo/src/b.rs", "b")] {
+            std::fs::write(dir.path().join(p), body).unwrap();
+            state.get_or_create_doc(p);
+        }
+        // An unrelated file with a confusingly similar name must survive.
+        std::fs::write(dir.path().join("repository.rs"), "keep").unwrap();
+        state.get_or_create_doc("repository.rs");
+
+        record(&state, "repo");
+        assert!(reconcile(&state).await >= 2);
+
+        assert!(!dir.path().join("repo/a.rs").exists());
+        assert!(!dir.path().join("repo/src/b.rs").exists());
+        assert!(
+            !dir.path().join("repo").exists(),
+            "emptied tree should be pruned"
+        );
+        assert!(
+            dir.path().join("repository.rs").exists(),
+            "a similarly-named sibling must not be deleted"
+        );
     }
 
     #[test]
