@@ -4,11 +4,9 @@ use yrs::updates::decoder::Decode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
 /// Path where the binary CRDT state for a doc is persisted.
-/// Hidden directory so the watcher ignores it (`.` prefix rule).
+/// Under the hidden `.enox` root so the watcher ignores it (`.` prefix rule).
 pub fn state_path(workspace: &Path, rel_path: &str) -> PathBuf {
-    workspace
-        .join(".enox_crdt")
-        .join(rel_path.replace('/', std::path::MAIN_SEPARATOR_STR))
+    super::layout::crdt(workspace).join(rel_path.replace('/', std::path::MAIN_SEPARATOR_STR))
 }
 
 /// Encode and write the full CRDT state for a doc.

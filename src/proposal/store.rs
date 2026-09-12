@@ -16,7 +16,9 @@ use super::snapshot::Snapshot;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-pub const STORE_DIR: &str = ".enox_proposals";
+/// Retained for the pre-consolidation layout; the live path comes from
+/// [`crate::store::layout`].
+pub const LEGACY_STORE_DIR: &str = ".enox_proposals";
 
 pub struct ProposalStore {
     root: PathBuf,
@@ -25,7 +27,7 @@ pub struct ProposalStore {
 
 impl ProposalStore {
     pub fn open(workspace: &Path) -> Result<Self> {
-        let root = workspace.join(STORE_DIR);
+        let root = crate::store::layout::proposals(workspace);
         let blobs = BlobStore::open(root.join("blobs"))?;
         std::fs::create_dir_all(root.join("snapshots"))?;
         std::fs::create_dir_all(root.join("proposals"))?;

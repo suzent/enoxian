@@ -540,6 +540,15 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         });
     }
 
+    // Before anything opens a store. A store that creates its directory first
+    // would leave the migration with nowhere to move the old one to, so this
+    // stays ahead of the watcher and the proposal/event stores below rather
+    // than relying on their internal ordering.
+    let moved = crate::store::layout::migrate_legacy_layout(&state.workspace);
+    if moved > 0 {
+        info!("[layout] consolidated {moved} legacy state director(ies) under .enox/");
+    }
+
     spawn_watcher(state.clone(), workspace, token.clone()).await?;
     // Upgrade pre-M15 proposal history into the append-only event log before
     // any peer event stream starts. Fresh proposals append events themselves.

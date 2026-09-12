@@ -39,6 +39,13 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Changed
+
+- A Circle now keeps its internal state in a single `.enox/` folder instead of
+  three siblings (`.enox_crdt`, `.enox_events`, `.enox_proposals`) cluttering
+  the top of your working directory. Existing workspaces are moved
+  automatically on the next start; nothing is merged or discarded.
+
 ### Added
 
 - Storage is now reclaimed instead of growing forever. Decided proposals older

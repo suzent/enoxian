@@ -83,7 +83,10 @@ pub fn validate_workspace_path(raw: &str) -> Result<()> {
     for component in path.components() {
         match component {
             Component::Normal(part) => {
-                if !saw_normal && part == store::STORE_DIR {
+                // Guard every layout, not just the current one: a proposal
+                // arriving from a peer on the old layout must not be able to
+                // write into our metadata either.
+                if !saw_normal && crate::store::layout::is_state_path(&part.to_string_lossy()) {
                     bail!("proposal path targets internal metadata: {raw}");
                 }
                 saw_normal = true;
