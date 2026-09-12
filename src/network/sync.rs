@@ -418,6 +418,15 @@ fn try_apply_once(doc: &Doc, raw: &[u8], path: &str) -> ApplyOutcome {
 /// everything from scratch, so a doc that is merely locked for a moment must
 /// not be allowed to cause one.
 async fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId) -> bool {
+    // A peer that has not yet seen the deletion will keep offering the file.
+    // Applying it would recreate the doc and write the file back to disk, so
+    // the deletion would bounce between peers forever. The control doc is
+    // exempt: it is what carries the tombstone in the first place.
+    if path != "__control__" && crate::deletions::is_deleted(state, path) {
+        debug!("[sync] ignoring update for deleted path {path} from {peer_id}");
+        return true;
+    }
+
     let doc = if path == "__control__" {
         state.control.clone()
     } else {
@@ -465,7 +474,12 @@ async fn apply_delete(state: &AppState, path: &str) {
     let full_path = state
         .workspace
         .join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
-    let _ = tokio::fs::remove_file(full_path).await;
+    if tokio::fs::remove_file(&full_path).await.is_ok() {
+        // Folder deletion arrives as one frame per contained file, so without
+        // this the emptied tree survives on every peer but the one that
+        // deleted it.
+        crate::deletions::prune_empty_parents(&state.workspace, &full_path).await;
+    }
 
     let _ = state.events.send(crate::control::CircleEvent::FileDeleted {
         path: path.to_string(),
@@ -499,7 +513,17 @@ fn is_empty_update(diff: &[u8]) -> bool {
 }
 
 fn all_doc_paths(state: &AppState) -> Vec<String> {
-    let mut paths: Vec<String> = state.docs.iter().map(|e| e.key().clone()).collect();
+    // Tombstoned paths are excluded deliberately. A peer that deleted a file no
+    // longer has the doc, so it cannot advertise it; if we still advertise ours
+    // the handshake re-creates the file on the device that deleted it, and the
+    // deletion can never converge. Absence alone is ambiguous ("not synced
+    // yet"), so the tombstone is what disambiguates it.
+    let mut paths: Vec<String> = state
+        .docs
+        .iter()
+        .map(|e| e.key().clone())
+        .filter(|p| !crate::deletions::is_deleted(state, p))
+        .collect();
     paths.insert(0, "__control__".to_string());
     paths
 }
@@ -992,6 +1016,13 @@ async fn sync_inner(
     // Re-ask now that a stream is up, so attachments posted while we were
     // offline (or before we joined) resolve without user action.
     state.request_missing_blobs(crate::api::chat::transcript_attachment_hashes(state));
+
+    // Apply any deletion recorded while this device was disconnected. This is
+    // the catch-up path the old live-frame-only design lacked entirely.
+    let removed = crate::deletions::reconcile(state).await;
+    if removed > 0 {
+        info!("[sync] applied {removed} pending deletion(s) from peers");
+    }
     let remote_peer_id = peer_id.to_string();
 
     loop {
