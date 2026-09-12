@@ -188,6 +188,18 @@ export interface ChatActivity {
   expires_at: number
 }
 
+/** The follow-up window for this device, from `GET /api/chat/engagement`. */
+export interface EngagementView {
+  /** Agent the next mention-less message routes to, or null if none. */
+  agent: string | null
+  /** Device that ran the reply, and that a follow-up must wake. */
+  peer_id?: string
+  /** The agent reply this was resolved from. */
+  message_id?: string
+  /** Seconds the window lasts; 0 means follow-up routing is off. */
+  window_secs: number
+}
+
 export interface AgentConfigView {
   reaction: 'push' | 'pull'
   config_path: string

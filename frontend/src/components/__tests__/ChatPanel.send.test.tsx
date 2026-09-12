@@ -20,6 +20,8 @@ vi.mock('../../api', () => ({
   setChatTyping: vi.fn(async () => ({ ok: true })),
   uploadAttachment: vi.fn(),
   stopRelay: vi.fn(async () => ({ ok: true, root: 'r' })),
+  getEngagement: vi.fn(async () => ({ agent: null, window_secs: 180 })),
+  exitEngagement: vi.fn(async () => ({ ok: true })),
   blobUrl: (_c: string, h: string) => `/blob/${h}`,
   MAX_ATTACHMENT_BYTES: 10 * 1024 * 1024,
   chatStream: () => ({

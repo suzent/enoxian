@@ -1,6 +1,6 @@
 import { Fragment, useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import type { Attachment, ChatActivity, ChatMessage, Member, Presence } from '../types'
-import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, MAX_ATTACHMENT_BYTES } from '../api'
+import type { Attachment, ChatActivity, ChatMessage, EngagementView, Member, Presence } from '../types'
+import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, getEngagement, exitEngagement, MAX_ATTACHMENT_BYTES } from '../api'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 import CircleGlyph from './CircleGlyph'
@@ -266,6 +266,9 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   const [presence, setPresence] = useState<Presence[]>([])
   const [activities, setActivities] = useState<Record<string, ChatActivity>>({})
   const [activityClock, setActivityClock] = useState(() => Math.floor(Date.now() / 1000))
+  // What the next message will do if it names no agent. Implicit routing that
+  // is invisible is a bug, so the composer says so before you press Enter.
+  const [engagement, setEngagement] = useState<EngagementView | null>(null)
   // Plaintext value of the input, mirrored from MentionInput for send.
   const [input, setInput] = useState('')
   // The active `@fragment` under the caret (drives the popup), or null.
@@ -704,6 +707,13 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
         }
       }
     }
+    if (e.key === 'Escape' && engagement?.agent) {
+      // Esc with no popup open leaves the conversation: the next message needs
+      // a mention again.
+      e.preventDefault()
+      dismissEngagement()
+      return
+    }
     if (e.key === 'Enter') {
       e.preventDefault()
       send()
@@ -733,6 +743,28 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     }
     return null
   })()
+
+  const refreshEngagement = useCallback(() => {
+    if (!activeCircleId) return
+    getEngagement(activeCircleId).then(setEngagement).catch(() => {})
+  }, [activeCircleId])
+
+  // Re-read whenever the transcript changes: a reply opens the window, and
+  // sending into it moves it on.
+  useEffect(() => {
+    refreshEngagement()
+  }, [refreshEngagement, messages.length])
+
+  const dismissEngagement = useCallback(async () => {
+    if (!activeCircleId) return
+    // Clear locally first so Esc feels instant; the daemon is the record.
+    setEngagement(prev => (prev ? { ...prev, agent: null } : prev))
+    try {
+      await exitEngagement(activeCircleId)
+    } finally {
+      refreshEngagement()
+    }
+  }, [activeCircleId, refreshEngagement])
 
   const [stoppingRoot, setStoppingRoot] = useState<string | null>(null)
   const haltCascade = useCallback(async (root: string) => {
@@ -871,6 +903,19 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
             onSelect={applyMention}
             onHover={setMentionIndex}
           />
+        )}
+        {engagement?.agent && (
+          <div className="chat-engagement" role="status" aria-live="polite">
+            <span>
+              replying to <strong>@{engagement.agent}</strong>
+              {liveActivities.some(a => a.actor_id === engagement.agent && a.kind === 'working')
+                ? ' · working, your message will be queued'
+                : ' · no mention needed'}
+            </span>
+            <button type="button" onClick={dismissEngagement} title="Stop replying to this agent (Esc)">
+              esc to exit
+            </button>
+          </div>
         )}
         {liveActivities.length > 0 && (
           <div className="chat-activity" role="status" aria-live="polite">

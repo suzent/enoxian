@@ -41,6 +41,8 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     // re-launch its agent on each restart. This survives restarts.
     let handled = super::handled::HandledMentions::load(&state.circle_dir);
     let ledger = std::sync::Arc::new(RelayLedger::default());
+    let queue = RunQueue::new();
+    spawn_run_worker(state.clone(), queue.clone(), token.clone());
 
     // Cheap first-line filter: a mention older than daemon start is almost
     // certainly replayed history. The durable set is the real guard; this just
@@ -55,6 +57,37 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
         tokio::select! {
             _ = token.cancelled() => break,
             evt = events.recv() => match evt {
+                // A message with no agent mention may still be a follow-up to
+                // the agent that just replied to this speaker (§1.1).
+                Ok(CircleEvent::MessagePosted { message }) => {
+                    if message.ts < cutoff {
+                        continue;
+                    }
+                    let cfg = AgentConfig::load();
+                    let Some(engagement) = resolve_followup(&state, &message, &cfg) else {
+                        continue;
+                    };
+                    // The whole text is the task: there is no mention prefix to
+                    // strip.
+                    dispatch(
+                        &state,
+                        &handled,
+                        &ledger,
+                        &queue,
+                        &cfg,
+                        DispatchRequest {
+                            agent: &engagement.agent,
+                            mention_key: &super::engagement::dedup_key(&engagement.agent),
+                            task: message.text.clone(),
+                            message: &message,
+                            relay: Some(super::engagement::followup_relay(
+                                &message.id,
+                                &message.peer_id,
+                            )),
+                            implicit: true,
+                        },
+                    );
+                }
                 Ok(CircleEvent::AgentMentioned { agent_id, message }) => {
                     // Old message (replayed history) — skip cheaply.
                     if message.ts < cutoff {
@@ -74,9 +107,6 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     // different device.
                     if let Some((owner, device)) = scope {
                         if !targets_this_device(&state, owner, device) {
-                            tracing::debug!(
-                                "[agent] mention scoped to {owner}/{device}, not this device — skipping"
-                            );
                             continue;
                         }
                     }
@@ -84,133 +114,21 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     // Reload config per mention so edits to agents.toml take
                     // effect without a daemon restart — mentions are rare.
                     let cfg = AgentConfig::load();
-                    if cfg.reaction != Reaction::Push {
-                        tracing::debug!("[agent] pull policy — ignoring mention of `{agent}`");
-                        continue;
-                    }
-                    let Some(cmd) = cfg.resolve(agent).cloned() else {
-                        // Not one of this device's agents — nothing to do.
-                        continue;
-                    };
-
-                    // Delegation gate. A mention posted by another agent only
-                    // wakes this one if this device opted in, and only while
-                    // this device's own budget for the cascade holds.
-                    let relay = message.relay.clone();
-                    let delegated = relay
-                        .as_ref()
-                        .and_then(|r| super::relay::poster(r))
-                        .map(str::to_string);
-                    if let Some(via) = &delegated {
-                        if cmd.accept_from != AcceptFrom::Agents {
-                            tracing::debug!(
-                                "[agent] `{agent}` does not accept delegation (mentioned by `{via}`) — skipping"
-                            );
-                            continue;
-                        }
-                        let relay = relay.as_ref().expect("delegated implies a relay");
-                        // A person pulled the brake on this cascade — anywhere
-                        // in the Circle, not necessarily on this device.
-                        if crate::api::chat::relay_is_stopped(&state, &relay.root) {
-                            tracing::info!(
-                                "[agent] cascade {} was stopped — not waking `{agent}`",
-                                relay.root
-                            );
-                            publish_relay_skipped(&state, agent, &message.id, "cascade stopped");
-                            continue;
-                        }
-                        if !super::relay::has_budget(relay, cmd.max_relay_turns) {
-                            tracing::info!(
-                                "[agent] relay budget spent on cascade {} — not waking `{agent}`",
-                                relay.root
-                            );
-                            publish_relay_skipped(
-                                &state,
-                                agent,
-                                &message.id,
-                                "relay budget spent",
-                            );
-                            continue;
-                        }
-                        if !ledger.charge(&relay.root, cmd.max_relay_turns) {
-                            tracing::info!(
-                                "[agent] cascade {} has spent this device's budget — not waking `{agent}`",
-                                relay.root
-                            );
-                            publish_relay_skipped(
-                                &state,
-                                agent,
-                                &message.id,
-                                "relay budget spent",
-                            );
-                            continue;
-                        }
-                    }
-
-                    // Only durable-dedup mentions that passed targeting, policy,
-                    // and allowlist checks and are actually about to launch.
-                    if !handled.mark_new(&message.id, &agent_id) {
-                        tracing::debug!("[agent] mention {}::{agent_id} already handled — skipping", message.id);
-                        continue;
-                    }
-
-                    // The task is the message text with the leading @mention
-                    // (in its full, possibly-scoped form) stripped, so the agent
-                    // gets a clean instruction. Capture before shadowing.
-                    let task = strip_mention(&message.text, &agent_id);
-                    let agent_id = agent.to_string();
-                    publish_agent_activity(
+                    dispatch(
                         &state,
-                        &agent_id,
-                        &message.id,
-                        ChatActivityKind::Seen,
-                        true,
+                        &handled,
+                        &ledger,
+                        &queue,
+                        &cfg,
+                        DispatchRequest {
+                            agent,
+                            mention_key: &agent_id,
+                            task: strip_mention(&message.text, &agent_id),
+                            message: &message,
+                            relay: message.relay.clone(),
+                            implicit: false,
+                        },
                     );
-
-                    // Sender-origin sets the acceptance-policy posture. For a
-                    // relayed turn this resolves from the *root human*, not the
-                    // agent that mentioned us — otherwise an agent could launder
-                    // a remote member's request into a local one by relaying it.
-                    let initiator = if attributed_local(&state, &message) {
-                        Initiator::Local
-                    } else {
-                        Initiator::RemoteMember
-                    };
-
-                    let sender = message.agent_id.clone();
-                    let message_id = message.id.clone();
-                    let state = state.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = react(
-                            &state,
-                            Turn {
-                                agent_id: &agent_id,
-                                cmd: &cmd,
-                                task: &task,
-                                sender: &sender,
-                                message_id: &message_id,
-                                initiator,
-                                relay,
-                            },
-                        ).await {
-                            publish_agent_activity(
-                                &state,
-                                &agent_id,
-                                &message_id,
-                                ChatActivityKind::Working,
-                                false,
-                            );
-                            tracing::warn!("[agent] run of `{agent_id}` failed: {e:#}");
-                            let reason = concise_error(&e);
-                            let text = format!("@{agent_id} failed to start · {reason}");
-                            let _ = crate::api::chat::post_message(
-                                &state,
-                                "system".to_string(),
-                                text,
-                                crate::api::chat::Trigger::System,
-                            );
-                        }
-                    });
                 }
                 Ok(_) => {}
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -221,6 +139,331 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Everything needed to decide whether a turn runs, from either entry path:
+/// an explicit mention, or a follow-up routed by the engagement window.
+struct DispatchRequest<'a> {
+    /// The resolved agent name.
+    agent: &'a str,
+    /// Durable-dedup key. The mention body for an explicit mention; a
+    /// synthetic `@agent` for a follow-up, which has no mention to key on.
+    mention_key: &'a str,
+    task: String,
+    message: &'a crate::control::ChatMessage,
+    relay: Option<Relay>,
+    /// True when routed by the engagement window rather than addressed.
+    implicit: bool,
+}
+
+/// The shared gate: allowlist, delegation budget, dedup, then enqueue.
+fn dispatch(
+    state: &AppState,
+    handled: &super::handled::HandledMentions,
+    ledger: &RelayLedger,
+    queue: &RunQueue,
+    cfg: &AgentConfig,
+    req: DispatchRequest<'_>,
+) {
+    if cfg.reaction != Reaction::Push {
+        tracing::debug!("[agent] pull policy — ignoring `{}`", req.agent);
+        return;
+    }
+    let Some(cmd) = cfg.resolve(req.agent).cloned() else {
+        // Not one of this device's agents — nothing to do.
+        return;
+    };
+
+    // Delegation gate. Only an agent-authored trigger is budgeted; a follow-up
+    // is a human's message and mints its own (§3.3).
+    if !req.implicit {
+        let delegated = req
+            .relay
+            .as_ref()
+            .and_then(|r| super::relay::poster(r))
+            .map(str::to_string);
+        if let Some(via) = &delegated {
+            if cmd.accept_from != AcceptFrom::Agents {
+                tracing::debug!(
+                    "[agent] `{}` does not accept delegation (mentioned by `{via}`) — skipping",
+                    req.agent
+                );
+                return;
+            }
+            let relay = req.relay.as_ref().expect("delegated implies a relay");
+            if crate::api::chat::relay_is_stopped(state, &relay.root) {
+                tracing::info!(
+                    "[agent] cascade {} was stopped — not waking `{}`",
+                    relay.root,
+                    req.agent
+                );
+                publish_relay_skipped(state, req.agent, &req.message.id, "cascade stopped");
+                return;
+            }
+            if !super::relay::has_budget(relay, cmd.max_relay_turns) {
+                tracing::info!(
+                    "[agent] relay budget spent on cascade {} — not waking `{}`",
+                    relay.root,
+                    req.agent
+                );
+                publish_relay_skipped(state, req.agent, &req.message.id, "relay budget spent");
+                return;
+            }
+            if !ledger.charge(&relay.root, cmd.max_relay_turns) {
+                tracing::info!(
+                    "[agent] cascade {} has spent this device's budget — not waking `{}`",
+                    relay.root,
+                    req.agent
+                );
+                publish_relay_skipped(state, req.agent, &req.message.id, "relay budget spent");
+                return;
+            }
+        }
+    }
+
+    // Only durable-dedup turns that passed every check and are about to run.
+    if !handled.mark_new(&req.message.id, req.mention_key) {
+        tracing::debug!(
+            "[agent] {}::{} already handled — skipping",
+            req.message.id,
+            req.mention_key
+        );
+        return;
+    }
+
+    if req.implicit {
+        tracing::info!(
+            "[agent] routing a follow-up to `{}` (no mention needed)",
+            req.agent
+        );
+    }
+    publish_agent_activity(
+        state,
+        req.agent,
+        &req.message.id,
+        ChatActivityKind::Seen,
+        true,
+    );
+
+    // Sender-origin sets the acceptance-policy posture. For a relayed turn this
+    // resolves from the *root human*, not the agent that mentioned us —
+    // otherwise an agent could launder a remote member's request into a local
+    // one by relaying it.
+    let initiator = if attributed_local(state, req.message) {
+        Initiator::Local
+    } else {
+        Initiator::RemoteMember
+    };
+
+    let agent_id = req.agent.to_string();
+    let dropped = queue.push(QueuedTurn {
+        agent_id: agent_id.clone(),
+        cmd,
+        task: req.task,
+        sender: req.message.agent_id.clone(),
+        message_id: req.message.id.clone(),
+        initiator,
+        relay: req.relay,
+    });
+    if let Some(dropped_id) = dropped {
+        // Dropping a message the user wrote is lossy, and rare by construction
+        // — so unlike a queued turn, it is worth a line in the transcript.
+        tracing::warn!(
+            "[agent] queue for `{agent_id}` is full — dropped the oldest turn ({dropped_id})"
+        );
+        let _ = crate::api::chat::post_message(
+            state,
+            "system".to_string(),
+            format!(
+                "@{agent_id} has {MAX_QUEUED_PER_AGENT} messages waiting — the oldest was dropped"
+            ),
+            crate::api::chat::Trigger::System,
+        );
+    }
+}
+
+/// Resolve a follow-up for a message that named no agent.
+fn resolve_followup(
+    state: &AppState,
+    message: &crate::control::ChatMessage,
+    cfg: &AgentConfig,
+) -> Option<super::engagement::Engagement> {
+    let mentions_an_agent = message.mentions.iter().any(|m| {
+        Mention::parse(m)
+            .and_then(|parsed| parsed.agent_target().map(|_| ()))
+            .is_some()
+    });
+    if !super::engagement::is_followup_candidate(message, mentions_an_agent) {
+        return None;
+    }
+    let history: Vec<_> = state
+        .transcript()
+        .into_iter()
+        .filter(|m| m.id != message.id)
+        .collect();
+    let engagement = super::engagement::resolve(
+        &history,
+        &message.peer_id,
+        message.ts,
+        cfg.engagement_window_secs,
+        state.engagement_dismissed(&message.peer_id).as_ref(),
+    )?;
+    // A follow-up must wake the machine that ran the reply — and only that
+    // machine. Every device evaluates this rule, so without the check they
+    // would all answer.
+    (engagement.peer_id == state.peer_id).then_some(engagement)
+}
+
+/// One agent turn waiting to run. Owned, because it outlives the event that
+/// produced it.
+struct QueuedTurn {
+    agent_id: String,
+    cmd: super::config::AgentCommand,
+    task: String,
+    sender: String,
+    message_id: String,
+    initiator: Initiator,
+    relay: Option<Relay>,
+}
+
+/// How many turns may wait for one agent before the oldest is dropped.
+///
+/// Deep enough to absorb someone typing three messages in a row while an agent
+/// works; shallow enough that a queue cannot silently grow into a backlog the
+/// user has forgotten about.
+const MAX_QUEUED_PER_AGENT: usize = 4;
+
+/// Serialized run queue for a Circle.
+///
+/// `driver::launch` refuses to start while any managed change session is open,
+/// and that lock is Circle-wide. Before this, a mention arriving during a run
+/// hit the refusal and was turned into a `system` chat post — a failure notice
+/// for something the user is entitled to do. Follow-up routing (§1.1) makes
+/// consecutive messages normal, which would have made that the common case.
+///
+/// So turns queue instead of racing. A single worker drains them in arrival
+/// order, which also means the Circle-wide lock is never contended from here.
+///
+/// The spec (§1.3) would rather the lock were per-agent so unrelated agents run
+/// in parallel. That needs `LocalChangeSession` to hold more than one open
+/// managed session and the proposal baseline to tolerate two concurrent
+/// writers, which it does not today — so this takes the fallback the spec
+/// names: keep the Circle-wide lock and queue across it.
+#[derive(Clone)]
+struct RunQueue {
+    pending: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<QueuedTurn>>>,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl RunQueue {
+    fn new() -> Self {
+        Self {
+            pending: Default::default(),
+            wake: Default::default(),
+        }
+    }
+
+    /// Enqueue a turn. Returns the message id of a turn dropped to make room,
+    /// if the agent's queue was already full.
+    fn push(&self, turn: QueuedTurn) -> Option<String> {
+        let mut pending = self.pending.lock().unwrap();
+        let agent = turn.agent_id.clone();
+        let queued = pending.iter().filter(|t| t.agent_id == agent).count();
+        // Drop the *oldest* rather than refusing the newest: the most recent
+        // message is the one the user is waiting on, and an older one is more
+        // likely to have been superseded by it.
+        let dropped = if queued >= MAX_QUEUED_PER_AGENT {
+            pending
+                .iter()
+                .position(|t| t.agent_id == agent)
+                .and_then(|i| pending.remove(i))
+                .map(|t| t.message_id)
+        } else {
+            None
+        };
+        pending.push_back(turn);
+        drop(pending);
+        self.wake.notify_one();
+        dropped
+    }
+
+    fn pop(&self) -> Option<QueuedTurn> {
+        self.pending.lock().unwrap().pop_front()
+    }
+
+    /// How many turns are waiting for this agent. The composer derives its
+    /// "will be queued" hint from the agent's activity indicator instead, so
+    /// this exists for tests.
+    #[cfg(test)]
+    fn depth_for(&self, agent: &str) -> usize {
+        self.pending
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| t.agent_id == agent)
+            .count()
+    }
+}
+
+/// Drain the queue one turn at a time for the life of the Circle.
+fn spawn_run_worker(state: AppState, queue: RunQueue, token: CancellationToken) {
+    tokio::spawn(async move {
+        loop {
+            let Some(turn) = queue.pop() else {
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    _ = queue.wake.notified() => continue,
+                }
+            };
+            if token.is_cancelled() {
+                break;
+            }
+            run_one(&state, turn).await;
+        }
+    });
+}
+
+async fn run_one(state: &AppState, turn: QueuedTurn) {
+    let QueuedTurn {
+        agent_id,
+        cmd,
+        task,
+        sender,
+        message_id,
+        initiator,
+        relay,
+    } = turn;
+    if let Err(e) = react(
+        state,
+        Turn {
+            agent_id: &agent_id,
+            cmd: &cmd,
+            task: &task,
+            sender: &sender,
+            message_id: &message_id,
+            initiator,
+            relay,
+        },
+    )
+    .await
+    {
+        publish_agent_activity(
+            state,
+            &agent_id,
+            &message_id,
+            ChatActivityKind::Working,
+            false,
+        );
+        tracing::warn!("[agent] run of `{agent_id}` failed: {e:#}");
+        let reason = concise_error(&e);
+        let text = format!("@{agent_id} failed to start · {reason}");
+        let _ = crate::api::chat::post_message(
+            state,
+            "system".to_string(),
+            text,
+            crate::api::chat::Trigger::System,
+        );
+    }
 }
 
 /// This device's own count of agent turns it has run per cascade root.
@@ -657,6 +900,74 @@ mod tests {
                 "matched a device it is not: local label is {local:?}"
             );
         }
+    }
+
+    fn queued(agent: &str, message_id: &str) -> QueuedTurn {
+        QueuedTurn {
+            agent_id: agent.into(),
+            cmd: super::super::config::AgentCommand::default(),
+            task: String::new(),
+            sender: "suzy".into(),
+            message_id: message_id.into(),
+            initiator: Initiator::Local,
+            relay: None,
+        }
+    }
+
+    #[test]
+    fn turns_run_in_arrival_order() {
+        let q = RunQueue::new();
+        for id in ["m1", "m2", "m3"] {
+            assert!(q.push(queued("claude", id)).is_none());
+        }
+        let order: Vec<String> = std::iter::from_fn(|| q.pop())
+            .map(|t| t.message_id)
+            .collect();
+        assert_eq!(order, ["m1", "m2", "m3"]);
+    }
+
+    #[test]
+    fn a_busy_agent_queues_instead_of_failing() {
+        // The behaviour that replaces "@agent failed to start · already
+        // running": a second message during a run is accepted, not refused.
+        let q = RunQueue::new();
+        assert!(q.push(queued("claude", "m1")).is_none());
+        assert!(q.push(queued("claude", "m2")).is_none());
+        assert_eq!(q.depth_for("claude"), 2);
+    }
+
+    #[test]
+    fn one_agents_backlog_does_not_squeeze_out_another() {
+        let q = RunQueue::new();
+        for i in 0..MAX_QUEUED_PER_AGENT {
+            assert!(q.push(queued("claude", &format!("c{i}"))).is_none());
+        }
+        assert!(
+            q.push(queued("codex", "x1")).is_none(),
+            "the cap is per agent, not per Circle"
+        );
+        assert_eq!(q.depth_for("codex"), 1);
+    }
+
+    #[test]
+    fn an_overfull_queue_drops_the_oldest_and_says_which() {
+        let q = RunQueue::new();
+        for i in 0..MAX_QUEUED_PER_AGENT {
+            assert!(q.push(queued("claude", &format!("m{i}"))).is_none());
+        }
+        // The newest message is the one the user is waiting on, so the oldest
+        // goes — and the caller is told, because this loses a real message.
+        assert_eq!(q.push(queued("claude", "new")).as_deref(), Some("m0"));
+        assert_eq!(q.depth_for("claude"), MAX_QUEUED_PER_AGENT);
+        let remaining: Vec<String> = std::iter::from_fn(|| q.pop())
+            .map(|t| t.message_id)
+            .collect();
+        assert_eq!(remaining, ["m1", "m2", "m3", "new"]);
+    }
+
+    #[test]
+    fn an_empty_queue_pops_nothing() {
+        assert!(RunQueue::new().pop().is_none());
     }
 
     #[test]

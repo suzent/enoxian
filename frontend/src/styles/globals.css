@@ -984,6 +984,39 @@ button[role="tab"][aria-selected="true"] {
   font-weight: 700;
 }
 
+/* The follow-up window. Sits directly above the composer because it describes
+   what the next keystroke will do, not what the room is doing. */
+.chat-engagement {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0 4px;
+  color: var(--fg-slate);
+  font-family: var(--font-mono);
+  font-size: var(--ui-tiny);
+  line-height: 1.2;
+}
+
+.chat-engagement strong {
+  color: var(--fg-obsidian);
+  font-weight: 800;
+}
+
+.chat-engagement button {
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.chat-engagement button:hover {
+  background: var(--fg-obsidian);
+  color: var(--bg-alabaster, #fff);
+}
+
 /* Considered and not run — deliberately static and dimmed, so it reads as a
    settled outcome rather than something still in progress. */
 .chat-activity__item--skipped {

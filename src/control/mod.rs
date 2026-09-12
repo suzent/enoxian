@@ -19,6 +19,12 @@ pub const CHAT_KEY: &str = "chat";
 /// is usually not the machine whose user hit stop. Entries are dropped once no
 /// live cascade could still reference them.
 pub const RELAY_STOPS_KEY: &str = "relay_stops";
+/// Follow-up windows a speaker has dismissed: `peer id -> dismissed-at ts`.
+///
+/// Like [`RELAY_STOPS_KEY`] this is synced rather than local, because the
+/// device that would route a follow-up is not necessarily the device whose user
+/// pressed Esc — the agent may be running on another machine entirely.
+pub const ENGAGEMENT_EXITS_KEY: &str = "engagement_exits";
 /// Path deletions, as a CRDT map of `rel_path -> Deletion`.
 ///
 /// Deletion used to exist only as a live broadcast frame, which meant it had no
@@ -423,6 +429,10 @@ pub enum CircleEvent {
     /// this root on any device.
     RelayStopped {
         root: String,
+    },
+    /// A peer dismissed its follow-up window.
+    EngagementChanged {
+        peer_id: String,
     },
     ChatActivityChanged {
         activity: ChatActivity,

@@ -41,6 +41,15 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Replying to an agent no longer needs a mention. For a few minutes after an
+  agent answers you, your next message goes back to it — on the same machine
+  that ran it — and the composer says so before you press Enter, with Esc to
+  leave the conversation. Windows are per person, so two people can hold
+  separate conversations with separate agents in one Circle. Configurable with
+  `engagement_window_secs` in `agents.toml`; `0` restores mention-only routing.
+- Messaging an agent that is already working now queues the message instead of
+  failing it into the transcript. Up to four wait per agent, delivered in order
+  as separate turns; beyond that the oldest is dropped and said so.
 - Agents can now delegate to each other. An agent's reply that mentions another
   agent can wake it, so `@claude` can hand a job to `@codex` without a person
   relaying messages. Off by default and enabled on the receiving side:

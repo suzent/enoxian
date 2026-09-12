@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
-use yrs::{Any, Doc, Map, Observable, Out, ReadTxn, Transact};
+use yrs::{Any, Array, Doc, Map, Observable, Out, ReadTxn, Transact};
 
 pub const EVENT_CAPACITY: usize = 256;
 
@@ -147,6 +147,45 @@ impl AppState {
     /// members address it by. Anything comparing against an incoming mention
     /// must use this rather than the local `identity.toml`, since the two can
     /// drift.
+    /// The Circle transcript in chronological order, deduplicated.
+    pub fn transcript(&self) -> Vec<ChatMessage> {
+        let Ok(txn) = self.control.try_transact() else {
+            return Vec::new();
+        };
+        let Some(arr) = txn.get_array(CHAT_KEY) else {
+            return Vec::new();
+        };
+        let mut seen = std::collections::HashSet::new();
+        arr.iter(&txn)
+            .filter_map(|item| match item {
+                Out::Any(Any::String(s)) => serde_json::from_str::<ChatMessage>(&s).ok(),
+                _ => None,
+            })
+            .filter(|m| seen.insert(m.id.clone()))
+            .collect()
+    }
+
+    /// What this peer last dismissed, if anything.
+    pub fn engagement_dismissed(
+        &self,
+        peer_id: &str,
+    ) -> Option<crate::agent::engagement::Dismissal> {
+        let txn = self.control.try_transact().ok()?;
+        let map = txn.get_map(crate::control::ENGAGEMENT_EXITS_KEY)?;
+        let Some(Out::Any(Any::String(raw))) = map.get(&txn, peer_id) else {
+            return None;
+        };
+        let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        Some(crate::agent::engagement::Dismissal {
+            at: value.get("at")?.as_i64()?,
+            message_id: value
+                .get("message_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        })
+    }
+
     pub fn self_member(&self) -> Option<MemberEntry> {
         let txn = self.control.try_transact().ok()?;
         let map = txn.get_map(MEMBER_LIST_KEY)?;

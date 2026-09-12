@@ -585,6 +585,110 @@ mod tests {
     }
 }
 
+// ── Follow-up engagement ─────────────────────────────────────────────────────
+
+/// The follow-up window for the caller's own device.
+///
+/// The composer uses this to say what will happen to the next message typed —
+/// implicit routing that is invisible is a bug (§1.2).
+pub async fn get_engagement(
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
+) -> impl IntoResponse {
+    let state = match daemon.get(&circle_id) {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
+    };
+    let cfg = crate::agent::config::AgentConfig::load();
+    let history = state.transcript();
+    let engagement = crate::agent::engagement::resolve(
+        &history,
+        &state.peer_id,
+        chrono::Utc::now().timestamp(),
+        cfg.engagement_window_secs,
+        state.engagement_dismissed(&state.peer_id).as_ref(),
+    );
+    match engagement {
+        Some(e) => Json(json!({
+            "agent": e.agent,
+            "peer_id": e.peer_id,
+            "message_id": e.message_id,
+            "window_secs": cfg.engagement_window_secs,
+        }))
+        .into_response(),
+        None => Json(json!({ "agent": null, "window_secs": cfg.engagement_window_secs }))
+            .into_response(),
+    }
+}
+
+/// Dismiss the follow-up window — the composer's Esc.
+///
+/// Recorded in the synced control doc rather than locally, because the device
+/// that would route the follow-up is not necessarily this one; the agent may be
+/// running on another machine.
+pub async fn exit_engagement(
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
+) -> impl IntoResponse {
+    let state = match daemon.get(&circle_id) {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "circle not found"})),
+            )
+                .into_response()
+        }
+    };
+    // Record *which* reply was on screen, not just when. See `Dismissal`.
+    let cfg = crate::agent::config::AgentConfig::load();
+    let current = crate::agent::engagement::resolve(
+        &state.transcript(),
+        &state.peer_id,
+        chrono::Utc::now().timestamp(),
+        cfg.engagement_window_secs,
+        state.engagement_dismissed(&state.peer_id).as_ref(),
+    );
+    match mark_engagement_dismissed(&state, current.map(|e| e.message_id).unwrap_or_default()) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(error) if error.to_string().contains("state busy") => super::circle_busy(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+fn mark_engagement_dismissed(
+    state: &crate::state::AppState,
+    message_id: String,
+) -> anyhow::Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    let value = json!({ "at": now, "message_id": message_id }).to_string();
+    let mut txn = state
+        .control
+        .try_transact_mut()
+        .map_err(|_| anyhow::anyhow!("circle state busy"))?;
+    let map = txn.get_or_insert_map(crate::control::ENGAGEMENT_EXITS_KEY);
+    map.insert(
+        &mut txn,
+        state.peer_id.as_str(),
+        Any::String(value.as_str().into()),
+    );
+    drop(txn);
+    let _ = state.events.send(CircleEvent::EngagementChanged {
+        peer_id: state.peer_id.clone(),
+    });
+    Ok(())
+}
+
 // ── Cascade stops ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
