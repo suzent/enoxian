@@ -82,6 +82,16 @@ pub async fn spawn_watcher(
 ) -> anyhow::Result<()> {
     preload_workspace(&state, &workspace).await;
 
+    // Preload re-creates a doc for every file on disk, including ones a peer
+    // deleted while this device was offline. Apply pending tombstones now, so
+    // those files are removed instead of being advertised back to the peer that
+    // deleted them. Prune first so expired tombstones do not resurrect work.
+    crate::deletions::prune(&state);
+    let removed = crate::deletions::reconcile(&state).await;
+    if removed > 0 {
+        tracing::info!("[watcher] applied {removed} deletion(s) recorded while offline");
+    }
+
     let (tokio_tx, mut tokio_rx) = mpsc::channel::<notify::Result<Event>>(128);
     let (std_tx, std_rx) = std::sync::mpsc::channel::<notify::Result<Event>>();
 
@@ -189,9 +199,22 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
         if matches!(event.kind, EventKind::Remove(_)) {
             state.remove_doc(&rel);
             crate::store::crdt::delete(&state.workspace, &rel).await;
+            // Durable record first: the live frame below only reaches peers
+            // connected at this instant, and a bulk delete overflows its
+            // broadcast buffer. The tombstone is what makes the deletion
+            // survive a disconnect and stop the file being re-created here on
+            // the next handshake.
+            crate::deletions::record(state, &rel);
             let _ = state.all_deletes.send(rel.clone());
             let _ = state.events.send(CircleEvent::FileDeleted { path: rel });
             continue;
+        }
+
+        // The path exists, so any tombstone for it is obsolete. Clearing it
+        // here is what makes delete-then-recreate work; otherwise the next
+        // reconcile would delete the new file.
+        if crate::deletions::is_deleted(state, &rel) {
+            crate::deletions::clear(state, &rel);
         }
 
         // Check the shared self_write_flag. If flush_to_disk set it, this event

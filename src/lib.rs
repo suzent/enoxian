@@ -9,6 +9,7 @@ pub mod control;
 pub mod crypto;
 pub mod daemon;
 pub mod defaults;
+pub mod deletions;
 pub mod identity;
 pub mod invite;
 pub mod lifecycle;

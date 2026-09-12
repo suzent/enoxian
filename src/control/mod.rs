@@ -12,6 +12,14 @@ pub const PRESENCE_KEY: &str = "presence";
 pub const CHAT_ACTIVITY_KEY: &str = "chat_activity";
 pub const MEMBER_LIST_KEY: &str = "member_list";
 pub const CHAT_KEY: &str = "chat";
+/// Path deletions, as a CRDT map of `rel_path -> Deletion`.
+///
+/// Deletion used to exist only as a live broadcast frame, which meant it had no
+/// durable representation: a peer that was disconnected when a file was removed
+/// never learned, and worse, still advertised the file on the next handshake
+/// and re-created it on the peer that deleted it. Recording deletions in the
+/// control doc makes them replicate and reconcile like any other state.
+pub const DELETIONS_KEY: &str = "deletions";
 
 // ── MLS delivery-service keys (M11) ───────────────────────────────────────
 // Stored in the __control__ Yjs map; replicated to all peers via CRDT sync.
@@ -257,6 +265,23 @@ pub struct Attachment {
     pub width: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
+}
+
+/// A tombstone marking a path as deleted.
+///
+/// Deliberately **not** permanent, unlike the member-removal tombstone: files
+/// are routinely deleted and re-created under the same name. Re-creating a path
+/// clears its tombstone, and `ts` exists so a stale tombstone arriving late
+/// cannot delete a file that was re-created after it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Deletion {
+    pub path: String,
+    /// Unix milliseconds. Milliseconds rather than seconds because a delete and
+    /// a re-create of the same path routinely land inside the same second.
+    pub ts: i64,
+    /// Device that performed the deletion, for attribution in the UI.
+    #[serde(default)]
+    pub peer_id: String,
 }
 
 /// A short-lived, non-transcript signal shown alongside chat. `activity_id`

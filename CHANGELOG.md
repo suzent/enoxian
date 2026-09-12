@@ -39,6 +39,17 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- Deleting a file or folder now reaches every device, and stays deleted.
+  Deletions were only ever sent to devices connected at that exact moment, with
+  no record kept — so a device that was offline, or simply mid-reconnect, never
+  learned. Worse, that device still believed it had the files and re-created
+  them on the device that deleted them, so a deletion could undo itself. A
+  device that was away now applies the deletion when it comes back, emptied
+  folders are removed rather than left behind, and deleting and re-creating a
+  file under the same name works as expected.
+
 ## [0.7.0] — 2026-09-12
 
 ### Added

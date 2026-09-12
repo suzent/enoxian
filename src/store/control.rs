@@ -65,6 +65,11 @@ struct ControlSnapshot {
     /// restarts while the transport PSK remains stable.
     #[serde(default)]
     removed: std::collections::BTreeMap<String, String>,
+    /// rel_path -> deletion JSON string. Without this a tombstone would not
+    /// survive a restart, and the restarted device would re-advertise the file
+    /// and resurrect it on the peer that deleted it.
+    #[serde(default)]
+    deletions: std::collections::BTreeMap<String, String>,
 }
 
 /// A `ChatMessage` is stored as a JSON string in the array; we only need its
@@ -119,12 +124,17 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
             .get_map(MLS_REMOVED_KEY)
             .map(|map| map_strings(&map, &txn))
             .unwrap_or_default();
+        let deletions = txn
+            .get_map(crate::control::DELETIONS_KEY)
+            .map(|map| map_strings(&map, &txn))
+            .unwrap_or_default();
 
         ControlSnapshot {
             chat,
             tasks,
             members,
             removed,
+            deletions,
         }
     };
 
@@ -164,6 +174,7 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
         let tasks = txn.get_or_insert_map(TASKS_KEY);
         let members = txn.get_or_insert_map(MEMBER_LIST_KEY);
         let removed = txn.get_or_insert_map(MLS_REMOVED_KEY);
+        let deletions = txn.get_or_insert_map(crate::control::DELETIONS_KEY);
         let chat = txn.get_or_insert_array(CHAT_KEY);
         for (k, v) in &snap.tasks {
             tasks.insert(&mut txn, k.as_str(), v.as_str());
@@ -173,6 +184,9 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
         }
         for (k, v) in &snap.removed {
             removed.insert(&mut txn, k.as_str(), v.as_str());
+        }
+        for (k, v) in &snap.deletions {
+            deletions.insert(&mut txn, k.as_str(), v.as_str());
         }
         // Chat: only seed if the live array is empty. If a peer already re-synced
         // the history, don't append a second copy on top of it.
@@ -184,11 +198,12 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
     }
 
     tracing::info!(
-        "[control] restored {} chat, {} tasks, {} members, {} removals from disk",
+        "[control] restored {} chat, {} tasks, {} members, {} removals, {} deletions from disk",
         snap.chat.len(),
         snap.tasks.len(),
         snap.members.len(),
-        snap.removed.len()
+        snap.removed.len(),
+        snap.deletions.len()
     );
     Ok(())
 }
@@ -229,6 +244,42 @@ mod tests {
 
     fn msg(id: &str, ts: i64) -> String {
         format!(r#"{{"id":"{id}","agent_id":"a","text":"hi","mentions":[],"ts":{ts}}}"#)
+    }
+
+    /// A tombstone that does not survive a restart is worse than useless: the
+    /// restarted device re-advertises the file and resurrects it on the peer
+    /// that deleted it.
+    #[test]
+    fn deletions_survive_save_and_restore() {
+        let tmp = std::env::temp_dir().join(format!("enox-del-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let src = Doc::new();
+        {
+            let deletions = src.get_or_insert_map(crate::control::DELETIONS_KEY);
+            let mut txn = src.transact_mut();
+            deletions.insert(
+                &mut txn,
+                "repo/src/main.rs",
+                r#"{"path":"repo/src/main.rs","ts":1789000000000,"peer_id":"p1"}"#,
+            );
+        }
+        save(&tmp, &src).unwrap();
+
+        let dst = Doc::new();
+        restore(&tmp, &dst).unwrap();
+        let deletions = dst.get_or_insert_map(crate::control::DELETIONS_KEY);
+        let txn = dst.transact();
+        assert_eq!(deletions.len(&txn), 1);
+        match deletions.get(&txn, "repo/src/main.rs") {
+            Some(Out::Any(Any::String(raw))) => {
+                let d: crate::control::Deletion = serde_json::from_str(&raw).unwrap();
+                assert_eq!(d.path, "repo/src/main.rs");
+                assert_eq!(d.peer_id, "p1");
+            }
+            other => panic!("tombstone lost across restart: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

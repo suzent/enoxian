@@ -156,6 +156,7 @@ impl AppState {
         let (all_deletes_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (blob_wants_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let control = Arc::new(Doc::new());
+        let docs: Arc<DashMap<String, Arc<Doc>>> = Arc::new(DashMap::new());
 
         // Forward control doc updates to P2P peers (skip updates that arrived from peers).
         let all_tx = all_updates_tx.clone();
@@ -219,6 +220,50 @@ impl AppState {
             },
         );
         std::mem::forget(chat_sub);
+
+        // Deletions arriving from peers. The live `\0delete/` frame handles the
+        // common case with lower latency; this observer covers deletions that
+        // reach us only as control-doc state — a peer that was disconnected
+        // when the file was removed, or a bulk delete whose broadcast overflowed.
+        let deletions_map = control.get_or_insert_map(crate::control::DELETIONS_KEY);
+        let events_for_deletions = events_tx.clone();
+        let workspace_for_deletions = workspace.clone();
+        let docs_for_deletions = docs.clone();
+        let deletions_sub =
+            deletions_map.observe(
+                move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+                    let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                    if !is_p2p {
+                        return;
+                    }
+                    for change in event.keys(txn).values() {
+                        let raw = match change {
+                            yrs::types::EntryChange::Inserted(yrs::Out::Any(yrs::Any::String(
+                                s,
+                            )))
+                            | yrs::types::EntryChange::Updated(
+                                _,
+                                yrs::Out::Any(yrs::Any::String(s)),
+                            ) => Some(s),
+                            _ => None,
+                        };
+                        let Some(raw) = raw else { continue };
+                        let Ok(deletion) = serde_json::from_str::<crate::control::Deletion>(raw)
+                        else {
+                            continue;
+                        };
+                        // The observer runs inside a CRDT transaction, so the file
+                        // IO has to happen outside it.
+                        let workspace = workspace_for_deletions.clone();
+                        let events = events_for_deletions.clone();
+                        let docs = docs_for_deletions.clone();
+                        tokio::spawn(async move {
+                            apply_remote_deletion(&workspace, &docs, &events, deletion).await;
+                        });
+                    }
+                },
+            );
+        std::mem::forget(deletions_sub);
 
         // Chat activity is an ephemeral CRDT map. Local writers emit their own
         // event; this observer turns P2P-delivered updates into local SSE
@@ -424,7 +469,7 @@ impl AppState {
             p2p_external_addrs: Arc::new(RwLock::new(Vec::new())),
             p2p_listen_addrs: Arc::new(RwLock::new(Vec::new())),
             peer_connections: Arc::new(RwLock::new(HashMap::new())),
-            docs: Arc::new(DashMap::new()),
+            docs,
             control,
             doc_updates: Arc::new(DashMap::new()),
             awareness_updates: Arc::new(DashMap::new()),
@@ -444,7 +489,45 @@ impl AppState {
             foreign_peers: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
     }
+}
 
+/// Apply a peer's deletion to local state and disk.
+///
+/// Free function rather than a method: the control-doc observer that calls this
+/// is installed while `AppState` is still being constructed, so it captures the
+/// pieces it needs instead of a `self` that does not exist yet.
+async fn apply_remote_deletion(
+    workspace: &std::path::Path,
+    docs: &Arc<DashMap<String, Arc<Doc>>>,
+    events: &broadcast::Sender<CircleEvent>,
+    deletion: crate::control::Deletion,
+) {
+    let full = workspace.join(deletion.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+
+    // A file written after the tombstone is a re-creation the deleting peer has
+    // not seen. Destroying it would lose work, so leave it: the watcher clears
+    // the stale tombstone when it observes that write.
+    if let Ok(meta) = tokio::fs::metadata(&full).await {
+        if let Ok(modified) = meta.modified() {
+            let modified_ms = modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            if modified_ms > deletion.ts {
+                return;
+            }
+        }
+    }
+
+    docs.remove(&deletion.path);
+    crate::store::crdt::delete(workspace, &deletion.path).await;
+    let _ = tokio::fs::remove_file(&full).await;
+    let _ = events.send(CircleEvent::FileDeleted {
+        path: deletion.path,
+    });
+}
+
+impl AppState {
     /// Content-addressed blob store for chat attachments, opened on first use.
     ///
     /// Rooted at `<circle_dir>/blobs` rather than in the workspace: attachments
