@@ -39,6 +39,15 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- Clicking an image in chat now opens it in a viewer inside the app instead of
+  a bare browser tab, so you keep your place in the conversation. Arrow keys
+  page through every image in the transcript, Escape closes it, and there is a
+  download button.
+- Attaching an image shows upload progress, so a large file on a slow
+  connection no longer looks like nothing is happening.
+
 ### Fixed
 
 - Deleting a file or folder now reaches every device, and stays deleted.

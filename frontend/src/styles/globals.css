@@ -1092,14 +1092,134 @@ button[role="tab"][aria-selected="true"] {
 }
 
 .chat-staged--busy {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: auto;
-  padding: 0 8px;
+  width: 52px;
+  overflow: hidden;
   color: var(--fg-slate);
   font-family: var(--font-mono);
   font-size: var(--ui-tiny);
+}
+
+/* Fills left-to-right behind the percentage as the upload proceeds. */
+.chat-staged__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--fg-obsidian);
+  opacity: 0.14;
+  transition: width 120ms linear;
+}
+
+.chat-staged__pct {
+  position: relative;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Lightbox ─────────────────────────────────────────────────────────────── */
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.86);
+}
+
+.lightbox__bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: var(--ui-tiny);
+}
+
+.lightbox__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lightbox__count {
+  opacity: 0.6;
+}
+
+.lightbox__btn {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  background: transparent;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: var(--ui-tiny);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.lightbox__btn:hover,
+.lightbox__btn:focus-visible {
+  background: #fff;
+  color: #000;
+  outline: none;
+}
+
+.lightbox__stage {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 0;
+  padding: 0 12px 16px;
+}
+
+.lightbox__img {
+  max-width: 100%;
+  /* Bounded by the stage, so a tall image cannot push the bar off-screen. */
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  /* A pale image needs an edge against the dark backdrop. */
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+
+.lightbox__nav {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 56px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: transparent;
+  color: #fff;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lightbox__nav:hover:not(:disabled),
+.lightbox__nav:focus-visible {
+  background: #fff;
+  color: #000;
+  outline: none;
+}
+
+.lightbox__nav:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+@media (max-width: 600px) {
+  /* Reclaim the width for the image itself; keyboard and swipe still page. */
+  .lightbox__nav {
+    width: 32px;
+  }
 }
 
 .chat-staged__remove {

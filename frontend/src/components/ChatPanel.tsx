@@ -6,6 +6,7 @@ import { shortenAgentId, peerLabel } from '../lib/displayName'
 import CircleGlyph from './CircleGlyph'
 import MentionPopup, { buildMentionItems, type MentionItem } from './MentionPopup'
 import MentionInput, { type MentionInputHandle } from './MentionInput'
+import Lightbox from './Lightbox'
 
 // Backfill retry budget: ~0.5s + 1s + 1.5s + 2s before giving up and telling
 // the user, rather than rendering an empty transcript as if it were loaded.
@@ -103,6 +104,9 @@ function formatBytes(n: number): string {
 interface AttachmentImageProps {
   circleId: string
   att: Attachment
+  /** Opens the in-app viewer. Plain clicks only — modified clicks fall through
+   *  to the href so "open in new tab" still works. */
+  onOpen: () => void
   /** Bumped when the daemon reports this blob finished downloading, which
    *  re-requests a URL that previously 404'd. */
   nonce: number
@@ -115,7 +119,7 @@ interface AttachmentImageProps {
  *  So a miss is an expected transient state, not an error: we show a
  *  placeholder sized from the stored dimensions and swap in the image when the
  *  `attachment_available` event bumps `nonce`. */
-function AttachmentImage({ circleId, att, nonce }: AttachmentImageProps) {
+function AttachmentImage({ circleId, att, nonce, onOpen }: AttachmentImageProps) {
   const [failed, setFailed] = useState(false)
   useEffect(() => { setFailed(false) }, [nonce])
 
@@ -135,7 +139,19 @@ function AttachmentImage({ circleId, att, nonce }: AttachmentImageProps) {
   }
 
   return (
-    <a className="chat-attachment" href={blobUrl(circleId, att.hash)} target="_blank" rel="noreferrer noopener" style={{ aspectRatio: ratio }}>
+    <a
+      className="chat-attachment"
+      href={blobUrl(circleId, att.hash)}
+      target="_blank"
+      rel="noreferrer noopener"
+      style={{ aspectRatio: ratio }}
+      onClick={e => {
+        // Let cmd/ctrl/shift/middle-click do what the browser normally does.
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+        e.preventDefault()
+        onOpen()
+      }}
+    >
       <img
         src={`${blobUrl(circleId, att.hash)}&v=${nonce}`}
         alt={att.name}
@@ -157,9 +173,10 @@ interface BubbleProps {
   showSender: boolean
   circleId: string
   blobNonces: Record<string, number>
+  onOpenImage: (hash: string) => void
 }
 
-function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNonces }: BubbleProps) {
+function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNonces, onOpenImage }: BubbleProps) {
   if (msg.agent_id === 'system') {
     return (
       <div className="chat-system-event" role="status">
@@ -206,6 +223,7 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
                 circleId={circleId}
                 att={att}
                 nonce={blobNonces[att.hash] ?? 0}
+                onOpen={() => onOpenImage(att.hash)}
               />
             ))}
           </div>
@@ -235,12 +253,15 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   const [mentionActive, setMentionActive] = useState(false)
   // Attachments uploaded and awaiting send with the next message.
   const [pending, setPending] = useState<Attachment[]>([])
-  const [uploading, setUploading] = useState(0)
+  // filename -> 0..1. An entry exists only while that file is uploading.
+  const [uploads, setUploads] = useState<Record<string, number>>({})
   const [attachError, setAttachError] = useState<string | null>(null)
   // Per-hash counter bumped when the daemon finishes fetching a blob, so an
   // image that 404'd on first render retries.
   const [blobNonces, setBlobNonces] = useState<Record<string, number>>({})
   const [dragging, setDragging] = useState(false)
+  // Hash of the image open in the viewer, or null when it is closed.
+  const [lightboxHash, setLightboxHash] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<MentionInputHandle>(null)
   const messageListRef = useRef<HTMLDivElement>(null)
@@ -441,15 +462,22 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
         setAttachError(`${file.name} is too large (max ${formatBytes(MAX_ATTACHMENT_BYTES)}).`)
         continue
       }
-      setUploading(n => n + 1)
+      const key = `${file.name}:${file.size}:${file.lastModified}`
+      setUploads(prev => ({ ...prev, [key]: 0 }))
       try {
-        const att = await uploadAttachment(activeCircleId, file)
+        const att = await uploadAttachment(activeCircleId, file, fraction => {
+          setUploads(prev => (key in prev ? { ...prev, [key]: fraction } : prev))
+        })
         // Same bytes twice is the same blob — don't stage a duplicate.
         setPending(prev => prev.some(p => p.hash === att.hash) ? prev : [...prev, att])
       } catch (error) {
         setAttachError(error instanceof Error ? error.message : 'Upload failed.')
       } finally {
-        setUploading(n => n - 1)
+        setUploads(prev => {
+          const next = { ...prev }
+          delete next[key]
+          return next
+        })
       }
     }
   }, [activeCircleId, activeCircle?.disabled])
@@ -469,13 +497,22 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
     void addFiles(Array.from(e.dataTransfer?.files ?? []))
   }, [addFiles])
 
+  const uploadEntries = Object.entries(uploads)
+
+  // Every image in the transcript, in order, so the viewer can page through
+  // the whole conversation rather than just the message that was clicked.
+  const galleryItems = messages.flatMap(m => m.attachments ?? [])
+  const lightboxIndex = lightboxHash
+    ? galleryItems.findIndex(a => a.hash === lightboxHash)
+    : -1
+
   const send = () => {
     const text = input.trim()
     if (!activeCircleId || !status || activeCircle?.disabled) return
     // An image on its own is a valid message; empty text with nothing staged
     // is not. Block send while an upload is still in flight so the attachment
     // isn't silently dropped from the message.
-    if ((!text && pending.length === 0) || uploading > 0) return
+    if ((!text && pending.length === 0) || Object.keys(uploads).length > 0) return
     inputRef.current?.clear()
     setInput('')
     setFragment(null)
@@ -680,6 +717,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
                 showSender={showSender || startsNewDay}
                 circleId={activeCircleId ?? ''}
                 blobNonces={blobNonces}
+                onOpenImage={setLightboxHash}
               />
             </Fragment>
           )
@@ -717,7 +755,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
             {liveActivities.length > 3 && <span>+{liveActivities.length - 3} active</span>}
           </div>
         )}
-        {(pending.length > 0 || uploading > 0 || attachError) && (
+        {(pending.length > 0 || uploadEntries.length > 0 || attachError) && (
           <div className="chat-composer__attachments">
             {pending.map(att => (
               <div key={att.hash} className="chat-staged">
@@ -732,11 +770,23 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
                 </button>
               </div>
             ))}
-            {uploading > 0 && (
-              <span className="chat-staged chat-staged--busy" role="status">
-                Uploading{uploading > 1 ? ` ${uploading}` : ''}…
-              </span>
-            )}
+            {uploadEntries.map(([key, fraction]) => {
+              const pct = Math.round(fraction * 100)
+              return (
+                <span
+                  key={key}
+                  className="chat-staged chat-staged--busy"
+                  role="progressbar"
+                  aria-valuenow={pct}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label={`Uploading ${key.split(':')[0]}`}
+                >
+                  <span className="chat-staged__fill" style={{ width: `${pct}%` }} />
+                  <span className="chat-staged__pct">{pct}%</span>
+                </span>
+              )
+            })}
             {attachError && (
               <span className="chat-composer__attach-error" role="alert">{attachError}</span>
             )}
@@ -773,10 +823,20 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
           disabled={activeCircle?.disabled}
           onPaste={onPaste}
         />
-        <button onClick={send} disabled={activeCircle?.disabled || uploading > 0} className="enox-btn chat-composer__send">
+        <button onClick={send} disabled={activeCircle?.disabled || Object.keys(uploads).length > 0} className="enox-btn chat-composer__send">
           {activeCircle?.disabled ? 'VOID' : variant === 'main' ? 'SEND' : 'EXEC'}
         </button>
       </div>
+
+      {lightboxIndex >= 0 && (
+        <Lightbox
+          circleId={activeCircleId ?? ''}
+          items={galleryItems}
+          index={lightboxIndex}
+          onIndexChange={i => setLightboxHash(galleryItems[i]?.hash ?? null)}
+          onClose={() => setLightboxHash(null)}
+        />
+      )}
     </main>
   )
 }
