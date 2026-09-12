@@ -41,6 +41,15 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Build output is no longer synced. Circles now respect `.gitignore` (and
+  `.ignore`, and a new `.enoxignore` for enoxian-specific rules), plus a short
+  built-in list — `target/`, `node_modules/`, `__pycache__/`, `.venv/`, `venv/` —
+  so a project with no ignore file still does not replicate its build
+  directory. In one real Circle that was 814 of 1713 tracked files and 1.6 GB of
+  stored history. Editing an ignore file takes effect immediately, without a
+  restart. Files that become ignored stop syncing but are never deleted, on any
+  device.
+
 - Clicking an image in chat now opens it in a viewer inside the app instead of
   a bare browser tab, so you keep your place in the conversation. Arrow keys
   page through every image in the transcript, Escape closes it, and there is a

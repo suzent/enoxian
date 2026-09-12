@@ -105,6 +105,9 @@ pub struct AppState {
     /// payloads). Lives under the circle dir, not the workspace, so the file
     /// watcher never sees it and blobs never enter the CRDT.
     blobs: Arc<std::sync::OnceLock<Arc<crate::proposal::blob::BlobStore>>>,
+    /// Compiled ignore rules for this workspace. Rebuilt when an ignore file
+    /// is written, so editing `.gitignore` takes effect without a restart.
+    pub ignore_rules: Arc<RwLock<Arc<crate::ignore_rules::IgnoreRules>>>,
     /// Blob hashes this node wants but does not have. Live sync streams
     /// subscribe and forward each want to their peer, so an attachment posted
     /// mid-session is fetched immediately instead of on the next reconnect.
@@ -480,6 +483,9 @@ impl AppState {
             interactive_writes: interactive_writes_tx,
             review_writes: review_writes_tx,
             self_write_flags: Arc::new(DashMap::new()),
+            ignore_rules: Arc::new(RwLock::new(Arc::new(
+                crate::ignore_rules::IgnoreRules::defaults_only(),
+            ))),
             blobs: Arc::new(std::sync::OnceLock::new()),
             blob_wants: blob_wants_tx,
             join_policy,
@@ -528,6 +534,25 @@ async fn apply_remote_deletion(
 }
 
 impl AppState {
+    /// Whether `rel_path` is excluded from syncing.
+    pub fn is_ignored(&self, rel_path: &str) -> bool {
+        let rules = match self.ignore_rules.read() {
+            Ok(guard) => guard.clone(),
+            // A poisoned lock must not silently start syncing a build tree.
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        rules.is_ignored(rel_path)
+    }
+
+    /// Recompile the ignore rules from the workspace.
+    pub fn reload_ignore_rules(&self) {
+        let rules = Arc::new(crate::ignore_rules::IgnoreRules::build(&self.workspace));
+        match self.ignore_rules.write() {
+            Ok(mut guard) => *guard = rules,
+            Err(poisoned) => *poisoned.into_inner() = rules,
+        }
+    }
+
     /// Content-addressed blob store for chat attachments, opened on first use.
     ///
     /// Rooted at `<circle_dir>/blobs` rather than in the workspace: attachments

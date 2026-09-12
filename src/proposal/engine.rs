@@ -446,7 +446,7 @@ pub(crate) fn snapshot_workspace(
                 Ok(r) => r.to_string_lossy().replace('\\', "/"),
                 Err(_) => continue,
             };
-            if crate::sync_yjs::watcher::is_ignored(&rel) {
+            if state.is_ignored(&rel) {
                 continue;
             }
             if path.is_dir() {
@@ -476,7 +476,7 @@ fn snapshot_dirty(
 ) -> anyhow::Result<Snapshot> {
     let mut files = baseline.files.clone();
     for rel in dirty {
-        if rel.is_empty() || crate::sync_yjs::watcher::is_ignored(rel) {
+        if rel.is_empty() || state.is_ignored(rel) {
             continue;
         }
         let abs = state.workspace.join(rel);

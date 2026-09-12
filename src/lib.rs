@@ -11,6 +11,7 @@ pub mod daemon;
 pub mod defaults;
 pub mod deletions;
 pub mod identity;
+pub mod ignore_rules;
 pub mod invite;
 pub mod lifecycle;
 pub mod mls;

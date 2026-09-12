@@ -427,6 +427,14 @@ async fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId)
         return true;
     }
 
+    // A peer that has not upgraded still offers its build tree. Accepting it
+    // would recreate the doc and write the file, so the exclusion has to hold
+    // on the receive path as well as the watcher.
+    if path != "__control__" && state.is_ignored(path) {
+        debug!("[sync] ignoring update for excluded path {path} from {peer_id}");
+        return true;
+    }
+
     let doc = if path == "__control__" {
         state.control.clone()
     } else {
@@ -522,7 +530,7 @@ fn all_doc_paths(state: &AppState) -> Vec<String> {
         .docs
         .iter()
         .map(|e| e.key().clone())
-        .filter(|p| !crate::deletions::is_deleted(state, p))
+        .filter(|p| !crate::deletions::is_deleted(state, p) && !state.is_ignored(p))
         .collect();
     paths.insert(0, "__control__".to_string());
     paths
