@@ -34,7 +34,9 @@ form:
 - The execution gate is per-device and local (`reaction = "push"` plus the
   agent allowlist). Nothing here moves that decision onto the wire.
 - A device never runs an agent addressed to another device.
-- An agent's reply never wakes another agent (`fire_mentions = false`).
+- An agent's reply never wakes another agent (`fire_mentions = false`). §3
+  relaxes this deliberately, and replaces the total ban with an explicit,
+  budgeted allowance rather than removing the bound.
 - Agent writes land in the live workspace and are recorded as accepted,
   revertible history — the proposal store is an audit and undo layer, *not* a
   staging area ([concepts/proposals.md](../concepts/proposals.md)). §2.4 is the
@@ -161,10 +163,14 @@ is deliberately conservative about what an unaddressed agent may do.
 An ambient turn is offered only for **human-authored** messages. Agent replies
 and system messages never trigger one.
 
-This is what keeps the system from oscillating: agent output cannot become
-another agent's input, so there is no fixpoint to chase and no token spiral. It
-is the same property `fire_mentions = false` buys for mentions today, stated as
-a rule about authorship rather than a flag on one call site.
+This is what keeps *ambient* from oscillating: an unaddressed agent's output
+cannot become another unaddressed agent's input, so there is no fixpoint to
+chase. Ambient is a broadcast, and a broadcast with no authorship rule is a
+token spiral.
+
+Explicit agent-to-agent mentions are the deliberate exception, and they buy
+their termination differently — see §3. Keep the two apart: the rule here is
+"unaddressed turns fire on humans only", not "agents never trigger agents".
 
 Determining authorship needs a durable signal, and neither existing field
 supplies it. `agent_id` is a display label — a person may legitimately be
@@ -236,6 +242,8 @@ reaction loop through to `decide` — and `pending` has never been used as a
 real gate before ([concepts/proposals.md](../concepts/proposals.md) says so
 explicitly), so ambient would be its first genuine user. The per-agent override
 hook is already anticipated: see the `TODO(M14)` in `proposal/policy.rs`.
+(§3.6 explains why a *relayed* turn is not an ambient one and keeps the
+existing acceptance path.)
 
 If that proves too invasive, the fallback is narrower and still safe: an
 ambient turn that wants to change files says so in chat, and a person mentions
@@ -284,7 +292,154 @@ roster must mark ambient agents so *all* peers can see who is listening — not
 just the device that configured one. This is a trust-model change and belongs
 in [concepts/security.md](../concepts/security.md) when it ships.
 
-## 3. Phasing
+## 3. Agent-to-agent delegation
+
+Goal: let an agent hand work to another agent by name, without reopening the
+door that `fire_mentions = false` closed.
+
+§2 is about agents *listening*. This is about agents *addressing*. They are not
+the same permission and should not be bought with the same switch: ambient is
+unaddressed, broadcast, and human-triggered; delegation is explicit, targeted,
+and rare. An agent that knows `@codex` is the one with the sandbox, or that a
+review should go to a second opinion, should be able to say so and have it
+happen — the alternative is a human relaying messages between two programs.
+
+### 3.1 Why it was foreclosed, and what replaces the ban
+
+The original objection was a termination story, not a taste objection. Left
+unbounded, `A` mentions `B`, `B` replies mentioning `A`, and the Circle burns
+tokens until someone kills a daemon. `fire_mentions = false` is a total ban
+because a total ban is the only bound that needs no bookkeeping.
+
+The replacement is a **relay budget**: a small, explicit allowance that a human
+message mints and every agent turn spends. When the allowance is gone, mentions
+in agent replies go back to being inert text. Termination is then arithmetic
+rather than a promise about model behaviour.
+
+### 3.2 The relay chain
+
+Every trigger carries the provenance of the human message that started it:
+
+```
+relay = { root: message_id, spent: u8, path: Vec<agent_id> }
+```
+
+- `root` — the human message at the base of the cascade.
+- `spent` — how many agent turns this cascade has already cost.
+- `path` — the agents already on *this* branch, innermost last.
+
+A human post mints `{ root: self, spent: 0, path: [] }`. An agent turn triggered
+with a relay posts its reply carrying `{ root, spent + 1, path + [self] }`.
+
+This has to ride on the wire. The device that fires the trigger and the device
+that runs the mentioned agent are routinely different machines, so the chain
+cannot live in one daemon's memory the way §1.1 engagements can. That means a
+defaulted `relay: Option<Relay>` on `ChatMessage` — absent from an older peer's
+message, which reads as "no allowance", the current behaviour.
+
+### 3.3 Termination
+
+Three bounds, because each one alone has a shape it does not catch:
+
+- **Budget.** `spent < max_relay_turns` (default **3**). This is the only bound
+  that holds regardless of the cascade's shape — depth limits alone do nothing
+  about a wide fan-out, and fan-out limits alone do nothing about a long chain.
+  It is a whole-cascade counter, not a per-branch one.
+- **Fan-out.** At most **one** agent-level mention in an agent reply is honoured
+  — the first. An agent that names three agents gets one trigger and two chips.
+  Without this, a budget of 3 is a budget of 3 *levels*, i.e. exponential.
+- **Path acyclicity.** An agent already in `path` is never re-triggered on that
+  branch. `A → B → A` stops at the second `A`. This is what makes ping-pong
+  structurally impossible instead of merely expensive, and it is per-branch
+  rather than global so `A → B` and `A → C` both still run.
+
+A human message always re-mints a full budget — including a human message that
+arrives mid-cascade. Humans are not rate-limited by their agents' spending.
+
+Note the asymmetry with §1.1: a relayed turn does **not** open an engagement
+window for the mentioning agent. Follow-up routing is a convenience for humans
+typing quickly; giving it to agents would hand them an unbudgeted second turn
+through a side door.
+
+### 3.4 Enforcement is local, as always
+
+`spent` and `path` arrive over the wire from a peer that could have forged them.
+That is not a new exposure — a hostile peer can already post `@claude` in a loop
+— but it does mean the wire value cannot be the enforcement point. The receiving
+device:
+
+1. clamps to its own configured maximum: `effective = min(wire.spent_remaining,
+   local_max)`;
+2. keeps its own per-`root` counter, so a cascade that re-enters the same device
+   several times cannot spend more than that device allows in total;
+3. checks the agent allowlist and `reaction = "push"` exactly as it does for a
+   human mention.
+
+The wire field is a hint that shrinks; the device's own count is the truth. This
+keeps the per-device execution gate invariant intact — nothing here moves a
+run decision onto the wire.
+
+### 3.5 Opt-in, on the receiving side
+
+The device that spends the tokens decides, which means the switch belongs to the
+agent being *called*, not the one calling:
+
+```toml
+[agents.codex]
+driver = "acp"
+command = [...]
+engagement = "mention"      # §2.2, unchanged
+accept_from = "humans"      # default: only human mentions wake this agent
+# accept_from = "agents"    # also wake on another agent's mention
+max_relay_turns = 3         # this device's clamp on §3.4
+```
+
+There is deliberately no sender-side switch. An agent's reply always *carries* a
+relay chain; whether that chain wakes anything is the callee's call, on the
+callee's machine, under the callee's budget. A device that has never heard of
+this feature declines every relayed mention by construction, which is the same
+answer the default gives.
+
+### 3.6 What a relayed turn may do
+
+A relayed turn is not an unaddressed turn — someone asked for it, just not
+directly. So it does not inherit §2.4's `pending` treatment: writes land and are
+accepted, as they do for any mention, and revertibility comes from the proposal
+store as usual.
+
+What changes is attribution. `TriggerOrigin` resolves from the **root human**,
+not from the mentioning agent — a cascade rooted in a local user's message is
+`LocalUser` throughout, one rooted in a remote member's is `RemoteMember`. An
+agent must not be able to launder a remote member's request into a local one by
+relaying it. The proposal record additionally stores `path`, so "who actually
+wrote this" is answerable after the fact.
+
+### 3.7 Legibility
+
+A cascade that is invisible is indistinguishable from a runaway. Three things
+are the minimum:
+
+- Relayed messages render their provenance — `codex · via @claude` — so a user
+  can see that a turn they did not ask for was asked for on their behalf.
+- Exhausting the budget posts nothing to chat (a `system` post per dead mention
+  is exactly the transcript noise §1.3 is trying to remove) but *is* surfaced in
+  the activity indicator: `relay budget spent — @codex not triggered`.
+- A cascade is interruptible. The stop control that cancels a running agent
+  cancels the rest of its cascade, and cancelling clears the `root` counter so a
+  retry is not charged twice.
+
+### 3.8 Interaction with ambient
+
+Ambient turns (§2) are still triggered by human messages only. A relayed reply
+is agent-authored, so it does not wake ambient listeners — otherwise one
+delegation would broadcast to every ambient agent on every device, and the
+budget would be spent by agents that were never addressed.
+
+The two features compose in one direction only: an ambient turn may *mint* a
+relay chain from the human message it is responding to, spending from that
+message's budget. An ambient agent that passes (§2.3) spends nothing.
+
+## 4. Phasing
 
 1. **Run queue** (§1.3) — independently useful, and a prerequisite for the
    rest.
@@ -294,30 +449,39 @@ in [concepts/security.md](../concepts/security.md) when it ships.
    its own for rendering.
 4. **Ambient engagement behind per-agent opt-in** (§2) — with the heuristic
    debounce from day one, and §2.4 settled before any of it lands.
-5. **Reply-threading** (§1.4) — when the window's guesses prove annoying in
+5. **Agent-to-agent delegation** (§3) — the relay chain, the three bounds, and
+   `accept_from`. Depends on the `author` field from step 3 to know what mints a
+   budget, and on the run queue from step 1 because a cascade is the fastest way
+   to find a busy agent. Independent of §2: it is worth shipping even if ambient
+   never is.
+6. **Reply-threading** (§1.4) — when the window's guesses prove annoying in
    practice.
 
-## 4. Explicitly not doing
+## 5. Explicitly not doing
 
 - **Ambient as a default or a Circle-wide setting.** Per-device opt-in only.
 - **Removing the mention gate.** Mentions remain the explicit, unambiguous way
   to address an agent; everything here is additive.
-- **Agent-to-agent conversation.** The human-authorship trigger forecloses it
-  on purpose. Multi-agent collaboration is a real design question, but it needs
-  a termination story that this spec does not have.
+- **Unbounded agent-to-agent conversation.** §3 allows delegation under a
+  budget that a human mints and agents only spend. What stays foreclosed is a
+  cascade that can sustain itself: no agent-minted budgets, no agent-opened
+  engagement windows (§3.3), no ambient turns woken by agent output (§3.8).
 - **Coalescing queued messages** into a single turn (§1.3).
 
-## 5. Docs to update when this ships
+## 6. Docs to update when this ships
 
-- [examples/agents.toml](../examples/agents.toml) — `engagement` key; the
-  header comment about reacting only to `@mentions` becomes wrong.
+- [examples/agents.toml](../examples/agents.toml) — `engagement`,
+  `accept_from` and `max_relay_turns` keys; the header comment about reacting
+  only to `@mentions` becomes wrong.
 - [guide/agents.md](../guide/agents.md) — follow-up routing, the flow
-  diagram's new entry paths, `engagement`, and the PASS convention.
-- [reference/api.md](../reference/api.md) — chat schema gains `author` (later
-  `reply_to`); event table may need an implicit-routing sibling.
+  diagram's new entry paths, `engagement`, the PASS convention, and delegation
+  (`accept_from`, the relay budget, `via @agent` rendering).
+- [reference/api.md](../reference/api.md) — chat schema gains `author` and
+  `relay` (later `reply_to`); event table may need an implicit-routing sibling.
 - [concepts/proposals.md](../concepts/proposals.md) — only if §2.4 lands;
   ambient would be `pending`'s first real use as a gate.
-- [concepts/security.md](../concepts/security.md) — the §2.6 privacy posture.
-- [concepts/internals.md](../concepts/internals.md) — engagement store and run
-  queue under Agent Runtime.
+- [concepts/security.md](../concepts/security.md) — the §2.6 privacy posture,
+  and why a forged `relay` on the wire is not an escalation (§3.4).
+- [concepts/internals.md](../concepts/internals.md) — engagement store, run
+  queue, and per-root relay counters under Agent Runtime.
 - `CHANGELOG.md` and [index.md](../index.md).

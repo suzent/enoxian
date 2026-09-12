@@ -77,6 +77,13 @@ jobs:
     name: Prepare the release
     needs: check
     if: needs.check.outputs.ready == 'true'
+    # A called workflow cannot hold more than its caller grants, and this file
+    # defaults to `contents: read`. `prepare-release` pushes the release branch
+    # and opens the pull request, so the calling job has to carry those rights
+    # or the run fails before it starts.
+    permissions:
+      contents: write
+      pull-requests: write
     # Reuses the manual workflow rather than duplicating the bump, so the
     # scheduled and hand-run paths cannot drift apart.
     uses: ./.github/workflows/prepare-release.yml
