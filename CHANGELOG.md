@@ -67,6 +67,12 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- A killed or restarted daemon no longer leaves a Circle unable to run any
+  agent. A run interrupted mid-flight left a lock behind that nothing expired,
+  so every later mention failed with "managed agent '…' is already running in
+  this Circle" — naming an agent that was not running. Such a lock is now
+  cleared when the daemon starts, since the agent it refers to died with the
+  previous one.
 - A chat message is no longer lost when sending fails. The composer used to
   clear itself and keep only the staged images, so a long message typed during
   a moment of sync contention was simply gone. The text comes back, and if you

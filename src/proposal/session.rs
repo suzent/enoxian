@@ -129,6 +129,29 @@ impl LocalChangeSession {
         serde_json::from_str(&text).ok()
     }
 
+    /// Drop a managed-session record left open by a previous daemon.
+    ///
+    /// The record is a lock: `driver::launch` refuses to start an agent while
+    /// one is open. Nothing ever expires it, so a daemon that dies mid-run —
+    /// killed, restarted, crashed — leaves a lock that blocks *every* future
+    /// agent run in that Circle, permanently, with a message claiming the agent
+    /// "is already running". It is not running; the process that ran it is gone.
+    ///
+    /// A managed agent is a child of the daemon, so once a new daemon starts,
+    /// any session still marked open belongs to a process that no longer
+    /// exists. Two daemons cannot share a Circle — the second fails to bind the
+    /// port — so "open at startup" means "orphaned" with no ambiguity.
+    ///
+    /// Returns the agent named by the record it cleared, for logging.
+    pub fn clear_orphaned_managed(circle_dir: &std::path::Path) -> Option<String> {
+        let current = Self::load_managed(circle_dir)?;
+        if !current.is_open() {
+            return None;
+        }
+        std::fs::remove_file(Self::managed_path(circle_dir)).ok()?;
+        Some(current.actor_id.unwrap_or_else(|| "?".to_string()))
+    }
+
     pub fn clear_managed_if(circle_dir: &std::path::Path, session_id: &str) -> anyhow::Result<()> {
         let Some(current) = Self::load_managed(circle_dir) else {
             return Ok(());
@@ -169,6 +192,67 @@ impl LocalChangeSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn managed(dir: &std::path::Path, agent: &str, finished: bool) -> LocalChangeSession {
+        let mut session =
+            LocalChangeSession::start("c".into(), "base".into(), SessionMode::ManagedProcess);
+        session.actor_id = Some(agent.into());
+        if finished {
+            session.finish();
+        }
+        session.save_managed(dir).unwrap();
+        session
+    }
+
+    #[test]
+    fn an_open_session_from_a_dead_daemon_is_cleared() {
+        // The lock that blocked every mention in a Circle: a run killed
+        // mid-flight leaves finished_at unset and nothing ever expires it.
+        let dir = tempfile::tempdir().unwrap();
+        managed(dir.path(), "suzent", false);
+        assert_eq!(
+            LocalChangeSession::clear_orphaned_managed(dir.path()),
+            Some("suzent".to_string())
+        );
+        assert!(
+            LocalChangeSession::load_managed(dir.path()).is_none(),
+            "the orphaned lock must be gone, not merely reported"
+        );
+    }
+
+    #[test]
+    fn a_finished_session_is_left_alone() {
+        // A closed record is history the proposal engine may still want to
+        // attribute against; only an *open* one is a lock worth breaking.
+        let dir = tempfile::tempdir().unwrap();
+        let session = managed(dir.path(), "claude", true);
+        assert_eq!(LocalChangeSession::clear_orphaned_managed(dir.path()), None);
+        assert_eq!(
+            LocalChangeSession::load_managed(dir.path())
+                .unwrap()
+                .session_id,
+            session.session_id
+        );
+    }
+
+    #[test]
+    fn no_record_at_all_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(LocalChangeSession::clear_orphaned_managed(dir.path()), None);
+    }
+
+    #[test]
+    fn clearing_an_orphan_lets_the_next_run_take_the_lock() {
+        // The property that actually matters: after recovery the Circle is
+        // usable again.
+        let dir = tempfile::tempdir().unwrap();
+        managed(dir.path(), "suzent", false);
+        LocalChangeSession::clear_orphaned_managed(dir.path());
+        let next = managed(dir.path(), "codex", false);
+        let held = LocalChangeSession::load_managed(dir.path()).unwrap();
+        assert_eq!(held.session_id, next.session_id);
+        assert!(held.is_open());
+    }
 
     #[test]
     fn start_finish_lifecycle() {

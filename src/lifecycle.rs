@@ -568,6 +568,18 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             warn!("[workspace-event] store initialization failed: {error}");
         }
     }
+    // A managed agent is a child of the daemon, so a session still marked open
+    // when a daemon starts belongs to a process that died with the last one.
+    // Left in place it is a permanent lock: every later mention fails with
+    // "already running in this Circle" naming an agent that is not running.
+    if let Some(agent) =
+        crate::proposal::session::LocalChangeSession::clear_orphaned_managed(&state.circle_dir)
+    {
+        warn!(
+            "[{}] cleared an orphaned managed session for `{agent}` left by a previous daemon",
+            state.circle_id
+        );
+    }
     crate::proposal::engine::spawn_engine(state.clone(), token.clone());
     crate::agent::reaction::spawn_reaction(state.clone(), token.clone());
     presence::spawn_presence(state.clone(), agent_id, token.clone());
