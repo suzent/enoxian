@@ -39,6 +39,24 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- Build output is no longer synced. Circles now respect `.gitignore` (and
+  `.ignore`, and a new `.enoxignore` for enoxian-specific rules), plus a short
+  built-in list — `target/`, `node_modules/`, `__pycache__/`, `.venv/`, `venv/` —
+  so a project with no ignore file still does not replicate its build
+  directory. In one real Circle that was 814 of 1713 tracked files and 1.6 GB of
+  stored history. Editing an ignore file takes effect immediately, without a
+  restart. Files that become ignored stop syncing but are never deleted, on any
+  device.
+
+- Clicking an image in chat now opens it in a viewer inside the app instead of
+  a bare browser tab, so you keep your place in the conversation. Arrow keys
+  page through every image in the transcript, Escape closes it, and there is a
+  download button.
+- Attaching an image shows upload progress, so a large file on a slow
+  connection no longer looks like nothing is happening.
+
 ### Fixed
 
 - Deleting a file or folder now reaches every device, and stays deleted.
@@ -48,7 +66,9 @@ refuses to publish a version whose section is missing or empty.
   them on the device that deleted them, so a deletion could undo itself. A
   device that was away now applies the deletion when it comes back, emptied
   folders are removed rather than left behind, and deleting and re-creating a
-  file under the same name works as expected.
+  file under the same name works as expected. This holds however the folder was
+  removed — deleted outright, or moved to the Trash, which the system reports
+  as a single change to the folder rather than one per file.
 
 ## [0.7.0] — 2026-09-12
 

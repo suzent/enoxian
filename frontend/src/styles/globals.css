@@ -1092,14 +1092,140 @@ button[role="tab"][aria-selected="true"] {
 }
 
 .chat-staged--busy {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: auto;
-  padding: 0 8px;
+  width: 52px;
+  overflow: hidden;
   color: var(--fg-slate);
   font-family: var(--font-mono);
   font-size: var(--ui-tiny);
+}
+
+/* Fills left-to-right behind the percentage as the upload proceeds. */
+.chat-staged__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background-image: var(--stripe-wide);
+  opacity: 0.5;
+  transition: width 120ms linear;
+}
+
+.chat-staged__pct {
+  position: relative;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Lightbox ─────────────────────────────────────────────────────────────── */
+
+/* A paper scrim rather than a dark one: the app is a light, printed surface,
+   and a black overlay reads as a different application. The halftone dither
+   keeps it from looking like a plain wash. */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: var(--shell-gap);
+  padding: var(--shell-padding);
+  background-color: rgba(244, 243, 239, 0.94);
+  background-image: var(--dither-fill);
+  background-size: 3px 3px;
+}
+
+.lightbox__bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--shell-gap);
+  min-height: 34px;
+  padding: 5px 9px;
+  border: 2px solid var(--fg-obsidian);
+  background-color: var(--bg-alabaster);
+  background-image: var(--stripe-soft);
+  box-shadow: 3px 3px 0 rgba(10, 10, 10, 0.13);
+  color: var(--fg-obsidian);
+  font-family: var(--font-mono);
+  font-size: var(--ui-tiny);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.lightbox__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* The filename is the one thing here that is not shouted. */
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+.lightbox__count {
+  color: var(--fg-slate);
+  font-variant-numeric: tabular-nums;
+}
+
+.lightbox__stage {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--shell-gap);
+  min-height: 0;
+}
+
+/* Framed like every other surface in the app, which also keeps a pale image
+   legible against the pale scrim. */
+.lightbox__figure {
+  display: flex;
+  margin: 0;
+  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
+  /* A favicon-sized image should still read as a framed object rather than a
+     stray speck of chrome. Never scales the image itself — only the mount. */
+  min-width: 120px;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border: 2px solid var(--fg-obsidian);
+  background: var(--surface-panel);
+  box-shadow: 3px 3px 0 rgba(10, 10, 10, 0.13);
+}
+
+.lightbox__img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+.lightbox__nav {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 56px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.lightbox__nav:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+@media (max-width: 600px) {
+  /* Reclaim the width for the image itself; keyboard still pages. */
+  .lightbox__nav {
+    width: 26px;
+  }
 }
 
 .chat-staged__remove {

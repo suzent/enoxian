@@ -25,7 +25,7 @@ pub async fn preload_workspace(state: &AppState, workspace: &PathBuf) {
                 Ok(r) => r.to_string_lossy().replace('\\', "/"),
                 Err(_) => continue,
             };
-            if is_ignored(&rel) {
+            if state.is_ignored(&rel) {
                 continue;
             }
 
@@ -80,7 +80,32 @@ pub async fn spawn_watcher(
     workspace: PathBuf,
     token: CancellationToken,
 ) -> anyhow::Result<()> {
+    // Compile ignore rules before the preload scan, so a build tree is never
+    // tracked in the first place.
+    state.reload_ignore_rules();
+
     preload_workspace(&state, &workspace).await;
+
+    // Rules can change between runs — a `.gitignore` added, or a new built-in
+    // shipped. Drop anything now excluded. Untracking only: the files stay on
+    // disk here and on every peer, because adding an ignore rule is not a
+    // request to delete a teammate's build output.
+    let now_ignored: Vec<String> = state
+        .docs
+        .iter()
+        .map(|e| e.key().clone())
+        .filter(|p| state.is_ignored(p))
+        .collect();
+    if !now_ignored.is_empty() {
+        tracing::info!(
+            "[watcher] untracking {} newly-ignored path(s)",
+            now_ignored.len()
+        );
+        for path in now_ignored {
+            state.remove_doc(&path);
+            crate::store::crdt::delete(&state.workspace, &path).await;
+        }
+    }
 
     // Preload re-creates a doc for every file on disk, including ones a peer
     // deleted while this device was offline. Apply pending tombstones now, so
@@ -126,40 +151,6 @@ pub async fn spawn_watcher(
     Ok(())
 }
 
-pub(crate) fn is_ignored(rel: &str) -> bool {
-    let name = rel.split('/').next_back().unwrap_or(rel);
-    if rel.split('/').any(|part| part.starts_with('.')) {
-        return true;
-    }
-    // Hidden files
-    if name.starts_with('.') {
-        return true;
-    }
-    // Editor temp/swap files
-    if name.ends_with('~') {
-        return true;
-    }
-    if name.ends_with(".swp") || name.ends_with(".swx") || name.ends_with(".swo") {
-        return true;
-    }
-    if name.ends_with(".tmp") {
-        return true;
-    }
-    // Sublime Text safe-write: test.txt.sb-<hex>-<random>
-    if name.contains(".sb-") {
-        return true;
-    }
-    // Conflict copies written by the sync engine: file.txt.conflict.agent-id
-    if name.contains(".conflict.") {
-        return true;
-    }
-    // Vim temp files (numeric names like 4913)
-    if name.chars().all(|c| c.is_ascii_digit()) {
-        return true;
-    }
-    false
-}
-
 async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
     let relevant = matches!(
         event.kind,
@@ -192,21 +183,44 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
             Err(_) => continue,
         };
 
-        if is_ignored(&rel) {
+        // Recompile before the ignore check: an ignore file is itself a
+        // dotfile, so testing it first would discard the very event that tells
+        // us the rules changed. Not tracked either way — only consulted.
+        if crate::ignore_rules::is_ignore_file(&rel) {
+            state.reload_ignore_rules();
+        }
+
+        if state.is_ignored(&rel) {
             continue;
         }
 
         if matches!(event.kind, EventKind::Remove(_)) {
-            state.remove_doc(&rel);
-            crate::store::crdt::delete(&state.workspace, &rel).await;
+            // One event can stand for a whole tree. Deleting a folder is
+            // reported per-file on some platforms and as a single event for the
+            // directory on others (moving a folder to the Trash is one rename
+            // of the folder). Expanding to the documents beneath the path makes
+            // both shapes produce the same durable result, instead of a
+            // tombstone keyed `repo` that matches none of the 1713 documents
+            // keyed `repo/...`.
+            let mut paths = crate::deletions::docs_under(state, &rel);
+            if !paths.contains(&rel) {
+                paths.push(rel.clone());
+            }
+
             // Durable record first: the live frame below only reaches peers
             // connected at this instant, and a bulk delete overflows its
             // broadcast buffer. The tombstone is what makes the deletion
             // survive a disconnect and stop the file being re-created here on
             // the next handshake.
             crate::deletions::record(state, &rel);
-            let _ = state.all_deletes.send(rel.clone());
-            let _ = state.events.send(CircleEvent::FileDeleted { path: rel });
+
+            for path in paths {
+                state.remove_doc(&path);
+                crate::store::crdt::delete(&state.workspace, &path).await;
+                crate::deletions::record(state, &path);
+                let _ = state.all_deletes.send(path.clone());
+                let _ = state.events.send(CircleEvent::FileDeleted { path });
+            }
             continue;
         }
 

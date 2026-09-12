@@ -97,27 +97,67 @@ export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 export const blobUrl = (id: string, hash: string) =>
   withToken(`${api(id)}/blobs/${hash}`)
 
-/** Upload one attachment. Bypasses the shared `request` helper: uploads send a
- *  raw body and can legitimately outlast the 10s JSON timeout. */
-export async function uploadAttachment(
+/** Upload one attachment, reporting progress as a 0..1 fraction.
+ *
+ *  Uses XMLHttpRequest rather than fetch: fetch cannot report *upload*
+ *  progress without a duplex request stream, which is not broadly supported.
+ *  Also bypasses the shared `request` helper, since an upload sends a raw body
+ *  and can legitimately outlast the 10s JSON timeout.
+ *
+ *  `signal` lets the caller cancel an in-flight upload. */
+export function uploadAttachment(
   id: string,
   file: File,
+  onProgress?: (fraction: number) => void,
+  signal?: AbortSignal,
 ): Promise<Attachment> {
   const url = `${api(id)}/chat/attachments?name=${encodeURIComponent(file.name)}`
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/octet-stream' }),
-    body: file,
+  return new Promise<Attachment>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', url)
+    for (const [k, v] of Object.entries(authHeaders({ 'Content-Type': 'application/octet-stream' }))) {
+      xhr.setRequestHeader(k, v)
+    }
+
+    xhr.upload.onprogress = e => {
+      // Without a total we cannot show a fraction; the caller falls back to an
+      // indeterminate state rather than inventing a number.
+      if (e.lengthComputable && e.total > 0) onProgress?.(e.loaded / e.total)
+    }
+    // The bytes are on the wire but the daemon still has to hash and sniff
+    // them, so hold just below complete until the response actually lands.
+    xhr.upload.onload = () => onProgress?.(0.99)
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          onProgress?.(1)
+          resolve(JSON.parse(xhr.responseText))
+        } catch {
+          reject(new Error('Malformed upload response'))
+        }
+        return
+      }
+      let msg = `Upload failed (${xhr.status})`
+      try {
+        const data = JSON.parse(xhr.responseText)
+        if (data.error) msg = data.error
+      } catch {}
+      reject(new Error(msg))
+    }
+    xhr.onerror = () => reject(new Error('Upload failed — is the daemon running?'))
+    xhr.ontimeout = () => reject(new Error('Upload timed out'))
+    xhr.onabort = () => reject(new DOMException('Upload cancelled', 'AbortError'))
+
+    if (signal) {
+      if (signal.aborted) {
+        xhr.abort()
+        return
+      }
+      signal.addEventListener('abort', () => xhr.abort(), { once: true })
+    }
+    xhr.send(file)
   })
-  if (!res.ok) {
-    let msg = `Upload failed (${res.status})`
-    try {
-      const data = await res.json()
-      if (data.error) msg = data.error
-    } catch {}
-    throw new Error(msg)
-  }
-  return res.json()
 }
 export const getChatActivity = (id: string) =>
   get<ChatActivity[]>(`${api(id)}/chat/activity`)
