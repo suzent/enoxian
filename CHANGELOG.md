@@ -83,6 +83,11 @@ refuses to publish a version whose section is missing or empty.
 - Upgraded the ChaCha20-Poly1305 implementation used for encrypted content
   frames to 0.11. No vulnerability is fixed and the frame format is unchanged;
   the upgrade keeps the cipher on a maintained release line.
+- Upgraded the random number generator to `rand` 0.10. Key, token and nonce
+  generation continue to use a cryptographically secure generator seeded by the
+  operating system. Where a content nonce previously came from an OS entropy
+  read that would abort the process if it ever failed, the failure is now
+  reported as an ordinary error instead.
 
 ## [0.6.2] — 2026-09-11
 

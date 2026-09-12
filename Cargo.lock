@@ -1117,7 +1117,7 @@ dependencies = [
  "openmls_basic_credential",
  "openmls_rust_crypto",
  "openmls_traits",
- "rand 0.8.6",
+ "rand 0.10.1",
  "reqwest",
  "rust-embed",
  "serde",

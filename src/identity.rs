@@ -16,7 +16,7 @@
 use anyhow::{bail, Context, Result};
 use hkdf::Hkdf;
 use libp2p::identity::Keypair;
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::path::PathBuf;
@@ -72,7 +72,7 @@ impl DeviceIdentity {
     /// Generate a fresh device identity with the given label.
     pub fn generate(device_label: String) -> Self {
         let mut seed = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut seed);
+        rand::rng().fill_bytes(&mut seed);
         DeviceIdentity {
             seed,
             device_label,
@@ -190,7 +190,7 @@ impl UserIdentity {
     /// 24-word BIP-39 mnemonic the user must back up.
     pub fn generate(handle: String) -> Result<(Self, String)> {
         let mut seed = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut seed);
+        rand::rng().fill_bytes(&mut seed);
         let mnemonic = bip39::Mnemonic::from_entropy(&seed)
             .context("generate mnemonic")?
             .to_string();
