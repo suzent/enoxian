@@ -12,6 +12,13 @@ use crate::{
 };
 
 pub async fn run(args: InitArgs) -> Result<()> {
+    // ── Validate arguments before anything is written ─────────────────────────
+    // Everything below this point creates state: the workspace directory, the
+    // circle config, the admin key, the MLS group. A TTL that cannot be turned
+    // into an invite has to fail here, or the command exits with an error
+    // having already made a circle.
+    let ttl = invite::parse_ttl(&args.ttl)?;
+
     // ── Enforce unique name locally ───────────────────────────────────────────
     let existing = config::load_all()?;
     if existing.iter().any(|c| c.circle_name == args.name) {
@@ -119,7 +126,6 @@ pub async fn run(args: InitArgs) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to save MLS group: {e}"))?;
 
     // ── Generate invite ───────────────────────────────────────────────────────
-    let ttl = invite::parse_ttl(&args.ttl)?;
     let admin_pubkey_bytes = hex::decode(&admin_pubkey_hex).ok();
     let expires_at = Utc::now() + ttl;
     let grant = invite::sign_grant(&circle_id, &keypair_to_hex(&keypair)?, expires_at).ok();
@@ -137,7 +143,7 @@ pub async fn run(args: InitArgs) -> Result<()> {
         relay_is_default: false,
         rendezvous_is_default: false,
         grant,
-    });
+    })?;
 
     println!("✦ Circle cast: {}", args.name);
     println!("  circle-id : {circle_id}");

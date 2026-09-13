@@ -256,7 +256,7 @@ pub async fn generate_invite(
             e
         })
         .ok();
-    let uri = invite::encode(&InvitePayload {
+    let uri = match invite::encode(&InvitePayload {
         circle_id: config.circle_id.clone(),
         psk_bytes: psk,
         circle_name: Some(config.circle_name.clone()),
@@ -268,7 +268,17 @@ pub async fn generate_invite(
         relay_is_default,
         rendezvous_is_default,
         grant,
-    });
+    }) {
+        Ok(uri) => uri,
+        Err(e) => {
+            tracing::error!("[invite] could not encode invite: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("could not encode invite: {e}") })),
+            )
+                .into_response();
+        }
+    };
 
     Json(json!({
         "invite_uri": uri,

@@ -60,7 +60,7 @@ The opaque payload is a variable-length byte array encoded as base64url (no padd
 | 0 | Flags (see below) |
 | 1–16 | Circle UUID (per `Uuid::as_bytes()`) |
 | 17–48 | PSK (32 raw bytes) |
-| 49–52 | Expiry — Unix timestamp as `u32` big-endian |
+| 49–52 | Expiry — Unix timestamp as `u32` big-endian (so no invite can expire after 2106-02-07; `parse_ttl` refuses a longer TTL) |
 
 ### Flags
 
@@ -79,18 +79,20 @@ The opaque payload is a variable-length byte array encoded as base64url (no padd
 
 ### Body
 
-Only the flagged fields appear, in this order. Lengths are a single `u8` — every field here is short by construction.
+Only the flagged fields appear, in this order.
 
 | Field | Encoding |
 |-------|----------|
-| Circle name | u8 length + UTF-8 |
+| Circle name | length + UTF-8 |
 | Peer address | address field |
-| Admin public key | u8 length + raw bytes (Ed25519, protobuf-encoded) |
+| Admin public key | length + raw bytes (Ed25519, protobuf-encoded) |
 | Relay address | address field |
 | Rendezvous address | address field |
-| Grant | u8 length + inviter pubkey, then nonce, then u8 length + signature |
+| Grant | length + inviter pubkey, then nonce, then length + signature |
 
-An **address field** is a tag byte — `0` for libp2p's binary multiaddr encoding, `1` for UTF-8 text — followed by a u8 length and the bytes.
+A **length** is an unsigned LEB128 varint: one byte below 128, which covers every field in practice, and a second byte beyond that. A multiaddr built on a long DNS name can exceed 255 bytes, and v1 carried those, so a fixed `u8` would have been a regression.
+
+An **address field** is a tag byte — `0` for libp2p's binary multiaddr encoding, `1` for UTF-8 text — followed by a length and the bytes.
 
 A **nonce** is a tag byte — `0` for 16 raw UUID bytes, `1` for UTF-8 text — followed by the bytes. `sign_grant` always produces a UUID; the text form exists so a grant minted elsewhere is not silently corrupted.
 

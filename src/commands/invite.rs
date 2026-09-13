@@ -104,7 +104,7 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
         relay_is_default,
         rendezvous_is_default,
         grant,
-    });
+    })?;
 
     println!(
         "✦ Invite for '{}' (valid {}):",

@@ -82,6 +82,14 @@ const ADDR_BINARY: u8 = 0;
 /// Tag on an address field: UTF-8 text, for anything that would not parse.
 const ADDR_TEXT: u8 = 1;
 
+/// The latest expiry a v2 invite can carry, from the `u32` timestamp: 2106-02-07.
+///
+/// `parse_ttl` refuses anything beyond it, so the limit is reported as a bad
+/// argument rather than surfacing much later from `encode`.
+fn max_expiry() -> DateTime<Utc> {
+    DateTime::from_timestamp(i64::from(u32::MAX), 0).expect("u32::MAX is a valid Unix timestamp")
+}
+
 /// Tag on a grant nonce: 16 raw UUID bytes.
 const NONCE_UUID: u8 = 0;
 /// Tag on a grant nonce: UTF-8 text, for a nonce that is not a UUID.
@@ -194,17 +202,28 @@ pub fn grant_message(circle_id: &str, nonce: &str, expires_at: DateTime<Utc>) ->
 
 // ── Encoding ──────────────────────────────────────────────────────────────────
 
-/// Append a `u8`-length-prefixed run of bytes.
+/// Append a length as an unsigned LEB128 varint.
 ///
-/// Every optional field in v2 is short by construction — a name, a multiaddr, a
-/// key, a signature — so one length byte is enough where v1 spent two.
-fn put_bytes(out: &mut Vec<u8>, bytes: &[u8], what: &str) {
-    assert!(
-        bytes.len() <= 255,
-        "{what} is {} bytes, too long for an invite",
-        bytes.len()
-    );
-    out.push(bytes.len() as u8);
+/// One byte for anything under 128, which in practice is every field here — a
+/// circle name, a binary multiaddr, a key, a signature — so the common invite
+/// pays exactly what a `u8` prefix would have cost. A field that runs longer
+/// spills into a second byte instead of being refused: a multiaddr built on a
+/// long DNS name can exceed 255 bytes, and v1 encoded those fine.
+fn put_len(out: &mut Vec<u8>, mut n: usize) {
+    loop {
+        let byte = (n & 0x7f) as u8;
+        n >>= 7;
+        if n == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// Append a length-prefixed run of bytes.
+fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    put_len(out, bytes.len());
     out.extend_from_slice(bytes);
 }
 
@@ -215,26 +234,37 @@ fn put_bytes(out: &mut Vec<u8>, bytes: &[u8], what: &str) {
 /// is carried as the multihash it already is rather than re-spelled in base58.
 /// Anything that will not parse is kept verbatim as text, so a hand-written
 /// `--peer` value survives the round trip either way.
-fn put_addr(out: &mut Vec<u8>, addr: &str, what: &str) {
+fn put_addr(out: &mut Vec<u8>, addr: &str) {
     match addr.parse::<Multiaddr>() {
         Ok(m) => {
             out.push(ADDR_BINARY);
-            put_bytes(out, &m.to_vec(), what);
+            put_bytes(out, &m.to_vec());
         }
         Err(_) => {
             out.push(ADDR_TEXT);
-            put_bytes(out, addr.as_bytes(), what);
+            put_bytes(out, addr.as_bytes());
         }
     }
 }
 
-pub fn encode(payload: &InvitePayload) -> String {
-    let uuid = Uuid::parse_str(&payload.circle_id).expect("circle_id must be a valid UUID");
+/// Encode an invite as an `enoxian://v2/` URI.
+///
+/// Fallible rather than panicking: an expiry beyond [`MAX_EXPIRY`] or a grant
+/// whose fields are not hex cannot be represented, and a caller that has
+/// already written state to disk needs to report that, not abort. `parse_ttl`
+/// rejects an out-of-range expiry earlier still, before any of that state
+/// exists.
+pub fn encode(payload: &InvitePayload) -> Result<String> {
+    let uuid = Uuid::parse_str(&payload.circle_id).context("circle_id must be a valid UUID")?;
 
     let ts = payload.expires_at.timestamp();
-    let ts = u32::try_from(ts).unwrap_or_else(|_| {
-        panic!("invite expiry {ts} is outside the range a v2 invite can carry")
-    });
+    let ts = u32::try_from(ts).map_err(|_| {
+        anyhow::anyhow!(
+            "an invite cannot expire at {} — the latest it can carry is {}",
+            payload.expires_at.format("%Y-%m-%d %H:%M UTC"),
+            max_expiry().format("%Y-%m-%d %H:%M UTC")
+        )
+    })?;
 
     let mut flags = 0u8;
     if payload.circle_name.is_some() {
@@ -269,27 +299,27 @@ pub fn encode(payload: &InvitePayload) -> String {
     raw.extend_from_slice(&ts.to_be_bytes());
 
     if let Some(ref name) = payload.circle_name {
-        put_bytes(&mut raw, name.as_bytes(), "circle name");
+        put_bytes(&mut raw, name.as_bytes());
     }
     if let Some(ref peer) = payload.peer_addr {
-        put_addr(&mut raw, peer, "peer addr");
+        put_addr(&mut raw, peer);
     }
     if let Some(ref admin) = payload.admin_pubkey_bytes {
-        put_bytes(&mut raw, admin, "admin pubkey");
+        put_bytes(&mut raw, admin);
     }
     if let Some(ref relay) = payload.relay_addr {
-        put_addr(&mut raw, relay, "relay addr");
+        put_addr(&mut raw, relay);
     }
     if let Some(ref rendezvous) = payload.rendezvous_addr {
-        put_addr(&mut raw, rendezvous, "rendezvous addr");
+        put_addr(&mut raw, rendezvous);
     }
     if let Some(ref grant) = payload.grant {
         // Both key and signature are hex on the struct because that is what
         // callers and the control doc use; on the wire they are the bytes that
         // hex was spelling, which halves them.
         let inviter = hex::decode(grant.inviter_pubkey_hex.trim())
-            .expect("grant inviter pubkey must be valid hex");
-        put_bytes(&mut raw, &inviter, "inviter pubkey");
+            .context("grant inviter pubkey is not valid hex")?;
+        put_bytes(&mut raw, &inviter);
 
         match Uuid::parse_str(&grant.nonce) {
             Ok(id) => {
@@ -298,15 +328,15 @@ pub fn encode(payload: &InvitePayload) -> String {
             }
             Err(_) => {
                 raw.push(NONCE_TEXT);
-                put_bytes(&mut raw, grant.nonce.as_bytes(), "grant nonce");
+                put_bytes(&mut raw, grant.nonce.as_bytes());
             }
         }
 
-        let sig = hex::decode(grant.sig.trim()).expect("grant signature must be valid hex");
-        put_bytes(&mut raw, &sig, "grant signature");
+        let sig = hex::decode(grant.sig.trim()).context("grant signature is not valid hex")?;
+        put_bytes(&mut raw, &sig);
     }
 
-    format!("{SCHEME_V2}{}", URL_SAFE_NO_PAD.encode(&raw))
+    Ok(format!("{SCHEME_V2}{}", URL_SAFE_NO_PAD.encode(&raw)))
 }
 
 // ── Decoding ──────────────────────────────────────────────────────────────────
@@ -336,9 +366,29 @@ impl<'a> Reader<'a> {
         Ok(self.take(1, what)?[0])
     }
 
-    /// A `u8`-length-prefixed run.
+    /// An unsigned LEB128 length, as written by `put_len`.
+    fn len(&mut self, what: &str) -> Result<usize> {
+        let mut n: usize = 0;
+        let mut shift = 0u32;
+        loop {
+            // Five groups of seven bits cover any length a 16 MB-capped URI
+            // could hold. More than that is a malformed or hostile payload
+            // rather than a long field, and must not be allowed to spin.
+            if shift > 28 {
+                bail!("length prefix for {what} is malformed");
+            }
+            let byte = self.byte(what)?;
+            n |= ((byte & 0x7f) as usize) << shift;
+            if byte & 0x80 == 0 {
+                return Ok(n);
+            }
+            shift += 7;
+        }
+    }
+
+    /// A length-prefixed run.
     fn bytes(&mut self, what: &str) -> Result<&'a [u8]> {
-        let len = self.byte(what)? as usize;
+        let len = self.len(what)?;
         self.take(len, what)
     }
 
@@ -661,15 +711,33 @@ pub fn check_expiry(payload: &InvitePayload) -> Result<()> {
 // ── TTL parsing ───────────────────────────────────────────────────────────────
 
 pub fn parse_ttl(s: &str) -> Result<Duration> {
-    if let Some(days) = s.strip_suffix('d') {
+    let ttl = if let Some(days) = s.strip_suffix('d') {
         let n: i64 = days.parse().context("invalid number of days in TTL")?;
-        Ok(Duration::days(n))
+        Duration::try_days(n).with_context(|| format!("TTL '{s}' is out of range"))?
     } else if let Some(hours) = s.strip_suffix('h') {
         let n: i64 = hours.parse().context("invalid number of hours in TTL")?;
-        Ok(Duration::hours(n))
+        Duration::try_hours(n).with_context(|| format!("TTL '{s}' is out of range"))?
     } else {
         bail!("invalid TTL '{s}' — use e.g. '7d' or '24h'")
+    };
+
+    // The range check belongs here, not in `encode`. A TTL is a command-line
+    // argument, and callers parse it before they start writing: `enox init`
+    // saves the circle config, the admin key and the MLS group before it mints
+    // the first invite, so an expiry rejected at encode time would leave a
+    // half-made circle behind a failed command.
+    let expires_at = Utc::now()
+        .checked_add_signed(ttl)
+        .with_context(|| format!("TTL '{s}' is out of range"))?;
+    if u32::try_from(expires_at.timestamp()).is_err() {
+        bail!(
+            "TTL '{s}' expires at {}, later than an invite can express — \
+             the limit is {}",
+            expires_at.format("%Y-%m-%d"),
+            max_expiry().format("%Y-%m-%d")
+        );
     }
+    Ok(ttl)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -711,7 +779,7 @@ mod tests {
             rendezvous_is_default: false,
         };
 
-        let uri = encode(&payload);
+        let uri = encode(&payload).unwrap();
         assert!(uri.starts_with("enoxian://v2/"));
         assert!(!uri.contains('?'), "URI must not have a query string");
         assert!(!uri.contains('&'), "URI must not contain & (shell unsafe)");
@@ -750,7 +818,7 @@ mod tests {
             relay_is_default: false,
             rendezvous_is_default: false,
         };
-        let uri = encode(&payload);
+        let uri = encode(&payload).unwrap();
         let decoded = decode(&uri).unwrap();
         assert!(decoded.circle_name.is_none());
         assert!(decoded.peer_addr.is_none());
@@ -772,7 +840,7 @@ mod tests {
             relay_is_default: false,
             rendezvous_is_default: false,
         };
-        let uri = encode(&payload);
+        let uri = encode(&payload).unwrap();
         let decoded = decode(&uri).unwrap();
         assert!(check_expiry(&decoded).is_err());
     }
@@ -862,7 +930,7 @@ mod tests {
     fn a_v2_invite_is_far_shorter_than_the_v1_it_replaces() {
         let payload = realistic(Some(a_grant()));
         let v1 = encode_v1(&payload);
-        let v2 = encode(&payload);
+        let v2 = encode(&payload).unwrap();
 
         assert!(
             v2.len() * 3 < v1.len() * 2,
@@ -878,13 +946,13 @@ mod tests {
     #[test]
     fn naming_the_default_servers_costs_nothing() {
         let mut payload = realistic(Some(a_grant()));
-        let with_addrs = encode(&payload);
+        let with_addrs = encode(&payload).unwrap();
 
         payload.relay_addr = None;
         payload.rendezvous_addr = None;
         payload.relay_is_default = true;
         payload.rendezvous_is_default = true;
-        let with_flags = encode(&payload);
+        let with_flags = encode(&payload).unwrap();
 
         // 515 -> 372 at the time of writing. This is the shape of invite the
         // CLI actually mints on a stock build, so it is the number that matters.
@@ -911,7 +979,7 @@ mod tests {
     /// silently become the public one.
     #[test]
     fn an_explicit_address_is_never_reported_as_the_default() {
-        let decoded = decode(&encode(&realistic(None))).unwrap();
+        let decoded = decode(&encode(&realistic(None)).unwrap()).unwrap();
         assert!(!decoded.relay_is_default);
         assert!(!decoded.rendezvous_is_default);
         assert_eq!(decoded.relay_addr, realistic(None).relay_addr);
@@ -923,7 +991,7 @@ mod tests {
     #[test]
     fn multiaddrs_survive_the_binary_encoding() {
         let payload = realistic(None);
-        let decoded = decode(&encode(&payload)).unwrap();
+        let decoded = decode(&encode(&payload).unwrap()).unwrap();
         assert_eq!(decoded.peer_addr, payload.peer_addr);
         assert_eq!(decoded.relay_addr, payload.relay_addr);
         assert_eq!(decoded.rendezvous_addr, payload.rendezvous_addr);
@@ -935,7 +1003,7 @@ mod tests {
     fn an_unparseable_address_falls_back_to_text() {
         let mut payload = realistic(None);
         payload.peer_addr = Some("not-a-multiaddr-at-all".to_string());
-        let decoded = decode(&encode(&payload)).unwrap();
+        let decoded = decode(&encode(&payload).unwrap()).unwrap();
         assert_eq!(decoded.peer_addr.as_deref(), Some("not-a-multiaddr-at-all"));
     }
 
@@ -980,7 +1048,7 @@ mod tests {
         payload.circle_id = circle.to_string();
         payload.expires_at = expires;
 
-        let decoded = decode(&encode(&payload)).unwrap();
+        let decoded = decode(&encode(&payload).unwrap()).unwrap();
         let back = decoded.grant.expect("grant survives v2 encoding");
         assert!(verify_grant(circle, &back, decoded.expires_at).is_ok());
     }
@@ -991,7 +1059,7 @@ mod tests {
     fn a_non_uuid_nonce_round_trips_as_text() {
         let mut payload = realistic(Some(a_grant()));
         payload.grant.as_mut().unwrap().nonce = "legacy-nonce-value".to_string();
-        let decoded = decode(&encode(&payload)).unwrap();
+        let decoded = decode(&encode(&payload).unwrap()).unwrap();
         assert_eq!(decoded.grant.unwrap().nonce, "legacy-nonce-value");
     }
 
@@ -999,7 +1067,7 @@ mod tests {
     /// invite — the flags promise fields that a truncated link cannot deliver.
     #[test]
     fn a_truncated_v2_payload_is_rejected() {
-        let uri = encode(&realistic(Some(a_grant())));
+        let uri = encode(&realistic(Some(a_grant()))).unwrap();
         let b64 = uri.strip_prefix(SCHEME_V2).unwrap();
         let raw = URL_SAFE_NO_PAD.decode(b64).unwrap();
 
@@ -1010,6 +1078,109 @@ mod tests {
                 "a payload cut to {cut} bytes decoded anyway"
             );
         }
+    }
+
+    /// A multiaddr built on a long DNS name runs past 255 bytes. v1 carried
+    /// those, so v2 must too — the varint length prefix spills into a second
+    /// byte rather than refusing the address.
+    #[test]
+    fn a_relay_address_longer_than_255_bytes_still_encodes() {
+        let host = "a".repeat(223);
+        let relay = format!(
+            "/dns4/{host}/tcp/36522/p2p/\
+             12D3KooWQbnLYdEz6f2EfSQXHkZbmWCTyPWk8WjbNmaTnDqDCeYk"
+        );
+        assert!(
+            relay.parse::<Multiaddr>().unwrap().to_vec().len() > 255,
+            "test needs an address whose binary form exceeds a u8 length"
+        );
+
+        let mut payload = realistic(Some(a_grant()));
+        payload.relay_addr = Some(relay.clone());
+
+        let decoded = decode(&encode(&payload).unwrap()).unwrap();
+        assert_eq!(decoded.relay_addr.as_deref(), Some(relay.as_str()));
+    }
+
+    /// The varint is one byte below 128 and two at 128, so the common invite
+    /// pays exactly what a `u8` prefix would have. Both sides of that boundary
+    /// have to round-trip.
+    #[test]
+    fn fields_either_side_of_the_varint_boundary_round_trip() {
+        for len in [127usize, 128, 129] {
+            let mut payload = realistic(None);
+            payload.circle_name = Some("n".repeat(len));
+            let decoded = decode(&encode(&payload).unwrap()).unwrap();
+            assert_eq!(
+                decoded.circle_name.as_deref().map(str::len),
+                Some(len),
+                "a {len}-byte name did not survive"
+            );
+        }
+    }
+
+    /// A `u32` expiry cannot reach the year 36 500 days out. That has to be
+    /// refused while it is still a command-line argument: `enox init` writes
+    /// the circle config, the admin key and the MLS group before it mints an
+    /// invite, so failing at encode time would leave a half-made circle.
+    #[test]
+    fn a_ttl_beyond_the_expressible_range_is_rejected_at_parse_time() {
+        let err = parse_ttl("36500d").expect_err("a 100-year TTL cannot be carried");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("36500d") && msg.contains("limit"),
+            "the error should name the TTL and the limit, got: {msg}"
+        );
+
+        // The TTLs people actually use stay accepted.
+        assert!(parse_ttl("7d").is_ok());
+        assert!(parse_ttl("365d").is_ok());
+    }
+
+    /// Whatever `parse_ttl` accepts, `encode` must be able to carry — otherwise
+    /// the check in front of the side effects is not the check that matters.
+    #[test]
+    fn every_accepted_ttl_can_be_encoded() {
+        for ttl in ["1h", "24h", "7d", "365d", "3650d"] {
+            let mut payload = realistic(None);
+            payload.expires_at = Utc::now() + parse_ttl(ttl).unwrap();
+            assert!(
+                encode(&payload).is_ok(),
+                "parse_ttl accepted {ttl} but encode refused it"
+            );
+        }
+    }
+
+    /// An expiry built without going through `parse_ttl` still cannot panic —
+    /// it comes back as an ordinary error naming the limit.
+    #[test]
+    fn an_unencodable_expiry_is_an_error_not_a_panic() {
+        let mut payload = realistic(None);
+        payload.expires_at = DateTime::from_timestamp(i64::from(u32::MAX) + 1, 0).unwrap();
+        let err = encode(&payload).expect_err("an expiry past 2106 cannot be carried");
+        assert!(err.to_string().contains("2106"), "got: {err}");
+    }
+
+    /// Malformed hex in a grant is likewise an error rather than a panic; the
+    /// struct carries hex because callers do, so it can hold anything.
+    #[test]
+    fn a_malformed_grant_is_an_error_not_a_panic() {
+        let mut payload = realistic(Some(a_grant()));
+        payload.grant.as_mut().unwrap().sig = "not hex".to_string();
+        assert!(encode(&payload).is_err());
+    }
+
+    /// A length prefix that never terminates must be rejected rather than read
+    /// forever.
+    #[test]
+    fn a_runaway_length_prefix_is_rejected() {
+        let mut raw = vec![FLAG_NAME];
+        raw.extend_from_slice(&[0u8; 16]); // circle id
+        raw.extend_from_slice(&[0u8; 32]); // psk
+        raw.extend_from_slice(&0u32.to_be_bytes()); // expiry
+        raw.extend_from_slice(&[0xff; 16]); // a length prefix with no final byte
+        let uri = format!("{SCHEME_V2}{}", URL_SAFE_NO_PAD.encode(&raw));
+        assert!(decode(&uri).is_err());
     }
 
     #[test]
@@ -1106,7 +1277,8 @@ mod grant_tests {
             relay_is_default: false,
             rendezvous_is_default: false,
             grant: Some(grant),
-        });
+        })
+        .unwrap();
         let back = decode(&uri)
             .unwrap()
             .grant
@@ -1131,7 +1303,8 @@ mod grant_tests {
             relay_is_default: false,
             rendezvous_is_default: false,
             grant: None,
-        });
+        })
+        .unwrap();
         assert!(decode(&uri).unwrap().grant.is_none());
     }
 }
