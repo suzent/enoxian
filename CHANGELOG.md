@@ -98,6 +98,13 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Agents are given the exact handle for every agent in the Circle, instead of a
+  display label they had to reconstruct a mention from. The roster read
+  `suzy (jessair) [agents: claude]`, leaving an agent to guess that addressing
+  it meant `@suzy/jessair/claude` — a guess it could not check. The addressing
+  rules are also stated now even on a device that cannot yet place itself in
+  the roster, since they do not depend on knowing that.
+
 - An agent can hand work to an agent of the same name on another device. Two
   machines each running a `claude` could not pass anything between them: the
   hand-off was read as the agent mentioning itself and dropped, with nothing
