@@ -153,6 +153,38 @@ async fn an_agent_reply_hands_off_once_and_carries_the_chain() {
 }
 
 #[tokio::test]
+async fn one_devices_agent_can_hand_off_to_the_same_name_on_another_device() {
+    // Two machines each run an agent called "claude". A hand-off from one to
+    // the other used to be read as a self-mention and silently never fired.
+    let (router, state, _dir) = harness();
+    send(
+        &router,
+        post_chat(serde_json::json!({ "text": "@claude say hello to the other one", "agent_id": "alice" })),
+    )
+    .await;
+    let root = transcript(&router).await[0].clone();
+    let mut rx = state.events.subscribe();
+
+    enoxian::api::chat::post_message(
+        &state,
+        "claude".into(),
+        "@suzy/jessair/claude — hi, give us a wave".into(),
+        Trigger::AgentReply {
+            agent: "claude".into(),
+            parent: root.relay.clone(),
+        },
+    )
+    .unwrap();
+
+    let fired: Vec<String> = drained(&mut rx).into_iter().map(|(a, _)| a).collect();
+    assert_eq!(
+        fired,
+        vec!["suzy/jessair/claude"],
+        "a different machine's agent shares only a name, not an identity"
+    );
+}
+
+#[tokio::test]
 async fn an_agent_never_wakes_itself() {
     let (router, state, _dir) = harness();
     send(
