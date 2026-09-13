@@ -282,6 +282,9 @@ export interface IdentityInfo {
   device_label: string
   user_handle: string | null
   has_user_key: boolean
+  /** Which build stream `enox update` follows. Read-only: switching channels
+   *  is an update, not a preference. */
+  update_channel?: string
 }
 
 export const getIdentity = () => get<IdentityInfo>('/api/identity')

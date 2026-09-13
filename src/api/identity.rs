@@ -1,4 +1,4 @@
-use axum::{http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -10,6 +10,11 @@ pub async fn get_identity() -> impl IntoResponse {
             "device_label": d.device_label,
             "user_handle":  d.user_handle,
             "has_user_key": d.user_pubkey_hex.is_some(),
+            // Which build stream `enox update` follows. Read-only here:
+            // switching channels is an update, not a preference.
+            "update_channel": crate::config::load_global()
+                .update_channel
+                .unwrap_or_else(|| "stable".to_string()),
         }))
         .into_response(),
         Err(_) => Json(json!({
@@ -27,7 +32,10 @@ pub struct SetIdentityRequest {
     pub user_handle: Option<String>,
 }
 
-pub async fn set_identity(Json(req): Json<SetIdentityRequest>) -> impl IntoResponse {
+pub async fn set_identity(
+    State(daemon): State<crate::daemon::DaemonState>,
+    Json(req): Json<SetIdentityRequest>,
+) -> impl IntoResponse {
     let mut device = match DeviceIdentity::load() {
         Ok(d) => d,
         Err(e) => {
@@ -59,8 +67,18 @@ pub async fn set_identity(Json(req): Json<SetIdentityRequest>) -> impl IntoRespo
         )
             .into_response();
     }
-    Json(json!({"status": "ok", "note": "restart Enoxian for agent_id to reflect changes"}))
-        .into_response()
+    // Re-advertise immediately. The device label is not decoration: it is how
+    // other members address this machine's agents (`@owner/device/agent`), and
+    // how this device recognises a mention as its own. Leaving the roster on
+    // the old label until a restart means a rename silently breaks addressing
+    // in both directions — the renamed device stops answering, and nothing
+    // says why.
+    crate::lifecycle::readvertise_local_agents(&daemon);
+    Json(json!({
+        "status": "ok",
+        "note": "agent_id keeps its previous value until Enoxian restarts"
+    }))
+    .into_response()
 }
 
 #[derive(Deserialize)]

@@ -20,6 +20,10 @@ vi.mock('../../api', () => ({
   addAgent: vi.fn(),
   removeAgent: vi.fn(),
   getConnectivitySettings: vi.fn(async () => ({ force_relay: false })),
+  getIdentity: vi.fn(async () => ({
+    device_label: 'macbook-pro', user_handle: 'suzy', has_user_key: true, update_channel: 'stable',
+  })),
+  setIdentity: vi.fn(async () => ({ status: 'ok' })),
   setForceRelay: vi.fn(),
 }))
 

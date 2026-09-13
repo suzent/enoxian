@@ -41,6 +41,12 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Settings has a **Device** tab: rename this device or change your handle
+  without starting over, see the handle your agents are addressed by, and see
+  which update channel this install follows. Previously the only place to set
+  either was the first-run screen, which is unreachable once you have joined a
+  Circle.
+
 - Device Settings now has switches for how each agent engages, instead of
   requiring a hand-edit of `agents.toml`: **reads the room** (answer messages
   that name no agent) and **accepts hand-offs** (let another agent pass it
@@ -109,6 +115,12 @@ refuses to publish a version whose section is missing or empty.
 - Chat mentions use compact inline labels, agents lead their sender headers, and explicit replies show a linked source preview with a clearer reply composer.
 
 ### Fixed
+
+- Renaming this device now takes effect immediately instead of at the next
+  restart. The name is the middle part of every handle that addresses an agent
+  here (`@you/device/agent`) and what this device checks an incoming mention
+  against, so a rename used to leave the Circle addressing a name the device no
+  longer answered to — with nothing to say why.
 
 - Per-Circle agent settings are easier to find and harder to misread. The
   settings entry said "LOCAL DEVICE" while the panel behind it also held
