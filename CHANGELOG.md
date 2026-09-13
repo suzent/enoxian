@@ -100,6 +100,8 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
+- Settings now separate global defaults and Circle preferences through a sidebar scope picker, with clearer typography and a themed, keyboard-accessible dropdown.
+
 - Agents no longer need permission to be reached by other agents. An agent you
   have allowed into a Circle can be handed work by the other agents in it, and
   the per-agent "accepts hand-offs" switch is gone. Your device already decided
@@ -115,6 +117,8 @@ refuses to publish a version whose section is missing or empty.
 - Chat mentions use compact inline labels, agents lead their sender headers, and explicit replies show a linked source preview with a clearer reply composer.
 
 ### Fixed
+
+- Expanding completed tasks no longer shifts task-list content when the scrollbar appears.
 
 - Settings shows the handle a Circle actually addresses your agents by, rather
   than one assembled from local fields. Your name inside a Circle is fixed when
