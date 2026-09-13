@@ -50,7 +50,9 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     )?);
     *state.execution_inbox.write().unwrap() = Some(std::sync::Arc::downgrade(&inbox));
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
-    spawn_run_worker(state.clone(), inbox.clone(), wake.clone(), token.clone());
+    let worker_token = token.child_token();
+    let _cancel_worker = worker_token.clone().drop_guard();
+    let mut worker = spawn_run_worker(state.clone(), inbox.clone(), wake.clone(), worker_token);
     // This boundary is only for ambient observations. Addressed work uses the
     // persisted activation boundary, not a new cutoff on every daemon start.
     let live_since = chrono::Utc::now().timestamp() - 2;
@@ -59,6 +61,10 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     loop {
         tokio::select! {
             _ = token.cancelled() => break,
+            result = &mut worker => {
+                result??;
+                anyhow::bail!("execution worker stopped unexpectedly; recovering owner");
+            },
             _ = reconcile.tick() => {
                 if let Err(error) = crate::proposal::runs::release_finished_locks(&state) { tracing::debug!("lock cleanup deferred: {error}"); }
                 reconcile_requests(&state, &handled, &inbox, &wake);
@@ -87,6 +93,10 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 Err(broadcast::error::RecvError::Closed) => break,
             },
         }
+        anyhow::ensure!(
+            inbox.is_healthy(),
+            "execution inbox unavailable; recovering owner"
+        );
     }
     Ok(())
 }
@@ -484,8 +494,9 @@ fn spawn_run_worker(
     inbox: std::sync::Arc<super::inbox::Inbox>,
     wake: std::sync::Arc<tokio::sync::Notify>,
     token: CancellationToken,
-) {
+) -> tokio::task::JoinHandle<anyhow::Result<()>> {
     tokio::spawn(async move {
+        let mut failure = None;
         let mut active = std::collections::HashSet::new();
         let mut tasks = tokio::task::JoinSet::new();
         let mut paused = std::collections::HashSet::new();
@@ -513,7 +524,14 @@ fn spawn_run_worker(
                         };
                         // Policy and chain stops are checked after acquiring the
                         // permit, immediately before the durable running claim.
-                        run_next_for_agent(&state, &inbox, &AgentConfig::load(), Some(&agent)).await
+                        run_next_cancellable(
+                            &state,
+                            &inbox,
+                            &AgentConfig::load(),
+                            Some(&agent),
+                            &cancel,
+                        )
+                        .await
                     }
                     .await;
                     (agent, result)
@@ -530,9 +548,11 @@ fn spawn_run_worker(
                         },
                         Some(Ok((agent, Err(error)))) => {
                             tracing::error!("[agent] execution worker {agent} stopped: {error:#}");
+                            failure = Some(error);
+                            token.cancel();
                             break;
                         },
-                        Some(Err(error)) => { tracing::error!("[agent] execution task failed: {error}"); break; },
+                        Some(Err(error)) => { failure = Some(error.into()); token.cancel(); break; },
                         None => {},
                     }
                 }
@@ -540,7 +560,11 @@ fn spawn_run_worker(
         }
         // Disable/stop-chain never implicitly kills an already running turn.
         while tasks.join_next().await.is_some() {}
-    });
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    })
 }
 
 #[cfg(test)]
@@ -552,11 +576,22 @@ async fn run_next_with_config(
     run_next_for_agent(state, inbox, cfg, None).await
 }
 
+#[cfg(test)]
 async fn run_next_for_agent(
     state: &AppState,
     inbox: &super::inbox::Inbox,
     cfg: &AgentConfig,
     agent: Option<&str>,
+) -> anyhow::Result<bool> {
+    run_next_cancellable(state, inbox, cfg, agent, &CancellationToken::new()).await
+}
+
+async fn run_next_cancellable(
+    state: &AppState,
+    inbox: &super::inbox::Inbox,
+    cfg: &AgentConfig,
+    agent: Option<&str>,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<bool> {
     use super::inbox::Status;
     if ProposalStore::open(&state.workspace)?
@@ -622,6 +657,7 @@ async fn run_next_for_agent(
                 relay: request.relay.clone(),
                 ambient: request.ambient,
             },
+            cancel,
         )
         .await;
         let (status, detail) = match result {
@@ -629,6 +665,10 @@ async fn run_next_for_agent(
             Err(error) if error.is::<crate::proposal::runs::ConversationBusy>() => (
                 Status::Pending,
                 Some("waiting for the previous conversation turn".into()),
+            ),
+            Err(error) if error.is::<crate::proposal::runs::DeviceCapacityUnavailable>() => (
+                Status::Pending,
+                Some("waiting for device capacity; no process launched".into()),
             ),
             Err(error) => {
                 let reason = concise_error(&error);
@@ -721,7 +761,7 @@ impl Drop for ManagedToken {
     }
 }
 
-async fn react(state: &AppState, turn: Turn<'_>) -> anyhow::Result<()> {
+async fn react(state: &AppState, turn: Turn<'_>, cancel: &CancellationToken) -> anyhow::Result<()> {
     let Turn {
         run_id,
         agent_id,
@@ -762,22 +802,25 @@ async fn react(state: &AppState, turn: Turn<'_>) -> anyhow::Result<()> {
         token: actor_token.clone(),
     };
 
-    let launch = driver::launch(driver::LaunchRequest {
-        run_id: Some(run_id),
-        trigger_id: Some(message_id),
-        coordination: Some(state.clone()),
-        agent_name: agent_id,
-        cmd,
-        task: &prompt,
-        workspace: &state.workspace,
-        base_snapshot: &base_snapshot,
-        circle_id: &state.circle_id,
-        circle_dir: &state.circle_dir,
-        actor_token: Some(&actor_token),
-        relay_path: relay.as_ref().map(|r| r.path.clone()).unwrap_or_default(),
-        initiator,
-        resume: resume.as_ref().map(|r| r.session_id.as_str()),
-    });
+    let launch = driver::launch_cancellable(
+        driver::LaunchRequest {
+            run_id: Some(run_id),
+            trigger_id: Some(message_id),
+            coordination: Some(state.clone()),
+            agent_name: agent_id,
+            cmd,
+            task: &prompt,
+            workspace: &state.workspace,
+            base_snapshot: &base_snapshot,
+            circle_id: &state.circle_id,
+            circle_dir: &state.circle_dir,
+            actor_token: Some(&actor_token),
+            relay_path: relay.as_ref().map(|r| r.path.clone()).unwrap_or_default(),
+            initiator,
+            resume: resume.as_ref().map(|r| r.session_id.as_str()),
+        },
+        cancel,
+    );
     tokio::pin!(launch);
 
     // Long agent runs renew their lease. If this process disappears, peers
@@ -1483,6 +1526,8 @@ mod tests {
         );
         assert_eq!(delivered.cursor.as_deref(), Some("m12"));
         assert!(delivered.prompt.contains("message 1"));
+        assert!(delivered.prompt.contains("message 28"));
+        assert!(delivered.prompt.contains("Latest room context:"));
         assert!(delivered
             .prompt
             .contains("Omitted lines have NOT been delivered"));
@@ -1509,5 +1554,89 @@ mod tests {
         drop(manual);
         assert!(run_next_with_config(&state, &inbox, &cfg).await.unwrap());
         assert_eq!(inbox.entries()[0].status, Status::Completed);
+    }
+    #[tokio::test]
+    async fn worker_errors_reach_its_supervisor() {
+        use super::super::inbox::{tests::request, Inbox};
+        let (mut state, dir) = test_state("local", "suzy");
+        let blocked = dir.path().join("not-a-directory");
+        std::fs::write(&blocked, "blocked").unwrap();
+        state.workspace = blocked;
+        let inbox = std::sync::Arc::new(Inbox::open(dir.path(), 100).unwrap());
+        inbox.admit(request("m", "claude"), 20, 100).unwrap();
+        let worker = spawn_run_worker(
+            state,
+            inbox,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+            CancellationToken::new(),
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), worker)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn persistence_failure_reopens_the_owner_without_daemon_restart() {
+        use super::super::inbox::{tests::request, Inbox};
+        let (state, dir) = test_state("local", "suzy");
+        let cancel = CancellationToken::new();
+        spawn_reaction(state.clone(), cancel.clone());
+        let wait = async {
+            loop {
+                if let Some(inbox) = state
+                    .execution_inbox
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(std::sync::Weak::upgrade)
+                {
+                    break inbox;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        let inbox = tokio::time::timeout(std::time::Duration::from_secs(2), wait)
+            .await
+            .unwrap();
+        let old = std::sync::Arc::downgrade(&inbox);
+        let path = Inbox::path(dir.path());
+        let original = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(inbox.admit(request("m", "claude"), 20, 100).is_err());
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, original).unwrap();
+        drop(inbox);
+        let mut message = request("wake", "claude").message;
+        message.author = crate::control::Author::System;
+        state
+            .events
+            .send(CircleEvent::MessagePosted { message })
+            .unwrap();
+        let recovered = async {
+            loop {
+                let ready = state
+                    .execution_inbox
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|current| {
+                        !current.ptr_eq(&old)
+                            && current.upgrade().is_some_and(|inbox| inbox.is_healthy())
+                    });
+                if ready {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(8), recovered)
+            .await
+            .unwrap();
+        cancel.cancel();
     }
 }

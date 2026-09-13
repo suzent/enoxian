@@ -225,3 +225,46 @@ async fn replicated_delivery_receipts_contain_no_request_body() {
     assert!(text.contains("pending"));
     assert!(!text.contains("private request body"));
 }
+
+#[test]
+fn receipt_retention_is_bounded_and_does_not_resurrect_or_remove_remote_receipts() {
+    use yrs::{ReadTxn, WriteTxn};
+    let (_router, state, dir) = harness();
+    let inbox = Inbox::open(dir.path(), 100).unwrap();
+    let now = chrono::Utc::now().timestamp();
+    {
+        let mut txn = state.control.transact_mut();
+        let map = txn.get_or_insert_map(api::execution::RECEIPTS_KEY);
+        map.insert(
+            &mut txn,
+            "remote",
+            serde_json::json!({"peer_id":"remote", "run_id":"remote"}).to_string(),
+        );
+    }
+    for i in 0..110 {
+        let enoxian::agent::inbox::Admission::Accepted { entry, .. } =
+            inbox.admit(work(&format!("m{i}")), 20, now).unwrap()
+        else {
+            panic!("expected admission");
+        };
+        inbox
+            .transition(&entry.run_id, Status::Pending, Status::Running, None, now)
+            .unwrap();
+        inbox
+            .transition(&entry.run_id, Status::Running, Status::Completed, None, now)
+            .unwrap();
+        api::execution::publish(&state, &inbox).unwrap();
+    }
+    for _ in 0..2 {
+        api::execution::publish(&state, &inbox).unwrap();
+        let txn = state.control.transact();
+        let map = txn.get_map(api::execution::RECEIPTS_KEY).unwrap();
+        assert_eq!(map.len(&txn), 101);
+        assert!(map.get(&txn, "remote").is_some());
+    }
+    assert_eq!(
+        inbox.entries().len(),
+        110,
+        "local durable dedup history remains intact"
+    );
+}

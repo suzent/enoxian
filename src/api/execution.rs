@@ -29,6 +29,19 @@ pub async fn list(
         )
             .into_response();
     };
+    if state
+        .execution_inbox
+        .read()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|owner| owner.upgrade().is_none_or(|inbox| !inbox.is_healthy()))
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "execution storage unavailable; owner recovery in progress"})),
+        )
+            .into_response();
+    }
     let snapshot = match Inbox::read(&state.circle_dir) {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -158,15 +171,54 @@ pub async fn update(
 
 /// Sanitized, device-vouched delivery receipts. Never sync tasks or commands.
 pub const RECEIPTS_KEY: &str = "execution_receipts";
+const TERMINAL_RECEIPTS_PER_DEVICE: usize = 100;
+const RECEIPT_RETENTION_SECS: i64 = 30 * 24 * 60 * 60;
+
+fn recent_receipts(
+    entries: Vec<crate::agent::inbox::Entry>,
+    now: i64,
+) -> Vec<crate::agent::inbox::Entry> {
+    use crate::agent::inbox::Status;
+    let (mut active, mut terminal): (Vec<_>, Vec<_>) = entries
+        .into_iter()
+        .partition(|e| matches!(e.status, Status::Pending | Status::Running));
+    terminal.retain(|e| e.updated_at >= now - RECEIPT_RETENTION_SECS);
+    terminal.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then(b.run_id.cmp(&a.run_id))
+    });
+    terminal.truncate(TERMINAL_RECEIPTS_PER_DEVICE);
+    active.extend(terminal);
+    active
+}
 
 pub fn publish(state: &crate::state::AppState, inbox: &Inbox) -> anyhow::Result<()> {
     use yrs::{Any, Map, Transact, WriteTxn};
-    let entries = inbox.entries();
+    let entries = recent_receipts(inbox.entries(), chrono::Utc::now().timestamp());
     let mut txn = state
         .control
         .try_transact_mut()
         .map_err(|_| anyhow::anyhow!("Circle busy"))?;
     let map = txn.get_or_insert_map(RECEIPTS_KEY);
+    let retained: std::collections::HashSet<_> =
+        entries.iter().map(|e| e.run_id.as_str()).collect();
+    let stale: Vec<_> = map
+        .iter(&txn)
+        .filter_map(|(key, value)| {
+            let yrs::Out::Any(Any::String(raw)) = value else {
+                return None;
+            };
+            let receipt: serde_json::Value = serde_json::from_str(&raw).ok()?;
+            (receipt["peer_id"].as_str() == Some(state.peer_id.as_str()) && !retained.contains(key))
+                .then(|| key.to_string())
+        })
+        .collect();
+    for key in stale {
+        map.remove(&mut txn, &key);
+    }
+    // Publish only retained records, otherwise the next reconcile resurrects
+    // every terminal receipt just pruned from the replicated map.
     for e in entries {
         let summary = json!({"run_id": e.run_id, "message_id": e.request.message.id,
             "agent_id": e.request.agent, "peer_id": state.peer_id, "status": e.status,
@@ -191,6 +243,19 @@ pub async fn deliveries(
     let Some(state) = daemon.get(&circle) else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    if state
+        .execution_inbox
+        .read()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|owner| owner.upgrade().is_none_or(|inbox| !inbox.is_healthy()))
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "execution storage unavailable; owner recovery in progress"})),
+        )
+            .into_response();
+    }
     let Ok(txn) = state.control.try_transact() else {
         return super::circle_busy();
     };

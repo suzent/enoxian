@@ -58,6 +58,31 @@ pub fn build_delivery(
     let end = (start + RECENT_CHAT_LINES).min(all.len());
     let cursor = all[start..end].last().map(|m| m.id.clone());
     let mut recent = window(&all[start..end], None, trigger_id);
+    // Keep a contiguous catch-up cursor, but also show the room as it is now
+    // and the original trigger's neighborhood after an offline backlog.
+    let mut supplied: std::collections::HashSet<_> = (start..end).collect();
+    let mut extra = |range: std::ops::Range<usize>, heading: &str| {
+        let lines: Vec<_> = range
+            .filter(|i| supplied.insert(*i))
+            .map(|i| all[i].clone())
+            .collect();
+        if !lines.is_empty() {
+            recent.push_str(&format!(
+                "\n{heading}\n{}",
+                window(&lines, None, trigger_id)
+            ));
+        }
+    };
+    extra(
+        all.len().saturating_sub(RECENT_CHAT_LINES)..all.len(),
+        "Latest room context:",
+    );
+    if let Some(trigger) = all.iter().position(|m| m.id == trigger_id) {
+        extra(
+            trigger.saturating_sub(6)..(trigger + 6).min(all.len()),
+            "Context around the original request:",
+        );
+    }
     if end < all.len() || (after.is_none() && start > 0) {
         recent.push_str(&format!("\nHistory omitted from this prompt. Retrieve pages from GET /circles/{}/api/chat?after_id={}&limit=100. Omitted lines have NOT been delivered.", state.circle_id, if after.is_some() { cursor.as_deref().unwrap_or("") } else { "" }));
     }

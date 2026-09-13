@@ -262,9 +262,26 @@ struct ManagedActor<'a> {
     token: Option<&'a str>,
 }
 
+fn resumable_session<'a>(
+    memory: Option<&'a super::memory::Record>,
+    fallback: Option<&'a str>,
+) -> Option<&'a str> {
+    memory
+        .map(|r| r.session_id.as_str())
+        .filter(|id| !id.is_empty())
+        .or(fallback.filter(|id| !id.is_empty()))
+}
+
 /// Launch a permitted agent, running the given task under a change session.
 /// Returns once the agent finishes its work.
 pub async fn launch(req: LaunchRequest<'_>) -> Result<LaunchOutcome> {
+    launch_cancellable(req, &tokio_util::sync::CancellationToken::new()).await
+}
+
+pub async fn launch_cancellable(
+    req: LaunchRequest<'_>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<LaunchOutcome> {
     let mode = match req.initiator {
         // A managed run enoxian owns the process tree for → verified process.
         Initiator::Local | Initiator::RemoteMember => SessionMode::ManagedProcess,
@@ -289,12 +306,14 @@ pub async fn launch(req: LaunchRequest<'_>) -> Result<LaunchOutcome> {
     if let (Some(state), Some(token)) = (&req.coordination, req.actor_token) {
         state.actor_tokens.bind_run(token, &session.session_id);
     }
-    let _device = crate::proposal::runs::DeviceLease::acquire(
+    let _device = crate::proposal::runs::DeviceLease::acquire_cancellable(
         &crate::proposal::runs::device_slots_dir()?,
         &req.circle_dir
             .join("managed_runs")
             .join(format!("{}.json", session.session_id)),
         super::config::AgentConfig::load().max_concurrent_runs,
+        cancel,
+        std::time::Duration::from_secs(30),
     )
     .await?;
     tracing::info!(
@@ -314,10 +333,7 @@ pub async fn launch(req: LaunchRequest<'_>) -> Result<LaunchOutcome> {
     };
 
     let memory = super::memory::load(req.circle_dir, req.agent_name);
-    let resume = memory
-        .as_ref()
-        .map(|r| r.session_id.as_str())
-        .or(req.resume);
+    let resume = resumable_session(memory.as_ref(), req.resume);
     let run_result = match req.cmd.driver {
         Driver::Argv => run_argv(req.cmd, req.task, &run_dir, actor, &mut lease)
             .await
@@ -513,5 +529,16 @@ mod tests {
     #[test]
     fn no_output_is_none() {
         assert_eq!(ReplyBuf::default().into_reply(), None);
+    }
+    #[test]
+    fn seen_only_memory_does_not_attempt_an_empty_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        super::super::memory::save_seen(dir.path(), "a", "message").unwrap();
+        let memory = super::super::memory::load(dir.path(), "a").unwrap();
+        assert_eq!(resumable_session(Some(&memory), Some("")), None);
+        assert_eq!(
+            resumable_session(Some(&memory), Some("fallback")),
+            Some("fallback")
+        );
     }
 }

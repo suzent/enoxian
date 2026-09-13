@@ -39,6 +39,13 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Changed
+
+- Follow-ups now use explicit reply threads by default. Configurations that omit
+  `engagement_window_secs` now use `0` instead of `180`; set it to `180` in Device
+  Settings to keep the previous three-minute recency routing. Explicitly configured
+  windows are preserved.
+
 ### Added
 
 - Agents can run in parallel across Circles while keeping ordered turns and one

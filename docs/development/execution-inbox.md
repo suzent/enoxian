@@ -146,3 +146,34 @@ for older history. Explicit ancestors are included separately. A failed ACP resu
 is identified in the next prompt with fresh room context and history retrieval
 instructions; missing private provider memory is not presented as preserved.
 
+
+
+### Recovery, context, and retention
+
+The execution supervisor observes worker failures and retries ownership after a
+five-second backoff. A failed inbox commit pauses execution, exposes an unavailable
+storage error through the delivery API, and forces owner recovery before more
+work can launch. The recovered snapshot still treats uncertain running work as
+interrupted rather than replaying external effects automatically.
+
+Waiting for cross-process device capacity observes Circle shutdown cancellation
+and has a 30-second deadline. Automatic turns return to Pending with a waiting
+status when no process was launched; manual launches report the timeout. These
+checks do not implicitly cancel an agent process that is already executing.
+
+A prompt includes the next 12-message catch-up page, up to 12 latest room messages,
+and up to 12 lines around an older trigger (deduplicated), plus explicit ancestors.
+Only the contiguous catch-up page advances the cursor. Omitted gaps remain
+retrievable; the latest room context does not imply those gaps were delivered.
+
+Replicated receipts retain active runs plus the newest 100 terminal receipts per
+device, for at most 30 days. Each device prunes only its own receipts and does not
+republish older terminal entries. Local inbox history remains durable deduplication
+evidence. Finished run records whose writes were captured are pruned after 30 days
+or beyond the newest 1,000; open and unconsumed records are preserved.
+
+Corrupt managed-run records are deliberately not skipped: a missing child PID
+could hide a surviving process, and missing ambient metadata could incorrectly
+auto-accept its writes. Errors identify the affected file and instruct the operator
+to verify the agent has stopped and restore the record from backup. This remains a
+fail-closed condition for the affected Circle, not an automatic deletion or reset.

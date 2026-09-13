@@ -257,7 +257,8 @@ impl Inbox {
             let relay = entry.request.relay.as_ref().unwrap();
             let spent = next.charges.entry(relay.root.clone()).or_default();
             anyhow::ensure!(
-                super::relay::has_budget(relay, max) && *spent < max,
+                super::relay::has_budget(relay, max)
+                    && *spent < max.min(super::relay::RELAY_TURNS_CEILING),
                 "relay budget spent"
             );
             *spent += 1;
@@ -293,6 +294,16 @@ impl Inbox {
     }
 
     pub fn admit(&self, request: Request, max_relay_turns: u8, now: i64) -> Result<Admission> {
+        self.admit_with_limit(request, max_relay_turns, now, MAX_PENDING_PER_DEVICE)
+    }
+
+    fn admit_with_limit(
+        &self,
+        request: Request,
+        max_relay_turns: u8,
+        now: i64,
+        device_limit: usize,
+    ) -> Result<Admission> {
         let mut aggregate = PENDING.lock().unwrap();
         let mut current = self.snapshot.lock().unwrap();
         if current
@@ -311,23 +322,8 @@ impl Inbox {
             admitted_at: now,
             updated_at: now,
         };
-        if entry.request.delegated() {
-            let relay = entry.request.relay.as_ref().unwrap();
-            let max = max_relay_turns.min(super::relay::RELAY_TURNS_CEILING);
-            let spent = next.charges.entry(relay.root.clone()).or_default();
-            if !super::relay::has_budget(relay, max) || *spent >= max {
-                entry.status = Status::Cancelled;
-                entry.detail = Some("relay budget spent".into());
-                next.entries.push(entry.clone());
-                self.persist(&next)?;
-                aggregate.insert(self.path.clone(), pending_count(&next));
-                *current = next;
-                return Ok(Admission::Rejected(entry));
-            }
-            *spent += 1;
-        }
         let mut displaced = Vec::new();
-        if aggregate.values().sum::<usize>() >= MAX_PENDING_PER_DEVICE {
+        if aggregate.values().sum::<usize>() >= device_limit {
             entry.status = Status::Expired;
             entry.detail = Some("device queue capacity exceeded".into());
             next.entries.push(entry.clone());
@@ -370,6 +366,31 @@ impl Inbox {
                 old.updated_at = now;
                 displaced.push(old.clone());
             }
+        }
+        // Displaced pending turns never launched, so return their reservations.
+        for old in &displaced {
+            if old.request.delegated() {
+                let root = &old.request.relay.as_ref().unwrap().root;
+                if let Some(spent) = next.charges.get_mut(root) {
+                    *spent = spent.saturating_sub(1);
+                }
+            }
+        }
+        if entry.request.delegated() {
+            let relay = entry.request.relay.as_ref().unwrap();
+            let max = max_relay_turns.min(super::relay::RELAY_TURNS_CEILING);
+            let spent = next.charges.entry(relay.root.clone()).or_default();
+            if !super::relay::has_budget(relay, max) || *spent >= max {
+                entry.status = Status::Cancelled;
+                entry.detail = Some("relay budget spent".into());
+                next = current.clone();
+                next.entries.push(entry.clone());
+                self.persist(&next)?;
+                aggregate.insert(self.path.clone(), pending_count(&next));
+                *current = next;
+                return Ok(Admission::Rejected(entry));
+            }
+            *spent += 1;
         }
         next.entries.push(entry.clone());
         self.persist(&next)?;
@@ -466,6 +487,10 @@ impl Inbox {
         Ok(true)
     }
 
+    pub fn is_healthy(&self) -> bool {
+        self.healthy.load(Ordering::SeqCst)
+    }
+
     fn persist(&self, snapshot: &Snapshot) -> Result<()> {
         use std::io::Write;
         let parent = self.path.parent().unwrap();
@@ -473,7 +498,7 @@ impl Inbox {
         // Unique temporary file, durable data, atomic replacement. A failed
         // commit cannot acknowledge a request or mutate the in-memory snapshot.
         if !self.healthy.swap(false, Ordering::SeqCst) {
-            bail!("execution inbox persistence failed; restart required before further execution");
+            bail!("execution inbox persistence failed; owner recovery required before further execution");
         }
         let tmp_path = parent.join(format!(".inbox-{}.tmp", uuid::Uuid::new_v4()));
         let result = (|| -> Result<()> {
@@ -701,10 +726,17 @@ pub(crate) mod tests {
         ));
         for i in 0..super::super::relay::RELAY_TURNS_CEILING {
             delegated.message.id = format!("d{i}");
-            assert!(matches!(
-                inbox.admit(delegated.clone(), 250, 101).unwrap(),
-                Admission::Accepted { .. }
-            ));
+            let Admission::Accepted { entry, .. } =
+                inbox.admit(delegated.clone(), 250, 101).unwrap()
+            else {
+                panic!("expected admission");
+            };
+            inbox
+                .transition(&entry.run_id, Status::Pending, Status::Running, None, 101)
+                .unwrap();
+            inbox
+                .transition(&entry.run_id, Status::Running, Status::Completed, None, 101)
+                .unwrap();
         }
         delegated.message.id = "over-budget".into();
         assert!(matches!(
@@ -764,5 +796,58 @@ pub(crate) mod tests {
         assert_ne!(retry.run_id, id);
         assert_eq!(inbox.entries()[0].status, Status::Failed);
         assert!(inbox.retry(&id, 20, 104).is_err());
+    }
+    fn delegated(id: &str) -> Request {
+        let mut req = request(id, "codex");
+        req.relay = Some(crate::agent::relay::extend(
+            &crate::agent::relay::mint("root", "sender"),
+            "claude",
+        ));
+        req
+    }
+
+    #[test]
+    fn rejected_capacity_does_not_spend_and_displacement_refunds() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let Admission::Rejected(rejected) = inbox
+            .admit_with_limit(delegated("full"), 2, 100, 0)
+            .unwrap()
+        else {
+            panic!("expected capacity rejection");
+        };
+        assert_eq!(inbox.snapshot.lock().unwrap().charges.get("root"), None);
+        let retry = inbox.retry(&rejected.run_id, 2, 101).unwrap();
+        assert_eq!(retry.status, Status::Pending);
+        for i in 0..10 {
+            assert!(matches!(
+                inbox.admit(delegated(&format!("m{i}")), 5, 102).unwrap(),
+                Admission::Accepted { .. }
+            ));
+        }
+        assert_eq!(inbox.snapshot.lock().unwrap().charges["root"], 4);
+    }
+
+    #[test]
+    fn retry_cannot_exceed_the_hard_relay_ceiling() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let mut entry = accepted(&inbox, delegated("retry"));
+        for attempt in 1..=crate::agent::relay::RELAY_TURNS_CEILING {
+            inbox
+                .transition(&entry.run_id, Status::Pending, Status::Running, None, 100)
+                .unwrap();
+            inbox
+                .transition(&entry.run_id, Status::Running, Status::Failed, None, 100)
+                .unwrap();
+            if attempt < crate::agent::relay::RELAY_TURNS_CEILING {
+                entry = inbox.retry(&entry.run_id, 250, 100).unwrap();
+            }
+        }
+        assert!(inbox.retry(&entry.run_id, 250, 100).is_err());
+        assert_eq!(
+            inbox.snapshot.lock().unwrap().charges["root"],
+            crate::agent::relay::RELAY_TURNS_CEILING
+        );
     }
 }

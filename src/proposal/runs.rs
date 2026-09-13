@@ -139,7 +139,7 @@ pub fn list(dir: &Path) -> Result<Vec<RunRecord>> {
         if path.extension().is_some_and(|s| s == "json") {
             records.push(
                 serde_json::from_slice(&std::fs::read(&path)?)
-                    .with_context(|| format!("invalid managed run {}", path.display()))?,
+                    .with_context(|| format!("invalid managed run {}; restore this record from backup after verifying its agent process has stopped (ignoring it could overlap a surviving turn)", path.display()))?,
             );
         }
     }
@@ -148,13 +148,38 @@ pub fn list(dir: &Path) -> Result<Vec<RunRecord>> {
 
 /// Cross-process device capacity, also used by manual `enox agent run`.
 /// A released OS lock with a surviving child remains occupied on recovery.
+#[derive(Debug, thiserror::Error)]
+#[error("waiting for device capacity (cancelled or timed out before launch)")]
+pub struct DeviceCapacityUnavailable;
+
 pub struct DeviceLease {
     _file: File,
 }
 impl DeviceLease {
     pub async fn acquire(root: &Path, run_path: &Path, limit: usize) -> Result<Self> {
+        Self::acquire_cancellable(
+            root,
+            run_path,
+            limit,
+            &tokio_util::sync::CancellationToken::new(),
+            std::time::Duration::from_secs(30),
+        )
+        .await
+    }
+
+    pub async fn acquire_cancellable(
+        root: &Path,
+        run_path: &Path,
+        limit: usize,
+        cancel: &tokio_util::sync::CancellationToken,
+        wait: std::time::Duration,
+    ) -> Result<Self> {
         std::fs::create_dir_all(root)?;
+        let deadline = tokio::time::Instant::now() + wait;
         loop {
+            if cancel.is_cancelled() || tokio::time::Instant::now() >= deadline {
+                return Err(DeviceCapacityUnavailable.into());
+            }
             for index in 0..limit.clamp(1, 32) {
                 let file = OpenOptions::new()
                     .create(true)
@@ -180,7 +205,11 @@ impl DeviceLease {
                 atomic_json(&pointer, &run_path)?;
                 return Ok(Self { _file: file });
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::select! {
+                _ = cancel.cancelled() => return Err(DeviceCapacityUnavailable.into()),
+                _ = tokio::time::sleep_until(deadline) => return Err(DeviceCapacityUnavailable.into()),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {},
+            }
         }
     }
 }
@@ -259,7 +288,8 @@ pub fn release_finished_locks(state: &crate::state::AppState) -> Result<()> {
         .try_transact_mut()
         .map_err(|_| anyhow::anyhow!("Circle busy during lock cleanup"))?;
     let Some(log) = txn.get_array(crate::control::LOCK_LOG_KEY) else {
-        return Ok(());
+        drop(txn);
+        return prune_consumed(&state.circle_dir, chrono::Utc::now());
     };
     let holders = crate::control::arbitration::compute_lock_holders(&log, &txn);
     for (path, holder) in holders {
@@ -303,6 +333,54 @@ pub fn release_finished_locks(state: &crate::state::AppState) -> Result<()> {
                 path,
                 agent_id: holder.agent_id,
             });
+    }
+    drop(txn);
+    prune_consumed(&state.circle_dir, chrono::Utc::now())
+}
+
+// Retain a bounded recent history once both process completion and workspace
+// capture are durable. Active/unconsumed records are never age-pruned.
+fn prune_consumed(dir: &Path, now: chrono::DateTime<chrono::Utc>) -> Result<()> {
+    let mut candidates: Vec<_> = list(dir)?
+        .into_iter()
+        .filter(|r| r.writes_consumed && !r.session.is_open())
+        .collect();
+    candidates.sort_by_key(|r| std::cmp::Reverse(r.session.finished_at));
+    for (index, record) in candidates.into_iter().enumerate() {
+        let old = record
+            .session
+            .finished_at
+            .is_some_and(|at| at < now - chrono::Duration::days(30));
+        if old || index >= 1000 {
+            // A pending pre-launch turn can reuse its run id. Serialize with
+            // that agent and re-read before deleting a previously closed record.
+            let Some(agent) = record.session.actor_id.as_deref() else {
+                continue;
+            };
+            let root = dir.join("managed_runs");
+            let key = super::blob::BlobStore::hash(agent.as_bytes());
+            let lock = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(root.join(format!("agent-{key}.lock")))?;
+            if lock.try_lock().is_err() {
+                continue;
+            }
+            let path = root.join(format!("{}.json", record.session.session_id));
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let current: RunRecord = serde_json::from_slice(&bytes)?;
+            if current.writes_consumed
+                && !current.session.is_open()
+                && current.session.finished_at == record.session.finished_at
+                && !current.child_pid.is_some_and(process_alive)
+            {
+                std::fs::remove_file(path)?;
+            }
+        }
     }
     Ok(())
 }
@@ -442,5 +520,81 @@ mod tests {
         assert!(ambient_review_required(d.path()).unwrap());
         consume_finished(d.path(), chrono::Utc::now()).unwrap();
         assert!(!ambient_review_required(d.path()).unwrap());
+    }
+    #[tokio::test]
+    async fn device_capacity_wait_is_cancellable_and_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.json");
+        let _held = DeviceLease::acquire(dir.path(), &path, 1).await.unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let wait = DeviceLease::acquire_cancellable(
+            dir.path(),
+            &path,
+            1,
+            &cancel,
+            std::time::Duration::from_secs(30),
+        );
+        let stop = async {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            cancel.cancel();
+        };
+        let (result, ()) = tokio::join!(wait, stop);
+        assert!(result.err().unwrap().is::<DeviceCapacityUnavailable>());
+        let result = DeviceLease::acquire_cancellable(
+            dir.path(),
+            &path,
+            1,
+            &tokio_util::sync::CancellationToken::new(),
+            std::time::Duration::from_millis(10),
+        )
+        .await;
+        assert!(result.err().unwrap().is::<DeviceCapacityUnavailable>());
+    }
+
+    #[test]
+    fn retention_keeps_unconsumed_and_active_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = chrono::Utc::now();
+        for (agent, consumed, finished) in [
+            ("retired", true, true),
+            ("uncaptured", false, true),
+            ("active", false, false),
+        ] {
+            let mut s = session(agent);
+            if finished {
+                s.finished_at = Some(now - chrono::Duration::days(31));
+            }
+            atomic_json(
+                &dir.path()
+                    .join("managed_runs")
+                    .join(format!("{}.json", s.session_id)),
+                &RunRecord {
+                    session: s,
+                    writes_consumed: consumed,
+                    owner_pid: 0,
+                    child_pid: None,
+                    interrupted: false,
+                },
+            )
+            .unwrap();
+        }
+        prune_consumed(dir.path(), now).unwrap();
+        let records = list(dir.path()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records
+            .iter()
+            .all(|r| r.session.actor_id.as_deref() != Some("retired")));
+    }
+
+    #[test]
+    fn corrupt_run_is_preserved_with_actionable_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("managed_runs/broken.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "truncated").unwrap();
+        let error = RunLease::acquire(dir.path(), session("a")).err().unwrap();
+        assert!(error.to_string().contains("broken.json"));
+        assert!(error.to_string().contains("surviving turn"));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "truncated");
     }
 }
