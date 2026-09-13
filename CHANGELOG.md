@@ -87,6 +87,11 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- An agent can hand work to an agent of the same name on another device. Two
+  machines each running a `claude` could not pass anything between them: the
+  hand-off was read as the agent mentioning itself and dropped, with nothing
+  posted to say why. "Itself" now means the same agent on the same machine.
+
 - A killed or restarted daemon no longer leaves a Circle unable to run any
   agent. A run interrupted mid-flight left a lock behind that nothing expired,
   so every later mention failed with "managed agent '…' is already running in

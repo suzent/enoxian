@@ -455,10 +455,19 @@ fn post_inner(
     let to_fire = match &trigger {
         Trigger::System => Vec::new(),
         Trigger::Human => mentions.clone(),
-        Trigger::AgentReply { .. } => crate::agent::relay::triggerable_mentions(
-            &msg,
-            crate::agent::relay::DEFAULT_MAX_RELAY_TURNS,
-        ),
+        Trigger::AgentReply { .. } => {
+            // This device's own labels, so a mention scoped *here* reads as
+            // self while one scoped elsewhere does not.
+            let me = state.self_member();
+            let self_device = me
+                .as_ref()
+                .map(|m| (m.owner.as_str(), m.device_label.as_str()));
+            crate::agent::relay::triggerable_mentions(
+                &msg,
+                crate::agent::relay::DEFAULT_MAX_RELAY_TURNS,
+                self_device,
+            )
+        }
     };
     for mentioned in to_fire {
         let _ = state.events.send(CircleEvent::AgentMentioned {

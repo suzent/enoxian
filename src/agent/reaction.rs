@@ -189,6 +189,18 @@ fn dispatch(
             .and_then(|r| super::relay::poster(r))
             .map(str::to_string);
         if let Some(via) = &delegated {
+            // Would this wake the very agent that posted the message, on the
+            // machine that posted it? Comparing peer ids answers exactly what
+            // labels only approximate — and this is the guard that makes a
+            // one-agent loop impossible, so the sender-side check can stay
+            // narrow enough to allow cross-device hand-offs.
+            if req.message.peer_id == state.peer_id && via == req.agent {
+                tracing::debug!(
+                    "[agent] `{}` mentioned itself on this device — not re-waking it",
+                    req.agent
+                );
+                return;
+            }
             if cmd.accept_from != AcceptFrom::Agents {
                 tracing::debug!(
                     "[agent] `{}` does not accept delegation (mentioned by `{via}`) — skipping",

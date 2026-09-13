@@ -86,7 +86,11 @@ pub fn has_budget(relay: &Relay, max: u8) -> bool {
 /// This is the *sender-side* filter. It is a courtesy, not the gate: the
 /// device that would actually run the agent re-checks the budget against its
 /// own configuration in [`crate::agent::reaction`].
-pub fn triggerable_mentions(msg: &ChatMessage, max: u8) -> Vec<String> {
+pub fn triggerable_mentions(
+    msg: &ChatMessage,
+    max: u8,
+    self_device: Option<(&str, &str)>,
+) -> Vec<String> {
     let Some(relay) = &msg.relay else {
         // Predates the field: treat as a human post with no allowance to pass
         // on. Its own mentions still fire.
@@ -106,27 +110,65 @@ pub fn triggerable_mentions(msg: &ChatMessage, max: u8) -> Vec<String> {
     }
     msg.mentions
         .iter()
-        .find(|m| !names_agent(m, posting_agent))
+        .find(|m| !is_self_mention(m, posting_agent, self_device))
         .cloned()
         .into_iter()
         .collect()
 }
 
-/// Does mention body `mention` address `agent`? The stored form may be scoped
-/// (`alice/laptop/claude`), so compare the agent segment rather than the whole
-/// string.
-fn names_agent(mention: &str, agent: &str) -> bool {
-    match super::mention::Mention::parse(mention)
-        .and_then(|m| m.agent_target().map(|(name, _)| name.to_string()))
-    {
-        Some(name) => name == agent,
-        None => false,
+/// Would this mention wake the agent that posted it — the *same* agent on the
+/// *same* machine?
+///
+/// A name match alone is not enough, and assuming it was is what broke
+/// cross-device delegation: `claude` on one device mentioning
+/// `@suzy/other-box/claude` is addressing a different agent that happens to
+/// share a name, not itself. Treating that as a self-mention meant the hand-off
+/// never fired, and nothing said why.
+///
+/// So a mention is self-addressed only when it names the same agent *and* is
+/// scoped to this device. Anything else is left to the receiving side, which
+/// can answer exactly — it knows whether it is the machine that posted the
+/// message — and refusing here would lose the legitimate case of one device's
+/// `claude` waking another's.
+fn is_self_mention(mention: &str, posting_agent: &str, self_device: Option<(&str, &str)>) -> bool {
+    let Some((name, scope)) = super::mention::Mention::parse(mention).and_then(|m| {
+        m.agent_target().map(|(n, s)| {
+            (
+                n.to_string(),
+                s.map(|(o, d)| (o.to_string(), d.to_string())),
+            )
+        })
+    }) else {
+        return false;
+    };
+    if name != posting_agent {
+        return false;
+    }
+    match scope {
+        // Bare `@claude` from `claude`: on this device it resolves to this very
+        // agent, so it is self-addressed and skipped — which also lets the next
+        // mention take the one honoured hand-off slot instead of wasting it.
+        None => true,
+        // Scoped to this very device, by the agent that lives here.
+        Some((owner, device)) => match self_device {
+            Some((self_owner, self_dev)) => {
+                owner.eq_ignore_ascii_case(self_owner) && device.eq_ignore_ascii_case(self_dev)
+            }
+            // We do not know what this device is called yet. Let it through:
+            // the receiving side compares peer ids, which is exact, and
+            // refusing here would break delegation whenever the roster is
+            // still syncing.
+            None => false,
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The device these tests run "on".
+    const HERE: Option<(&str, &str)> = Some(("suzy", "macbook-pro"));
 
     fn msg(mentions: &[&str], relay: Option<Relay>) -> ChatMessage {
         ChatMessage {
@@ -146,27 +188,27 @@ mod tests {
     #[test]
     fn human_post_fires_every_mention() {
         let m = msg(&["claude", "codex"], Some(mint("m0", "p1")));
-        assert_eq!(triggerable_mentions(&m, 20), vec!["claude", "codex"]);
+        assert_eq!(triggerable_mentions(&m, 20, HERE), vec!["claude", "codex"]);
     }
 
     #[test]
     fn message_predating_the_field_still_fires() {
         let m = msg(&["claude"], None);
-        assert_eq!(triggerable_mentions(&m, 20), vec!["claude"]);
+        assert_eq!(triggerable_mentions(&m, 20, HERE), vec!["claude"]);
     }
 
     #[test]
     fn agent_reply_fires_only_its_first_mention() {
         let r = extend(&mint("m0", "p1"), "claude");
         let m = msg(&["codex", "gemini"], Some(r));
-        assert_eq!(triggerable_mentions(&m, 20), vec!["codex"]);
+        assert_eq!(triggerable_mentions(&m, 20, HERE), vec!["codex"]);
     }
 
     #[test]
     fn agent_never_triggers_itself() {
         let r = extend(&mint("m0", "p1"), "claude");
         let m = msg(&["claude"], Some(r));
-        assert!(triggerable_mentions(&m, 20).is_empty());
+        assert!(triggerable_mentions(&m, 20, HERE).is_empty());
     }
 
     #[test]
@@ -174,14 +216,48 @@ mod tests {
         // Naming itself first must not consume the one honoured slot.
         let r = extend(&mint("m0", "p1"), "claude");
         let m = msg(&["claude", "codex"], Some(r));
-        assert_eq!(triggerable_mentions(&m, 20), vec!["codex"]);
+        assert_eq!(triggerable_mentions(&m, 20, HERE), vec!["codex"]);
     }
 
     #[test]
-    fn scoped_self_mention_is_recognised() {
+    fn a_mention_scoped_to_this_device_is_a_self_mention() {
         let r = extend(&mint("m0", "p1"), "claude");
-        let m = msg(&["alice/laptop/claude"], Some(r));
-        assert!(triggerable_mentions(&m, 20).is_empty());
+        let m = msg(&["suzy/macbook-pro/claude"], Some(r));
+        assert!(triggerable_mentions(&m, 20, HERE).is_empty());
+    }
+
+    #[test]
+    fn another_devices_agent_of_the_same_name_is_not_itself() {
+        // The bug: claude on macbook-pro handing off to claude on jessair was
+        // read as a self-mention, so the hand-off silently never fired.
+        let r = extend(&mint("m0", "p1"), "claude");
+        let m = msg(&["suzy/jessair/claude"], Some(r));
+        assert_eq!(
+            triggerable_mentions(&m, 20, HERE),
+            vec!["suzy/jessair/claude"],
+            "a different machine's agent is a different agent"
+        );
+    }
+
+    #[test]
+    fn a_bare_self_name_is_still_skipped() {
+        // Unscoped, it resolves to this very agent here — and skipping it frees
+        // the one honoured hand-off for the next mention.
+        let r = extend(&mint("m0", "p1"), "claude");
+        let m = msg(&["claude"], Some(r));
+        assert!(triggerable_mentions(&m, 20, HERE).is_empty());
+    }
+
+    #[test]
+    fn without_knowing_this_device_a_scoped_mention_still_passes() {
+        // Roster not synced yet. Refusing would fail closed and break
+        // delegation at random; the receiver still catches a true self-wake.
+        let r = extend(&mint("m0", "p1"), "claude");
+        let m = msg(&["suzy/macbook-pro/claude"], Some(r));
+        assert_eq!(
+            triggerable_mentions(&m, 20, None),
+            vec!["suzy/macbook-pro/claude"]
+        );
     }
 
     #[test]
@@ -192,8 +268,8 @@ mod tests {
         }
         let m = msg(&["codex"], Some(r.clone()));
         assert_eq!(r.spent, 3);
-        assert!(triggerable_mentions(&m, 3).is_empty());
-        assert_eq!(triggerable_mentions(&m, 4), vec!["codex"]);
+        assert!(triggerable_mentions(&m, 3, HERE).is_empty());
+        assert_eq!(triggerable_mentions(&m, 4, HERE), vec!["codex"]);
     }
 
     #[test]
@@ -206,7 +282,7 @@ mod tests {
             let posting = if turns % 2 == 0 { "claude" } else { "codex" };
             r = extend(&r, posting);
             let m = msg(&[next], Some(r.clone()));
-            if triggerable_mentions(&m, 6).is_empty() {
+            if triggerable_mentions(&m, 6, HERE).is_empty() {
                 break;
             }
             turns += 1;
@@ -222,7 +298,7 @@ mod tests {
             r = extend(&r, "claude");
         }
         let m = msg(&["codex"], Some(r));
-        assert!(triggerable_mentions(&m, 250).is_empty());
+        assert!(triggerable_mentions(&m, 250, HERE).is_empty());
     }
 
     #[test]

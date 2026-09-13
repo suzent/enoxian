@@ -393,10 +393,15 @@ Three bounds, because each one alone has a shape it does not catch:
   — the first that is not the agent itself. An agent that names three agents
   gets one trigger and two chips. Without this, a budget of N is a budget of N
   *levels*, i.e. exponential rather than linear.
-- **No self-trigger.** An agent never wakes itself, however it phrases the
-  mention (`@claude` and `@alice/laptop/claude` both resolve to the same agent).
-  This kills the degenerate one-agent loop outright, and it is the only cycle
-  worth forbidding structurally.
+- **No self-trigger.** An agent never wakes itself. Note what "itself" means:
+  the same agent *on the same machine*. Several devices may each configure an
+  agent called `claude`, and one handing off to another is delegation, not a
+  loop — an early cut compared names alone and silently swallowed exactly that
+  hand-off. The check is made where it can be exact, on the receiving device,
+  by comparing peer ids; the sending side only skips a mention it can already
+  tell is local (bare, or scoped to itself), which also frees the one honoured
+  hand-off for the next mention. This kills the degenerate one-agent loop and
+  is the only cycle worth forbidding structurally.
 
 An earlier draft added **path acyclicity** — an agent already on the branch is
 never re-triggered — which makes `A → B → A` impossible rather than merely
