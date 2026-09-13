@@ -191,6 +191,10 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
             "/api/agent-config/reaction",
             post(agent_config::set_reaction),
         )
+        .route(
+            "/api/agent-config/engagement",
+            post(agent_config::set_engagement),
+        )
         .route("/api/agent-config/agents", post(agent_config::add_agent))
         .route(
             "/api/agent-config/agents/remove",

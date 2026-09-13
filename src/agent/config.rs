@@ -298,6 +298,58 @@ mod tests {
     "#;
 
     #[test]
+    fn engagement_settings_round_trip_through_toml() {
+        // What the settings UI writes must survive a save/load cycle, or a
+        // change appears to stick and silently does not.
+        let text = r#"
+reaction = "push"
+engagement_window_secs = 90
+
+[agents.claude]
+driver = "acp"
+command = ["claude-agent-acp"]
+engagement = "ambient"
+accept_from = "agents"
+max_relay_turns = 6
+"#;
+        let cfg = AgentConfig::from_toml(text).unwrap();
+        assert_eq!(cfg.engagement_window_secs, 90);
+        let claude = cfg.resolve("claude").unwrap();
+        assert_eq!(claude.engagement, Engagement::Ambient);
+        assert_eq!(claude.accept_from, AcceptFrom::Agents);
+        assert_eq!(claude.max_relay_turns, 6);
+
+        let back = AgentConfig::from_toml(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        let claude = back.resolve("claude").unwrap();
+        assert_eq!(back.engagement_window_secs, 90);
+        assert_eq!(claude.engagement, Engagement::Ambient);
+        assert_eq!(claude.accept_from, AcceptFrom::Agents);
+        assert_eq!(claude.max_relay_turns, 6);
+    }
+
+    #[test]
+    fn an_agent_without_engagement_keys_gets_the_safe_defaults() {
+        // A config written before these existed must not silently opt an agent
+        // into reading the room or accepting delegation.
+        let text = r#"
+reaction = "push"
+
+[agents.claude]
+driver = "acp"
+command = ["claude-agent-acp"]
+"#;
+        let cfg = AgentConfig::from_toml(text).unwrap();
+        let claude = cfg.resolve("claude").unwrap();
+        assert_eq!(claude.engagement, Engagement::Mention);
+        assert_eq!(claude.accept_from, AcceptFrom::Humans);
+        assert_eq!(
+            claude.max_relay_turns,
+            crate::agent::relay::DEFAULT_MAX_RELAY_TURNS
+        );
+        assert_eq!(cfg.engagement_window_secs, DEFAULT_ENGAGEMENT_WINDOW_SECS);
+    }
+
+    #[test]
     fn parses_config_with_drivers_and_reaction() {
         let cfg = AgentConfig::from_toml(CONFIG).unwrap();
         assert_eq!(cfg.reaction, Reaction::Push);

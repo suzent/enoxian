@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Bot, RadioTower } from 'lucide-react'
 import type { AgentConfigView, AgentPlugin, ConnectivitySettings, DiscoveredAgent } from '../types'
-import { getAgentConfig, getAgentPlugins, discoverAgents, installAgentPlugin, setAgentReaction, addAgent, removeAgent, getConnectivitySettings, setForceRelay } from '../api'
+import { getAgentConfig, getAgentPlugins, discoverAgents, installAgentPlugin, setAgentReaction, setAgentEngagement, addAgent, removeAgent, getConnectivitySettings, setForceRelay } from '../api'
 import { useApp } from '../context/AppContext'
 import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
+import AgentEngagement from './AgentEngagement'
 
 type SettingsTab = 'agents' | 'connectivity'
 
@@ -123,6 +124,24 @@ export default function DeviceSettings({ onClose }: Props) {
     })
   }
 
+  const changeEngagement = (
+    name: string,
+    patch: { engagement?: 'mention' | 'ambient'; accept_from?: 'humans' | 'agents' },
+  ) => run(() => setAgentEngagement({ name, ...patch }))
+
+  // Edited as text so the field can be cleared while typing without snapping
+  // back to 0 — which would read as "follow-ups disabled".
+  const [windowDraft, setWindowDraft] = useState<string | null>(null)
+  const windowValue = windowDraft ?? String(cfg?.engagement_window_secs ?? '')
+  const commitWindow = () => {
+    if (!cfg || windowDraft === null) return
+    const parsed = Number(windowDraft)
+    setWindowDraft(null)
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed === cfg.engagement_window_secs) return
+    run(() => setAgentEngagement({ name: '', engagement_window_secs: Math.floor(parsed) }))
+  }
+
+  const agentByName = new Map((cfg?.agents || []).map(agent => [agent.name, agent]))
   const managedNames = new Set((plugins || []).map(plugin => plugin.agent))
   const customAgents = cfg?.agents.filter(agent => !managedNames.has(agent.name)) || []
   const activeCircle = circles.find(circle => circle.circle_id === activeCircleId)
@@ -174,6 +193,35 @@ export default function DeviceSettings({ onClose }: Props) {
                   {isPush ? 'ON' : 'OFF'}
                 </button>
               </section>
+
+              {isPush && (
+                <section className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-bold">FOLLOW-UP WINDOW</div>
+                    <div className="text-[9px] text-slate mt-0.5 leading-relaxed">
+                      {cfg.engagement_window_secs > 0
+                        ? `After an agent replies to you, your next message goes back to it for ${cfg.engagement_window_secs}s without a mention.`
+                        : 'Off — every message needs an explicit @mention.'}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <input
+                      type="number"
+                      min={0}
+                      step={30}
+                      value={windowValue}
+                      disabled={busy}
+                      onChange={e => setWindowDraft(e.target.value)}
+                      onBlur={commitWindow}
+                      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                      className="w-[64px] border border-obsidian px-1 py-1 text-[10px] focus:outline-none focus:bg-obsidian/5 disabled:opacity-50"
+                      aria-label="Follow-up window in seconds"
+                      title="Seconds. 0 turns follow-up routing off."
+                    />
+                    <span className="text-[9px] text-slate">sec</span>
+                  </div>
+                </section>
+              )}
 
               {plugins && plugins.length > 0 && (
                 <section>
@@ -260,6 +308,14 @@ export default function DeviceSettings({ onClose }: Props) {
                             )}
                           </div>
                         </div>
+
+                        {agentByName.has(plugin.agent) && (
+                          <AgentEngagement
+                            agent={agentByName.get(plugin.agent)!}
+                            busy={busy}
+                            onChange={patch => changeEngagement(plugin.agent, patch)}
+                          />
+                        )}
 
                         {runtimeMissing && (
                           <div className="mt-2 border-l-2 border-obsidian/40 pl-2 text-[9px] text-slate leading-relaxed">
@@ -373,6 +429,11 @@ export default function DeviceSettings({ onClose }: Props) {
                           <div className={`text-[9px] mt-0.5 ${health.ready ? 'text-obsidian' : 'text-slate'}`}>{health.detail}</div>
                         )}
                         <div className="text-[8px] text-slate truncate" title={agent.command.join(' ')}>{agent.command.join(' ')}</div>
+                        <AgentEngagement
+                          agent={agent}
+                          busy={busy}
+                          onChange={patch => changeEngagement(agent.name, patch)}
+                        />
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <span

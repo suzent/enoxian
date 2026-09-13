@@ -99,6 +99,15 @@ export const installAgentPlugin = (pluginId: string) =>
   post<{ ok: boolean; plugin: string; command: string[] }>(`/api/agent-plugins/${encodeURIComponent(pluginId)}/install`, {})
 export const setAgentReaction = (reaction: 'push' | 'pull') =>
   post('/api/agent-config/reaction', { reaction })
+/** Change how one agent engages, or this device's follow-up window. Every
+ *  field is optional; send only what changed. */
+export const setAgentEngagement = (patch: {
+  name: string
+  engagement?: 'mention' | 'ambient'
+  accept_from?: 'humans' | 'agents'
+  max_relay_turns?: number
+  engagement_window_secs?: number
+}) => post<{ ok: boolean }>('/api/agent-config/engagement', patch)
 export const addAgent = (name: string, driver: string, command: string[], working_dir?: string) =>
   post('/api/agent-config/agents', { name, driver, command, working_dir })
 export const removeAgent = (name: string) =>

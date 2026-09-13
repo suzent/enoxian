@@ -19,7 +19,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::agent::config::{AgentCommand, AgentConfig, Driver, Reaction};
+use crate::agent::config::{AcceptFrom, AgentCommand, AgentConfig, Driver, Engagement, Reaction};
 use crate::agent::plugin;
 use crate::agent::probe;
 use crate::daemon::DaemonState;
@@ -38,6 +38,12 @@ struct AgentSummary {
     /// `ready`, `missing`, or `runtime_download`. The latter is deliberately
     /// not considered installed: a mention must not invoke a package manager.
     status: String,
+    /// "mention" or "ambient" — whether this agent reads unaddressed messages.
+    engagement: String,
+    /// "humans" or "agents" — whose mention may wake it.
+    accept_from: String,
+    /// This device's ceiling on agent turns per delegation cascade.
+    max_relay_turns: u8,
 }
 
 #[derive(Serialize)]
@@ -49,6 +55,9 @@ struct AgentConfigView {
     config_path: String,
     /// True if the file actually exists (vs. defaulted-empty).
     configured: bool,
+    /// Seconds an agent stays in conversation with whoever it replied to, so a
+    /// follow-up needs no mention. `0` disables follow-up routing.
+    engagement_window_secs: i64,
     agents: Vec<AgentSummary>,
 }
 
@@ -67,6 +76,9 @@ pub async fn get_agent_config() -> impl IntoResponse {
             status: plugin::command_status(&cmd.command).to_string(),
             command: cmd.command.clone(),
             working_dir: cmd.working_dir.clone(),
+            engagement: format!("{:?}", cmd.engagement).to_lowercase(),
+            accept_from: format!("{:?}", cmd.accept_from).to_lowercase(),
+            max_relay_turns: cmd.max_relay_turns,
         })
         .collect();
 
@@ -76,6 +88,7 @@ pub async fn get_agent_config() -> impl IntoResponse {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
         configured,
+        engagement_window_secs: cfg.engagement_window_secs,
         agents,
     })
 }
@@ -178,6 +191,90 @@ pub async fn set_reaction(Json(req): Json<SetReactionRequest>) -> impl IntoRespo
         cfg.reaction = reaction;
         Ok(())
     })
+}
+
+/// Change how one agent engages, without touching its command.
+///
+/// Every field is optional so the UI can send just what changed. These are
+/// device-local decisions — the device that pays for an agent's tokens decides
+/// what they are spent on — so this route edits `agents.toml` and nothing else.
+#[derive(Deserialize)]
+pub struct SetEngagementRequest {
+    pub name: String,
+    /// "mention" or "ambient".
+    #[serde(default)]
+    pub engagement: Option<String>,
+    /// "humans" or "agents".
+    #[serde(default)]
+    pub accept_from: Option<String>,
+    #[serde(default)]
+    pub max_relay_turns: Option<u8>,
+    /// Device-wide follow-up window, in seconds. `0` disables it.
+    #[serde(default)]
+    pub engagement_window_secs: Option<i64>,
+}
+
+pub async fn set_engagement(
+    State(daemon): State<DaemonState>,
+    Json(req): Json<SetEngagementRequest>,
+) -> impl IntoResponse {
+    let engagement = match req.engagement.as_deref() {
+        None => None,
+        Some("mention") => Some(Engagement::Mention),
+        Some("ambient") => Some(Engagement::Ambient),
+        Some(other) => return bad_request(format!("invalid engagement '{other}'")),
+    };
+    let accept_from = match req.accept_from.as_deref() {
+        None => None,
+        Some("humans") => Some(AcceptFrom::Humans),
+        Some("agents") => Some(AcceptFrom::Agents),
+        Some(other) => return bad_request(format!("invalid accept_from '{other}'")),
+    };
+    if let Some(window) = req.engagement_window_secs {
+        if window < 0 {
+            return bad_request("engagement_window_secs cannot be negative".to_string());
+        }
+    }
+    if let Some(turns) = req.max_relay_turns {
+        if turns == 0 {
+            return bad_request(
+                "max_relay_turns must be at least 1 — use accept_from = \"humans\" to refuse \
+                 delegation entirely"
+                    .to_string(),
+            );
+        }
+    }
+
+    let name = req.name.clone();
+    let resp = edit(move |cfg| {
+        if let Some(window) = req.engagement_window_secs {
+            cfg.engagement_window_secs = window;
+        }
+        let Some(cmd) = cfg.agents.get_mut(&name) else {
+            // Only an error when the request was actually about this agent.
+            if engagement.is_none() && accept_from.is_none() && req.max_relay_turns.is_none() {
+                return Ok(());
+            }
+            return Err(format!(
+                "no agent named '{name}' is configured on this device"
+            ));
+        };
+        if let Some(value) = engagement {
+            cmd.engagement = value;
+        }
+        if let Some(value) = accept_from {
+            cmd.accept_from = value;
+        }
+        if let Some(value) = req.max_relay_turns {
+            cmd.max_relay_turns = value;
+        }
+        Ok(())
+    });
+    // `ambient_agents` is advertised in the roster so every peer can see who is
+    // listening (§2.6). Without this the switch would take effect locally while
+    // the rest of the Circle kept seeing the old answer.
+    readvertise_if_ok(&resp, &daemon);
+    resp
 }
 
 #[derive(Deserialize)]
