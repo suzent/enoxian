@@ -116,7 +116,7 @@ pub enum AgentCommands {
     Update {
         /// Build from source instead of downloading a release binary.
         /// Use this during development.
-        #[arg(long, conflicts_with = "status")]
+        #[arg(long, conflicts_with_all = ["status", "check", "release"])]
         dev: bool,
         /// Path to the enoxian source directory (saved after first use)
         #[arg(long, requires = "dev")]
@@ -127,8 +127,14 @@ pub enum AgentCommands {
         /// Show channel, source, managed binary, version, and service state
         #[arg(long, conflicts_with_all = ["dev", "src", "no_pull"])]
         status: bool,
+        /// Report the newest stable release without installing it
+        #[arg(long, conflicts_with_all = ["dev", "src", "no_pull", "status"])]
+        check: bool,
+        /// Install a specific stable release such as v0.8.0 (default: latest)
+        #[arg(long, value_name = "TAG", conflicts_with_all = ["dev", "src", "no_pull", "status"])]
+        release: Option<String>,
         /// Installer-only marker for a verified stable release
-        #[arg(long, hide = true, conflicts_with_all = ["dev", "src", "no_pull", "status"])]
+        #[arg(long, hide = true, conflicts_with_all = ["dev", "src", "no_pull", "status", "check", "release"])]
         record_stable: bool,
     },
     /// Complete a deferred self-update after the old executable exits
@@ -152,8 +158,9 @@ pub struct UpdateApplyArgs {
     pub target: std::path::PathBuf,
     #[arg(long)]
     pub service: bool,
+    /// Set only on the development channel: the source checkout that was built
     #[arg(long)]
-    pub dev_source: std::path::PathBuf,
+    pub dev_source: Option<std::path::PathBuf>,
 }
 
 #[derive(clap::Args)]

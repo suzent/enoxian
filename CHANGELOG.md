@@ -49,6 +49,14 @@ refuses to publish a version whose section is missing or empty.
   attribution when agents work concurrently. Stopped reply chains remain stopped
   after restarting the daemon.
 
+- `enox update` now updates stable installs itself: it downloads the release
+  archive published for your platform, verifies it against the release
+  `SHA256SUMS`, installs it, restarts Enoxian, and rolls back to the previous
+  binary if the new one fails its health check. Previously a stable install
+  could only be updated by rerunning the installer script. `enox update
+  --check` reports whether a newer release exists without installing it, and
+  `enox update --release <TAG>` installs a specific version.
+
 - Settings has a **Device** tab: rename this device or change your handle
   without starting over, see the handle your agents are addressed by, and see
   which update channel this install follows. Previously the only place to set
@@ -135,15 +143,13 @@ refuses to publish a version whose section is missing or empty.
   reads the handle from the Circle, and says that changing your handle applies
   to Circles you join later, not ones you are already in.
 
-<<<<<<< HEAD
 - Renaming this device now takes effect immediately instead of at the next
   restart. The name is the middle part of every handle that addresses an agent
   here (`@you/device/agent`) and what this device checks an incoming mention
   against, so a rename used to leave the Circle addressing a name the device no
   longer answered to — with nothing to say why.
 
-=======
->>>>>>> origin/main
+
 - Per-Circle agent settings are easier to find and harder to misread. The
   settings entry said "LOCAL DEVICE" while the panel behind it also held
   per-Circle behaviour, the scope tab named the Circle only in passing, and
