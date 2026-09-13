@@ -1,14 +1,17 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Bot, RadioTower } from 'lucide-react'
+import { Bot, RadioTower, Laptop } from 'lucide-react'
 import type { AgentConfigView, AgentPlugin, ConnectivitySettings, DiscoveredAgent } from '../types'
-import { getAgentConfigFor, getAgentPlugins, discoverAgents, installAgentPlugin, setEngagement, addAgent, removeAgent, getConnectivitySettings, setForceRelay } from '../api'
+import type { IdentityInfo } from '../api'
+import { getAgentConfigFor, getAgentPlugins, discoverAgents, installAgentPlugin, setEngagement, addAgent, removeAgent, getConnectivitySettings, setForceRelay, getIdentity, setIdentity } from '../api'
 import { useApp } from '../context/AppContext'
 import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
 import EngagementSettings, { type Patch } from './EngagementSettings'
+import DeviceIdentity from './DeviceIdentity'
 
-type SettingsTab = 'agents' | 'connectivity'
+type SettingsTab = 'device' | 'agents' | 'connectivity'
 
 const SETTINGS_TABS: readonly SegmentedTabOption<SettingsTab>[] = [
+  { value: 'device', content: <><Laptop size={14} aria-hidden="true" />DEVICE</> },
   { value: 'agents', content: <><Bot size={14} aria-hidden="true" />AGENTS</> },
   { value: 'connectivity', content: <><RadioTower size={14} aria-hidden="true" />CONNECTIVITY</> },
 ]
@@ -31,6 +34,7 @@ export default function DeviceSettings({ onClose }: Props) {
   const [plugins, setPlugins] = useState<AgentPlugin[] | null>(null)
   const [known, setKnown] = useState<DiscoveredAgent[]>([])
   const [connectivity, setConnectivity] = useState<ConnectivitySettings | null>(null)
+  const [identity, setIdentityState] = useState<IdentityInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [installingPlugin, setInstallingPlugin] = useState<string | null>(null)
@@ -50,6 +54,7 @@ export default function DeviceSettings({ onClose }: Props) {
     // Descriptions for agents enoxian knows about, so a custom entry that is
     // one of them reads like an adapter instead of a bare command line.
     discoverAgents().then(r => setKnown(r.agents)).catch(() => setKnown([]))
+    getIdentity().then(setIdentityState).catch(() => setIdentityState(null))
   }, [activeCircleId])
 
   useEffect(() => { refresh() }, [refresh])
@@ -146,6 +151,37 @@ export default function DeviceSettings({ onClose }: Props) {
               </button>
             </div>
           )}
+          {activeTab === 'device' && !identity && !error && (
+            <div className="text-slate font-mono text-[11px]">Loading…</div>
+          )}
+
+          {activeTab === 'device' && identity && (
+            <>
+              <section>
+                <div className="text-[11px] font-bold mb-1">IDENTITY</div>
+                <DeviceIdentity
+                  identity={identity}
+                  busy={busy}
+                  onSave={async patch => {
+                    await run(() => setIdentity(patch))
+                    await getIdentity().then(setIdentityState).catch(() => {})
+                  }}
+                />
+              </section>
+
+              {cfg?.config_path && (
+                <section>
+                  <div className="text-[11px] font-bold mb-1">CONFIG</div>
+                  <div className="text-[9px] text-slate break-all">{cfg.config_path}</div>
+                  <div className="text-[9px] text-slate mt-1 leading-relaxed">
+                    Everything in Settings is written here and stays on this machine.
+                    It is never synced to a Circle.
+                  </div>
+                </section>
+              )}
+            </>
+          )}
+
           {activeTab === 'agents' && !cfg && !error && <div className="text-slate font-mono text-[11px]">Loading…</div>}
 
           {activeTab === 'agents' && cfg && (
@@ -424,6 +460,16 @@ export default function DeviceSettings({ onClose }: Props) {
               <div className="settings-connectivity__circle">
                 <span>CURRENT CIRCLE</span>
                 <strong>{activeCircle?.circle_name ?? activeCircleId ?? 'NONE'}</strong>
+              </div>
+              {/* Routing is per Circle and stored on this device, the same
+                  shape as the per-Circle engagement overrides. Saying so keeps
+                  the two consistent — and stops "force relay" reading like
+                  something the whole Circle is switched to. */}
+              <div className="settings-scope__note">
+                Applies in <strong>{activeCircle?.circle_name ?? 'this Circle'}</strong> only.{' '}
+                <span className="settings-scope__private">
+                  This is this device's routing — never shared with the Circle.
+                </span>
               </div>
 
               <div className="settings-connectivity__availability" aria-label="Connectivity services">

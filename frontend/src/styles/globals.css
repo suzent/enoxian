@@ -987,6 +987,83 @@ button[role="tab"][aria-selected="true"] {
   font-weight: 700;
 }
 
+/* Device identity. A form rather than live-editing toggles, because a rename
+   changes how the Circle addresses this machine — worth a deliberate save. */
+.device-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-family: var(--font-mono);
+}
+
+.device-identity__field {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  font-size: 9px;
+  color: var(--fg-slate);
+}
+
+.device-identity__field input {
+  min-width: 0;
+  border: 1px solid var(--fg-obsidian);
+  padding: 5px 7px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg-obsidian);
+  background: transparent;
+}
+
+.device-identity__field input:focus {
+  outline: none;
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.device-identity__hint {
+  font-size: 9px;
+  line-height: 1.5;
+  color: var(--fg-slate);
+}
+
+.device-identity__hint code {
+  color: var(--fg-obsidian);
+  font-weight: 700;
+}
+
+.device-identity__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.device-identity__actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--fg-obsidian);
+  background: transparent;
+  color: var(--fg-obsidian);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.device-identity__actions button:hover:not(:disabled) {
+  background: var(--fg-obsidian);
+  color: var(--bg-alabaster, #fff);
+}
+
+.device-identity__actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.device-identity__channel {
+  margin-left: auto;
+  font-size: 9px;
+  color: var(--fg-slate);
+}
+
 /* The scope switch frames everything under it, so it reads as a mode rather
    than one more control in a list. */
 .settings-scope__head {
