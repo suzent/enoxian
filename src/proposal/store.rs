@@ -66,8 +66,17 @@ impl ProposalStore {
         let tmp = self
             .root
             .join(format!(".baseline-{}", uuid::Uuid::new_v4()));
-        std::fs::write(&tmp, id)?;
-        std::fs::File::open(&tmp)?.sync_all()?;
+        // Windows requires a writable handle for FlushFileBuffers (sync_all).
+        // Flush the same handle that wrote the pointer, then close before rename.
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
+            file.write_all(id.as_bytes())?;
+            file.sync_all()?;
+        }
         std::fs::rename(tmp, path).context("writing baseline pointer")?;
         #[cfg(unix)]
         std::fs::File::open(&self.root)?.sync_all()?;
@@ -171,5 +180,7 @@ mod tests {
         assert_eq!(store.baseline_id(), None);
         store.set_baseline("snap-123").unwrap();
         assert_eq!(store.baseline_id(), Some("snap-123".into()));
+        store.set_baseline("snap-456").unwrap();
+        assert_eq!(store.baseline_id(), Some("snap-456".into()));
     }
 }
