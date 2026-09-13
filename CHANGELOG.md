@@ -41,6 +41,14 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- `enox update` now updates stable installs itself: it downloads the release
+  archive published for your platform, verifies it against the release
+  `SHA256SUMS`, installs it, restarts Enoxian, and rolls back to the previous
+  binary if the new one fails its health check. Previously a stable install
+  could only be updated by rerunning the installer script. `enox update
+  --check` reports whether a newer release exists without installing it, and
+  `enox update --release <TAG>` installs a specific version.
+
 - Settings has a **Device** tab: rename this device or change your handle
   without starting over, see the handle your agents are addressed by, and see
   which update channel this install follows. Previously the only place to set

@@ -120,35 +120,48 @@ enox bootstrap serve --port 36521 [--relay-port 36522] [--advertise-host HOST]
 
 ### `update`
 
-Pull the latest code and reinstall the unified `enox` binary.
+Reinstall the unified `enox` binary — from the published releases on the
+`stable` channel, or from a local source checkout on the `dev` channel.
 
 ```bash
+enox update [--check] [--release <TAG>]
 enox update --dev [--src <PATH>] [--no-pull]
 enox update --status
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--check` | — | Report the newest stable release and whether an update is available, without installing it |
+| `--release <TAG>` | latest | Install a specific stable release such as `v0.8.0`; also allows reinstalling or downgrading to a version you already run |
 | `--dev` | — | Build from source (for developers) |
 | `--src <PATH>` | saved | Path to the enoxian source directory. Saved to `~/.enoxian/config.toml` on first use — not required after that |
 | `--no-pull` | — | Skip `git pull`, just rebuild |
 | `--status` | — | Show the active channel, version, managed binary, source, and service mode |
 
-Development updates replace the binary already referenced by the installed
-login service, then restore the same managed/unmanaged startup mode. The new
-binary must pass a version check and API health check; otherwise the previous
-binary is restored automatically. A successful dev update remembers the
-channel, so later `enox update` commands continue using the saved source.
+With no flags, `enox update` follows the channel recorded in
+`~/.enoxian/config.toml`: `stable` downloads the release archive published for
+your platform, verifies it against the release `SHA256SUMS`, and installs it;
+`dev` rebuilds from the saved source checkout. `--dev` switches to the dev
+channel; rerunning the release installer (or a plain `enox update` on a stable
+install) records `stable` again.
 
-Stable installs still use the authenticated, checksum-verified release
-installer. Running that installer records the channel as `stable` again.
+Both channels replace the binary already referenced by the installed login
+service, then restore the same managed/unmanaged startup mode. The new binary
+must pass a version check and an API health check; otherwise the previous
+binary is restored automatically.
 
-**First-time setup per machine:**
+**Stable installs:**
+```bash
+enox update --check     # is there anything newer?
+enox update             # download, verify, install, restart
+```
+
+**Development, first-time setup per machine:**
 ```bash
 enox update --dev --src /path/to/enoxian   # saves the path
 ```
 
-**Every update after that:**
+**Every development update after that:**
 ```bash
 enox update --dev
 ```

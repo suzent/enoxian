@@ -1,5 +1,6 @@
 use crate::{cli::UpdateApplyArgs, config};
 use anyhow::{bail, Context, Result};
+use sha2::{Digest, Sha256};
 use std::fs;
 #[cfg(windows)]
 use std::fs::OpenOptions;
@@ -10,16 +11,20 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+const REPO: &str = "suzent/enoxian";
 const CHANNEL_DEV: &str = "dev";
 const CHANNEL_STABLE: &str = "stable";
 const CHILD_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(20);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub async fn run(
     dev: bool,
     src: Option<PathBuf>,
     no_pull: bool,
     status: bool,
+    check: bool,
+    release: Option<String>,
     record_stable: bool,
 ) -> Result<()> {
     if record_stable {
@@ -33,9 +38,248 @@ pub async fn run(
     if dev || cfg.update_channel.as_deref() == Some(CHANNEL_DEV) {
         run_dev(src, no_pull)
     } else {
-        show_stable_guidance();
+        run_stable(release, check).await
+    }
+}
+
+/// Stable channel: download the release archive published for this platform,
+/// verify it against the release SHA256SUMS, then hand it to the same staged
+/// install/rollback path the development channel uses.
+async fn run_stable(release: Option<String>, check: bool) -> Result<()> {
+    let service = crate::commands::service::is_installed();
+    let target = managed_target(service)?;
+    let installed = installed_version(&target);
+
+    let tag = match release.as_deref() {
+        Some(requested) => normalize_tag(requested),
+        None => latest_tag().await?,
+    };
+    let wanted = tag.trim_start_matches('v').to_string();
+
+    println!(
+        "installed: {}",
+        installed.as_deref().unwrap_or("unavailable")
+    );
+    println!("available: {wanted}");
+
+    let up_to_date = installed.as_deref() == Some(wanted.as_str());
+    if check {
+        if up_to_date {
+            println!("✓ Enoxian is on the newest stable release");
+        } else {
+            println!("▶ Run `enox update` to install {tag}");
+        }
+        return Ok(());
+    }
+    if up_to_date && release.is_none() {
+        println!("✓ Enoxian is already up to date");
+        return Ok(());
+    }
+
+    let staging = staging_dir()?;
+    let source = download_release(&tag, &staging).await?;
+    verify_binary(&source).context("downloaded release binary failed its pre-install check")?;
+    if let Some(found) = version_of(&source) {
+        if found != wanted {
+            let _ = fs::remove_dir_all(&staging);
+            bail!("downloaded binary reports version '{found}', expected '{wanted}'");
+        }
+    }
+
+    println!("▶ Stopping Enoxian...");
+    stop_current(service)?;
+
+    #[cfg(windows)]
+    {
+        spawn_windows_apply(source, target, None, service)?;
+        println!("▶ Handed off to the verified release binary...");
+        println!("  It will replace this executable, restart Enoxian, and verify API health.");
+        println!("  Progress: ~/.enoxian/logs/update.log");
         Ok(())
     }
+
+    #[cfg(not(windows))]
+    {
+        apply(UpdateApplyArgs {
+            source,
+            target,
+            service,
+            dev_source: None,
+        })
+    }
+}
+
+fn normalize_tag(requested: &str) -> String {
+    let trimmed = requested.trim();
+    if trimmed.starts_with('v') {
+        trimmed.to_string()
+    } else {
+        format!("v{trimmed}")
+    }
+}
+
+async fn latest_tag() -> Result<String> {
+    #[derive(serde::Deserialize)]
+    struct Release {
+        tag_name: String,
+    }
+
+    println!("▶ Checking for the newest stable release...");
+    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+    let release: Release = http_client()?
+        .get(&url)
+        .header("accept", "application/vnd.github+json")
+        .send()
+        .await
+        .with_context(|| format!("failed to query {url}"))?
+        .error_for_status()
+        .with_context(|| format!("failed to query {url}"))?
+        .json()
+        .await
+        .context("release metadata was not valid JSON")?;
+    if release.tag_name.trim().is_empty() {
+        bail!("the latest release has no tag name");
+    }
+    Ok(release.tag_name)
+}
+
+fn http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .user_agent(concat!("enox/", env!("CARGO_PKG_VERSION")))
+        .timeout(DOWNLOAD_TIMEOUT)
+        .build()
+        .context("failed to build the update HTTP client")
+}
+
+/// Release asset published for this platform by `.github/workflows/release.yml`.
+fn asset_name() -> Result<&'static str> {
+    Ok(match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "enoxian-linux-x86_64.tar.gz",
+        ("linux", "aarch64") => "enoxian-linux-aarch64.tar.gz",
+        ("macos", "aarch64") => "enoxian-macos-aarch64.tar.gz",
+        ("macos", "x86_64") => "enoxian-macos-x86_64.tar.gz",
+        ("windows", "x86_64") => "enoxian-windows-x86_64.zip",
+        (os, arch) => bail!(
+            "no stable release is published for {os}/{arch}; build from source with `enox update --dev --src <path>`"
+        ),
+    })
+}
+
+fn staging_dir() -> Result<PathBuf> {
+    let dir = config::enoxian_dir()?.join("update");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    Ok(dir)
+}
+
+/// Downloads and checksum-verifies the release archive, returning the path of
+/// the extracted `enox` executable inside `staging`.
+async fn download_release(tag: &str, staging: &Path) -> Result<PathBuf> {
+    let asset = asset_name()?;
+    let base = format!("https://github.com/{REPO}/releases/download/{tag}");
+    let client = http_client()?;
+
+    println!("▶ Downloading {asset} ({tag})...");
+    let archive = fetch_bytes(&client, &format!("{base}/{asset}")).await?;
+    let sums = fetch_bytes(&client, &format!("{base}/SHA256SUMS")).await?;
+    let sums = String::from_utf8(sums).context("SHA256SUMS is not valid UTF-8")?;
+
+    let expected = expected_checksum(&sums, asset)
+        .with_context(|| format!("SHA256SUMS has no entry for {asset}"))?;
+    let actual = hex::encode(Sha256::digest(&archive));
+    if actual != expected {
+        bail!("checksum mismatch for {asset}; the download was discarded");
+    }
+    println!("✓ Checksum verified");
+
+    let archive_path = staging.join(asset);
+    fs::write(&archive_path, &archive)
+        .with_context(|| format!("failed to write {}", archive_path.display()))?;
+    extract(&archive_path, staging)?;
+    let _ = fs::remove_file(&archive_path);
+
+    let binary = staging.join(if cfg!(windows) { "enox.exe" } else { "enox" });
+    if !binary.is_file() {
+        bail!("{asset} does not contain an enox executable");
+    }
+    make_executable(&binary)?;
+    Ok(binary)
+}
+
+async fn fetch_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("failed to download {url}"))?
+        .error_for_status()
+        .with_context(|| format!("failed to download {url}"))?;
+    Ok(response
+        .bytes()
+        .await
+        .with_context(|| format!("failed to read the response body of {url}"))?
+        .to_vec())
+}
+
+/// SHA256SUMS lines are `<hash>  <name>`; GNU coreutils writes `*<name>` for
+/// binary mode, so both spellings are accepted.
+fn expected_checksum(sums: &str, asset: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let (hash, name) = line.split_once(char::is_whitespace)?;
+        let name = name.trim().trim_start_matches('*');
+        (name == asset).then(|| hash.trim().to_ascii_lowercase())
+    })
+}
+
+fn extract(archive: &Path, into: &Path) -> Result<()> {
+    let status = if cfg!(windows) {
+        Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command"])
+            .arg(format!(
+                "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                archive.display(),
+                into.display()
+            ))
+            .status()
+    } else {
+        Command::new("tar")
+            .arg("-C")
+            .arg(into)
+            .arg("-xzf")
+            .arg(archive)
+            .status()
+    }
+    .with_context(|| format!("failed to extract {}", archive.display()))?;
+    if !status.success() {
+        bail!("failed to extract {}", archive.display());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+        .with_context(|| format!("failed to mark {} executable", path.display()))
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+/// `enox --version` prints `enox <semver>`; the bare version is what the
+/// release tag carries.
+fn version_of(path: &Path) -> Option<String> {
+    let output = command_output(path, &["--version"])?;
+    output
+        .split_whitespace()
+        .next_back()
+        .map(|value| value.to_string())
+}
+
+fn installed_version(target: &Path) -> Option<String> {
+    version_of(target)
 }
 
 fn run_dev(src: Option<PathBuf>, no_pull: bool) -> Result<()> {
@@ -70,7 +314,7 @@ fn run_dev(src: Option<PathBuf>, no_pull: bool) -> Result<()> {
 
     #[cfg(windows)]
     {
-        spawn_windows_apply(source, target, src, service)?;
+        spawn_windows_apply(source, target, Some(src), service)?;
         println!("▶ Handed off to the verified development binary...");
         println!("  It will replace this executable, restart Enoxian, and verify API health.");
         println!("  Progress: ~/.enoxian/logs/update.log");
@@ -83,7 +327,7 @@ fn run_dev(src: Option<PathBuf>, no_pull: bool) -> Result<()> {
             source,
             target,
             service,
-            dev_source: src,
+            dev_source: Some(src),
         })
     }
 }
@@ -92,15 +336,17 @@ pub fn apply(args: UpdateApplyArgs) -> Result<()> {
     #[cfg(windows)]
     thread::sleep(Duration::from_millis(750));
 
+    let dev = args.dev_source.is_some();
+    let label = if dev { "development" } else { "release" };
     let backup = backup_path(&args.target)?;
     let staged = staged_path(&args.target)?;
     let had_target = args.target.is_file();
 
     if same_path(&args.source, &args.target) {
-        println!("▶ Development binary is already at the managed path.");
+        println!("▶ The {label} binary is already at the managed path.");
     } else {
         println!(
-            "▶ Installing development binary to {}...",
+            "▶ Installing {label} binary to {}...",
             args.target.display()
         );
         if let Some(parent) = args.target.parent() {
@@ -121,26 +367,49 @@ pub fn apply(args: UpdateApplyArgs) -> Result<()> {
         .and_then(|_| start_target(&args.target, args.service))
         .and_then(|_| wait_for_health(&args.target))
     {
-        eprintln!("✗ Development update failed: {error:#}");
+        eprintln!("✗ {label} update failed: {error:#}");
         if !same_path(&args.source, &args.target) {
             rollback(&args.target, &backup, had_target, args.service)?;
         }
-        bail!("development update rolled back; the previous installation was restored");
+        bail!("{label} update rolled back; the previous installation was restored");
     }
 
     let mut cfg = config::load_global();
-    cfg.dev_src = Some(args.dev_source.to_string_lossy().into_owned());
-    cfg.update_channel = Some(CHANNEL_DEV.to_string());
+    if let Some(dev_source) = &args.dev_source {
+        cfg.dev_src = Some(dev_source.to_string_lossy().into_owned());
+        cfg.update_channel = Some(CHANNEL_DEV.to_string());
+    } else {
+        cfg.update_channel = Some(CHANNEL_STABLE.to_string());
+    }
     cfg.managed_executable = Some(args.target.to_string_lossy().into_owned());
     config::save_global(&cfg)?;
 
     let _ = fs::remove_file(&backup);
     let _ = fs::remove_file(&staged);
-    cleanup_alternate_dev_binary(&args.target);
-    println!("✓ Development update installed and healthy");
+    if dev {
+        cleanup_alternate_dev_binary(&args.target);
+    } else {
+        discard_staging_dir(&args.source);
+    }
+    println!("✓ {label} update installed and healthy");
     println!("  binary: {}", args.target.display());
-    println!("  source: {}", args.dev_source.display());
+    if let Some(dev_source) = &args.dev_source {
+        println!("  source: {}", dev_source.display());
+    } else if let Some(version) = version_of(&args.target) {
+        println!("  version: {version}");
+    }
     Ok(())
+}
+
+/// Removes `~/.enoxian/update` once its staged binary has been installed. The
+/// path check keeps a `--source` outside the staging area untouched.
+fn discard_staging_dir(source: &Path) {
+    let Ok(expected) = config::enoxian_dir().map(|dir| dir.join("update")) else {
+        return;
+    };
+    if source.parent() == Some(expected.as_path()) {
+        let _ = fs::remove_dir_all(&expected);
+    }
 }
 
 fn show_status() -> Result<()> {
@@ -173,13 +442,6 @@ fn record_stable_install() -> Result<()> {
     cfg.update_channel = Some(CHANNEL_STABLE.to_string());
     cfg.managed_executable = Some(exe.to_string_lossy().into_owned());
     config::save_global(&cfg)
-}
-
-fn show_stable_guidance() {
-    println!("Stable installs are updated by rerunning the verified release installer.");
-    println!("Download: https://github.com/suzent/enoxian/releases/latest");
-    println!("Development source: enox update --dev [--src <path>]");
-    println!("Current channel: enox update --status");
 }
 
 fn managed_target(service: bool) -> Result<PathBuf> {
@@ -405,7 +667,7 @@ fn command_status_with_timeout(
 fn spawn_windows_apply(
     source: PathBuf,
     target: PathBuf,
-    dev_source: PathBuf,
+    dev_source: Option<PathBuf>,
     service: bool,
 ) -> Result<()> {
     use std::os::windows::process::CommandExt;
@@ -417,10 +679,10 @@ fn spawn_windows_apply(
         .create(true)
         .append(true)
         .open(&log_path)?;
-    writeln!(log, "\n=== development update handoff ===")?;
+    writeln!(log, "\n=== update handoff ===")?;
     let stderr = log.try_clone()?;
 
-    let mut command = windows_apply_command(&source, &target, &dev_source, service);
+    let mut command = windows_apply_command(&source, &target, dev_source.as_deref(), service);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
@@ -442,7 +704,7 @@ fn spawn_windows_apply(
 fn windows_apply_command(
     source: &Path,
     target: &Path,
-    dev_source: &Path,
+    dev_source: Option<&Path>,
     service: bool,
 ) -> Command {
     let mut command = Command::new(source);
@@ -451,9 +713,10 @@ fn windows_apply_command(
         .arg("--source")
         .arg(source)
         .arg("--target")
-        .arg(target)
-        .arg("--dev-source")
-        .arg(dev_source);
+        .arg(target);
+    if let Some(dev_source) = dev_source {
+        command.arg("--dev-source").arg(dev_source);
+    }
     if service {
         command.arg("--service");
     }
@@ -509,6 +772,38 @@ mod tests {
             staged_path(target).unwrap(),
             Path::new("/opt/enox/bin/enox.update-new")
         );
+    }
+
+    #[test]
+    fn requested_release_gains_a_leading_v() {
+        assert_eq!(normalize_tag("0.8.0"), "v0.8.0");
+        assert_eq!(normalize_tag(" v0.8.0 "), "v0.8.0");
+    }
+
+    #[test]
+    fn checksum_lookup_accepts_both_sha256sums_spellings() {
+        let sums = concat!(
+            "aaaa  enoxian-linux-x86_64.tar.gz\n",
+            "BBBB *enoxian-macos-aarch64.tar.gz\n",
+        );
+        assert_eq!(
+            expected_checksum(sums, "enoxian-linux-x86_64.tar.gz").as_deref(),
+            Some("aaaa")
+        );
+        assert_eq!(
+            expected_checksum(sums, "enoxian-macos-aarch64.tar.gz").as_deref(),
+            Some("bbbb")
+        );
+        assert!(expected_checksum(sums, "enoxian-windows-x86_64.zip").is_none());
+    }
+
+    #[test]
+    fn asset_name_matches_the_published_release_matrix() {
+        // Unsupported platforms are told to build from source instead.
+        if let Ok(asset) = asset_name() {
+            assert!(asset.starts_with("enoxian-"));
+            assert!(asset.ends_with(".tar.gz") || asset.ends_with(".zip"));
+        }
     }
 
     #[test]
