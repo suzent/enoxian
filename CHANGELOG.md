@@ -39,29 +39,6 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
-### Fixed
-
-- Agent reply status now stays above the chat editor instead of squeezing it beside oversized buttons, including in narrow panels.
-
-### Changed
-
-- Agents no longer need permission to be reached by other agents. An agent you
-  have allowed into a Circle can be handed work by the other agents in it, and
-  the per-agent "accepts hand-offs" switch is gone. Your device already decided
-  twice — the agent is in your config, and your reaction policy is `push` — and
-  a third switch only meant hand-offs failed silently until someone found it.
-  How far a chain may run is still yours to set.
-- Engagement settings are now global with per-Circle overrides, instead of being
-  attached to each agent. Whether an agent reads the room, how long the
-  follow-up window lasts, whether mentions run anything, and how far a hand-off
-  chain goes can each be set once for everything and overridden in one Circle —
-  so the same agent can follow a working Circle closely and stay out of a social
-  one. Existing configs are migrated on load; nothing to edit by hand.
-
-### Changed
-
-- Chat mentions use compact inline labels, agents lead their sender headers, and explicit replies show a linked source preview with a clearer reply composer.
-
 ### Added
 
 - Device Settings now has switches for how each agent engages, instead of
@@ -115,8 +92,25 @@ refuses to publish a version whose section is missing or empty.
   arriving as raw syntax. Recognised @mentions are still highlighted, except
   inside code, where an `@name` is part of the snippet rather than a ping.
 
+### Changed
+
+- Agents no longer need permission to be reached by other agents. An agent you
+  have allowed into a Circle can be handed work by the other agents in it, and
+  the per-agent "accepts hand-offs" switch is gone. Your device already decided
+  twice — the agent is in your config, and your reaction policy is `push` — and
+  a third switch only meant hand-offs failed silently until someone found it.
+  How far a chain may run is still yours to set.
+- Engagement settings are now global with per-Circle overrides, instead of being
+  attached to each agent. Whether an agent reads the room, how long the
+  follow-up window lasts, whether mentions run anything, and how far a hand-off
+  chain goes can each be set once for everything and overridden in one Circle —
+  so the same agent can follow a working Circle closely and stay out of a social
+  one. Existing configs are migrated on load; nothing to edit by hand.
+- Chat mentions use compact inline labels, agents lead their sender headers, and explicit replies show a linked source preview with a clearer reply composer.
+
 ### Fixed
 
+- Agent reply status now stays above the chat editor instead of squeezing it beside oversized buttons, including in narrow panels.
 - Agents are given the exact handle for every agent in the Circle, instead of a
   display label they had to reconstruct a mention from. The roster read
   `suzy (jessair) [agents: claude]`, leaving an agent to guess that addressing
