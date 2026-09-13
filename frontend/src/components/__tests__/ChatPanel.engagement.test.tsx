@@ -128,6 +128,7 @@ describe('explicit reply-to', () => {
         id: 'a1',
         agent_id: 'claude',
         text: 'from claude',
+        reply_to: 'question',
         mentions: [],
         ts: Math.floor(Date.now() / 1000),
         peer_id: 'p1',
@@ -137,6 +138,7 @@ describe('explicit reply-to', () => {
     ])
     render(<ChatPanel />)
 
+    expect(await screen.findByRole('link', { name: 'Earlier message' })).toHaveAttribute('href', '#chat-message-question')
     const reply = await screen.findByRole('button', { name: 'reply' })
     await userEvent.click(reply)
 

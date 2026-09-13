@@ -39,6 +39,10 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Changed
+
+- Chat mentions use compact inline labels, agents lead their sender headers, and explicit replies show a linked source preview with a clearer reply composer.
+
 ### Added
 
 - Device Settings now has switches for how each agent engages, instead of

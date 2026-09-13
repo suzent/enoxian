@@ -4265,11 +4265,32 @@ select option {
   user-select: none;
 }
 
-/* In a message bubble the chip inherits the bubble's colors better as an
-   outline, so it reads on both light (received) and dark (mine) bubbles. */
+/* Transcript mentions read as inline addresses, not editable fields. */
 .mention-chip--msg {
-  background: transparent;
-  border-color: currentColor;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+  border-color: transparent;
+  border-radius: 4px;
+  white-space: normal;
+  overflow-wrap: anywhere;
   color: inherit;
   user-select: text;
 }
+
+/* Explicit replies retain their source in the chronological transcript. */
+.chat-message--reply .chat-message__body {
+  border-left: 2px solid color-mix(in srgb, var(--fg-slate) 30%, transparent);
+  padding-left: 12px;
+}
+.chat-message__parent {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-slate);
+  font-size: var(--ui-tiny);
+  margin-bottom: 6px;
+  text-decoration: none;
+}
+.chat-message__parent:hover { text-decoration: underline; }
+.chat-message:target { background: color-mix(in srgb, var(--fg-slate) 8%, transparent); }
