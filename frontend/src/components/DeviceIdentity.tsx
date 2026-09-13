@@ -56,7 +56,7 @@ export default function DeviceIdentity({
   return (
     <div className="device-identity">
       <label className="device-identity__field">
-        <span>DEVICE NAME</span>
+        <span>Device name</span>
         <input
           value={label}
           disabled={busy}
@@ -66,7 +66,7 @@ export default function DeviceIdentity({
         />
       </label>
       <label className="device-identity__field">
-        <span>YOUR HANDLE</span>
+        <span>Your handle</span>
         <input
           value={handle}
           disabled={busy}

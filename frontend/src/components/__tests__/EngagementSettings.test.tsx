@@ -36,8 +36,8 @@ describe('global scope', () => {
       <EngagementSettings agentNames={['claude']} global={GLOBAL} circle={null}
         scope="global" busy={false} onChange={vi.fn()} />,
     )
-    expect(screen.queryByText('inherited')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'reset' })).toBeNull()
+    expect(screen.queryByText('Using default')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Use default' })).toBeNull()
   })
 
   it('edits write to the global scope', async () => {
@@ -62,7 +62,7 @@ describe('circle scope', () => {
         scope="circle" busy={false} onChange={vi.fn()} />,
     )
     // Four settings, all inherited.
-    expect(screen.getAllByText('inherited')).toHaveLength(4)
+    expect(screen.getAllByText('Using default')).toHaveLength(4)
     // And the inherited value is visible, not hidden.
     expect(screen.getByLabelText('Follow-up window in seconds')).toHaveValue(180)
   })
@@ -73,8 +73,8 @@ describe('circle scope', () => {
         circle={circle({ engagement_window_secs: 0 })}
         scope="circle" busy={false} onChange={vi.fn()} />,
     )
-    expect(screen.getAllByRole('button', { name: 'reset' })).toHaveLength(1)
-    expect(screen.getAllByText('inherited')).toHaveLength(3)
+    expect(screen.getAllByRole('button', { name: 'Use default' })).toHaveLength(1)
+    expect(screen.getAllByText('Using default')).toHaveLength(3)
   })
 
   it('reset clears the override rather than writing a value', async () => {
@@ -86,7 +86,7 @@ describe('circle scope', () => {
         circle={circle({ engagement_window_secs: 0 })}
         scope="circle" busy={false} onChange={onChange} />,
     )
-    await userEvent.click(screen.getByRole('button', { name: 'reset' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Use default' }))
     expect(onChange).toHaveBeenCalledWith({ engagement_window_secs: null })
   })
 
