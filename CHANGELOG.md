@@ -116,12 +116,15 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+<<<<<<< HEAD
 - Renaming this device now takes effect immediately instead of at the next
   restart. The name is the middle part of every handle that addresses an agent
   here (`@you/device/agent`) and what this device checks an incoming mention
   against, so a rename used to leave the Circle addressing a name the device no
   longer answered to — with nothing to say why.
 
+=======
+>>>>>>> origin/main
 - Per-Circle agent settings are easier to find and harder to misread. The
   settings entry said "LOCAL DEVICE" while the panel behind it also held
   per-Circle behaviour, the scope tab named the Circle only in passing, and
