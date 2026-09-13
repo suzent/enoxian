@@ -72,6 +72,7 @@ pub(crate) fn resolve_actor(
     // Backward compatibility for the UI and older CLI clients. This is local
     // API attribution, not a separately authenticated agent identity.
     Ok(ActorIdentity {
+        run_id: None,
         registration_id: String::new(),
         agent_id: legacy_agent_id.unwrap_or_else(|| fallback.to_string()),
         circle_id: state.circle_id.clone(),

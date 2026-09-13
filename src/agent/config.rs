@@ -153,10 +153,9 @@ impl AgentCommand {
 /// Default follow-up window: how long after an agent's reply a message from the
 /// same person is routed back to it without a mention.
 ///
-/// Three minutes is long enough to read a reply and type a considered answer,
-/// short enough that a conversation abandoned mid-thread does not silently
-/// capture an unrelated message later.
-pub const DEFAULT_ENGAGEMENT_WINDOW_SECS: i64 = 180;
+/// Explicit reply threads are the default. Existing configured windows remain
+/// opt-in behavior and are not overwritten during migration.
+pub const DEFAULT_ENGAGEMENT_WINDOW_SECS: i64 = 0;
 
 /// How agents behave in one scope — globally, or in a single Circle.
 ///
@@ -202,6 +201,9 @@ impl ResolvedSettings {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AgentConfig {
+    /// Device-wide execution cap. Set to 1 for serial rollback; restart to resize.
+    #[serde(default = "default_max_concurrent_runs")]
+    pub max_concurrent_runs: usize,
     #[serde(default)]
     pub reaction: Reaction,
     /// Seconds an agent stays "in conversation" with whoever it replied to, so
@@ -274,12 +276,15 @@ impl AgentConfig {
     }
 }
 
+fn default_max_concurrent_runs() -> usize {
+    4
+}
+
 impl Default for AgentConfig {
-    /// Matches the serde defaults field for field. A derived `Default` would
-    /// give `engagement_window_secs = 0`, silently disabling follow-up routing
-    /// on the fallback path while an empty `agents.toml` enabled it.
+    /// Matches serde defaults so empty files and load failures resolve alike.
     fn default() -> Self {
         Self {
+            max_concurrent_runs: default_max_concurrent_runs(),
             reaction: Reaction::default(),
             engagement_window_secs: DEFAULT_ENGAGEMENT_WINDOW_SECS,
             ambient: Vec::new(),

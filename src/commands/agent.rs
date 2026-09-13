@@ -230,6 +230,9 @@ pub async fn run(
         println!("  resuming previous session");
     }
     let outcome = driver::launch(driver::LaunchRequest {
+        run_id: None,
+        trigger_id: None,
+        coordination: None,
         agent_name: &agent,
         cmd: &cmd,
         task: &task,
@@ -244,10 +247,6 @@ pub async fn run(
     })
     .await
     .context("agent run failed")?;
-
-    if let Some(sid) = &outcome.acp_session_id {
-        let _ = crate::agent::memory::save_session(&circle_dir, &agent, sid);
-    }
 
     println!("✓ agent finished ({})", outcome.detail);
     if let Some(reply) = &outcome.reply {

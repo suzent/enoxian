@@ -623,7 +623,7 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
                         </div>
                         {device.agents.length > 0 && (
                           <div className="ml-3 flex flex-wrap gap-1">
-                            {device.agents.map(a => <span key={a} className="text-[9px] text-slate border border-obsidian/20 px-1">{a}</span>)}
+                            {device.agents.map(a => <span key={a} className="text-[9px] text-slate border border-obsidian/20 px-1">{a}{device.ambientAgents.includes(a) ? ' · listening' : ''}</span>)}
                           </div>
                         )}
                         {p && <div className="ml-3 text-[9px] text-slate">{age(p.last_seen)}</div>}
@@ -924,6 +924,7 @@ function PanelEmpty({ title, detail }: { title: string; detail: string }) {
 // ── User/device grouping ──────────────────────────────────────────────────────
 
 interface DeviceView {
+  ambientAgents: string[]
   peer_id: string
   displayLabel: string
   agent_id: string
@@ -953,6 +954,7 @@ function buildUserGroups(members: Member[], presenceList: Presence[], selfAgentI
       displayLabel: m.device_label || shortenAgentId(m.agent_id),
       agent_id: m.agent_id,
       agents: m.agents,
+      ambientAgents: m.ambient_agents ?? [],
       role: m.role,
       presence: p,
       isSelf: m.agent_id === selfAgentId,

@@ -15,6 +15,9 @@ pub async fn run(
     if let Some(token) = actor_token {
         body["actor_token"] = Value::String(token.to_string());
     }
+    if let Ok(run) = std::env::var("ENOXIAN_RUN_ID") {
+        body["run_id"] = Value::String(run);
+    }
     let resp = client
         .post(format!("{base}/bind"))
         .json(&body)
@@ -35,5 +38,10 @@ pub async fn run(
             println!("  held by: {holder}");
         }
     }
+    anyhow::ensure!(
+        status.is_success(),
+        "bind rejected: {}",
+        val["error"].as_str().unwrap_or("conflict")
+    );
     Ok(())
 }

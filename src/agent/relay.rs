@@ -110,7 +110,10 @@ pub fn triggerable_mentions(
     }
     msg.mentions
         .iter()
-        .find(|m| !is_self_mention(m, posting_agent, self_device))
+        .find(|m| {
+            super::mention::Mention::parse(m).is_some_and(|target| target.agent_target().is_some())
+                && !is_self_mention(m, posting_agent, self_device)
+        })
         .cloned()
         .into_iter()
         .collect()
@@ -172,6 +175,7 @@ mod tests {
 
     fn msg(mentions: &[&str], relay: Option<Relay>) -> ChatMessage {
         ChatMessage {
+            thread_root: None,
             id: "m1".into(),
             agent_id: "claude".into(),
             text: String::new(),
@@ -201,6 +205,15 @@ mod tests {
     fn agent_reply_fires_only_its_first_mention() {
         let r = extend(&mint("m0", "p1"), "claude");
         let m = msg(&["codex", "gemini"], Some(r));
+        assert_eq!(triggerable_mentions(&m, 20, HERE), vec!["codex"]);
+    }
+
+    #[test]
+    fn notify_only_targets_do_not_consume_the_agent_handoff() {
+        let m = msg(
+            &["suzy/jessair", "codex"],
+            Some(extend(&mint("root", "p1"), "claude")),
+        );
         assert_eq!(triggerable_mentions(&m, 20, HERE), vec!["codex"]);
     }
 

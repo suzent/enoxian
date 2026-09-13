@@ -34,6 +34,11 @@ pub fn command(program: &str, args: &[String]) -> Command {
         c = Command::new(program);
         c.args(args);
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.as_std_mut().process_group(0);
+    }
     scrub_env(&mut c);
     configure_underlying_cli(program, &mut c);
     c
@@ -142,10 +147,14 @@ pub fn kill_tree(pid: u32) {
         // Negative pid targets the process group; the child is a group leader
         // only if spawned that way, so also try the pid directly as a fallback.
         let _ = std::process::Command::new("kill")
-            .args(["-TERM", &format!("-{pid}")])
+            .args(["-KILL", &format!("-{pid}")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
         let _ = std::process::Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
+            .args(["-KILL", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
     }
 }

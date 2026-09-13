@@ -5,6 +5,7 @@ pub mod auth;
 pub mod chat;
 pub mod connectivity;
 pub mod events;
+pub mod execution;
 pub mod files;
 pub mod identity;
 pub mod lifecycle;
@@ -109,6 +110,18 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
         .route(
             "/circles/{circle_id}/api/proposals/{proposal_id}/revert",
             post(proposals::revert_proposal),
+        )
+        .route(
+            "/circles/{circle_id}/api/chat/executions",
+            get(execution::list),
+        )
+        .route(
+            "/circles/{circle_id}/api/chat/executions/{run_id}",
+            post(execution::update),
+        )
+        .route(
+            "/circles/{circle_id}/api/chat/deliveries",
+            get(execution::deliveries),
         )
         // M9 chat
         .route(

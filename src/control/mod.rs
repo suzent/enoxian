@@ -110,6 +110,8 @@ pub struct MlsCommitEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LockEntry {
+    #[serde(default)]
+    pub run_id: Option<String>,
     pub entry_id: String,
     pub agent_id: String,
     /// Device that vouched for `agent_id`. Empty for legacy entries.
@@ -245,6 +247,9 @@ pub struct MemberEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
+    /// Stable chat-thread root; independent from the ACP conversation ID.
+    #[serde(default)]
+    pub thread_root: Option<String>,
     pub id: String,
     pub agent_id: String,
     pub text: String,

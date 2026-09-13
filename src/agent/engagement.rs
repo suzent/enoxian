@@ -176,6 +176,7 @@ mod tests {
 
     fn human(id: &str, peer: &str, ts: i64) -> ChatMessage {
         ChatMessage {
+            thread_root: None,
             id: id.into(),
             agent_id: "suzy".into(),
             text: "hello".into(),
@@ -192,6 +193,7 @@ mod tests {
     fn agent_reply(id: &str, agent: &str, ran_on: &str, root_peer: &str, ts: i64) -> ChatMessage {
         let parent = crate::agent::relay::mint("root", root_peer);
         ChatMessage {
+            thread_root: None,
             id: id.into(),
             agent_id: agent.into(),
             text: "sure".into(),

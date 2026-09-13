@@ -43,6 +43,7 @@ struct AgentSummary {
 
 #[derive(Serialize)]
 struct AgentConfigView {
+    max_concurrent_runs: usize,
     /// "push" or "pull".
     reaction: String,
     /// Absolute path of the config file, so the UI can tell the user what to
@@ -151,6 +152,7 @@ pub async fn get_agent_config(
     });
 
     Json(AgentConfigView {
+        max_concurrent_runs: cfg.max_concurrent_runs,
         reaction: format!("{:?}", cfg.reaction).to_lowercase(),
         config_path: path
             .map(|p| p.to_string_lossy().into_owned())
@@ -274,6 +276,7 @@ pub async fn set_reaction(Json(req): Json<SetReactionRequest>) -> impl IntoRespo
 /// tokens is the device that decides what they are spent on.
 #[derive(Deserialize)]
 pub struct SetEngagementRequest {
+    pub max_concurrent_runs: Option<usize>,
     #[serde(default)]
     pub circle_id: Option<String>,
     /// "push" or "pull".
@@ -346,6 +349,12 @@ pub async fn set_engagement(
     let scope = req.circle_id.clone().filter(|id| !id.is_empty());
     let resp = edit(move |cfg| {
         validate(&req, &cfg.agents)?;
+        if let Some(limit) = req.max_concurrent_runs {
+            if scope.is_some() || !(1..=32).contains(&limit) {
+                return Err("max_concurrent_runs must be 1–32 at device scope".into());
+            }
+            cfg.max_concurrent_runs = limit;
+        }
         match scope {
             None => {
                 // Global scope answers every question, so `null` is not a

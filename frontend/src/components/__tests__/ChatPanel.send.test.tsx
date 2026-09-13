@@ -13,6 +13,8 @@ const postChat = vi.fn()
 
 vi.mock('../../api', () => ({
   postChat,
+  getExecutions: vi.fn(async () => ({ runs: [] })),
+  updateExecution: vi.fn(),
   getChat: vi.fn(async () => []),
   getMembers: vi.fn(async () => []),
   getWho: vi.fn(async () => []),

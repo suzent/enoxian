@@ -49,6 +49,19 @@ pub trait ClientHooks: Send + 'static {
     /// Called for each `session/update` notification (streamed agent output).
     /// Default: log at debug. Override to surface progress.
     fn on_update(&self, _update: &Value) {}
+    fn on_spawn(&self, _pid: u32) -> Result<()> {
+        Ok(())
+    }
+    fn run_id(&self) -> Option<&str> {
+        None
+    }
+    fn write_file(&self, path: &Path, content: &[u8]) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, content)?;
+        Ok(())
+    }
 }
 
 /// The discriminator of a `session/update` (`sessionUpdate` or legacy `type`).
@@ -106,12 +119,20 @@ pub struct AcpSession<H: ClientHooks> {
     session_id: Option<String>,
     /// Whether the agent advertised the `loadSession` capability at init.
     load_session_cap: bool,
+    resumed: bool,
     workspace: PathBuf,
     hooks: H,
     next_id: u64,
 }
 
 impl<H: ClientHooks> AcpSession<H> {
+    pub fn was_resumed(&self) -> bool {
+        self.resumed
+    }
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.id()
+    }
+
     /// Spawn the agent command and complete the ACP handshake, leaving a
     /// session ready for `prompt`.
     ///
@@ -139,6 +160,9 @@ impl<H: ClientHooks> AcpSession<H> {
 
         let mut command = super::spawn::command(program, args);
         super::spawn::apply_actor_env(&mut command, agent_id, circle_id, actor_token);
+        if let Some(id) = hooks.run_id() {
+            command.env("ENOXIAN_RUN_ID", id);
+        }
         command
             .current_dir(workspace)
             .stdin(Stdio::piped())
@@ -149,6 +173,7 @@ impl<H: ClientHooks> AcpSession<H> {
             .spawn()
             .with_context(|| format!("failed to spawn ACP agent `{program}`"))?;
 
+        hooks.on_spawn(child.id().context("child PID missing")?)?;
         let stdin = child.stdin.take().context("child stdin missing")?;
         let stdout = child.stdout.take().context("child stdout missing")?;
         let stderr = child.stderr.take().context("child stderr missing")?;
@@ -195,6 +220,7 @@ impl<H: ClientHooks> AcpSession<H> {
             req_rx,
             session_id: None,
             load_session_cap: false,
+            resumed: false,
             workspace: workspace.to_path_buf(),
             hooks,
             next_id: 1,
@@ -206,6 +232,7 @@ impl<H: ClientHooks> AcpSession<H> {
         match resume {
             Some(prior) if session.load_session_cap => match session.load_session(prior).await {
                 Ok(()) => {
+                    session.resumed = true;
                     tracing::info!("[acp] resumed session {prior}");
                 }
                 Err(e) => {
@@ -465,11 +492,7 @@ impl<H: ClientHooks> AcpSession<H> {
             .get("content")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("fs/write_text_file: missing content"))?;
-        if let Some(parent) = abs.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        std::fs::write(&abs, content)
-            .with_context(|| format!("fs/write_text_file: {}", abs.display()))?;
+        self.hooks.write_file(&abs, content.as_bytes())?;
         tracing::info!("[acp] agent wrote {}", abs.display());
         Ok(json!({}))
     }
@@ -490,7 +513,7 @@ impl<H: ClientHooks> AcpSession<H> {
         if !normalized.starts_with(&root) {
             bail!("path {raw} escapes the workspace");
         }
-        Ok(normalized)
+        crate::proposal::canonical_workspace_path(&self.workspace, &normalized)
     }
 
     async fn reply(&mut self, id: Option<Value>, result: Result<Value>) -> Result<()> {

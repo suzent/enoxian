@@ -41,6 +41,14 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Agents can run in parallel across Circles while keeping ordered turns and one
+  conversation per agent in each Circle. Device Settings controls concurrency.
+- Durable delivery queues recover mentions after reconnects and restarts, with
+  delivery status, explicit reply threads, and retry or cancel controls in chat.
+- Managed native writes carry per-run change evidence and locks, preserving
+  attribution when agents work concurrently. Stopped reply chains remain stopped
+  after restarting the daemon.
+
 - Settings has a **Device** tab: rename this device or change your handle
   without starting over, see the handle your agents are addressed by, and see
   which update channel this install follows. Previously the only place to set

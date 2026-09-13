@@ -14,6 +14,8 @@ const getChatActivity = vi.fn(async () => [])
 
 vi.mock('../../api', () => ({
   postChat: vi.fn(async () => ({ id: 'm1' })),
+  getExecutions: vi.fn(async () => ({ runs: [] })),
+  updateExecution: vi.fn(),
   getChat: vi.fn(async () => []),
   getMembers: vi.fn(async () => []),
   getWho: vi.fn(async () => []),
@@ -138,11 +140,11 @@ describe('explicit reply-to', () => {
     ])
     render(<ChatPanel />)
 
-    expect(await screen.findByRole('link', { name: 'Earlier message' })).toHaveAttribute('href', '#chat-message-question')
+    expect(await screen.findByRole('link', { name: 'Waiting for the referenced message to sync' })).toHaveAttribute('href', '#chat-message-question')
     const reply = await screen.findByRole('button', { name: 'reply' })
     await userEvent.click(reply)
 
-    expect(await screen.findByText('@claude')).toBeTruthy()
+    expect(await screen.findByText('@suzy/mac/claude')).toBeTruthy()
     expect(await screen.findByText(/this message only/)).toBeTruthy()
     expect(screen.queryByText('@codex')).toBeNull()
   })

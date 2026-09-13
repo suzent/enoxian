@@ -62,13 +62,22 @@ impl ProposalStore {
     }
 
     pub fn set_baseline(&self, id: &str) -> Result<()> {
-        std::fs::write(self.root.join("baseline"), id).context("writing baseline pointer")
+        let path = self.root.join("baseline");
+        let tmp = self
+            .root
+            .join(format!(".baseline-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp, id)?;
+        std::fs::File::open(&tmp)?.sync_all()?;
+        std::fs::rename(tmp, path).context("writing baseline pointer")?;
+        #[cfg(unix)]
+        std::fs::File::open(&self.root)?.sync_all()?;
+        Ok(())
     }
 
     pub fn save_proposal(&self, proposal: &Proposal) -> Result<()> {
         super::validate_storage_id("proposal", &proposal.id)?;
         let path = self.proposals_dir().join(format!("{}.json", proposal.id));
-        std::fs::write(&path, serde_json::to_vec_pretty(proposal)?)
+        super::runs::atomic_json(&path, proposal)
             .with_context(|| format!("writing proposal {}", path.display()))
     }
 

@@ -21,6 +21,7 @@ export interface ConnectivitySettings {
 }
 
 export interface Member {
+  ambient_agents?: string[]
   peer_id: string
   owner: string
   agent_id: string
@@ -80,6 +81,7 @@ export interface Relay {
 }
 
 export interface ChatMessage {
+  thread_root?: string | null
   id: string
   agent_id: string
   text: string
@@ -240,6 +242,7 @@ export interface CircleSettingsView {
 }
 
 export interface AgentConfigView {
+  max_concurrent_runs?: number
   reaction: 'push' | 'pull'
   /** Applies everywhere unless a Circle overrides it. */
   global_settings: SettingsView
@@ -258,4 +261,14 @@ export interface DiscoveredAgent {
   about: string
   installed: boolean
   configured: boolean
+}
+
+export interface ExecutionRun {
+  peer_id?: string
+  run_id: string
+  message_id: string
+  agent_id: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'expired' | 'interrupted' | 'legacy_suppressed'
+  detail?: string | null
+  ambient: boolean
 }

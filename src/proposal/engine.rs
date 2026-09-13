@@ -52,11 +52,21 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     // from the current workspace means offline edits — record them as accepted
     // history. The edits are already live on disk, so "pending" would not gate
     // anything; the proposal preserves attribution, diff, and revert instead.
-    let disk = snapshot_workspace(&state, &store)?;
-    let mut baseline = match store
+    // Replay durable write evidence before looking at disk, including writes
+    // completed immediately before a daemon crash.
+    let prior = store
         .baseline_id()
-        .and_then(|id| store.load_snapshot(&id).ok())
-    {
+        .and_then(|id| store.load_snapshot(&id).ok());
+    let prior = match prior {
+        Some(mut baseline) => {
+            consume_write_evidence(&state, &store, &mut baseline, &device_label)?;
+            Some(baseline)
+        }
+        None => None,
+    };
+    let scan_started = chrono::Utc::now();
+    let disk = snapshot_workspace(&state, &store)?;
+    let mut baseline = match prior {
         Some(prev) => {
             let diff = SnapshotDiff::between(&prev, &disk);
             if diff.is_empty() {
@@ -71,7 +81,11 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     diff.changed_paths(),
                     &device_label,
                     ProposalSource::Ambient,
-                    ProposalStatus::Accepted,
+                    if crate::proposal::runs::ambient_review_required(&state.circle_dir)? {
+                        ProposalStatus::Pending
+                    } else {
+                        ProposalStatus::Accepted
+                    },
                     None,
                 )?;
                 store.set_baseline(&disk.id)?;
@@ -84,16 +98,14 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
             disk
         }
     };
+    crate::proposal::runs::consume_finished(&state.circle_dir, scan_started)?;
     tracing::info!("[proposal] engine started, baseline {}", baseline.id);
 
     let mut events = state.events.subscribe();
     let mut interactive_rx = state.interactive_writes.subscribe();
     let mut review_rx = state.review_writes.subscribe();
     let mut dirty: BTreeSet<String> = BTreeSet::new();
-    // Watcher events do not carry a process id. Their observation time lets us
-    // correlate each native file edit with the managed-process session that
-    // Enoxian persisted before spawning the agent.
-    let mut dirty_observed_at: BTreeMap<String, chrono::DateTime<chrono::Utc>> = BTreeMap::new();
+
     // Paths written by interactive surfaces (browser editor, P2P CRDT sync,
     // UI file operations). These are live edits the user already saw happen —
     // they become auto-accepted proposals (history + revert, no review).
@@ -126,7 +138,6 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
             _ = token.cancelled() => break,
             evt = events.recv() => match evt {
                 Ok(CircleEvent::FileUpdated { path }) | Ok(CircleEvent::FileDeleted { path }) => {
-                    dirty_observed_at.insert(path.clone(), chrono::Utc::now());
                     dirty.insert(path);
                 }
                 Ok(_) => {}
@@ -168,17 +179,22 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
             },
             // Re-armed on every loop iteration, so this fires only after
             // IDLE_WINDOW of event silence — a debounce since the last event.
-            _ = tokio::time::sleep(IDLE_WINDOW), if !dirty.is_empty() || !interactive.is_empty() => {
+            _ = tokio::time::sleep(IDLE_WINDOW) => {
+                let evidenced = consume_write_evidence(&state, &store, &mut baseline, &device_label)?;
+                // The interactive stream names paths, not operation versions.
+                // Mixed paths cannot safely credit an entire window to a human.
+                for path in &evidenced { interactive.remove(path); interactive_fresh.remove(path); }
                 let interactive_keys: BTreeSet<String> = interactive.keys().cloned().collect();
                 let touched: BTreeSet<String> = dirty.union(&interactive_keys).cloned().collect();
-                let result = if rescan {
+                let scan_started = chrono::Utc::now();
+                let finishing = crate::proposal::runs::list(&state.circle_dir)?.iter().any(|r| !r.writes_consumed && !r.session.is_open());
+                let result = if rescan || finishing {
                     snapshot_workspace(&state, &store)?
                 } else {
                     snapshot_dirty(&state, &store, &baseline, &touched)?
                 };
                 rescan = false;
                 dirty.clear();
-                let observed_at = std::mem::take(&mut dirty_observed_at);
 
                 // Interactive paths written during the window that just closed
                 // are still "in flight" — defer them so a round-trip spanning
@@ -205,6 +221,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     expected.clear();
                     interactive.clear();
                     interactive_baseline = None;
+                    crate::proposal::runs::consume_finished(&state.circle_dir, scan_started)?;
                     continue;
                 }
 
@@ -235,60 +252,136 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                     )?;
                 }
                 if !agent_paths.is_empty() {
-                    let managed_session = LocalChangeSession::load_managed(&state.circle_dir);
-                    let mut managed_paths = Vec::new();
-                    let mut ambient_paths = Vec::new();
-                    for path in agent_paths {
-                        let is_managed = managed_session.as_ref().is_some_and(|session| {
-                            observed_at
-                                .get(&path)
-                                .is_some_and(|at| session.contains_activity_at(*at))
-                        });
-                        if is_managed {
-                            managed_paths.push(path);
-                        } else {
-                            ambient_paths.push(path);
-                        }
-                    }
-                    if !managed_paths.is_empty() {
-                        // An unaddressed turn is a conversational turn, not a
-                        // work order: an agent nobody asked to do anything
-                        // should not have its files accepted on sight. This is
-                        // `pending`'s first use as a real gate (§2.4).
-                        let status = match managed_session.as_ref().map(|s| s.mode) {
-                            Some(crate::proposal::session::SessionMode::AmbientTriggered) => {
-                                ProposalStatus::Pending
-                            }
-                            _ => ProposalStatus::Accepted,
-                        };
-                        create_proposal(
-                            &state, &store, &baseline, &result, managed_paths, &device_label,
-                            ProposalSource::ManagedProcess, status,
-                            managed_session.as_ref(),
-                        )?;
-                        if let Some(session) = managed_session.as_ref().filter(|s| !s.is_open()) {
-                            LocalChangeSession::clear_managed_if(
-                                &state.circle_dir,
-                                &session.session_id,
-                            )?;
-                        }
-                    }
-                    if !ambient_paths.is_empty() {
-                        create_proposal(
-                            &state, &store, &baseline, &result, ambient_paths, &device_label,
-                            ProposalSource::Ambient, ProposalStatus::Accepted, None,
-                        )?;
-                    }
+                    // Watcher timestamps cannot identify a writer. Supported
+                    // native writes were consumed above; remaining changes are
+                    // unknown, even when a managed process happened to be live.
+                    let ambiguous_ambient = crate::proposal::runs::ambient_review_required(&state.circle_dir)?;
+                    create_proposal(
+                        &state, &store, &baseline, &result, agent_paths, &device_label,
+                        ProposalSource::Ambient,
+                        if ambiguous_ambient { ProposalStatus::Pending } else { ProposalStatus::Accepted }, None,
+                    )?;
                 }
                 if folded > 0 {
                     tracing::info!("[proposal] folded {folded} review-restored paths into baseline");
                 }
                 store.set_baseline(&result.id)?;
                 baseline = result;
+                crate::proposal::runs::consume_finished(&state.circle_dir, scan_started)?;
             }
         }
     }
     Ok(())
+}
+
+/// Commit each evidenced operation independently, so two writes to one file
+/// remain separately reviewable. The rolling checkpoint also makes recovery
+/// idempotent if the process dies between committing and removing the journal.
+fn consume_write_evidence(
+    state: &AppState,
+    store: &ProposalStore,
+    baseline: &mut Snapshot,
+    device: &str,
+) -> anyhow::Result<BTreeSet<String>> {
+    let mut touched = BTreeSet::new();
+    let _order = crate::proposal::evidence::WRITE_ORDER
+        .lock()
+        .map_err(|_| anyhow::anyhow!("write journal poisoned"))?;
+    let _file_order = crate::proposal::evidence::file_order(&state.workspace)?;
+    let pending = crate::proposal::evidence::pending(&state.circle_dir)?;
+    let committed = pending
+        .iter()
+        .position(|(_, e)| e.checkpoint == baseline.id);
+    for (index, (path, e)) in pending.into_iter().enumerate() {
+        touched.insert(e.path.clone());
+        if committed.is_some_and(|last| index <= last) {
+            std::fs::remove_file(path)?;
+            continue;
+        }
+        // Preserve any intervening unmediated edit before this operation.
+        let before_entry = e.before.files.get(&e.path);
+        if baseline.files.get(&e.path) != before_entry {
+            let mut gap = baseline.clone();
+            gap.id = uuid::Uuid::new_v4().to_string();
+            match before_entry {
+                Some(v) => {
+                    gap.files.insert(e.path.clone(), v.clone());
+                }
+                None => {
+                    gap.files.remove(&e.path);
+                }
+            }
+            store.save_snapshot(&gap)?;
+            create_proposal(
+                state,
+                store,
+                baseline,
+                &gap,
+                vec![e.path.clone()],
+                device,
+                ProposalSource::Ambient,
+                if e.session.mode == crate::proposal::session::SessionMode::AmbientTriggered
+                    || crate::proposal::runs::ambient_review_required(&state.circle_dir)?
+                {
+                    ProposalStatus::Pending
+                } else {
+                    ProposalStatus::Accepted
+                },
+                None,
+            )?;
+            *baseline = gap;
+        }
+        store.save_snapshot(&e.before)?;
+        store.save_snapshot(&e.after)?;
+        if store.load_proposal(&e.id).is_err() {
+            let mut proposal = Proposal::ambient(
+                state.circle_id.clone(),
+                e.before.id.clone(),
+                e.after.id.clone(),
+                vec![e.path.clone()],
+            );
+            proposal.id = e.id.clone();
+            proposal.source = ProposalSource::ManagedProcess;
+            proposal.status =
+                if e.session.mode == crate::proposal::session::SessionMode::AmbientTriggered {
+                    ProposalStatus::Pending
+                } else {
+                    ProposalStatus::Accepted
+                };
+            proposal.origin_peer_id = state.peer_id.clone();
+            proposal.origin_device = device.to_string();
+            apply_session_attribution(&mut proposal, &e.session);
+            proposal.confidence = crate::proposal::model::Confidence::VerifiedProcess;
+            store.save_proposal(&proposal)?;
+            append_local_event(
+                state,
+                device,
+                WorkspaceEventKind::ProposalCreated {
+                    proposal_id: proposal.id.clone(),
+                    base_snapshot: proposal.base_snapshot.clone(),
+                    result_snapshot: proposal.result_snapshot.clone(),
+                    changed_paths: proposal.changed_paths.clone(),
+                    initial_status: proposal.status,
+                },
+            )?;
+            let _ = state.events.send(CircleEvent::ProposalCreated {
+                proposal_id: proposal.id,
+            });
+        }
+        match e.after.files.get(&e.path) {
+            Some(v) => {
+                baseline.files.insert(e.path.clone(), v.clone());
+            }
+            None => {
+                baseline.files.remove(&e.path);
+            }
+        }
+        baseline.id = e.checkpoint;
+        store.save_snapshot(baseline)?;
+        store.set_baseline(&baseline.id)?;
+        std::fs::remove_file(path)?;
+    }
+    Ok(touched)
 }
 
 /// The decision for one idle window: which paths fold silently, which become
@@ -677,5 +770,66 @@ mod tests {
 
         assert_eq!(plan.folded, 1);
         assert_eq!(plan.interactive_by_author.len(), 0);
+    }
+    #[test]
+    fn operation_proposals_preserve_intervening_human_content_and_ambient_review() {
+        let workspace = tempfile::tempdir().unwrap();
+        let records = tempfile::tempdir().unwrap();
+        let state = AppState::new(
+            "c".into(),
+            "c".into(),
+            workspace.path().into(),
+            records.path().into(),
+            String::new(),
+            "human".into(),
+            1,
+            "local".into(),
+            crate::config::JoinPolicy::Manual,
+            "owner".into(),
+            crate::mls::new_mls_state(crate::mls::MlsIdentity::generate("local").unwrap(), None),
+        );
+        let file = workspace.path().join("shared.txt");
+        std::fs::write(&file, "original").unwrap();
+        let store = ProposalStore::open(workspace.path()).unwrap();
+        let mut baseline = snapshot_workspace(&state, &store).unwrap();
+        store.save_snapshot(&baseline).unwrap();
+        store.set_baseline(&baseline.id).unwrap();
+        for (agent, mode) in [
+            ("a", crate::proposal::session::SessionMode::ManagedProcess),
+            ("b", crate::proposal::session::SessionMode::AmbientTriggered),
+        ] {
+            if agent == "b" {
+                std::fs::write(&file, "intervening human edit").unwrap();
+            }
+            let mut session = LocalChangeSession::start("c".into(), baseline.id.clone(), mode);
+            session.actor_id = Some(agent.into());
+            crate::proposal::evidence::write(
+                workspace.path(),
+                records.path(),
+                &session,
+                &file,
+                agent.as_bytes(),
+            )
+            .unwrap();
+        }
+        consume_write_evidence(&state, &store, &mut baseline, "device").unwrap();
+        let proposals = store.list_proposals();
+        assert_eq!(proposals.len(), 3);
+        let b = proposals
+            .iter()
+            .find(|p| p.actor_id.as_deref() == Some("b"))
+            .unwrap();
+        assert_eq!(b.status, ProposalStatus::Pending);
+        let before = store.load_snapshot(&b.base_snapshot).unwrap();
+        assert_eq!(
+            store.blobs.get(&before.files["shared.txt"].hash).unwrap(),
+            b"intervening human edit"
+        );
+        assert_eq!(
+            baseline.files["shared.txt"].hash,
+            crate::proposal::blob::BlobStore::hash(b"b")
+        );
+        consume_write_evidence(&state, &store, &mut baseline, "device").unwrap();
+        assert_eq!(store.list_proposals().len(), 3);
     }
 }

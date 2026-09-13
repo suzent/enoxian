@@ -37,7 +37,7 @@ impl Snapshot {
         super::validate_storage_id("snapshot", &self.id)?;
         std::fs::create_dir_all(dir)?;
         let path = dir.join(format!("{}.json", self.id));
-        std::fs::write(&path, serde_json::to_vec_pretty(self)?)
+        super::runs::atomic_json(&path, self)
             .with_context(|| format!("writing snapshot {}", path.display()))
     }
 

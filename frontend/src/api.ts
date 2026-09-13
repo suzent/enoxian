@@ -107,6 +107,7 @@ export const setAgentReaction = (reaction: 'push' | 'pull') =>
  *  clears the override so the setting inherits again — which is why this takes
  *  `T | null` rather than `T | undefined`. */
 export const setEngagement = (patch: {
+  max_concurrent_runs?: number
   circle_id?: string
   reaction?: 'push' | 'pull' | null
   engagement_window_secs?: number | null
@@ -306,3 +307,6 @@ export function wsYjsUrl(circleId: string, filePath: string): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   return withToken(`${proto}://${location.host}/circles/${circleId}/ws/yjs?path=${encodeURIComponent(filePath)}`)
 }
+
+export const getExecutions = (id: string) => get<{ peer_id?: string; runs: import('./types').ExecutionRun[] }>(`${api(id)}/chat/deliveries`)
+export const updateExecution = (id: string, run: string, action: 'retry' | 'cancel') => post(`${api(id)}/chat/executions/${encodeURIComponent(run)}`, { action })
