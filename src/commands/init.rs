@@ -132,6 +132,10 @@ pub async fn run(args: InitArgs) -> Result<()> {
         admin_pubkey_bytes,
         relay_addr: None,
         rendezvous_addr: None,
+        // A brand-new circle has no saved servers to name, and the daemon is not
+        // up yet to resolve one. `enox invite` embeds them once it is.
+        relay_is_default: false,
+        rendezvous_is_default: false,
         grant,
     });
 

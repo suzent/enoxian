@@ -5,7 +5,7 @@
 Circles are joined via `enoxian://` invite URIs — single strings that encode everything needed to authenticate and connect.
 
 ```
-enoxian://v1/CRxkUjpNaBcDeFgH...
+enoxian://v2/CRxkUjpNaBcDeFgH...
 ```
 
 A link encodes:
@@ -22,9 +22,81 @@ The URI has no query string — it is safe to paste in any shell without quoting
 
 ---
 
-## Binary format
+## Wire versions
 
-The opaque payload is a variable-length byte array encoded as base64url (no padding), prefixed with `enoxian://v1/`.
+`enox` mints **v2** links and decodes both. A `v1` link that is already in circulation keeps working until its own TTL expires; nothing needs to be reissued.
+
+v2 carries the same fields as v1 in a much smaller space. Measured on the same fully loaded invite:
+
+| | v1 | v2 |
+|---|---:|---:|
+| every field present | 843 chars | 515 chars |
+| relay and rendezvous are the defaults | — | **372 chars** |
+
+Three things account for the difference:
+
+- **Multiaddrs travel as bytes.** libp2p's binary encoding of `/ip4/…/tcp/…/p2p/…` is about 47 bytes; the same address spelled as text is about 84, because the peer ID gets re-encoded in base58. An address that will not parse falls back to text, so a hand-written `--peer` value still survives.
+- **The grant travels as bytes.** `inviter_pubkey`, `nonce` and `sig` are a key, a UUID and a signature — 116 bytes. v1 carried them as hex and a UUID string: 236.
+- **The default servers travel as a flag.** See below.
+
+### Default relay and rendezvous
+
+A stock build points both `DEFAULT_RELAY` and `DEFAULT_RENDEZVOUS` at the same host, so an invite that names them is spending ~190 bytes on an address the recipient's own binary already knows. When the address being embedded is the one resolving that default would produce, v2 sets a flag instead and carries no address; `enox enter` resolves it on the way in, the same way the daemon does at startup.
+
+The match is judged on host, transport and port — not the peer ID, which the joiner fetches fresh anyway. A server on the default host but a different port is somebody's own deployment and is embedded in full. When the check is unsure it embeds the address, so the failure mode is a longer link, never a wrong one.
+
+A self-hosted relay or rendezvous server is always carried explicitly.
+
+---
+
+## Binary format (v2)
+
+The opaque payload is a variable-length byte array encoded as base64url (no padding), prefixed with `enoxian://v2/`.
+
+### Fixed header (53 bytes)
+
+| Bytes | Content |
+|-------|---------|
+| 0 | Flags (see below) |
+| 1–16 | Circle UUID (per `Uuid::as_bytes()`) |
+| 17–48 | PSK (32 raw bytes) |
+| 49–52 | Expiry — Unix timestamp as `u32` big-endian |
+
+### Flags
+
+| Bit | Meaning |
+|-----|---------|
+| `0x01` | Circle name follows |
+| `0x02` | Peer address follows |
+| `0x04` | Admin public key follows |
+| `0x08` | Explicit relay address follows |
+| `0x10` | Relay is `DEFAULT_RELAY` — no address carried |
+| `0x20` | Explicit rendezvous address follows |
+| `0x40` | Rendezvous is `DEFAULT_RENDEZVOUS` — no address carried |
+| `0x80` | Grant follows |
+
+`0x08`/`0x10` are mutually exclusive, as are `0x20`/`0x40`.
+
+### Body
+
+Only the flagged fields appear, in this order. Lengths are a single `u8` — every field here is short by construction.
+
+| Field | Encoding |
+|-------|----------|
+| Circle name | u8 length + UTF-8 |
+| Peer address | address field |
+| Admin public key | u8 length + raw bytes (Ed25519, protobuf-encoded) |
+| Relay address | address field |
+| Rendezvous address | address field |
+| Grant | u8 length + inviter pubkey, then nonce, then u8 length + signature |
+
+An **address field** is a tag byte — `0` for libp2p's binary multiaddr encoding, `1` for UTF-8 text — followed by a u8 length and the bytes.
+
+A **nonce** is a tag byte — `0` for 16 raw UUID bytes, `1` for UTF-8 text — followed by the bytes. `sign_grant` always produces a UUID; the text form exists so a grant minted elsewhere is not silently corrupted.
+
+---
+
+## Binary format (v1, decode only)
 
 ### Fixed header (58 bytes minimum)
 
@@ -50,6 +122,7 @@ Extensions use a u16 big-endian length prefix. Old decoders that don't know abou
 | ext2+2 | len | Relay multiaddr (UTF-8, TCP — e.g. `/ip4/1.2.3.4/tcp/36521/p2p/<id>`) |
 | ext3 | u16 BE | Rendezvous addr length (0 = absent) |
 | ext3+2 | len | Rendezvous server multiaddr (UTF-8, QUIC — e.g. `/ip4/1.2.3.4/udp/36521/quic-v1/p2p/<id>`) |
+| ext4 | u16 BE ×3 | Grant: inviter pubkey hex, nonce, signature hex — each UTF-8 |
 
 ---
 
@@ -72,7 +145,7 @@ Output:
 ```
 ✦ Invite for 'MyCircle' (valid 7d):
 
-  enoxian://v1/CRxkUjpNaBcDeFgH...
+  enoxian://v2/CRxkUjpNaBcDeFgH...
 
   Embedded connectivity:
     peer-id   : 12D3KooWabc...

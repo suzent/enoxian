@@ -1,6 +1,42 @@
 //! `enoxian://` invite URI encoding, decoding, and expiry validation.
 //!
-//! Binary payload (variable length, base64url-no-pad, no query string):
+//! Two wire versions exist. v2 is what we mint; v1 is still decoded so links
+//! already in circulation keep working.
+//!
+//! # v2
+//!
+//! A leading flags byte says which optional fields follow, so an absent field
+//! costs nothing rather than a zero length prefix, and every field is carried
+//! in its most compact form: multiaddrs in libp2p's binary encoding rather than
+//! as text, the grant as raw key/nonce/signature bytes rather than hex, the
+//! expiry as a `u32`. Measured against the same fully loaded invite, v2 is 515
+//! characters where v1 was 843; the common invite, whose relay and rendezvous
+//! are the compiled-in defaults, is 372. Most of what v1 spent was text
+//! encoding of data that is natively binary.
+//!
+//! ```text
+//!   byte   0      flags (see the FLAG_* constants)
+//!   bytes  1-16   circle UUID
+//!   bytes 17-48   PSK (32 raw bytes)
+//!   bytes 49-52   expires_at as u32 Unix timestamp (big-endian)
+//!   then, in order, only those fields the flags mark present:
+//!     circle name     u8 length + UTF-8
+//!     peer addr       address field (see `put_addr`)
+//!     admin pubkey    u8 length + raw bytes
+//!     relay addr      address field   — only when FLAG_RELAY_ADDR
+//!     rendezvous addr address field   — only when FLAG_RENDEZVOUS_ADDR
+//!     grant           u8 length + inviter pubkey, tagged nonce, u8 length + sig
+//! ```
+//!
+//! The relay and rendezvous servers each have a second flag meaning "the
+//! compiled-in default". Both point at the same host for a stock build, so the
+//! common invite would otherwise spend ~190 bytes spelling out an address the
+//! reader's own binary already knows. The joiner resolves the default the same
+//! way the daemon does at startup; only a self-hosted server pays for the bytes.
+//!
+//! # v1
+//!
+//! ```text
 //!   bytes  0-15   circle UUID (big-endian)
 //!   bytes 16-47   PSK (32 raw bytes)
 //!   bytes 48-55   expires_at as i64 Unix timestamp (big-endian)
@@ -8,17 +44,48 @@
 //!   bytes 57..    circle_name (UTF-8, N bytes)
 //!   byte  57+N    peer length M (u8)
 //!   bytes 58+N..  peer_addr (UTF-8, M bytes)
+//!   then u16-length-prefixed extensions: admin pubkey, relay addr,
+//!   rendezvous addr, and the grant as three UTF-8 fields.
+//! ```
 //!
 //! Full URI (no query string — safe to paste in any shell without quoting):
-//!   enoxian://v1/<base64url-no-pad>
+//!   enoxian://v2/<base64url-no-pad>
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Duration, Utc};
+use libp2p::Multiaddr;
 use uuid::Uuid;
 
-const SCHEME_PREFIX: &str = "enoxian://v1/";
-const MIN_LEN: usize = 58; // 16 + 32 + 8 + 1 + 1
+const SCHEME_V1: &str = "enoxian://v1/";
+const SCHEME_V2: &str = "enoxian://v2/";
+const MIN_LEN_V1: usize = 58; // 16 + 32 + 8 + 1 + 1
+const MIN_LEN_V2: usize = 53; // 1 + 16 + 32 + 4
+
+// ── v2 flags ──────────────────────────────────────────────────────────────────
+
+const FLAG_NAME: u8 = 0x01;
+const FLAG_PEER: u8 = 0x02;
+const FLAG_ADMIN: u8 = 0x04;
+/// An explicit relay multiaddr follows.
+const FLAG_RELAY_ADDR: u8 = 0x08;
+/// The relay is `defaults::DEFAULT_RELAY`; no address is carried.
+const FLAG_RELAY_DEFAULT: u8 = 0x10;
+/// An explicit rendezvous multiaddr follows.
+const FLAG_RENDEZVOUS_ADDR: u8 = 0x20;
+/// The rendezvous server is `defaults::DEFAULT_RENDEZVOUS`; no address is carried.
+const FLAG_RENDEZVOUS_DEFAULT: u8 = 0x40;
+const FLAG_GRANT: u8 = 0x80;
+
+/// Tag on an address field: libp2p's binary multiaddr encoding.
+const ADDR_BINARY: u8 = 0;
+/// Tag on an address field: UTF-8 text, for anything that would not parse.
+const ADDR_TEXT: u8 = 1;
+
+/// Tag on a grant nonce: 16 raw UUID bytes.
+const NONCE_UUID: u8 = 0;
+/// Tag on a grant nonce: UTF-8 text, for a nonce that is not a UUID.
+const NONCE_TEXT: u8 = 1;
 
 pub struct InvitePayload {
     pub circle_id: String,
@@ -34,6 +101,15 @@ pub struct InvitePayload {
     /// Rendezvous server multiaddr (QUIC, e.g. /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<peer_id>).
     /// Joinees add this to their rendezvous_addrs for automatic peer discovery.
     pub rendezvous_addr: Option<String>,
+    /// The relay is the compiled-in default, carried as a flag instead of an
+    /// address. `relay_addr` is `None` and the joiner resolves
+    /// [`crate::defaults::DEFAULT_RELAY`] itself — see [`resolve_defaults`].
+    ///
+    /// Never set at the same time as `relay_addr`; a v1 invite decodes with it
+    /// false, because v1 had no way to say this.
+    pub relay_is_default: bool,
+    /// As `relay_is_default`, for [`crate::defaults::DEFAULT_RENDEZVOUS`].
+    pub rendezvous_is_default: bool,
     /// The grant: who issued this invite, a one-time nonce, and their signature.
     ///
     /// Present on invites minted by a member; absent on invites predating the
@@ -118,90 +194,314 @@ pub fn grant_message(circle_id: &str, nonce: &str, expires_at: DateTime<Utc>) ->
 
 // ── Encoding ──────────────────────────────────────────────────────────────────
 
+/// Append a `u8`-length-prefixed run of bytes.
+///
+/// Every optional field in v2 is short by construction — a name, a multiaddr, a
+/// key, a signature — so one length byte is enough where v1 spent two.
+fn put_bytes(out: &mut Vec<u8>, bytes: &[u8], what: &str) {
+    assert!(
+        bytes.len() <= 255,
+        "{what} is {} bytes, too long for an invite",
+        bytes.len()
+    );
+    out.push(bytes.len() as u8);
+    out.extend_from_slice(bytes);
+}
+
+/// Append an address as a tag byte plus a length-prefixed run.
+///
+/// libp2p's binary encoding is roughly half the size of the text form — an
+/// `/ip4/…/tcp/…/p2p/…` address is ~47 bytes against ~84 — because the peer ID
+/// is carried as the multihash it already is rather than re-spelled in base58.
+/// Anything that will not parse is kept verbatim as text, so a hand-written
+/// `--peer` value survives the round trip either way.
+fn put_addr(out: &mut Vec<u8>, addr: &str, what: &str) {
+    match addr.parse::<Multiaddr>() {
+        Ok(m) => {
+            out.push(ADDR_BINARY);
+            put_bytes(out, &m.to_vec(), what);
+        }
+        Err(_) => {
+            out.push(ADDR_TEXT);
+            put_bytes(out, addr.as_bytes(), what);
+        }
+    }
+}
+
 pub fn encode(payload: &InvitePayload) -> String {
     let uuid = Uuid::parse_str(&payload.circle_id).expect("circle_id must be a valid UUID");
 
-    let name_bytes = payload.circle_name.as_deref().unwrap_or("").as_bytes();
-    let peer_bytes = payload.peer_addr.as_deref().unwrap_or("").as_bytes();
-    assert!(name_bytes.len() <= 255, "circle name too long");
-    assert!(peer_bytes.len() <= 255, "peer addr too long");
+    let ts = payload.expires_at.timestamp();
+    let ts = u32::try_from(ts).unwrap_or_else(|_| {
+        panic!("invite expiry {ts} is outside the range a v2 invite can carry")
+    });
 
-    let admin_bytes = payload.admin_pubkey_bytes.as_deref().unwrap_or(&[]);
-    let relay_bytes = payload.relay_addr.as_deref().unwrap_or("").as_bytes();
-    let rendezvous_bytes = payload.rendezvous_addr.as_deref().unwrap_or("").as_bytes();
-    assert!(admin_bytes.len() <= 65535, "admin pubkey too long");
-    assert!(relay_bytes.len() <= 65535, "relay addr too long");
-    assert!(rendezvous_bytes.len() <= 65535, "rendezvous addr too long");
-
-    let mut raw = Vec::with_capacity(
-        MIN_LEN
-            + name_bytes.len()
-            + peer_bytes.len()
-            + 2
-            + admin_bytes.len()
-            + 2
-            + relay_bytes.len()
-            + 2
-            + rendezvous_bytes.len(),
-    );
-    raw.extend_from_slice(uuid.as_bytes()); // 0-15
-    raw.extend_from_slice(&payload.psk_bytes); // 16-47
-    raw.extend_from_slice(&payload.expires_at.timestamp().to_be_bytes()); // 48-55
-    raw.push(name_bytes.len() as u8); // 56
-    raw.extend_from_slice(name_bytes); // 57..57+N
-    raw.push(peer_bytes.len() as u8); // 57+N
-    raw.extend_from_slice(peer_bytes); // 58+N..
-                                       // Extension 1: admin pubkey (u16 BE length + bytes); absent in old invites
-    let admin_len = admin_bytes.len() as u16;
-    raw.extend_from_slice(&admin_len.to_be_bytes());
-    raw.extend_from_slice(admin_bytes);
-    // Extension 2: relay addr (u16 BE length + bytes); absent in old invites
-    let relay_len = relay_bytes.len() as u16;
-    raw.extend_from_slice(&relay_len.to_be_bytes());
-    raw.extend_from_slice(relay_bytes);
-    // Extension 3: rendezvous addr (u16 BE length + bytes); absent in old invites
-    let rendezvous_len = rendezvous_bytes.len() as u16;
-    raw.extend_from_slice(&rendezvous_len.to_be_bytes());
-    raw.extend_from_slice(rendezvous_bytes);
-
-    // Extension 4: the grant — inviter peer id, nonce, signature. Each is a
-    // u16 BE length prefix followed by bytes. Absent on invites minted before
-    // grants existed, which decode with `grant: None`.
-    let (inviter, nonce, sig) = match &payload.grant {
-        Some(g) => (
-            g.inviter_pubkey_hex.as_str(),
-            g.nonce.as_str(),
-            g.sig.as_str(),
-        ),
-        None => ("", "", ""),
-    };
-    for field in [inviter, nonce, sig] {
-        let bytes = field.as_bytes();
-        assert!(bytes.len() <= 65535, "grant field too long");
-        raw.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
-        raw.extend_from_slice(bytes);
+    let mut flags = 0u8;
+    if payload.circle_name.is_some() {
+        flags |= FLAG_NAME;
+    }
+    if payload.peer_addr.is_some() {
+        flags |= FLAG_PEER;
+    }
+    if payload.admin_pubkey_bytes.is_some() {
+        flags |= FLAG_ADMIN;
+    }
+    // An explicit address wins over the default flag: the two are mutually
+    // exclusive on the wire, and carrying the address is never wrong.
+    if payload.relay_addr.is_some() {
+        flags |= FLAG_RELAY_ADDR;
+    } else if payload.relay_is_default {
+        flags |= FLAG_RELAY_DEFAULT;
+    }
+    if payload.rendezvous_addr.is_some() {
+        flags |= FLAG_RENDEZVOUS_ADDR;
+    } else if payload.rendezvous_is_default {
+        flags |= FLAG_RENDEZVOUS_DEFAULT;
+    }
+    if payload.grant.is_some() {
+        flags |= FLAG_GRANT;
     }
 
-    format!("{SCHEME_PREFIX}{}", URL_SAFE_NO_PAD.encode(&raw))
+    let mut raw = Vec::with_capacity(MIN_LEN_V2 + 128);
+    raw.push(flags);
+    raw.extend_from_slice(uuid.as_bytes());
+    raw.extend_from_slice(&payload.psk_bytes);
+    raw.extend_from_slice(&ts.to_be_bytes());
+
+    if let Some(ref name) = payload.circle_name {
+        put_bytes(&mut raw, name.as_bytes(), "circle name");
+    }
+    if let Some(ref peer) = payload.peer_addr {
+        put_addr(&mut raw, peer, "peer addr");
+    }
+    if let Some(ref admin) = payload.admin_pubkey_bytes {
+        put_bytes(&mut raw, admin, "admin pubkey");
+    }
+    if let Some(ref relay) = payload.relay_addr {
+        put_addr(&mut raw, relay, "relay addr");
+    }
+    if let Some(ref rendezvous) = payload.rendezvous_addr {
+        put_addr(&mut raw, rendezvous, "rendezvous addr");
+    }
+    if let Some(ref grant) = payload.grant {
+        // Both key and signature are hex on the struct because that is what
+        // callers and the control doc use; on the wire they are the bytes that
+        // hex was spelling, which halves them.
+        let inviter = hex::decode(grant.inviter_pubkey_hex.trim())
+            .expect("grant inviter pubkey must be valid hex");
+        put_bytes(&mut raw, &inviter, "inviter pubkey");
+
+        match Uuid::parse_str(&grant.nonce) {
+            Ok(id) => {
+                raw.push(NONCE_UUID);
+                raw.extend_from_slice(id.as_bytes());
+            }
+            Err(_) => {
+                raw.push(NONCE_TEXT);
+                put_bytes(&mut raw, grant.nonce.as_bytes(), "grant nonce");
+            }
+        }
+
+        let sig = hex::decode(grant.sig.trim()).expect("grant signature must be valid hex");
+        put_bytes(&mut raw, &sig, "grant signature");
+    }
+
+    format!("{SCHEME_V2}{}", URL_SAFE_NO_PAD.encode(&raw))
 }
 
 // ── Decoding ──────────────────────────────────────────────────────────────────
+
+/// Cursor over a v2 payload. Every read is bounds-checked and names the field
+/// it was reading, so a truncated invite says where it ran out.
+struct Reader<'a> {
+    raw: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize, what: &str) -> Result<&'a [u8]> {
+        let end = self
+            .at
+            .checked_add(n)
+            .context("invite payload length overflowed")?;
+        if end > self.raw.len() {
+            bail!("invite payload truncated at {what}");
+        }
+        let out = &self.raw[self.at..end];
+        self.at = end;
+        Ok(out)
+    }
+
+    fn byte(&mut self, what: &str) -> Result<u8> {
+        Ok(self.take(1, what)?[0])
+    }
+
+    /// A `u8`-length-prefixed run.
+    fn bytes(&mut self, what: &str) -> Result<&'a [u8]> {
+        let len = self.byte(what)? as usize;
+        self.take(len, what)
+    }
+
+    fn text(&mut self, what: &str) -> Result<String> {
+        let bytes = self.bytes(what)?;
+        String::from_utf8(bytes.to_vec()).with_context(|| format!("{what} is not valid UTF-8"))
+    }
+
+    fn addr(&mut self, what: &str) -> Result<String> {
+        match self.byte(what)? {
+            ADDR_BINARY => {
+                let bytes = self.bytes(what)?;
+                Ok(Multiaddr::try_from(bytes.to_vec())
+                    .with_context(|| format!("{what} is not a valid multiaddr"))?
+                    .to_string())
+            }
+            ADDR_TEXT => self.text(what),
+            other => bail!("unknown address encoding {other} for {what}"),
+        }
+    }
+}
 
 pub fn decode(uri: &str) -> Result<InvitePayload> {
     // Strip any query string that old clients might have produced
     let uri_clean = uri.split_once('?').map(|(base, _)| base).unwrap_or(uri);
 
-    let b64 = uri_clean
-        .strip_prefix(SCHEME_PREFIX)
-        .with_context(|| format!("not a valid enoxian:// URI: {uri}"))?;
+    if let Some(b64) = uri_clean.strip_prefix(SCHEME_V2) {
+        return decode_v2(b64);
+    }
+    if let Some(b64) = uri_clean.strip_prefix(SCHEME_V1) {
+        return decode_v1(b64);
+    }
+    bail!("not a valid enoxian:// URI: {uri}")
+}
 
+fn decode_v2(b64: &str) -> Result<InvitePayload> {
     let raw = URL_SAFE_NO_PAD
         .decode(b64)
         .context("invite URI payload is not valid base64url")?;
 
-    if raw.len() < MIN_LEN {
+    if raw.len() < MIN_LEN_V2 {
         bail!(
-            "invite payload is {} bytes, expected at least {MIN_LEN}",
+            "invite payload is {} bytes, expected at least {MIN_LEN_V2}",
+            raw.len()
+        );
+    }
+
+    let mut r = Reader { raw: &raw, at: 0 };
+    let flags = r.byte("flags")?;
+
+    let uuid_bytes: [u8; 16] = r.take(16, "circle id")?.try_into().unwrap();
+    let circle_id = Uuid::from_bytes(uuid_bytes).to_string();
+    let psk_bytes: [u8; 32] = r.take(32, "psk")?.try_into().unwrap();
+    let ts = u32::from_be_bytes(r.take(4, "expiry")?.try_into().unwrap());
+    let expires_at =
+        DateTime::from_timestamp(i64::from(ts), 0).context("invalid timestamp in invite")?;
+
+    let circle_name = if flags & FLAG_NAME != 0 {
+        Some(r.text("circle name")?)
+    } else {
+        None
+    };
+    let peer_addr = if flags & FLAG_PEER != 0 {
+        Some(r.addr("peer addr")?)
+    } else {
+        None
+    };
+    let admin_pubkey_bytes = if flags & FLAG_ADMIN != 0 {
+        Some(r.bytes("admin pubkey")?.to_vec())
+    } else {
+        None
+    };
+    let relay_addr = if flags & FLAG_RELAY_ADDR != 0 {
+        Some(r.addr("relay addr")?)
+    } else {
+        None
+    };
+    let rendezvous_addr = if flags & FLAG_RENDEZVOUS_ADDR != 0 {
+        Some(r.addr("rendezvous addr")?)
+    } else {
+        None
+    };
+
+    let grant = if flags & FLAG_GRANT != 0 {
+        let inviter_pubkey_hex = hex::encode(r.bytes("inviter pubkey")?);
+        let nonce = match r.byte("grant nonce")? {
+            NONCE_UUID => {
+                let bytes: [u8; 16] = r.take(16, "grant nonce")?.try_into().unwrap();
+                Uuid::from_bytes(bytes).to_string()
+            }
+            NONCE_TEXT => r.text("grant nonce")?,
+            other => bail!("unknown nonce encoding {other}"),
+        };
+        let sig = hex::encode(r.bytes("grant signature")?);
+        // A grant with an empty field would verify against nothing; treat it as
+        // no grant at all rather than a partial one downstream might wave
+        // through. Same rule as v1.
+        if inviter_pubkey_hex.is_empty() || nonce.is_empty() || sig.is_empty() {
+            None
+        } else {
+            Some(InviteGrant {
+                inviter_pubkey_hex,
+                nonce,
+                sig,
+            })
+        }
+    } else {
+        None
+    };
+
+    Ok(InvitePayload {
+        circle_id,
+        psk_bytes,
+        circle_name,
+        expires_at,
+        peer_addr,
+        admin_pubkey_bytes,
+        relay_addr,
+        // A default flag only means anything when no address was carried; the
+        // encoder never sets both, and a reader that saw both should trust the
+        // address it actually has.
+        relay_is_default: relay_addr_is_default(flags),
+        rendezvous_addr,
+        rendezvous_is_default: rendezvous_addr_is_default(flags),
+        grant,
+    })
+}
+
+fn relay_addr_is_default(flags: u8) -> bool {
+    flags & FLAG_RELAY_DEFAULT != 0 && flags & FLAG_RELAY_ADDR == 0
+}
+
+fn rendezvous_addr_is_default(flags: u8) -> bool {
+    flags & FLAG_RENDEZVOUS_DEFAULT != 0 && flags & FLAG_RENDEZVOUS_ADDR == 0
+}
+
+/// Resolve the compiled-in default relay and rendezvous addresses for an invite
+/// that asked for them by flag.
+///
+/// Kept out of [`decode`] because decoding is pure and this reaches the network:
+/// the default is a hostname, and turning it into a multiaddr means asking the
+/// bootstrap server for its peer ID — exactly what the daemon does at startup.
+/// A server that cannot be reached leaves the field `None`, the same
+/// non-fatal outcome as an invite that carried no address at all.
+pub async fn resolve_defaults(payload: &mut InvitePayload) {
+    use crate::commands::rendezvous as rdvz;
+
+    if payload.relay_is_default && payload.relay_addr.is_none() {
+        payload.relay_addr = rdvz::resolve_default_relay().await;
+    }
+    if payload.rendezvous_is_default && payload.rendezvous_addr.is_none() {
+        payload.rendezvous_addr = rdvz::resolve_default().await;
+    }
+}
+
+fn decode_v1(b64: &str) -> Result<InvitePayload> {
+    let raw = URL_SAFE_NO_PAD
+        .decode(b64)
+        .context("invite URI payload is not valid base64url")?;
+
+    if raw.len() < MIN_LEN_V1 {
+        bail!(
+            "invite payload is {} bytes, expected at least {MIN_LEN_V1}",
             raw.len()
         );
     }
@@ -336,6 +636,9 @@ pub fn decode(uri: &str) -> Result<InvitePayload> {
         admin_pubkey_bytes,
         relay_addr,
         rendezvous_addr,
+        // v1 had no way to say "the default"; an address was carried or it was not.
+        relay_is_default: false,
+        rendezvous_is_default: false,
         grant,
     })
 }
@@ -404,10 +707,12 @@ mod tests {
             admin_pubkey_bytes: None,
             relay_addr: Some("/ip4/5.6.7.8/tcp/36521/p2p/12D3KooWtest".to_string()),
             rendezvous_addr: Some("/ip4/9.10.11.12/udp/36521/quic-v1/p2p/12D3KooWrdvz".to_string()),
+            relay_is_default: false,
+            rendezvous_is_default: false,
         };
 
         let uri = encode(&payload);
-        assert!(uri.starts_with("enoxian://v1/"));
+        assert!(uri.starts_with("enoxian://v2/"));
         assert!(!uri.contains('?'), "URI must not have a query string");
         assert!(!uri.contains('&'), "URI must not contain & (shell unsafe)");
 
@@ -442,6 +747,8 @@ mod tests {
             admin_pubkey_bytes: None,
             relay_addr: None,
             rendezvous_addr: None,
+            relay_is_default: false,
+            rendezvous_is_default: false,
         };
         let uri = encode(&payload);
         let decoded = decode(&uri).unwrap();
@@ -462,10 +769,253 @@ mod tests {
             admin_pubkey_bytes: None,
             relay_addr: None,
             rendezvous_addr: None,
+            relay_is_default: false,
+            rendezvous_is_default: false,
         };
         let uri = encode(&payload);
         let decoded = decode(&uri).unwrap();
         assert!(check_expiry(&decoded).is_err());
+    }
+
+    /// Build a v1 invite the way the old encoder did, so the compatibility
+    /// tests below exercise the real historical bytes rather than a
+    /// reconstruction that happens to agree with today's decoder.
+    fn encode_v1(payload: &InvitePayload) -> String {
+        let uuid = Uuid::parse_str(&payload.circle_id).unwrap();
+        let name_bytes = payload.circle_name.as_deref().unwrap_or("").as_bytes();
+        let peer_bytes = payload.peer_addr.as_deref().unwrap_or("").as_bytes();
+        let admin_bytes = payload.admin_pubkey_bytes.as_deref().unwrap_or(&[]);
+        let relay_bytes = payload.relay_addr.as_deref().unwrap_or("").as_bytes();
+        let rendezvous_bytes = payload.rendezvous_addr.as_deref().unwrap_or("").as_bytes();
+
+        let mut raw = Vec::new();
+        raw.extend_from_slice(uuid.as_bytes());
+        raw.extend_from_slice(&payload.psk_bytes);
+        raw.extend_from_slice(&payload.expires_at.timestamp().to_be_bytes());
+        raw.push(name_bytes.len() as u8);
+        raw.extend_from_slice(name_bytes);
+        raw.push(peer_bytes.len() as u8);
+        raw.extend_from_slice(peer_bytes);
+        for ext in [admin_bytes, relay_bytes, rendezvous_bytes] {
+            raw.extend_from_slice(&(ext.len() as u16).to_be_bytes());
+            raw.extend_from_slice(ext);
+        }
+        let (inviter, nonce, sig) = match &payload.grant {
+            Some(g) => (
+                g.inviter_pubkey_hex.as_str(),
+                g.nonce.as_str(),
+                g.sig.as_str(),
+            ),
+            None => ("", "", ""),
+        };
+        for field in [inviter, nonce, sig] {
+            raw.extend_from_slice(&(field.len() as u16).to_be_bytes());
+            raw.extend_from_slice(field.as_bytes());
+        }
+        format!("{SCHEME_V1}{}", URL_SAFE_NO_PAD.encode(&raw))
+    }
+
+    fn realistic(grant: Option<InviteGrant>) -> InvitePayload {
+        InvitePayload {
+            circle_id: "8e563c41-f0ec-4225-9764-064f1fb04341".to_string(),
+            psk_bytes: [42u8; 32],
+            circle_name: Some("acme-eng".to_string()),
+            expires_at: DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+            peer_addr: Some(
+                "/ip4/192.168.1.42/tcp/36521/p2p/\
+                 12D3KooWGjMkHkMvzGrzGHkPmuvFmbrzBXV9NwYWnYVvbcJRHMo3"
+                    .to_string(),
+            ),
+            admin_pubkey_bytes: Some(vec![9u8; 36]),
+            relay_addr: Some(
+                "/ip4/203.0.113.17/tcp/36522/p2p/\
+                 12D3KooWQbnLYdEz6f2EfSQXHkZbmWCTyPWk8WjbNmaTnDqDCeYk/p2p-circuit"
+                    .to_string(),
+            ),
+            rendezvous_addr: Some(
+                "/ip4/203.0.113.17/udp/36521/quic-v1/p2p/\
+                 12D3KooWQbnLYdEz6f2EfSQXHkZbmWCTyPWk8WjbNmaTnDqDCeYk"
+                    .to_string(),
+            ),
+            relay_is_default: false,
+            rendezvous_is_default: false,
+            grant,
+        }
+    }
+
+    fn a_grant() -> InviteGrant {
+        InviteGrant {
+            inviter_pubkey_hex: hex::encode([3u8; 36]),
+            nonce: Uuid::new_v4().to_string(),
+            sig: hex::encode([7u8; 64]),
+        }
+    }
+
+    /// The point of v2. A fully loaded invite — every optional field present,
+    /// nothing elided — must come out substantially shorter than the same one in
+    /// v1. The bound is deliberately a little loose: what matters is that the
+    /// compaction holds, not the exact byte count, which moves with the length
+    /// of a circle name or a multiaddr.
+    ///
+    /// At the time of writing this pair measures 515 against 843.
+    #[test]
+    fn a_v2_invite_is_far_shorter_than_the_v1_it_replaces() {
+        let payload = realistic(Some(a_grant()));
+        let v1 = encode_v1(&payload);
+        let v2 = encode(&payload);
+
+        assert!(
+            v2.len() * 3 < v1.len() * 2,
+            "v2 is {} chars, v1 is {} — expected under two thirds",
+            v2.len(),
+            v1.len()
+        );
+        assert!(v2.len() < 560, "v2 invite grew to {} chars", v2.len());
+    }
+
+    /// Eliding the two default servers is the rest of the saving, and it is the
+    /// common case: a stock build points relay and rendezvous at the same host.
+    #[test]
+    fn naming_the_default_servers_costs_nothing() {
+        let mut payload = realistic(Some(a_grant()));
+        let with_addrs = encode(&payload);
+
+        payload.relay_addr = None;
+        payload.rendezvous_addr = None;
+        payload.relay_is_default = true;
+        payload.rendezvous_is_default = true;
+        let with_flags = encode(&payload);
+
+        // 515 -> 372 at the time of writing. This is the shape of invite the
+        // CLI actually mints on a stock build, so it is the number that matters.
+        assert!(
+            with_addrs.len() - with_flags.len() > 100,
+            "eliding both defaults saved only {} chars",
+            with_addrs.len() - with_flags.len()
+        );
+        assert!(
+            with_flags.len() < 400,
+            "the common invite grew to {} chars",
+            with_flags.len()
+        );
+
+        let decoded = decode(&with_flags).unwrap();
+        assert!(decoded.relay_is_default);
+        assert!(decoded.rendezvous_is_default);
+        assert!(decoded.relay_addr.is_none());
+        assert!(decoded.rendezvous_addr.is_none());
+    }
+
+    /// An address that was carried explicitly is used as-is — the default flag
+    /// must not be inferred from its absence, or a self-hosted relay would
+    /// silently become the public one.
+    #[test]
+    fn an_explicit_address_is_never_reported_as_the_default() {
+        let decoded = decode(&encode(&realistic(None))).unwrap();
+        assert!(!decoded.relay_is_default);
+        assert!(!decoded.rendezvous_is_default);
+        assert_eq!(decoded.relay_addr, realistic(None).relay_addr);
+        assert_eq!(decoded.rendezvous_addr, realistic(None).rendezvous_addr);
+    }
+
+    /// Multiaddrs travel in libp2p's binary form, which is where most of the
+    /// saving comes from, and must come back spelled exactly as they went in.
+    #[test]
+    fn multiaddrs_survive_the_binary_encoding() {
+        let payload = realistic(None);
+        let decoded = decode(&encode(&payload)).unwrap();
+        assert_eq!(decoded.peer_addr, payload.peer_addr);
+        assert_eq!(decoded.relay_addr, payload.relay_addr);
+        assert_eq!(decoded.rendezvous_addr, payload.rendezvous_addr);
+    }
+
+    /// An address that is not a multiaddr at all — a hand-typed `--peer`, say —
+    /// falls back to text rather than being rejected or mangled.
+    #[test]
+    fn an_unparseable_address_falls_back_to_text() {
+        let mut payload = realistic(None);
+        payload.peer_addr = Some("not-a-multiaddr-at-all".to_string());
+        let decoded = decode(&encode(&payload)).unwrap();
+        assert_eq!(decoded.peer_addr.as_deref(), Some("not-a-multiaddr-at-all"));
+    }
+
+    /// Links already in circulation keep working, including the grant they
+    /// carry — a v1 invite in someone's chat history must still admit them.
+    #[test]
+    fn a_v1_invite_still_decodes() {
+        let payload = realistic(Some(a_grant()));
+        let decoded = decode(&encode_v1(&payload)).unwrap();
+
+        assert_eq!(decoded.circle_id, payload.circle_id);
+        assert_eq!(decoded.psk_bytes, payload.psk_bytes);
+        assert_eq!(decoded.circle_name, payload.circle_name);
+        assert_eq!(decoded.peer_addr, payload.peer_addr);
+        assert_eq!(decoded.relay_addr, payload.relay_addr);
+        assert_eq!(decoded.rendezvous_addr, payload.rendezvous_addr);
+        assert_eq!(decoded.admin_pubkey_bytes, payload.admin_pubkey_bytes);
+        assert_eq!(decoded.grant, payload.grant);
+        assert_eq!(
+            decoded.expires_at.timestamp(),
+            payload.expires_at.timestamp()
+        );
+        // v1 could not express this, so it must never come back true.
+        assert!(!decoded.relay_is_default);
+        assert!(!decoded.rendezvous_is_default);
+    }
+
+    /// The grant's signature covers a decimal expiry and a string nonce, so the
+    /// compacted `u32` timestamp and 16-byte nonce have to render back to
+    /// exactly the text that was signed or every v2 invite would fail to verify.
+    #[test]
+    fn a_grant_still_verifies_after_the_compaction() {
+        use crate::crypto::keypair_to_hex;
+        use libp2p::identity::Keypair;
+
+        let kp = Keypair::generate_ed25519();
+        let circle = "8e563c41-f0ec-4225-9764-064f1fb04341";
+        let expires = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let grant = sign_grant(circle, &keypair_to_hex(&kp).unwrap(), expires).unwrap();
+
+        let mut payload = realistic(Some(grant));
+        payload.circle_id = circle.to_string();
+        payload.expires_at = expires;
+
+        let decoded = decode(&encode(&payload)).unwrap();
+        let back = decoded.grant.expect("grant survives v2 encoding");
+        assert!(verify_grant(circle, &back, decoded.expires_at).is_ok());
+    }
+
+    /// A nonce that is not a UUID is not something `sign_grant` produces, but a
+    /// grant that came from elsewhere must not be silently corrupted into one.
+    #[test]
+    fn a_non_uuid_nonce_round_trips_as_text() {
+        let mut payload = realistic(Some(a_grant()));
+        payload.grant.as_mut().unwrap().nonce = "legacy-nonce-value".to_string();
+        let decoded = decode(&encode(&payload)).unwrap();
+        assert_eq!(decoded.grant.unwrap().nonce, "legacy-nonce-value");
+    }
+
+    /// A payload cut short must say so rather than decoding into a half-filled
+    /// invite — the flags promise fields that a truncated link cannot deliver.
+    #[test]
+    fn a_truncated_v2_payload_is_rejected() {
+        let uri = encode(&realistic(Some(a_grant())));
+        let b64 = uri.strip_prefix(SCHEME_V2).unwrap();
+        let raw = URL_SAFE_NO_PAD.decode(b64).unwrap();
+
+        for cut in [MIN_LEN_V2 + 1, raw.len() - 20, raw.len() - 1] {
+            let truncated = format!("{SCHEME_V2}{}", URL_SAFE_NO_PAD.encode(&raw[..cut]));
+            assert!(
+                decode(&truncated).is_err(),
+                "a payload cut to {cut} bytes decoded anyway"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_scheme_version_is_rejected() {
+        assert!(decode("enoxian://v9/AAAA").is_err());
+        assert!(decode("https://example.com/AAAA").is_err());
     }
 
     #[test]
@@ -553,6 +1103,8 @@ mod grant_tests {
             admin_pubkey_bytes: None,
             relay_addr: None,
             rendezvous_addr: None,
+            relay_is_default: false,
+            rendezvous_is_default: false,
             grant: Some(grant),
         });
         let back = decode(&uri)
@@ -576,6 +1128,8 @@ mod grant_tests {
             admin_pubkey_bytes: None,
             relay_addr: None,
             rendezvous_addr: None,
+            relay_is_default: false,
+            rendezvous_is_default: false,
             grant: None,
         });
         assert!(decode(&uri).unwrap().grant.is_none());
