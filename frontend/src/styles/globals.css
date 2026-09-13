@@ -1111,7 +1111,7 @@ button[role="tab"][aria-selected="true"] {
 }
 
 .engagement-row--inherited {
-  opacity: 0.62;
+  opacity: 1;
 }
 
 .engagement-row__label {
@@ -2987,6 +2987,8 @@ body {
 
 .task-list {
   padding: 10px;
+  /* Keep row widths stable when the completed section starts overflowing. */
+  scrollbar-gutter: stable;
 }
 
 .task-card {
@@ -4031,9 +4033,14 @@ select option {
 }
 
 .device-settings-panel {
-  width: min(620px, calc(100vw - 32px));
+  /* Forms need smooth, sentence-case text rather than the shell's pixel style. */
+  --font-mono: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-mono);
+  text-transform: none;
+  -webkit-font-smoothing: antialiased;
+  width: min(860px, calc(100vw - 32px));
   max-width: none;
-  height: min(500px, calc(100dvh - 32px));
+  height: min(720px, calc(100dvh - 32px));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -4043,7 +4050,7 @@ select option {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
+  grid-template-columns: 152px minmax(0, 1fr);
 }
 
 .settings-tabs {
@@ -4054,7 +4061,7 @@ select option {
 }
 
 .settings-tabs button {
-  width: 132px;
+  width: 100%;
   height: 52px;
   flex: 0 0 52px;
   display: inline-flex;
@@ -4201,30 +4208,42 @@ select option {
   opacity: 0.5;
 }
 
-@media (max-width: 520px) {
-  .device-settings-panel {
-    width: calc(100vw - 24px);
-    height: min(460px, calc(100dvh - 24px));
-  }
+/* Settings uses the same ink-and-paper palette with room for clear hierarchy. */
+.settings-panel-body { padding: 28px; gap: 24px; }
+.settings-section-heading { padding-bottom: 20px; border-bottom: 1px solid color-mix(in srgb, var(--fg-obsidian) 20%, transparent); }
+.settings-section-heading__scope { font-family: var(--font-mono); font-size: 9px; letter-spacing: .12em; color: var(--fg-slate); }
+.settings-section-heading h2 { margin: 8px 0; font-size: 23px; font-weight: 650; line-height: 1.2; }
+.settings-section-heading p { margin: 0; font-size: 12px; line-height: 1.6; color: var(--fg-slate); max-width: 52ch; }
+.settings-scope__head { align-items: flex-start; flex-direction: column; gap: 12px; margin-bottom: 14px; }
+.settings-scope__label { font-size: 9px; letter-spacing: .08em; font-weight: 700; color: var(--fg-slate); }
+.settings-scope-tabs { display: flex; flex-wrap: wrap; border: 1px solid var(--fg-obsidian); max-width: 100%; }
+.settings-scope-tabs button { padding: 9px 12px; font-family: var(--font-mono); font-size: 10px; overflow-wrap: anywhere; cursor: pointer; }
+.settings-scope-tabs button.is-active { background: var(--fg-obsidian); color: var(--bg-alabaster); }
+.settings-scope__note { font-size: 11px; line-height: 1.6; padding-left: 12px; margin-bottom: 20px; }
+.settings-scope__private { display: block; margin-top: 4px; opacity: 1; font-style: normal; }
+.engagement-settings { gap: 0; border-top: 1px solid color-mix(in srgb, var(--fg-obsidian) 20%, transparent); }
+.engagement-row { padding: 18px 0; gap: 8px 16px; border-bottom: 1px solid color-mix(in srgb, var(--fg-obsidian) 20%, transparent); }
+.engagement-row__label { flex-wrap: wrap; font-size: 12px; line-height: 1.5; }
+.engagement-row__badge { border: 0; padding: 2px 6px; background: color-mix(in srgb, var(--fg-obsidian) 6%, transparent); font-size: 9px; font-weight: 400; }
+.engagement-row__reset { font-size: 10px; padding: 4px 6px; }
+.engagement-row__hint { font-size: 11px; line-height: 1.6; max-width: 58ch; }
+.engagement-toggle { gap: 7px; font-size: 11px; min-height: 32px; }
+.engagement-toggle input { width: 16px; height: 16px; }
+.engagement-number { gap: 8px; font-size: 11px; }
+.engagement-number input { width: 64px; min-height: 32px; padding: 5px 7px; font-size: 12px; }
+.engagement-row__control { max-width: 220px; }
+.settings-empty { padding: 20px; border: 1px dashed var(--fg-slate); font-size: 12px; line-height: 1.6; color: var(--fg-slate); }
 
-  .settings-layout {
-    grid-template-columns: 104px minmax(0, 1fr);
-  }
-
-  .settings-tabs button {
-    width: 104px;
-    padding-inline: 9px;
-    font-size: 8px;
-  }
-
-  .settings-panel-body {
-    padding: 12px;
-  }
-
-  .settings-connectivity__mode {
-    gap: 10px;
-    padding: 10px;
-  }
+@media (max-width: 600px) {
+  .device-settings-panel { width: calc(100vw - 16px); height: calc(100dvh - 24px); }
+  .settings-layout { grid-template-columns: 112px minmax(0, 1fr); }
+  .settings-tabs button { padding-inline: 8px; gap: 5px; font-size: 8px; }
+  .settings-panel-body { padding: 16px; }
+  .settings-section-heading h2 { font-size: 20px; }
+  .engagement-row { grid-template-columns: minmax(0, 1fr); }
+  .engagement-row__control { grid-column: 1; grid-row: 2; justify-self: start; max-width: 100%; }
+  .engagement-agents { justify-content: flex-start; }
+  .settings-connectivity__mode { gap: 10px; padding: 10px; }
 }
 
 .circle-sidebar-settings__identity {
@@ -4502,3 +4521,86 @@ select option {
 }
 .chat-message__parent:hover { text-decoration: underline; }
 .chat-message:target { background: color-mix(in srgb, var(--fg-slate) 8%, transparent); }
+
+/* Keep settings typography scoped so the surrounding shell retains its style. */
+.device-settings-panel .settings-section-heading h2 { font-size: 22px; font-weight: 600; letter-spacing: -.02em; }
+.device-settings-panel .settings-section-heading p { font-size: 13px; line-height: 1.6; }
+.device-settings-panel .settings-section-heading__scope { font-size: 10px; }
+.device-settings-panel .settings-tabs button { font-size: 11px; letter-spacing: .02em; }
+.device-settings-panel .device-identity { gap: 14px; }
+.device-settings-panel .device-identity__field { grid-template-columns: 100px minmax(0, 1fr); font-size: 12px; }
+.device-settings-panel .device-identity__field input { font-size: 14px; padding: 9px 10px; }
+.device-settings-panel .device-identity__hint { font-size: 12px; line-height: 1.65; }
+.device-settings-panel .device-identity__hint code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }
+.device-settings-panel .device-identity__actions button { font-size: 12px; }
+.device-settings-panel .device-identity__channel { font-size: 11px; }
+@media (max-width: 600px) {
+  .device-settings-panel .settings-tabs button { font-size: 9px; }
+  .device-settings-panel .device-identity__field { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Quiet surfaces and an inset scrollbar keep the panel edge visually separate. */
+.device-settings-panel.sys-window {
+  --settings-border: color-mix(in srgb, var(--fg-obsidian) 30%, var(--surface-panel));
+  --settings-divider: color-mix(in srgb, var(--fg-obsidian) 14%, var(--surface-panel));
+  --settings-scrollbar: color-mix(in srgb, var(--fg-obsidian) 24%, var(--surface-panel));
+  border: 1px solid var(--settings-border);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .14);
+  background: var(--surface-panel);
+}
+.device-settings-panel .ritual-panel__header { border-bottom: 1px solid var(--settings-divider); }
+.device-settings-panel .settings-tabs { background: var(--surface-panel); border-right: 1px solid var(--settings-divider); padding: 12px 8px; gap: 4px; }
+.device-settings-panel .settings-tabs button { background: transparent; border: 0; color: var(--fg-slate); height: 44px; flex-basis: 44px; }
+.device-settings-panel .settings-tabs button.is-active { background: var(--surface-control); color: var(--fg-obsidian); box-shadow: inset 2px 0 var(--fg-slate); }
+.device-settings-panel .settings-tabs button:hover:not(.is-active) { background: var(--surface-control); }
+.device-settings-panel .settings-panel-body {
+  margin: 8px 6px 8px 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--settings-scrollbar) transparent;
+  scrollbar-gutter: stable;
+}
+.device-settings-panel .settings-panel-body::-webkit-scrollbar { width: 6px; }
+.device-settings-panel .settings-panel-body::-webkit-scrollbar-thumb { background: var(--settings-scrollbar); }
+.device-settings-panel .settings-panel-body::-webkit-scrollbar-track { background: transparent; }
+.settings-scope-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; width: 100%; font-size: 12px; color: var(--fg-slate); }
+.settings-scope-picker select { min-width: 0; max-width: 100%; width: 260px; padding: 9px 30px 9px 10px; border: 1px solid var(--settings-border); background: var(--surface-panel); color: var(--fg-obsidian); font: inherit; }
+.settings-scope-picker select:focus-visible { outline: 2px solid var(--fg-slate); outline-offset: 2px; }
+
+.device-settings-panel .settings-layout { grid-template-columns: 190px minmax(0, 1fr); }
+.settings-sidebar { min-width: 0; overflow-y: auto; border-right: 1px solid var(--settings-divider); padding-top: 18px; }
+.settings-sidebar .settings-scope-picker { display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 0 12px 16px; }
+.settings-sidebar .settings-scope-picker > span { font-size: 11px; font-weight: 600; }
+.settings-sidebar .settings-scope-picker select { width: 100%; }
+.device-settings-panel .settings-sidebar .settings-tabs { border-right: 0; border-top: 1px solid var(--settings-divider); }
+.settings-sidebar__note { margin: 12px 16px; color: var(--fg-slate); font-size: 11px; line-height: 1.6; }
+@media (max-width: 600px) {
+  .device-settings-panel .settings-layout { grid-template-columns: 132px minmax(0, 1fr); }
+  .settings-sidebar .settings-scope-picker { padding-inline: 8px; }
+  .settings-sidebar .settings-scope-picker select { font-size: 11px; padding-left: 6px; }
+}
+
+/* Native dropdown behaviour; the closed control shares the app's square form style. */
+.ui-select { position: relative; display: inline-flex; min-width: 0; width: 100%; }
+.ui-select select { appearance: none; width: 100%; min-width: 0; min-height: 36px; padding: 8px 32px 8px 10px; border: 1px solid var(--fg-slate); background: var(--surface-panel); color: var(--fg-obsidian); font: inherit; cursor: pointer; text-overflow: ellipsis; transition: border-color var(--control-motion), background-color var(--control-motion); }
+.ui-select__chevron { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--fg-slate); }
+.ui-select select:hover:not(:disabled) { border-color: var(--fg-obsidian); background: var(--surface-control); }
+.ui-select select:focus-visible { outline: 2px solid var(--fg-slate); outline-offset: 2px; }
+.ui-select select:disabled { opacity: .5; cursor: default; }
+.device-settings-panel .settings-tabs button:focus-visible { outline: 2px solid var(--fg-slate); outline-offset: -2px; }
+.device-settings-panel .engagement-number input,
+.device-settings-panel .device-identity__field input { border-color: var(--settings-border); background: var(--surface-panel); min-height: 36px; }
+.device-settings-panel .engagement-number input:focus-visible,
+.device-settings-panel .device-identity__field input:focus-visible { outline: 2px solid var(--fg-slate); outline-offset: 2px; }
+.settings-sidebar { scrollbar-width: thin; scrollbar-color: var(--settings-scrollbar) transparent; }
+
+.ui-select__trigger { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 36px; padding: 8px 10px; border: 1px solid var(--fg-slate); background: var(--surface-panel); color: var(--fg-obsidian); font: inherit; text-align: left; cursor: pointer; }
+.ui-select__trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-select__trigger > svg { flex-shrink: 0; }
+.ui-select__trigger:hover:not(:disabled), .ui-select__trigger[aria-expanded="true"] { background: var(--surface-control); }
+.ui-select__trigger:focus-visible { outline: 2px solid var(--fg-slate); outline-offset: 2px; }
+.ui-select__trigger:disabled { opacity: .5; cursor: default; }
+.ui-select__menu { position: fixed; z-index: 10000; overflow-y: auto; padding: 4px; border: 1px solid var(--fg-obsidian); background: var(--surface-panel); box-shadow: 2px 2px 0 var(--fg-obsidian); color: var(--fg-obsidian); font: 12px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; scrollbar-width: thin; }
+.ui-select__option { display: flex; align-items: center; gap: 8px; padding: 8px 6px; cursor: pointer; overflow-wrap: anywhere; }
+.ui-select__option svg { flex-shrink: 0; }
+.ui-select__option.is-active { background: var(--fg-obsidian); color: var(--surface-panel); }
+.ui-select__group { margin: 4px 0; padding: 8px 6px 4px; border-top: 1px solid var(--fg-slate); color: var(--fg-slate); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }

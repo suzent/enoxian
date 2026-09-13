@@ -47,14 +47,14 @@ export default function EngagementSettings({
         <span>{label}</span>
         {isCircle && (
           inherits(key)
-            ? <span className="engagement-row__badge">inherited</span>
+            ? <span className="engagement-row__badge">Using default</span>
             : <button
                 type="button"
                 className="engagement-row__reset"
                 disabled={busy}
                 onClick={() => onChange({ [key]: null } as Patch)}
-                title="Stop overriding this here and follow the global setting"
-              >reset</button>
+                title="Remove this Circle override and use the default for all Circles"
+              >Use default</button>
         )}
       </div>
       <div className="engagement-row__control">{control}</div>
@@ -68,6 +68,7 @@ export default function EngagementSettings({
         <label className="engagement-toggle">
           <input
             type="checkbox"
+            aria-label="Run agents when mentioned"
             checked={effective.reaction === 'push'}
             disabled={busy}
             onChange={e => {

@@ -7,12 +7,14 @@ import { useApp } from '../context/AppContext'
 import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
 import EngagementSettings, { type Patch } from './EngagementSettings'
 import DeviceIdentity from './DeviceIdentity'
+import Select from './ui/Select'
 
-type SettingsTab = 'device' | 'agents' | 'connectivity'
+type SettingsTab = 'device' | 'agents' | 'behaviour' | 'connectivity'
 
 const SETTINGS_TABS: readonly SegmentedTabOption<SettingsTab>[] = [
   { value: 'device', content: <><Laptop size={14} aria-hidden="true" />DEVICE</> },
   { value: 'agents', content: <><Bot size={14} aria-hidden="true" />AGENTS</> },
+  { value: 'behaviour', content: <><Bot size={14} aria-hidden="true" />BEHAVIOUR</> },
   { value: 'connectivity', content: <><RadioTower size={14} aria-hidden="true" />CONNECTIVITY</> },
 ]
 
@@ -28,8 +30,10 @@ interface Props {
  * ordinary launcher config. See docs/concepts/proposals.md.
  */
 export default function DeviceSettings({ onClose }: Props) {
-  const { activeCircleId, circles } = useApp()
-  const [activeTab, setActiveTab] = useState<SettingsTab>('agents')
+  const { activeCircleId: chatCircleId, circles } = useApp()
+  // Settings selection is independent of the active chat.
+  const [activeCircleId, setSettingsCircleId] = useState(chatCircleId)
+  const [activeTab, setActiveTab] = useState<SettingsTab>('behaviour')
   const [cfg, setCfg] = useState<AgentConfigView | null>(null)
   const [plugins, setPlugins] = useState<AgentPlugin[] | null>(null)
   const [known, setKnown] = useState<DiscoveredAgent[]>([])
@@ -132,17 +136,42 @@ export default function DeviceSettings({ onClose }: Props) {
     <div className="ritual-modal-backdrop" onClick={onClose}>
       <div className="ritual-panel sys-window device-settings-panel" onClick={e => e.stopPropagation()}>
         <button onClick={onClose} className="ritual-panel__close" aria-label="Close">×</button>
-        <div className="ritual-panel__header">DEVICE SETTINGS</div>
+        <div className="ritual-panel__header">SETTINGS</div>
         <div className="settings-layout">
+          <aside className="settings-sidebar">
+                  <label className="settings-scope-picker">
+                    <span>Settings for</span>
+                    <Select
+                      aria-label="Settings scope"
+                      value={scope === 'global' ? '' : activeCircleId ?? ''}
+                      disabled={busy}
+                      onChange={id => {
+                        setScope(id ? 'circle' : 'global')
+                        if ((id && (activeTab === 'device' || activeTab === 'agents')) || (!id && activeTab === 'connectivity')) setActiveTab('behaviour')
+                        if (id) setSettingsCircleId(id)
+                      }}
+                      options={[
+                        { value: '', label: 'Global settings' },
+                        ...circles.map(circle => ({ value: circle.circle_id, label: circle.circle_name, group: 'Circles' })),
+                      ]}
+                    />
+                  </label>
           <SegmentedTabs
             className="settings-tabs"
             ariaLabel="Settings sections"
             orientation="vertical"
             value={activeTab}
             onChange={setActiveTab}
-            options={SETTINGS_TABS}
+            options={SETTINGS_TABS.filter(tab => scope === 'global' ? tab.value !== 'connectivity' : tab.value === 'behaviour' || tab.value === 'connectivity')}
           />
+          <p className="settings-sidebar__note">{scope === 'global' ? 'Defaults for this device across all Circles.' : 'This device’s preferences in the selected Circle.'}</p>
+          </aside>
           <div className="ritual-panel__body settings-panel-body flex flex-col gap-4">
+          <header className="settings-section-heading">
+            <span className="settings-section-heading__scope">{scope === 'global' ? 'THIS DEVICE · GLOBAL' : `THIS DEVICE IN ${activeCircle?.circle_name ?? 'CIRCLE'}`}</span>
+            <h2>{{ device: 'Device identity', agents: 'Your agents', behaviour: 'Agent behaviour', connectivity: 'Connectivity' }[activeTab]}</h2>
+            <p>{{ device: 'How you and this machine appear to others.', agents: 'Connect the agents available on this machine. Used across all Circles.', behaviour: 'Set defaults for all Circles, or tailor how agents respond in one Circle.', connectivity: 'Manage how this device connects to the current Circle.' }[activeTab]}</p>
+          </header>
           {error && (
             <div className="file-error">
               <div>{error}</div>
@@ -176,32 +205,18 @@ export default function DeviceSettings({ onClose }: Props) {
                   <div className="text-[11px] font-bold mb-1">CONFIG</div>
                   <div className="text-[9px] text-slate break-all">{cfg.config_path}</div>
                   <div className="text-[9px] text-slate mt-1 leading-relaxed">
-                    Everything in Settings is written here and stays on this machine.
-                    It is never synced to a Circle.
+                    Agent configuration is stored here on this machine, including your Circle overrides.
                   </div>
                 </section>
               )}
             </>
           )}
 
-          {activeTab === 'agents' && !cfg && !error && <div className="text-slate font-mono text-[11px]">Loading…</div>}
+          {(activeTab === 'agents' || activeTab === 'behaviour') && !cfg && !error && <div className="text-slate font-mono text-[11px]">Loading…</div>}
 
-          {activeTab === 'agents' && cfg && (
+          {activeTab === 'behaviour' && cfg && (
             <>
                 <section className="settings-scope">
-                <div className="settings-scope__head">
-                  <div className="text-[11px] font-bold">ENGAGEMENT</div>
-                  <SegmentedTabs
-                    value={scope}
-                    onChange={setScope}
-                    ariaLabel="Settings scope"
-                    className="settings-scope-tabs"
-                    options={[
-                      { value: 'global', content: <>ALL CIRCLES</> },
-                      { value: 'circle', content: <>{activeCircle?.circle_name?.toUpperCase() || 'THIS CIRCLE'}</> },
-                    ]}
-                  />
-                </div>
                 <div className="settings-scope__note">
                   {scope === 'global'
                     ? 'Applies in every Circle, unless one of them overrides it.'
@@ -229,6 +244,11 @@ export default function DeviceSettings({ onClose }: Props) {
                 )}
               </section>
 
+            </>
+          )}
+
+          {activeTab === 'agents' && cfg && (
+            <>
               {plugins && plugins.length > 0 && (
                 <section>
                   <div className="flex items-baseline justify-between border-b border-obsidian pb-1 mb-1">
@@ -453,11 +473,15 @@ export default function DeviceSettings({ onClose }: Props) {
             </>
           )}
 
-          {activeTab === 'connectivity' && !connectivity && !error && (
+          {activeTab === 'connectivity' && !activeCircleId && (
+            <div className="settings-empty">Open a Circle to view its connection settings.</div>
+          )}
+
+          {activeTab === 'connectivity' && activeCircleId && !connectivity && !error && (
             <div className="text-slate font-mono text-[11px]">Loading…</div>
           )}
 
-          {activeTab === 'connectivity' && connectivity && (
+          {activeTab === 'connectivity' && activeCircleId && connectivity && (
             <div className="settings-connectivity">
               <div className="settings-connectivity__circle">
                 <span>CURRENT CIRCLE</span>

@@ -64,10 +64,11 @@ beforeEach(() => {
 describe('per-Circle settings', () => {
   it('are reachable from the same panel, under a named scope', async () => {
     render(<DeviceSettings onClose={vi.fn()} />)
+    await userEvent.click(screen.getByRole('combobox', { name: 'Settings scope' }))
     // The Circle is named on the tab, not called "this Circle" — you can only
     // tell which one you are editing if it says.
-    expect(await screen.findByRole('tab', { name: 'GROUP' })).toBeTruthy()
-    expect(screen.getByRole('tab', { name: 'ALL CIRCLES' })).toBeTruthy()
+    expect(await screen.findByRole('option', { name: 'group' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Global settings' })).toBeTruthy()
   })
 
   it('open on the global scope, since most people have one answer', async () => {
@@ -77,9 +78,27 @@ describe('per-Circle settings', () => {
 
   it('say plainly that a per-Circle setting is not shared with the Circle', async () => {
     render(<DeviceSettings onClose={vi.fn()} />)
-    await userEvent.click(await screen.findByRole('tab', { name: 'GROUP' }))
+    await userEvent.click(screen.getByRole('combobox', { name: 'Settings scope' }))
+    await userEvent.click(screen.getByRole('option', { name: 'group' }))
     await waitFor(() => expect(screen.getByText(/Applies in/)).toBeTruthy())
     expect(screen.getByText(/never shared with the Circle/)).toBeTruthy()
+  })
+
+  it('uses the sidebar scope to show only relevant sections', async () => {
+    render(<DeviceSettings onClose={vi.fn()} />)
+    expect(screen.getByRole('tab', { name: 'DEVICE' })).toBeTruthy()
+    expect(screen.queryByRole('tab', { name: 'CONNECTIVITY' })).toBeNull()
+    await userEvent.click(screen.getByRole('tab', { name: 'DEVICE' }))
+    await userEvent.click(screen.getByRole('combobox', { name: 'Settings scope' }))
+    await userEvent.click(screen.getByRole('option', { name: 'group' }))
+    expect(screen.queryByRole('tab', { name: 'DEVICE' })).toBeNull()
+    expect(screen.queryByRole('tab', { name: 'AGENTS' })).toBeNull()
+    expect(screen.getByRole('tab', { name: 'BEHAVIOUR' })).toHaveAttribute('aria-selected', 'true')
+    await userEvent.click(screen.getByRole('tab', { name: 'CONNECTIVITY' }))
+    await userEvent.click(screen.getByRole('combobox', { name: 'Settings scope' }))
+    await userEvent.click(screen.getByRole('option', { name: 'Global settings' }))
+    expect(screen.getByRole('tab', { name: 'BEHAVIOUR' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('tab', { name: 'CONNECTIVITY' })).toBeNull()
   })
 
   it('ask the daemon for the active Circle, so overrides can be shown at all', async () => {
