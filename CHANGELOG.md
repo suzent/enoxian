@@ -41,6 +41,13 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Device Settings now has switches for how each agent engages, instead of
+  requiring a hand-edit of `agents.toml`: **reads the room** (answer messages
+  that name no agent) and **accepts hand-offs** (let another agent pass it
+  work), plus the follow-up window for this device. Both per-agent switches are
+  off until you turn them on, and turning on "reads the room" says plainly what
+  it will send to that agent's provider before it does.
+
 - Agents can be asked to read the room. An agent set `engagement = "ambient"` in
   `agents.toml` is offered every human message and may answer or stay quiet.
   Off by default and per device, because it sends every human line to that

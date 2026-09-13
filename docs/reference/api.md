@@ -311,6 +311,7 @@ Two further per-circle routes are used by the local UI:
 | `GET` | `/circles/<id>/api/chat/engagement` | What the next mention-less message will do |
 | `POST` | `/circles/<id>/api/chat/engagement/exit` | Dismiss the follow-up window |
 | `POST` | `/circles/<id>/api/chat/relay/stop` | Halt a delegation cascade |
+| `POST` | `/api/agent-config/engagement` | Change how one agent engages, or this device's follow-up window |
 | `POST` | `/circles/<id>/api/chat/attachments` | Upload an image to attach to a message |
 | `GET` | `/circles/<id>/api/blobs/<hash>` | Fetch attachment bytes |
 
