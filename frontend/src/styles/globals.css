@@ -987,26 +987,80 @@ button[role="tab"][aria-selected="true"] {
   font-weight: 700;
 }
 
-/* Per-agent engagement switches in Device Settings. Deliberately plain: these
-   change what leaves the machine, so they should read as settings, not chrome. */
-.agent-engagement {
+/* Engagement settings, one row per question. An inherited row is dimmed rather
+   than hidden: a Circle that follows the global answer should still show what
+   that answer is, or you cannot tell what you are about to change. */
+.engagement-settings {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 10px;
-  margin-top: 4px;
   font-family: var(--font-mono);
-  font-size: 9px;
-  color: var(--fg-slate);
 }
 
-.agent-engagement label {
-  display: inline-flex;
+.engagement-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
   align-items: center;
-  gap: 4px;
+}
+
+.engagement-row--inherited {
+  opacity: 0.62;
+}
+
+.engagement-row__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--fg-obsidian);
+}
+
+.engagement-row__badge {
+  padding: 0 3px;
+  border: 1px dashed currentColor;
+  color: var(--fg-slate);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.engagement-row__reset {
+  padding: 0 3px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: var(--fg-slate);
+  font: inherit;
+  font-size: 8px;
   cursor: pointer;
 }
 
-.agent-engagement input {
+.engagement-row__reset:hover:not(:disabled) {
+  color: var(--fg-obsidian);
+}
+
+.engagement-row__control {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+}
+
+.engagement-row__hint {
+  grid-column: 1 / -1;
+  font-size: 9px;
+  color: var(--fg-slate);
+  line-height: 1.4;
+}
+
+.engagement-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.engagement-toggle input {
   width: 11px;
   height: 11px;
   margin: 0;
@@ -1014,15 +1068,38 @@ button[role="tab"][aria-selected="true"] {
   cursor: pointer;
 }
 
-.agent-engagement input:disabled,
-.agent-engagement input:disabled + span {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.agent-engagement input:checked + span {
+.engagement-toggle input:checked + span {
   color: var(--fg-obsidian);
   font-weight: 700;
+}
+
+.engagement-number {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  color: var(--fg-slate);
+}
+
+.engagement-number input {
+  width: 58px;
+  border: 1px solid var(--fg-obsidian);
+  padding: 1px 3px;
+  font: inherit;
+  font-size: 10px;
+}
+
+.engagement-agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.engagement-settings input:disabled,
+.engagement-settings button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Reply affordance on an agent message. Quiet until hovered — it is an

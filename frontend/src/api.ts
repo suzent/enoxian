@@ -89,6 +89,8 @@ async function post<T>(url: string, body: unknown): Promise<T> {
 
 export const getCircles = () => get<Circle[]>('/circles')
 // Device-level (not circle-scoped): how this device reacts to chat mentions.
+export const getAgentConfigFor = (circleId?: string | null) =>
+  get<AgentConfigView>(`/api/agent-config${circleId ? `?circle_id=${encodeURIComponent(circleId)}` : ''}`)
 export const getAgentConfig = () => get<AgentConfigView>('/api/agent-config')
 // Probe well-known agents for local install status (read-only; runs nothing).
 export const discoverAgents = () =>
@@ -99,14 +101,17 @@ export const installAgentPlugin = (pluginId: string) =>
   post<{ ok: boolean; plugin: string; command: string[] }>(`/api/agent-plugins/${encodeURIComponent(pluginId)}/install`, {})
 export const setAgentReaction = (reaction: 'push' | 'pull') =>
   post('/api/agent-config/reaction', { reaction })
-/** Change how one agent engages, or this device's follow-up window. Every
- *  field is optional; send only what changed. */
-export const setAgentEngagement = (patch: {
-  name: string
-  engagement?: 'mention' | 'ambient'
-  accept_from?: 'humans' | 'agents'
-  max_relay_turns?: number
-  engagement_window_secs?: number
+/** Change engagement settings in one scope.
+ *
+ *  Omit `circle_id` for the global settings. At Circle scope an explicit `null`
+ *  clears the override so the setting inherits again — which is why this takes
+ *  `T | null` rather than `T | undefined`. */
+export const setEngagement = (patch: {
+  circle_id?: string
+  reaction?: 'push' | 'pull' | null
+  engagement_window_secs?: number | null
+  ambient?: string[] | null
+  max_relay_turns?: number | null
 }) => post<{ ok: boolean }>('/api/agent-config/engagement', patch)
 export const addAgent = (name: string, driver: string, command: string[], working_dir?: string) =>
   post('/api/agent-config/agents', { name, driver, command, working_dir })

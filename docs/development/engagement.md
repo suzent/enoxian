@@ -443,24 +443,40 @@ run decision onto the wire.
 
 ### 3.5 Opt-in, on the receiving side
 
-The device that spends the tokens decides, which means the switch belongs to the
-agent being *called*, not the one calling:
+**Superseded.** This section described a per-agent `accept_from` switch, so that
+a hand-off only landed on an agent that had opted into receiving one. That
+shipped, and was then removed.
+
+The argument for it was that the device spending the tokens should decide. That
+argument is sound and still holds — but the device already decides, twice, before
+this switch is ever consulted: the agent has to be in `agents.toml` at all, and
+the reaction policy has to be `push`. A third switch added no authority, and it
+failed in the worst available way: a hand-off to an agent that had not opted in
+did nothing, said nothing, and looked exactly like a bug. It was reported as one.
+
+So delegation is no longer opt-in. An agent allowed into a Circle is reachable by
+the other agents in it. What remains configurable is how far a chain may run
+(`max_relay_turns`), not who may start one — a bound rather than a gate, which is
+what §3.3 argued for in the first place.
+
+Settings are scoped instead of per-agent, because whether an agent should read
+the room or how long a chain may run is a property of *where* it is working:
 
 ```toml
-[agents.codex]
-driver = "acp"
-command = [...]
-engagement = "mention"      # §2.2, unchanged
-accept_from = "humans"      # default: only human mentions wake this agent
-# accept_from = "agents"    # also wake on another agent's mention
-max_relay_turns = 20        # this device's clamp on §3.4
+# Global — applies in every Circle.
+reaction = "push"
+engagement_window_secs = 180
+ambient = ["claude"]
+max_relay_turns = 20
+
+# One Circle, overriding only what it names.
+[circles."<circle-id>"]
+ambient = []
+max_relay_turns = 4
 ```
 
-There is deliberately no sender-side switch. An agent's reply always *carries* a
-relay chain; whether that chain wakes anything is the callee's call, on the
-callee's machine, under the callee's budget. A device that has never heard of
-this feature declines every relayed mention by construction, which is the same
-answer the default gives.
+Still device-local, and that part is not negotiable: a synced per-Circle setting
+would let a remote member decide what this machine spends.
 
 ### 3.6 What a relayed turn may do
 

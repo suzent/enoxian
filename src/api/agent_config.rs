@@ -11,15 +11,16 @@
 //! just applies what it is asked. See docs/concepts/proposals.md.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeMap;
 
-use crate::agent::config::{AcceptFrom, AgentCommand, AgentConfig, Driver, Engagement, Reaction};
+use crate::agent::config::{AgentCommand, AgentConfig, Driver, Reaction};
 use crate::agent::plugin;
 use crate::agent::probe;
 use crate::daemon::DaemonState;
@@ -38,12 +39,6 @@ struct AgentSummary {
     /// `ready`, `missing`, or `runtime_download`. The latter is deliberately
     /// not considered installed: a mention must not invoke a package manager.
     status: String,
-    /// "mention" or "ambient" — whether this agent reads unaddressed messages.
-    engagement: String,
-    /// "humans" or "agents" — whose mention may wake it.
-    accept_from: String,
-    /// This device's ceiling on agent turns per delegation cascade.
-    max_relay_turns: u8,
 }
 
 #[derive(Serialize)]
@@ -55,13 +50,48 @@ struct AgentConfigView {
     config_path: String,
     /// True if the file actually exists (vs. defaulted-empty).
     configured: bool,
-    /// Seconds an agent stays in conversation with whoever it replied to, so a
-    /// follow-up needs no mention. `0` disables follow-up routing.
-    engagement_window_secs: i64,
+    /// The answers that apply everywhere unless a Circle overrides them.
+    global_settings: SettingsView,
+    /// The active Circle's own answers: what it overrides, and what those
+    /// settings actually resolve to there.
+    circle: Option<CircleSettingsView>,
     agents: Vec<AgentSummary>,
 }
 
-pub async fn get_agent_config() -> impl IntoResponse {
+#[derive(Serialize)]
+struct SettingsView {
+    reaction: String,
+    engagement_window_secs: i64,
+    ambient: Vec<String>,
+    max_relay_turns: u8,
+}
+
+#[derive(Serialize)]
+struct CircleSettingsView {
+    circle_id: String,
+    /// What this Circle sets for itself. A field absent here inherits.
+    overrides: crate::agent::config::EngagementSettings,
+    /// Global with the overrides applied — what actually happens here.
+    effective: SettingsView,
+}
+
+fn settings_view(s: &crate::agent::config::ResolvedSettings) -> SettingsView {
+    SettingsView {
+        reaction: format!("{:?}", s.reaction).to_lowercase(),
+        engagement_window_secs: s.engagement_window_secs,
+        ambient: s.ambient.clone(),
+        max_relay_turns: s.max_relay_turns,
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ConfigQuery {
+    /// Circle to report settings for. Omitted, only the global scope is shown.
+    #[serde(default)]
+    pub circle_id: Option<String>,
+}
+
+pub async fn get_agent_config(Query(q): Query<ConfigQuery>) -> impl IntoResponse {
     let cfg = AgentConfig::load();
     let path = AgentConfig::path().ok();
     let configured = path.as_ref().map(|p| p.exists()).unwrap_or(false);
@@ -76,11 +106,20 @@ pub async fn get_agent_config() -> impl IntoResponse {
             status: plugin::command_status(&cmd.command).to_string(),
             command: cmd.command.clone(),
             working_dir: cmd.working_dir.clone(),
-            engagement: format!("{:?}", cmd.engagement).to_lowercase(),
-            accept_from: format!("{:?}", cmd.accept_from).to_lowercase(),
-            max_relay_turns: cmd.max_relay_turns,
         })
         .collect();
+
+    // The global scope is itself a resolution with nothing overriding it, so
+    // both views are built the same way and cannot drift apart.
+    let global = cfg.resolved("");
+    let circle = q.circle_id.filter(|id: &String| !id.is_empty()).map(|id| {
+        let effective = cfg.resolved(&id);
+        CircleSettingsView {
+            overrides: cfg.circles.get(&id).cloned().unwrap_or_default(),
+            effective: settings_view(&effective),
+            circle_id: id,
+        }
+    });
 
     Json(AgentConfigView {
         reaction: format!("{:?}", cfg.reaction).to_lowercase(),
@@ -88,7 +127,8 @@ pub async fn get_agent_config() -> impl IntoResponse {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
         configured,
-        engagement_window_secs: cfg.engagement_window_secs,
+        global_settings: settings_view(&global),
+        circle,
         agents,
     })
 }
@@ -193,86 +233,135 @@ pub async fn set_reaction(Json(req): Json<SetReactionRequest>) -> impl IntoRespo
     })
 }
 
-/// Change how one agent engages, without touching its command.
+/// Change engagement settings in one scope.
 ///
-/// Every field is optional so the UI can send just what changed. These are
-/// device-local decisions — the device that pays for an agent's tokens decides
-/// what they are spent on — so this route edits `agents.toml` and nothing else.
+/// `circle_id` picks the scope: absent or empty means the global settings,
+/// otherwise that Circle's overrides. Every setting is optional so the UI sends
+/// only what changed, and at Circle scope an explicit `null` clears the
+/// override so the setting inherits again.
+///
+/// Device-local, like everything in `agents.toml`. There is deliberately no way
+/// for a remote member to reach this: the device that pays for an agent's
+/// tokens is the device that decides what they are spent on.
 #[derive(Deserialize)]
 pub struct SetEngagementRequest {
-    pub name: String,
-    /// "mention" or "ambient".
     #[serde(default)]
-    pub engagement: Option<String>,
-    /// "humans" or "agents".
-    #[serde(default)]
-    pub accept_from: Option<String>,
-    #[serde(default)]
-    pub max_relay_turns: Option<u8>,
-    /// Device-wide follow-up window, in seconds. `0` disables it.
-    #[serde(default)]
-    pub engagement_window_secs: Option<i64>,
+    pub circle_id: Option<String>,
+    /// "push" or "pull".
+    #[serde(default, deserialize_with = "double_option")]
+    pub reaction: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub engagement_window_secs: Option<Option<i64>>,
+    /// Agents that read the room in this scope, by name.
+    #[serde(default, deserialize_with = "double_option")]
+    pub ambient: Option<Option<Vec<String>>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub max_relay_turns: Option<Option<u8>>,
+}
+
+/// Distinguish "field absent" from "field set to null".
+///
+/// At Circle scope they mean opposite things — leave this setting alone, versus
+/// stop overriding it — and a plain `Option` collapses them into one.
+fn double_option<'de, D, T>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
+}
+
+fn parse_reaction(value: &str) -> Result<Reaction, String> {
+    match value {
+        "push" => Ok(Reaction::Push),
+        "pull" => Ok(Reaction::Pull),
+        other => Err(format!("invalid reaction '{other}'")),
+    }
+}
+
+fn validate(
+    req: &SetEngagementRequest,
+    known: &BTreeMap<String, AgentCommand>,
+) -> Result<(), String> {
+    if let Some(Some(window)) = req.engagement_window_secs {
+        if window < 0 {
+            return Err("engagement_window_secs cannot be negative".into());
+        }
+    }
+    if let Some(Some(turns)) = req.max_relay_turns {
+        if turns == 0 {
+            return Err("max_relay_turns must be at least 1".into());
+        }
+    }
+    if let Some(Some(value)) = &req.reaction {
+        parse_reaction(value)?;
+    }
+    if let Some(Some(names)) = &req.ambient {
+        // Naming an agent this device cannot run would look like it was
+        // listening when nothing would ever wake it.
+        for name in names {
+            if !known.contains_key(name) {
+                return Err(format!(
+                    "no agent named '{name}' is configured on this device"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub async fn set_engagement(
     State(daemon): State<DaemonState>,
     Json(req): Json<SetEngagementRequest>,
 ) -> impl IntoResponse {
-    let engagement = match req.engagement.as_deref() {
-        None => None,
-        Some("mention") => Some(Engagement::Mention),
-        Some("ambient") => Some(Engagement::Ambient),
-        Some(other) => return bad_request(format!("invalid engagement '{other}'")),
-    };
-    let accept_from = match req.accept_from.as_deref() {
-        None => None,
-        Some("humans") => Some(AcceptFrom::Humans),
-        Some("agents") => Some(AcceptFrom::Agents),
-        Some(other) => return bad_request(format!("invalid accept_from '{other}'")),
-    };
-    if let Some(window) = req.engagement_window_secs {
-        if window < 0 {
-            return bad_request("engagement_window_secs cannot be negative".to_string());
-        }
-    }
-    if let Some(turns) = req.max_relay_turns {
-        if turns == 0 {
-            return bad_request(
-                "max_relay_turns must be at least 1 — use accept_from = \"humans\" to refuse \
-                 delegation entirely"
-                    .to_string(),
-            );
-        }
-    }
-
-    let name = req.name.clone();
+    let scope = req.circle_id.clone().filter(|id| !id.is_empty());
     let resp = edit(move |cfg| {
-        if let Some(window) = req.engagement_window_secs {
-            cfg.engagement_window_secs = window;
-        }
-        let Some(cmd) = cfg.agents.get_mut(&name) else {
-            // Only an error when the request was actually about this agent.
-            if engagement.is_none() && accept_from.is_none() && req.max_relay_turns.is_none() {
-                return Ok(());
+        validate(&req, &cfg.agents)?;
+        match scope {
+            None => {
+                // Global scope answers every question, so `null` is not a
+                // meaningful value here — there is nothing above to inherit.
+                if let Some(Some(value)) = &req.reaction {
+                    cfg.reaction = parse_reaction(value)?;
+                }
+                if let Some(Some(window)) = req.engagement_window_secs {
+                    cfg.engagement_window_secs = window;
+                }
+                if let Some(Some(names)) = req.ambient.clone() {
+                    cfg.ambient = names;
+                }
+                if let Some(Some(turns)) = req.max_relay_turns {
+                    cfg.max_relay_turns = turns;
+                }
             }
-            return Err(format!(
-                "no agent named '{name}' is configured on this device"
-            ));
-        };
-        if let Some(value) = engagement {
-            cmd.engagement = value;
-        }
-        if let Some(value) = accept_from {
-            cmd.accept_from = value;
-        }
-        if let Some(value) = req.max_relay_turns {
-            cmd.max_relay_turns = value;
+            Some(circle_id) => {
+                let over = cfg.circles.entry(circle_id.clone()).or_default();
+                if let Some(value) = &req.reaction {
+                    over.reaction = match value {
+                        Some(v) => Some(parse_reaction(v)?),
+                        None => None,
+                    };
+                }
+                if let Some(value) = req.engagement_window_secs {
+                    over.engagement_window_secs = value;
+                }
+                if let Some(value) = req.ambient.clone() {
+                    over.ambient = value;
+                }
+                if let Some(value) = req.max_relay_turns {
+                    over.max_relay_turns = value;
+                }
+                // An override that overrides nothing is noise in the file.
+                if over == &crate::agent::config::EngagementSettings::default() {
+                    cfg.circles.remove(&circle_id);
+                }
+            }
         }
         Ok(())
     });
     // `ambient_agents` is advertised in the roster so every peer can see who is
-    // listening (§2.6). Without this the switch would take effect locally while
-    // the rest of the Circle kept seeing the old answer.
+    // listening. Without this the switch would take effect locally while the
+    // rest of the Circle kept seeing the old answer.
     readvertise_if_ok(&resp, &daemon);
     resp
 }

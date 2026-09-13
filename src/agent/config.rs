@@ -90,7 +90,7 @@ pub enum AcceptFrom {
     Agents,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AgentCommand {
     /// Command and arguments. For the argv driver, `{{task}}` is replaced with
     /// the mention's task text. For the ACP driver the task is delivered in the
@@ -101,17 +101,23 @@ pub struct AgentCommand {
     /// Working directory relative to the workspace root; defaults to the root.
     #[serde(default)]
     pub working_dir: Option<String>,
-    /// Whether this agent is offered unaddressed messages. See [`Engagement`].
-    #[serde(default)]
-    pub engagement: Engagement,
-    /// Whether another agent's mention may wake this one. See [`AcceptFrom`].
-    #[serde(default)]
-    pub accept_from: AcceptFrom,
-    /// This device's ceiling on agent turns per delegation cascade. Clamps
-    /// whatever a peer put on the wire; capped in turn by
-    /// [`crate::agent::relay::RELAY_TURNS_CEILING`].
-    #[serde(default = "default_max_relay_turns")]
-    pub max_relay_turns: u8,
+    /// Read from configs written before engagement settings were scoped, and
+    /// folded into the global scope on load. Never written back.
+    ///
+    /// Behaviour moved out of `[agents.*]` because it is a property of *where*
+    /// an agent is working, not of how it is launched — the same `claude`
+    /// binary should be able to read the room in one Circle and not another.
+    #[serde(default, skip_serializing)]
+    pub engagement: Option<Engagement>,
+    /// Legacy, ignored. Delegation is no longer opt-in per agent: an agent you
+    /// have already allowed into a Circle is reachable by the other agents in
+    /// it. See [`EngagementSettings::max_relay_turns`] for the bound that
+    /// replaced the switch.
+    #[serde(default, skip_serializing)]
+    pub accept_from: Option<AcceptFrom>,
+    /// Legacy, folded into the global scope on load.
+    #[serde(default, skip_serializing)]
+    pub max_relay_turns: Option<u8>,
 }
 
 fn default_engagement_window() -> i64 {
@@ -122,36 +128,14 @@ fn default_max_relay_turns() -> u8 {
     crate::agent::relay::DEFAULT_MAX_RELAY_TURNS
 }
 
-impl Default for AgentCommand {
-    fn default() -> Self {
-        Self {
-            command: Vec::new(),
-            driver: Driver::default(),
-            working_dir: None,
-            engagement: Engagement::default(),
-            accept_from: AcceptFrom::default(),
-            max_relay_turns: default_max_relay_turns(),
-        }
-    }
-}
-
 impl AgentCommand {
     /// Carry this device's delegation settings over from a previous definition
     /// of the same agent. Editing an agent's command in the UI or CLI must not
     /// silently reset whether it accepts work from other agents.
-    pub fn inheriting_delegation(mut self, previous: Option<&AgentCommand>) -> Self {
-        if let Some(prev) = previous {
-            self.engagement = prev.engagement;
-            self.accept_from = prev.accept_from;
-            self.max_relay_turns = prev.max_relay_turns;
-        }
+    pub fn inheriting_delegation(self, _previous: Option<&AgentCommand>) -> Self {
+        // Nothing per-agent left to carry: engagement settings live in their
+        // own scopes now, which editing a launch command never touches.
         self
-    }
-
-    /// Agents on this device that read the room rather than waiting to be
-    /// addressed.
-    pub fn is_ambient(&self) -> bool {
-        self.engagement == Engagement::Ambient
     }
 }
 
@@ -174,6 +158,48 @@ impl AgentCommand {
 /// capture an unrelated message later.
 pub const DEFAULT_ENGAGEMENT_WINDOW_SECS: i64 = 180;
 
+/// How agents behave in one scope — globally, or in a single Circle.
+///
+/// Every field is optional at Circle scope, where `None` means "inherit the
+/// global answer". The global scope fills each in with a default, so there is
+/// always a concrete answer at the bottom.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct EngagementSettings {
+    /// How this device reacts to mentions here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reaction: Option<Reaction>,
+    /// Seconds an agent stays "in conversation" with whoever it replied to, so
+    /// a follow-up needs no mention. `0` disables follow-up routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engagement_window_secs: Option<i64>,
+    /// Agents that read every human message here rather than waiting to be
+    /// addressed. Named rather than flagged per agent, because whether an agent
+    /// reads the room is a property of the room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ambient: Option<Vec<String>>,
+    /// Ceiling on agent turns in one delegation chain. Clamps whatever a peer
+    /// put on the wire; capped in turn by
+    /// [`crate::agent::relay::RELAY_TURNS_CEILING`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_relay_turns: Option<u8>,
+}
+
+/// Settings with every question answered — what a caller actually works with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSettings {
+    pub reaction: Reaction,
+    pub engagement_window_secs: i64,
+    pub ambient: Vec<String>,
+    pub max_relay_turns: u8,
+}
+
+impl ResolvedSettings {
+    /// Does this agent read the room here?
+    pub fn is_ambient(&self, agent: &str) -> bool {
+        self.ambient.iter().any(|a| a.eq_ignore_ascii_case(agent))
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AgentConfig {
     #[serde(default)]
@@ -183,8 +209,69 @@ pub struct AgentConfig {
     /// every message then needs an explicit mention, as before.
     #[serde(default = "default_engagement_window")]
     pub engagement_window_secs: i64,
+    /// Agents that read the room in every Circle unless a Circle says
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ambient: Vec<String>,
+    /// The global ceiling on a delegation chain.
+    #[serde(default = "default_max_relay_turns")]
+    pub max_relay_turns: u8,
+    /// Per-Circle overrides, keyed by circle id. Anything absent inherits the
+    /// global answer above.
+    ///
+    /// Device-local like the rest of this file. A synced per-Circle setting
+    /// would let a remote member decide what this machine spends, which is the
+    /// one thing the execution model does not allow.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub circles: BTreeMap<String, EngagementSettings>,
     #[serde(default)]
     pub agents: BTreeMap<String, AgentCommand>,
+}
+
+impl AgentConfig {
+    /// The settings that apply in one Circle: the global answers, with any
+    /// Circle-scoped overrides laid on top.
+    pub fn resolved(&self, circle_id: &str) -> ResolvedSettings {
+        let over = self.circles.get(circle_id);
+        ResolvedSettings {
+            reaction: over.and_then(|o| o.reaction).unwrap_or(self.reaction),
+            engagement_window_secs: over
+                .and_then(|o| o.engagement_window_secs)
+                .unwrap_or(self.engagement_window_secs),
+            ambient: over
+                .and_then(|o| o.ambient.clone())
+                .unwrap_or_else(|| self.ambient.clone()),
+            max_relay_turns: over
+                .and_then(|o| o.max_relay_turns)
+                .unwrap_or(self.max_relay_turns),
+        }
+    }
+
+    /// Fold settings written under `[agents.*]` before they were scoped into
+    /// the global scope, so an existing config keeps behaving the same way.
+    ///
+    /// `accept_from` is deliberately dropped rather than migrated: delegation
+    /// is no longer opt-in, so there is nothing for it to mean. The legacy
+    /// fields are never written back, so a save quietly completes the move.
+    fn migrate_legacy_agent_settings(&mut self) {
+        for (name, cmd) in &self.agents {
+            if cmd.engagement == Some(Engagement::Ambient)
+                && !self.ambient.iter().any(|a| a.eq_ignore_ascii_case(name))
+            {
+                self.ambient.push(name.clone());
+            }
+        }
+        // A per-agent cap becomes the global one. Take the smallest, so
+        // migrating never raises a ceiling somebody had lowered.
+        if let Some(min) = self.agents.values().filter_map(|c| c.max_relay_turns).min() {
+            self.max_relay_turns = self.max_relay_turns.min(min);
+        }
+        for cmd in self.agents.values_mut() {
+            cmd.engagement = None;
+            cmd.accept_from = None;
+            cmd.max_relay_turns = None;
+        }
+    }
 }
 
 impl Default for AgentConfig {
@@ -195,6 +282,9 @@ impl Default for AgentConfig {
         Self {
             reaction: Reaction::default(),
             engagement_window_secs: DEFAULT_ENGAGEMENT_WINDOW_SECS,
+            ambient: Vec::new(),
+            max_relay_turns: crate::agent::relay::DEFAULT_MAX_RELAY_TURNS,
+            circles: BTreeMap::new(),
             agents: BTreeMap::new(),
         }
     }
@@ -202,7 +292,9 @@ impl Default for AgentConfig {
 
 impl AgentConfig {
     pub fn from_toml(text: &str) -> anyhow::Result<Self> {
-        Ok(toml::from_str(text)?)
+        let mut cfg: Self = toml::from_str(text)?;
+        cfg.migrate_legacy_agent_settings();
+        Ok(cfg)
     }
 
     /// The allowlist check: `None` means no such agent is permitted here, so a
@@ -298,12 +390,79 @@ mod tests {
     "#;
 
     #[test]
-    fn engagement_settings_round_trip_through_toml() {
-        // What the settings UI writes must survive a save/load cycle, or a
-        // change appears to stick and silently does not.
+    fn scoped_settings_round_trip_through_toml() {
         let text = r#"
 reaction = "push"
-engagement_window_secs = 90
+engagement_window_secs = 180
+ambient = ["claude"]
+max_relay_turns = 20
+
+[agents.claude]
+driver = "acp"
+command = ["claude-agent-acp"]
+
+[circles.work]
+engagement_window_secs = 0
+ambient = []
+"#;
+        let cfg = AgentConfig::from_toml(text).unwrap();
+        let back = AgentConfig::from_toml(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert_eq!(back.resolved("work"), cfg.resolved("work"));
+        assert_eq!(back.resolved("other"), cfg.resolved("other"));
+    }
+
+    #[test]
+    fn a_circle_overrides_only_what_it_names() {
+        let text = r#"
+reaction = "push"
+engagement_window_secs = 180
+ambient = ["claude"]
+max_relay_turns = 20
+
+[agents.claude]
+driver = "acp"
+command = ["claude-agent-acp"]
+
+[circles.social]
+engagement_window_secs = 0
+ambient = []
+"#;
+        let cfg = AgentConfig::from_toml(text).unwrap();
+
+        let social = cfg.resolved("social");
+        assert_eq!(social.engagement_window_secs, 0, "overridden");
+        assert!(social.ambient.is_empty(), "overridden");
+        assert_eq!(social.reaction, Reaction::Push, "inherited");
+        assert_eq!(social.max_relay_turns, 20, "inherited");
+
+        // A Circle that says nothing gets the global answers unchanged.
+        let other = cfg.resolved("anything-else");
+        assert_eq!(other.engagement_window_secs, 180);
+        assert_eq!(other.ambient, vec!["claude"]);
+    }
+
+    #[test]
+    fn an_empty_ambient_list_is_an_override_not_an_absence() {
+        // `ambient = []` must mean "nobody reads the room here", not "inherit".
+        // Collapsing the two would silently re-enable it.
+        let text = r#"
+ambient = ["claude"]
+[agents.claude]
+command = ["x"]
+[circles.quiet]
+ambient = []
+"#;
+        let cfg = AgentConfig::from_toml(text).unwrap();
+        assert!(cfg.resolved("quiet").ambient.is_empty());
+        assert_eq!(cfg.resolved("loud").ambient, vec!["claude"]);
+    }
+
+    #[test]
+    fn legacy_per_agent_settings_are_migrated_into_the_global_scope() {
+        // Configs written before settings were scoped must keep behaving the
+        // same way, without the user editing anything.
+        let text = r#"
+reaction = "push"
 
 [agents.claude]
 driver = "acp"
@@ -311,26 +470,39 @@ command = ["claude-agent-acp"]
 engagement = "ambient"
 accept_from = "agents"
 max_relay_turns = 6
+
+[agents.codex]
+driver = "acp"
+command = ["codex-acp"]
 "#;
         let cfg = AgentConfig::from_toml(text).unwrap();
-        assert_eq!(cfg.engagement_window_secs, 90);
-        let claude = cfg.resolve("claude").unwrap();
-        assert_eq!(claude.engagement, Engagement::Ambient);
-        assert_eq!(claude.accept_from, AcceptFrom::Agents);
-        assert_eq!(claude.max_relay_turns, 6);
+        let global = cfg.resolved("");
+        assert_eq!(global.ambient, vec!["claude"], "ambient carried over");
+        assert_eq!(global.max_relay_turns, 6, "the tighter cap carried over");
 
-        let back = AgentConfig::from_toml(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
-        let claude = back.resolve("claude").unwrap();
-        assert_eq!(back.engagement_window_secs, 90);
-        assert_eq!(claude.engagement, Engagement::Ambient);
-        assert_eq!(claude.accept_from, AcceptFrom::Agents);
-        assert_eq!(claude.max_relay_turns, 6);
+        // The legacy keys are not written back, so saving completes the move.
+        let saved = toml::to_string_pretty(&cfg).unwrap();
+        assert!(!saved.contains("accept_from"), "dropped: no longer opt-in");
+        assert!(!saved.contains("engagement ="), "moved to the scope");
+        assert!(saved.contains("ambient"));
+    }
+
+    #[test]
+    fn migration_never_raises_a_cap_somebody_lowered() {
+        let text = r#"
+[agents.a]
+command = ["x"]
+max_relay_turns = 4
+[agents.b]
+command = ["y"]
+max_relay_turns = 30
+"#;
+        let cfg = AgentConfig::from_toml(text).unwrap();
+        assert_eq!(cfg.resolved("").max_relay_turns, 4);
     }
 
     #[test]
     fn an_agent_without_engagement_keys_gets_the_safe_defaults() {
-        // A config written before these existed must not silently opt an agent
-        // into reading the room or accepting delegation.
         let text = r#"
 reaction = "push"
 
@@ -339,14 +511,16 @@ driver = "acp"
 command = ["claude-agent-acp"]
 "#;
         let cfg = AgentConfig::from_toml(text).unwrap();
-        let claude = cfg.resolve("claude").unwrap();
-        assert_eq!(claude.engagement, Engagement::Mention);
-        assert_eq!(claude.accept_from, AcceptFrom::Humans);
+        let global = cfg.resolved("");
+        assert!(global.ambient.is_empty(), "reading the room stays opt-in");
         assert_eq!(
-            claude.max_relay_turns,
+            global.max_relay_turns,
             crate::agent::relay::DEFAULT_MAX_RELAY_TURNS
         );
-        assert_eq!(cfg.engagement_window_secs, DEFAULT_ENGAGEMENT_WINDOW_SECS);
+        assert_eq!(
+            global.engagement_window_secs,
+            DEFAULT_ENGAGEMENT_WINDOW_SECS
+        );
     }
 
     #[test]
