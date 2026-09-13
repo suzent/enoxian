@@ -1,21 +1,37 @@
 import { useState } from 'react'
 import type { IdentityInfo } from '../api'
+import type { AddressedAs } from '../types'
 
 interface Props {
   identity: IdentityInfo
+  /** How the active Circle addresses this device, if there is one. */
+  addressedAs?: AddressedAs | null
+  /** Name of that Circle, for the label. */
+  circleName?: string | null
   busy: boolean
   onSave: (patch: { device_label?: string; user_handle?: string }) => Promise<void>
 }
 
 /**
- * Who this machine is in a Circle.
+ * Who this machine is.
  *
- * Not cosmetic: the device label is the middle segment of every handle that
- * addresses an agent here (`@owner/device/agent`), and it is what this device
- * compares an incoming mention against. Renaming it changes how the Circle
- * reaches you, which is why it says so rather than presenting a bare field.
+ * Two identities meet here and they are not the same, which is the thing this
+ * component mostly exists to keep straight:
+ *
+ * - **device name** — local, and the middle segment of every handle addressing
+ *   an agent here. Renaming it changes that handle everywhere.
+ * - **your handle** — local too, but only used when you *create or join* a
+ *   Circle. Your name inside a Circle you already joined is part of your
+ *   membership there and does not change when you edit this.
+ *
+ * So the address shown is the one the Circle actually uses, read from its
+ * roster, rather than one assembled from local fields. A handle that looks
+ * authoritative and is wrong is the worst outcome: a mention to it fails
+ * silently.
  */
-export default function DeviceIdentity({ identity, busy, onSave }: Props) {
+export default function DeviceIdentity({
+  identity, addressedAs, circleName, busy, onSave,
+}: Props) {
   const [label, setLabel] = useState(identity.device_label)
   const [handle, setHandle] = useState(identity.user_handle ?? '')
 
@@ -31,12 +47,16 @@ export default function DeviceIdentity({ identity, busy, onSave }: Props) {
     })
   }
 
-  const example = `@${handle.trim() || 'you'}/${label.trim() || 'device'}/agent`
+  // The owner segment comes from the Circle, never from the local handle. Only
+  // the device segment previews the pending rename, because that one really
+  // does follow this field.
+  const owner = addressedAs?.owner
+  const deviceSegment = label.trim() || 'device'
 
   return (
     <div className="device-identity">
       <label className="device-identity__field">
-        <span>THIS DEVICE</span>
+        <span>DEVICE NAME</span>
         <input
           value={label}
           disabled={busy}
@@ -46,7 +66,7 @@ export default function DeviceIdentity({ identity, busy, onSave }: Props) {
         />
       </label>
       <label className="device-identity__field">
-        <span>YOU</span>
+        <span>YOUR HANDLE</span>
         <input
           value={handle}
           disabled={busy}
@@ -57,8 +77,24 @@ export default function DeviceIdentity({ identity, busy, onSave }: Props) {
       </label>
 
       <div className="device-identity__hint">
-        Agents on this machine are addressed as <code>{example}</code>. Renaming
-        changes that handle for everyone in your Circles.
+        {owner ? (
+          <>
+            {circleName ? <>In <strong>{circleName}</strong>, agents</> : 'Agents'} on this machine
+            are addressed as <code>@{owner}/{deviceSegment}/agent</code>.
+            {labelChanged && ' Saving updates that for everyone.'}
+          </>
+        ) : (
+          <>Agents on this machine are addressed as{' '}
+          <code>@{handle.trim() || 'you'}/{deviceSegment}/agent</code>.</>
+        )}
+      </div>
+
+      <div className="device-identity__hint">
+        {/* The distinction people get wrong: "change your handle" reads like it
+            changes everywhere, and it does not. */}
+        Your handle is used when you <em>create or join</em> a Circle. Changing
+        it here does not rename you in Circles you have already joined
+        {owner ? <> — you stay <strong>{owner}</strong> there.</> : '.'}
       </div>
 
       <div className="device-identity__actions">

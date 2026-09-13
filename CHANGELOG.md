@@ -116,6 +116,13 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Settings shows the handle a Circle actually addresses your agents by, rather
+  than one assembled from local fields. Your name inside a Circle is fixed when
+  you create or join it, so a device whose local handle had since changed was
+  shown an address that would silently fail if anyone used it. Settings now
+  reads the handle from the Circle, and says that changing your handle applies
+  to Circles you join later, not ones you are already in.
+
 <<<<<<< HEAD
 - Renaming this device now takes effect immediately instead of at the next
   restart. The name is the middle part of every handle that addresses an agent
