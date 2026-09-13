@@ -936,8 +936,9 @@ button[role="tab"][aria-selected="true"] {
 
 .chat-composer {
   position: relative;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: end;
   gap: 8px;
   padding: 10px 12px;
   border-top: 1px solid var(--fg-obsidian);
@@ -945,6 +946,8 @@ button[role="tab"][aria-selected="true"] {
 }
 
 .chat-activity {
+  grid-column: 1 / -1;
+  min-width: 0;
   flex: 1 0 100%;
   min-height: 16px;
   display: flex;
@@ -1125,6 +1128,8 @@ button[role="tab"][aria-selected="true"] {
 /* The follow-up window. Sits directly above the composer because it describes
    what the next keystroke will do, not what the room is doing. */
 .chat-engagement {
+  grid-column: 1 / -1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1202,8 +1207,7 @@ button[role="tab"][aria-selected="true"] {
 }
 
 .chat-composer__input {
-  flex: 1 1 180px;
-  min-width: 160px;
+  min-width: 0;
   min-height: 36px;
   padding: 8px 10px;
   border: 1px solid rgba(0,0,0,0.48);
@@ -1220,8 +1224,27 @@ button[role="tab"][aria-selected="true"] {
 }
 
 .chat-composer__send {
-  min-width: 72px;
+  min-width: 64px;
+  height: 36px;
 }
+
+.chat-engagement > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chat-engagement > button {
+  flex-shrink: 0;
+}
+
+.chat-composer .chat-composer__attach {
+  height: 36px;
+}
+
+.chat-composer .mention-input {
+  min-height: 36px;
+}
+
 
 /* ── Chat attachments ─────────────────────────────────────────────────────── */
 
@@ -1289,6 +1312,8 @@ button[role="tab"][aria-selected="true"] {
 }
 
 .chat-composer__attachments {
+  grid-column: 1 / -1;
+  min-width: 0;
   flex: 1 0 100%;
   display: flex;
   flex-wrap: wrap;
