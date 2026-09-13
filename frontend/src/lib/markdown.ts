@@ -71,7 +71,11 @@ function chipMentions(doc: Document, mentions: string[]) {
       if (match.index > last) fragment.append(doc.createTextNode(text.slice(last, match.index)))
       const chip = doc.createElement('span')
       chip.className = 'mention-chip mention-chip--msg'
-      chip.textContent = `@${match[1]}`
+      const parts = match[1].split('/')
+      if (parts.length === 3) chip.title = `@${match[1]}`
+      chip.textContent = parts.length === 3
+        ? `@${parts[2]} · ${parts[1]}`
+        : `@${match[1]}`
       fragment.append(chip)
       last = match.index + match[0].length
     }

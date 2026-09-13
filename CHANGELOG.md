@@ -39,6 +39,10 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Changed
+
+- Chat mentions use compact inline labels, agents lead their sender headers, and explicit replies show a linked source preview with a clearer reply composer.
+
 ### Added
 
 - Agents can be asked to read the room. An agent set `engagement = "ambient"` in

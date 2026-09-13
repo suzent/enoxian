@@ -33,6 +33,16 @@ describe('renderChatMarkdown formatting', () => {
 })
 
 describe('renderChatMarkdown mention chips', () => {
+  it('shortens qualified mentions while preserving the full address', () => {
+    const doc = new DOMParser().parseFromString(
+      renderChatMarkdown('@suzy/macbook-pro/claude', ['suzy/macbook-pro/claude']),
+      'text/html',
+    )
+    const chip = doc.querySelector('.mention-chip--msg')!
+    expect(chip.textContent).toBe('@claude · macbook-pro')
+    expect(chip.getAttribute('title')).toBe('@suzy/macbook-pro/claude')
+  })
+
   it('chips a mention the server recognised', () => {
     const html = renderChatMarkdown('ping @claude please', ['claude'])
     expect(html).toContain('<span class="mention-chip mention-chip--msg">@claude</span>')

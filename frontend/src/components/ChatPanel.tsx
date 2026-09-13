@@ -184,10 +184,11 @@ interface BubbleProps {
   circleId: string
   blobNonces: Record<string, number>
   onOpenImage: (hash: string) => void
+  replyParent?: ChatMessage
   onReply?: (msg: ChatMessage) => void
 }
 
-function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNonces, onOpenImage, onReply }: BubbleProps) {
+function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNonces, onOpenImage, onReply, replyParent }: BubbleProps) {
   if (msg.agent_id === 'system') {
     return (
       <div className="chat-system-event" role="status">
@@ -207,7 +208,8 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
 
   return (
     <article
-      className={`chat-message${isMine ? ' chat-message--mine' : ''}${isThisDevice ? ' chat-message--current' : ''}${isAgent ? ' chat-message--agent' : ''}${showSender ? '' : ' chat-message--continued'}`}
+      id={`chat-message-${msg.id}`}
+      className={`chat-message${msg.reply_to ? ' chat-message--reply' : ''}${isMine ? ' chat-message--mine' : ''}${isThisDevice ? ' chat-message--current' : ''}${isAgent ? ' chat-message--agent' : ''}${showSender ? '' : ' chat-message--continued'}`}
     >
       <div className="chat-message__gutter" aria-hidden="true">
         {showSender
@@ -215,11 +217,17 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
           : <time className="chat-message__gutter-time" dateTime={new Date(msg.ts * 1000).toISOString()} title={fullTimestamp}>{timestamp}</time>}
       </div>
       <div className="chat-message__body">
+        {msg.reply_to && (
+          <a className="chat-message__parent" href={`#chat-message-${msg.reply_to}`}>
+            <span aria-hidden="true">↳ </span>
+            {replyParent?.text.trim() || 'Earlier message'}
+          </a>
+        )}
         {showSender && (
           <header className="chat-message__sender">
-            <span className="chat-message__owner">{label.user}</span>
+            <span className="chat-message__owner" title={label.agent ? `Owned by ${label.user}` : undefined}>{label.agent || label.user}</span>
             {label.device && <span className="chat-message__device">· {label.device}</span>}
-            {label.agent && <span className="chat-message__agent">AGENT / {label.agent}</span>}
+            {label.agent && <span className="chat-message__agent">AGENT</span>}
             {delegatedBy && (
               <span className="chat-message__via" title={`Delegated by @${delegatedBy}. Nobody typed this request.`}>
                 via @{delegatedBy}
@@ -911,6 +919,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
                 blobNonces={blobNonces}
                 onOpenImage={setLightboxHash}
                 onReply={startReply}
+                replyParent={messages.find(parent => parent.id === msg.reply_to)}
               />
             </Fragment>
           )
@@ -1045,7 +1054,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
           ref={inputRef}
           onChange={onInputChange}
           onKeyDown={onInputKeyDown}
-          placeholder={activeCircle?.disabled ? 'Circle disabled — enable to resume' : 'Message the circle...  (@ to mention)'}
+          placeholder={activeCircle?.disabled ? 'Circle disabled — enable to resume' : replyTo?.agent || engagement?.agent ? `Reply to @${replyTo?.agent || engagement?.agent}…` : 'Message the circle...  (@ to mention)'}
           className={`chat-composer__input${activeCircle?.disabled ? ' chat-composer__input--disabled' : ''}`}
           disabled={activeCircle?.disabled}
           onPaste={onPaste}
