@@ -179,13 +179,17 @@ export default function CircleSidebar({ onRitual }: Props) {
         <button
           className="circle-sidebar-settings"
           onClick={() => setSettingsOpen(true)}
-          title={identity ? `Settings for ${localIdentityLabel}` : 'Device and Circle settings'}
-          aria-label="Open device settings"
+          title={identity
+            ? `Settings for ${localIdentityLabel} — agents, per-Circle behaviour, connectivity`
+            : 'Device and Circle settings'}
+          aria-label="Open settings"
         >
           <Settings size={16} strokeWidth={2.25} aria-hidden="true" />
           <span className="circle-sidebar-settings__identity">
             <strong>{localIdentityLabel}</strong>
-            <small>{status ? 'LOCAL DEVICE · SETTINGS' : 'LOCAL DEVICE'}</small>
+            {/* The panel holds per-Circle settings too, and labelling it as
+                the device alone is why they were hard to find. */}
+            <small>{status ? 'SETTINGS · DEVICE & CIRCLES' : 'LOCAL DEVICE'}</small>
           </span>
           <span className="circle-sidebar-settings__arrow" aria-hidden="true">→</span>
         </button>
