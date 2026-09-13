@@ -774,6 +774,95 @@ mod tests {
         );
     }
 
+    /// Network smoke test for the stable download leg: resolves the newest
+    /// release, downloads the asset for this platform, verifies it against
+    /// SHA256SUMS, extracts it, and runs the result. Opt in with
+    /// `cargo test -- --ignored stable_release_downloads`.
+    #[tokio::test]
+    #[ignore = "requires network access to github.com"]
+    async fn stable_release_downloads_and_verifies() {
+        let tag = latest_tag().await.expect("resolve the latest release tag");
+        let dir = tempfile::tempdir().unwrap();
+        let binary = download_release(&tag, dir.path())
+            .await
+            .expect("download and verify the release asset");
+
+        assert!(binary.is_file(), "no executable was extracted");
+        verify_binary(&binary).expect("downloaded binary failed --version");
+        assert_eq!(
+            version_of(&binary).as_deref(),
+            Some(tag.trim_start_matches('v')),
+            "downloaded binary does not report the requested version"
+        );
+    }
+
+    /// `ENOXIAN_HOME` is process-wide, so the tests that repoint it run under
+    /// one lock rather than in parallel.
+    static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn staged_source_is_discarded_but_an_external_source_is_kept() {
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let previous = std::env::var("ENOXIAN_HOME").ok();
+        std::env::set_var("ENOXIAN_HOME", home.path());
+
+        // A source inside ~/.enoxian/update is ours to clean up.
+        let staging = staging_dir().unwrap();
+        let staged = staging.join("enox");
+        fs::write(&staged, b"binary").unwrap();
+        discard_staging_dir(&staged);
+        assert!(!staging.exists(), "staging directory should be removed");
+
+        // A source anywhere else (a dev checkout's target/release) is not.
+        let external = tempfile::tempdir().unwrap();
+        let outside = external.path().join("enox");
+        fs::write(&outside, b"binary").unwrap();
+        discard_staging_dir(&outside);
+        assert!(outside.is_file(), "an external source must not be removed");
+
+        match previous {
+            Some(value) => std::env::set_var("ENOXIAN_HOME", value),
+            None => std::env::remove_var("ENOXIAN_HOME"),
+        }
+    }
+
+    #[test]
+    fn update_apply_accepts_both_channels() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Harness {
+            #[command(flatten)]
+            args: UpdateApplyArgs,
+        }
+
+        // Stable: no --dev-source, so apply() records the stable channel.
+        let stable = Harness::parse_from([
+            "update-apply",
+            "--source",
+            "/staging/enox",
+            "--target",
+            "/usr/local/bin/enox",
+        ]);
+        assert!(stable.args.dev_source.is_none());
+        assert!(!stable.args.service);
+
+        // Development: --dev-source carries the checkout that was built.
+        let dev = Harness::parse_from([
+            "update-apply",
+            "--source",
+            "/src/target/release/enox",
+            "--target",
+            "/usr/local/bin/enox",
+            "--dev-source",
+            "/src",
+            "--service",
+        ]);
+        assert_eq!(dev.args.dev_source.as_deref(), Some(Path::new("/src")));
+        assert!(dev.args.service);
+    }
+
     #[test]
     fn requested_release_gains_a_leading_v() {
         assert_eq!(normalize_tag("0.8.0"), "v0.8.0");
