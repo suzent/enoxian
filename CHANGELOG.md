@@ -39,6 +39,10 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- Agent reply status now stays above the chat editor instead of squeezing it beside oversized buttons, including in narrow panels.
+
 ### Changed
 
 - Chat mentions use compact inline labels, agents lead their sender headers, and explicit replies show a linked source preview with a clearer reply composer.
