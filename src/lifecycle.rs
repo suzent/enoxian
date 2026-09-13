@@ -2001,20 +2001,23 @@ pub fn readvertise_local_agents(daemon: &DaemonState) {
     use yrs::{Any, Map, Out, ReadTxn, Transact, WriteTxn};
 
     let current_agents = crate::identity::read_local_agents();
-    // Which of them read the room. Advertised so every peer can see who is
-    // listening, not just the device that opted in (§2.6).
-    let current_ambient = crate::agent::config::AgentConfig::load()
-        .agents
-        .iter()
-        .filter(|(_, cmd)| cmd.is_ambient())
-        .map(|(name, _)| name.clone())
-        .collect::<Vec<_>>();
+    // Which of them read the room is a per-Circle answer now, so it is
+    // resolved inside the loop below rather than once for every Circle.
+    let cfg = crate::agent::config::AgentConfig::load();
     let current_label = crate::identity::read_identity_display()
         .map(|(label, _)| label)
         .unwrap_or_default();
 
     for state in daemon.list() {
         let self_key = state.peer_id.clone();
+        // Advertised so every peer can see who is listening here, not just the
+        // device that opted in (§2.6).
+        let current_ambient: Vec<String> = cfg
+            .resolved(&state.circle_id)
+            .ambient
+            .into_iter()
+            .filter(|name| cfg.agents.contains_key(name))
+            .collect();
 
         let existing: Option<MemberEntry> = {
             let Ok(txn) = state.control.try_transact() else {

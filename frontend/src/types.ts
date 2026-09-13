@@ -151,12 +151,6 @@ export interface AgentSummary {
   working_dir: string | null
   // Whether command[0] resolves on this machine's PATH right now.
   installed: boolean
-  /** 'mention' (only when addressed) or 'ambient' (reads every human message). */
-  engagement: 'mention' | 'ambient'
-  /** Whose mention may wake this agent. */
-  accept_from: 'humans' | 'agents'
-  /** This device's ceiling on agent turns in one delegation chain. */
-  max_relay_turns: number
   status: 'ready' | 'missing' | 'runtime_download'
 }
 
@@ -210,11 +204,39 @@ export interface EngagementView {
   window_secs: number
 }
 
-export interface AgentConfigView {
+/** Settings with every question answered, for one scope. */
+export interface SettingsView {
   reaction: 'push' | 'pull'
   /** Seconds an agent stays in conversation with whoever it replied to, so a
    *  follow-up needs no mention. 0 disables follow-up routing. */
   engagement_window_secs: number
+  /** Agents that read every human message here, by name. */
+  ambient: string[]
+  /** Ceiling on agent turns in one delegation chain. */
+  max_relay_turns: number
+}
+
+/** What one Circle sets for itself. An absent field inherits the global value. */
+export interface CircleOverrides {
+  reaction?: 'push' | 'pull'
+  engagement_window_secs?: number
+  ambient?: string[]
+  max_relay_turns?: number
+}
+
+export interface CircleSettingsView {
+  circle_id: string
+  overrides: CircleOverrides
+  /** Global with the overrides applied — what actually happens here. */
+  effective: SettingsView
+}
+
+export interface AgentConfigView {
+  reaction: 'push' | 'pull'
+  /** Applies everywhere unless a Circle overrides it. */
+  global_settings: SettingsView
+  /** The active Circle's settings, when one was asked for. */
+  circle: CircleSettingsView | null
   config_path: string
   configured: boolean
   agents: AgentSummary[]
