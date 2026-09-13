@@ -161,6 +161,8 @@ export default function DeviceSettings({ onClose }: Props) {
                 <div className="text-[11px] font-bold mb-1">IDENTITY</div>
                 <DeviceIdentity
                   identity={identity}
+                  addressedAs={cfg?.circle?.addressed_as}
+                  circleName={activeCircle?.circle_name}
                   busy={busy}
                   onSave={async patch => {
                     await run(() => setIdentity(patch))

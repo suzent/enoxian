@@ -224,8 +224,16 @@ export interface CircleOverrides {
   max_relay_turns?: number
 }
 
+/** How one Circle addresses this device, from its roster. */
+export interface AddressedAs {
+  owner: string
+  device_label: string
+}
+
 export interface CircleSettingsView {
   circle_id: string
+  /** Present once this device has a roster entry in that Circle. */
+  addressed_as?: AddressedAs | null
   overrides: CircleOverrides
   /** Global with the overrides applied — what actually happens here. */
   effective: SettingsView

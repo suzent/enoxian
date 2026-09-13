@@ -19,19 +19,59 @@ const IDENTITY: IdentityInfo = {
   update_channel: 'stable',
 }
 
-describe('device identity', () => {
-  it('shows the handle agents here are addressed by', () => {
-    render(<DeviceIdentity identity={IDENTITY} busy={false} onSave={vi.fn()} />)
-    expect(screen.getByText('@suzy/macbook-pro/agent')).toBeTruthy()
+const ADDRESSED = { owner: 'alice', device_label: 'macbook-pro' }
+
+describe('the address it shows', () => {
+  it('comes from the Circle, not from the local handle', async () => {
+    // The bug this covers: the local handle and the name a Circle knows you by
+    // can differ, and showing the local one presents a handle that silently
+    // fails when used.
+    render(
+      <DeviceIdentity identity={IDENTITY} addressedAs={ADDRESSED} circleName="group"
+        busy={false} onSave={vi.fn()} />,
+    )
+    expect(screen.getByText('@alice/macbook-pro/agent')).toBeTruthy()
+    expect(screen.queryByText('@suzy/macbook-pro/agent')).toBeNull()
   })
 
-  it('updates that example as you type, before anything is saved', async () => {
-    render(<DeviceIdentity identity={IDENTITY} busy={false} onSave={vi.fn()} />)
+  it('previews a pending device rename, since that segment really does follow', async () => {
+    render(
+      <DeviceIdentity identity={IDENTITY} addressedAs={ADDRESSED} circleName="group"
+        busy={false} onSave={vi.fn()} />,
+    )
     const label = screen.getByLabelText('Device name')
     await userEvent.clear(label)
     await userEvent.type(label, 'studio')
-    expect(screen.getByText('@suzy/studio/agent')).toBeTruthy()
+    // Device segment follows the edit; the owner segment does not.
+    expect(screen.getByText('@alice/studio/agent')).toBeTruthy()
   })
+
+  it('does not pretend a handle edit changes the Circle name', async () => {
+    render(
+      <DeviceIdentity identity={IDENTITY} addressedAs={ADDRESSED} circleName="group"
+        busy={false} onSave={vi.fn()} />,
+    )
+    await userEvent.clear(screen.getByLabelText('User handle'))
+    await userEvent.type(screen.getByLabelText('User handle'), 'zzz')
+    expect(screen.getByText('@alice/macbook-pro/agent')).toBeTruthy()
+  })
+
+  it('says the handle only applies to Circles joined later', () => {
+    render(
+      <DeviceIdentity identity={IDENTITY} addressedAs={ADDRESSED} circleName="group"
+        busy={false} onSave={vi.fn()} />,
+    )
+    expect(screen.getByText(/create or join/)).toBeTruthy()
+    expect(screen.getByText(/you stay/)).toBeTruthy()
+  })
+
+  it('falls back to the local handle when no Circle knows this device yet', () => {
+    render(<DeviceIdentity identity={IDENTITY} busy={false} onSave={vi.fn()} />)
+    expect(screen.getByText('@suzy/macbook-pro/agent')).toBeTruthy()
+  })
+})
+
+describe('device identity', () => {
 
   it('cannot be saved until something changes', async () => {
     const onSave = vi.fn()

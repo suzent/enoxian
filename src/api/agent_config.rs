@@ -59,6 +59,12 @@ struct AgentConfigView {
 }
 
 #[derive(Serialize)]
+struct AddressedAs {
+    owner: String,
+    device_label: String,
+}
+
+#[derive(Serialize)]
 struct SettingsView {
     reaction: String,
     engagement_window_secs: i64,
@@ -69,6 +75,15 @@ struct SettingsView {
 #[derive(Serialize)]
 struct CircleSettingsView {
     circle_id: String,
+    /// How this Circle addresses this device: the `owner` and `device_label`
+    /// from its roster entry.
+    ///
+    /// Not the same as the device-global handle. `owner` is fixed when you
+    /// create or join a Circle and is part of your membership there, so
+    /// changing the local handle does not rewrite it — and showing the local
+    /// one as though it were the address would be a confidently wrong handle,
+    /// which is the failure mode mentions are worst at reporting.
+    addressed_as: Option<AddressedAs>,
     /// What this Circle sets for itself. A field absent here inherits.
     overrides: crate::agent::config::EngagementSettings,
     /// Global with the overrides applied — what actually happens here.
@@ -91,7 +106,10 @@ pub struct ConfigQuery {
     pub circle_id: Option<String>,
 }
 
-pub async fn get_agent_config(Query(q): Query<ConfigQuery>) -> impl IntoResponse {
+pub async fn get_agent_config(
+    State(daemon): State<DaemonState>,
+    Query(q): Query<ConfigQuery>,
+) -> impl IntoResponse {
     let cfg = AgentConfig::load();
     let path = AgentConfig::path().ok();
     let configured = path.as_ref().map(|p| p.exists()).unwrap_or(false);
@@ -114,9 +132,20 @@ pub async fn get_agent_config(Query(q): Query<ConfigQuery>) -> impl IntoResponse
     let global = cfg.resolved("");
     let circle = q.circle_id.filter(|id: &String| !id.is_empty()).map(|id| {
         let effective = cfg.resolved(&id);
+        // Resolved from the roster by peer id — the same source mention
+        // targeting compares against, so the UI cannot disagree with it.
+        let addressed_as = daemon.get(&id).and_then(|state| {
+            state.self_member().and_then(|m| {
+                (!m.owner.is_empty() && !m.device_label.is_empty()).then_some(AddressedAs {
+                    owner: m.owner,
+                    device_label: m.device_label,
+                })
+            })
+        });
         CircleSettingsView {
             overrides: cfg.circles.get(&id).cloned().unwrap_or_default(),
             effective: settings_view(&effective),
+            addressed_as,
             circle_id: id,
         }
     });
