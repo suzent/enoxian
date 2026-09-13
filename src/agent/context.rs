@@ -155,7 +155,7 @@ fn standing_brief(state: &AppState, agent_id: &str) -> String {
     let roster = if members.is_empty() {
         String::new()
     } else {
-        format!("Members in this circle: {}.\n", members.join(", "))
+        format!("Members in this circle: {}.\n", members.join("; "))
     };
     // Which machine this agent is on, and how to address it exactly.
     //
@@ -164,15 +164,26 @@ fn standing_brief(state: &AppState, agent_id: &str) -> String {
     // by that same name. It cannot then tell itself apart from its namesakes,
     // answer "which one are you?", or address a specific one — the reason a
     // user ends up saying "mention the one on <device>" by hand.
+    // The grammar holds whether or not this device knows its own name, so it is
+    // stated unconditionally; only the "you are here" half is conditional. An
+    // agent that cannot place itself can still address someone else correctly,
+    // and the roster above now spells the handles out.
     let addressing = match self_identity(state) {
         Some((owner, device)) => format!(
-            "You are running on device \"{device}\" (owner \"{owner}\"). Your exact address is \
-             @{owner}/{device}/{agent}; a bare @{agent} may reach a different device's agent of \
-             the same name. Mentions take the form @owner/device/agent, and @owner or \
-             @owner/device notify a person or a machine without running anything.\n",
+            "You are running on device \"{device}\" (owner \"{owner}\"). Your own address is \
+             @{owner}/{device}/{agent}.\n\
+             To address someone, copy their handle from the member list below: @owner/device/agent \
+             runs that device's agent, while @owner or @owner/device only notifies a person or a \
+             machine. A bare @{agent} is not the same as your handle — it may reach a different \
+             device's agent of the same name.\n",
             agent = agent_id,
         ),
-        None => String::new(),
+        None => format!(
+            "To address someone, copy their handle from the member list below: @owner/device/agent \
+             runs that device's agent, while @owner or @owner/device only notifies a person or a \
+             machine. A bare @{agent} may reach a different device's agent of the same name.\n",
+            agent = agent_id,
+        ),
     };
     format!(
         "You are \"{agent}\", an agent participating in an enoxian circle named \"{circle}\".\n\
@@ -215,15 +226,29 @@ fn member_labels(state: &AppState) -> Vec<String> {
             if let Ok(m) = serde_json::from_str::<MemberEntry>(&s) {
                 let mut label = m.owner.clone();
                 if !m.device_label.is_empty() {
-                    label.push_str(&format!(" ({})", m.device_label));
+                    label.push_str(&format!(" on {}", m.device_label));
                 }
-                if !m.agents.is_empty() {
-                    label.push_str(&format!(" [agents: {}]", m.agents.join(", ")));
-                }
-                // Mark the agent's own machine, so it can locate itself in a
-                // roster where several devices may list the same agent name.
                 if m.peer_id == state.peer_id {
-                    label.push_str(" ← you are here");
+                    label.push_str(" (this device)");
+                }
+                // Spell out the handle rather than the display label. The
+                // roster used to read `suzy (jessair) [agents: claude]`, which
+                // left an agent to work out `@suzy/jessair/claude` from parens
+                // and brackets — a guess it does not need to make, and one it
+                // cannot check. These are the exact strings a mention takes.
+                if !m.agents.is_empty() {
+                    let handles: Vec<String> = m
+                        .agents
+                        .iter()
+                        .map(|agent| {
+                            if m.owner.is_empty() || m.device_label.is_empty() {
+                                format!("@{agent}")
+                            } else {
+                                format!("@{}/{}/{}", m.owner, m.device_label, agent)
+                            }
+                        })
+                        .collect();
+                    label.push_str(&format!(" — {}", handles.join(", ")));
                 }
                 if !label.is_empty() {
                     labels.push(label);

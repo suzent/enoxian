@@ -86,14 +86,53 @@ fn identity_is_resolved_by_peer_not_by_agent_name() {
     two_devices(&state);
 
     let prompt = fresh_prompt(&state);
+    // The sibling's handle *is* in the roster — that is the point of listing
+    // it. What must never happen is the agent being told it is that one.
     assert!(
-        !prompt.contains("@suzy/jessair/suzent"),
+        prompt.contains("Your own address is @suzy/macbook-pro/suzent"),
+        "wrong identity:\n{prompt}"
+    );
+    assert!(
+        !prompt.contains("Your own address is @suzy/jessair/suzent"),
         "the agent must not be told it is the *other* device's agent:\n{prompt}"
     );
-    // The sibling is still visible in the roster — it just isn't "you".
     assert!(
-        prompt.contains("jessair"),
-        "the roster still lists the other device"
+        prompt.contains("@suzy/jessair/suzent"),
+        "the sibling stays addressable"
+    );
+}
+
+#[test]
+fn the_roster_spells_out_the_handle_for_every_agent() {
+    // An agent should never have to reconstruct a mention from a display
+    // label. These are the exact strings it can copy.
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(dir.path());
+    two_devices(&state);
+
+    let prompt = fresh_prompt(&state);
+    assert!(
+        prompt.contains("@suzy/jessair/suzent"),
+        "the other device's agent must be addressable as written:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("@suzy/macbook-pro/suzent"),
+        "and so must this one's:\n{prompt}"
+    );
+}
+
+#[test]
+fn the_addressing_rules_survive_not_knowing_this_device() {
+    // Empty roster: the agent cannot place itself, but it can still be told
+    // how addressing works — and the rules do not depend on knowing that.
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(dir.path());
+
+    let prompt = fresh_prompt(&state);
+    assert!(!prompt.contains("You are running on device"));
+    assert!(
+        prompt.contains("@owner/device/agent"),
+        "the grammar holds regardless:\n{prompt}"
     );
 }
 
@@ -107,7 +146,7 @@ fn the_roster_marks_which_entry_is_this_machine() {
     let marked: Vec<&str> = prompt
         .lines()
         .flat_map(|l| l.split(", "))
-        .filter(|part| part.contains("← you are here"))
+        .filter(|part| part.contains("(this device)"))
         .collect();
     assert_eq!(
         marked.len(),
@@ -146,7 +185,7 @@ fn an_empty_roster_degrades_quietly_rather_than_guessing() {
 
     let prompt = fresh_prompt(&state);
     assert!(!prompt.contains("You are running on device"));
-    assert!(!prompt.contains("← you are here"));
+    assert!(!prompt.contains("(this device)"));
     // The rest of the brief still arrives.
     assert!(prompt.contains("an agent participating in an enoxian circle"));
     assert!(prompt.ends_with("do the thing"));
