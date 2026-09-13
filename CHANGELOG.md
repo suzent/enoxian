@@ -110,6 +110,12 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Per-Circle agent settings are easier to find and harder to misread. The
+  settings entry said "LOCAL DEVICE" while the panel behind it also held
+  per-Circle behaviour, the scope tab named the Circle only in passing, and
+  nothing said who can see these settings — they are this device's own answers
+  about a Circle, never shared with its members. All three now say so.
+
 - Agent reply status now stays above the chat editor instead of squeezing it beside oversized buttons, including in narrow panels.
 - Agents are given the exact handle for every agent in the Circle, instead of a
   display label they had to reconstruct a mention from. The roster read

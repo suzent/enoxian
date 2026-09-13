@@ -167,3 +167,4 @@ it('is inert while a save is in flight', async () => {
   await userEvent.click(screen.getByRole('checkbox', { name: '@claude' }))
   expect(onChange).not.toHaveBeenCalled()
 })
+

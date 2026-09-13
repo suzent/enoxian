@@ -987,6 +987,35 @@ button[role="tab"][aria-selected="true"] {
   font-weight: 700;
 }
 
+/* The scope switch frames everything under it, so it reads as a mode rather
+   than one more control in a list. */
+.settings-scope__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.settings-scope__note {
+  margin-bottom: 10px;
+  padding-left: 6px;
+  border-left: 2px solid var(--fg-obsidian);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.5;
+  color: var(--fg-slate);
+}
+
+.settings-scope__note strong {
+  color: var(--fg-obsidian);
+}
+
+.settings-scope__private {
+  opacity: 0.75;
+  font-style: italic;
+}
+
 /* Engagement settings, one row per question. An inherited row is dimmed rather
    than hidden: a Circle that follows the global answer should still show what
    that answer is, or you cannot tell what you are about to change. */

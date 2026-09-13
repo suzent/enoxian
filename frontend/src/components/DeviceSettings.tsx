@@ -150,8 +150,8 @@ export default function DeviceSettings({ onClose }: Props) {
 
           {activeTab === 'agents' && cfg && (
             <>
-                <section>
-                <div className="flex items-center justify-between gap-2 mb-2">
+                <section className="settings-scope">
+                <div className="settings-scope__head">
                   <div className="text-[11px] font-bold">ENGAGEMENT</div>
                   <SegmentedTabs
                     value={scope}
@@ -164,12 +164,20 @@ export default function DeviceSettings({ onClose }: Props) {
                     ]}
                   />
                 </div>
-                <div className="text-[9px] text-slate mb-2 leading-relaxed">
+                <div className="settings-scope__note">
                   {scope === 'global'
-                    ? 'Applies everywhere, unless a Circle below overrides it.'
+                    ? 'Applies in every Circle, unless one of them overrides it.'
                     : activeCircleId
-                      ? 'Applies in this Circle only. Anything left inherited follows the settings for all Circles.'
+                      ? <>Applies in <strong>{activeCircle?.circle_name}</strong> only. Anything left inherited follows the settings for all Circles.</>
                       : 'Open a Circle to give it its own settings.'}
+                  {' '}
+                  {/* A per-Circle setting reads like it belongs to the Circle.
+                      It does not: it is this machine's answer about that
+                      Circle, and nobody else can see or change it. Saying so
+                      here is cheaper than the misunderstanding. */}
+                  <span className="settings-scope__private">
+                    These are this device's settings — never shared with the Circle.
+                  </span>
                 </div>
                 {scope === 'circle' && !activeCircleId ? null : (
                   <EngagementSettings
