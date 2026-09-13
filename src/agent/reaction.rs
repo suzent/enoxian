@@ -14,7 +14,7 @@
 //! does not configure is ignored. Files produced by an allowed run are already
 //! live in the workspace and are recorded as accepted, revertible history.
 
-use super::config::{AcceptFrom, AgentConfig, Reaction};
+use super::config::{AgentConfig, Reaction};
 use super::driver::{self, Initiator};
 use super::mention::Mention;
 use crate::control::{ChatActivity, ChatActivityKind, CircleEvent, Relay};
@@ -171,7 +171,8 @@ fn dispatch(
     cfg: &AgentConfig,
     req: DispatchRequest<'_>,
 ) {
-    if cfg.reaction != Reaction::Push {
+    let settings = cfg.resolved(&state.circle_id);
+    if settings.reaction != Reaction::Push {
         tracing::debug!("[agent] pull policy — ignoring `{}`", req.agent);
         return;
     }
@@ -201,13 +202,12 @@ fn dispatch(
                 );
                 return;
             }
-            if cmd.accept_from != AcceptFrom::Agents {
-                tracing::debug!(
-                    "[agent] `{}` does not accept delegation (mentioned by `{via}`) — skipping",
-                    req.agent
-                );
-                return;
-            }
+            // Delegation is not opt-in. An agent allowed into this Circle is
+            // reachable by the other agents in it; the allowlist and the
+            // reaction policy above already decide whether it may run here at
+            // all, and the budget below bounds what a chain can cost. A second
+            // switch only meant hand-offs failed silently until someone found
+            // it.
             let relay = req.relay.as_ref().expect("delegated implies a relay");
             if crate::api::chat::relay_is_stopped(state, &relay.root) {
                 tracing::info!(
@@ -218,7 +218,7 @@ fn dispatch(
                 publish_relay_skipped(state, req.agent, &req.message.id, "cascade stopped");
                 return;
             }
-            if !super::relay::has_budget(relay, cmd.max_relay_turns) {
+            if !super::relay::has_budget(relay, settings.max_relay_turns) {
                 tracing::info!(
                     "[agent] relay budget spent on cascade {} — not waking `{}`",
                     relay.root,
@@ -227,7 +227,7 @@ fn dispatch(
                 publish_relay_skipped(state, req.agent, &req.message.id, "relay budget spent");
                 return;
             }
-            if !ledger.charge(&relay.root, cmd.max_relay_turns) {
+            if !ledger.charge(&relay.root, settings.max_relay_turns) {
                 tracing::info!(
                     "[agent] cascade {} has spent this device's budget — not waking `{}`",
                     relay.root,
@@ -313,11 +313,14 @@ fn offer_ambient(
     cfg: &AgentConfig,
     message: &crate::control::ChatMessage,
 ) {
-    let ambient: Vec<String> = cfg
-        .agents
+    // Which agents read the room *here*. An agent can be ambient in a working
+    // Circle and silent in a social one, so the answer is per Circle.
+    let settings = cfg.resolved(&state.circle_id);
+    let ambient: Vec<String> = settings
+        .ambient
         .iter()
-        .filter(|(_, cmd)| cmd.is_ambient())
-        .map(|(name, _)| name.clone())
+        .filter(|name| cfg.agents.contains_key(*name))
+        .cloned()
         .collect();
     if ambient.is_empty() {
         return;
@@ -394,7 +397,7 @@ fn resolve_followup(
         &history,
         &message.peer_id,
         message.ts,
-        cfg.engagement_window_secs,
+        cfg.resolved(&state.circle_id).engagement_window_secs,
         state.engagement_dismissed(&message.peer_id).as_ref(),
     )?;
     // A follow-up must wake the machine that ran the reply — and only that

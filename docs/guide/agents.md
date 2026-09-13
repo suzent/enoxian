@@ -339,12 +339,18 @@ agent, with no timer.
 An agent can be given `engagement = "ambient"` so it sees every human message in
 the Circle and decides for itself whether to answer:
 
+Set in Device Settings, or by hand:
+
 ```toml
-[agents.claude]
-driver = "acp"
-command = [...]
-engagement = "ambient"   # default is "mention"
+ambient = ["claude"]        # everywhere
+
+[circles."<circle-id>"]
+ambient = []                # ...except here
 ```
+
+Whether an agent reads the room is a property of the *room*, so it is set per
+Circle rather than per agent: the same `claude` can follow a working Circle
+closely and stay out of a social one.
 
 **This is off by default, and it is a real trade.** Under mentions, your chat
 reaches a model provider only when you summon an agent. Under ambient, every
@@ -364,21 +370,14 @@ is told to say what needs doing rather than do it.
 ## Agents mentioning agents
 
 An agent's reply can mention another agent and wake it, so `@claude` can hand a
-job to `@codex` without you relaying messages between two programs. This is
-**off by default**, and it is turned on by the agent being *called*, on the
-device that would run it:
+job to `@codex` without you relaying messages between two programs. An agent you
+have allowed into a Circle is reachable by the other agents in it — there is no
+separate switch to turn this on.
 
-```toml
-[agents.codex]
-driver = "acp"
-command = ["npx", "@agentclientprotocol/codex-acp"]
-accept_from = "agents"   # default "humans" — only people's mentions wake it
-max_relay_turns = 20     # this device's cap on one cascade (hard limit 50)
-```
-
-There is deliberately no setting on the *calling* side. The device that spends
-the tokens is the device that decides, which is the same rule the allowlist and
-`reaction` already follow — a remote peer cannot opt your agent into work.
+That is not a loosening of who may run what. Your device still decides, the way
+it always did: an agent has to be in your `agents.toml`, and your reaction policy
+has to be `push`. Delegation adds no authority beyond that; it only changes who
+may spend it.
 
 A cascade cannot run away. Every chat message carries the provenance of the
 human message that started it, and three bounds apply:
@@ -389,7 +388,7 @@ human message that started it, and three bounds apply:
   spelled;
 - **a shared budget** — the whole cascade is capped at `max_relay_turns` agent
   turns, counted from the human message, and every device enforces its own cap
-  against its own count.
+  against its own count. Set it in Device Settings, globally or per Circle.
 
 Two agents going back and forth *is* allowed — that is the point — so the
 budget, not the shape of the conversation, is what ends it. When the budget
