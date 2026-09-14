@@ -186,9 +186,13 @@ pub fn http_endpoint_of(addr: &str) -> Option<String> {
     })
 }
 
-/// Whether two `host[:port]` strings name the same host, ignoring the port.
-pub fn same_host(a: &str, b: &str) -> bool {
-    split_host_port(a, 0).0 == split_host_port(b, 0).0
+/// Whether two `host[:port]` strings name the same server — host and port both.
+///
+/// Normalising rather than comparing strings, because one side usually carries
+/// an explicit port and the other leaves the default implied: `relay:36521` and
+/// `relay` are the same endpoint, `relay:45561` is not.
+pub fn same_endpoint(a: &str, b: &str) -> bool {
+    split_host_port(a, 36521) == split_host_port(b, 36521)
 }
 
 fn split_host_port(input: &str, default_port: u16) -> (String, u16) {
@@ -228,13 +232,34 @@ mod tests {
         assert_eq!(http_endpoint_of(""), None);
     }
 
-    /// The default host is recognised whether or not a port came with it, so a
-    /// stock circle's short invite does not carry a redundant hostname.
+    /// The default is recognised whether or not a port came with it, so a stock
+    /// circle's short invite does not carry a redundant hostname.
     #[test]
-    fn the_default_host_is_matched_without_its_port() {
-        assert!(same_host("relay.enoxian.com:36521", "relay.enoxian.com"));
-        assert!(same_host("relay.enoxian.com", "relay.enoxian.com"));
-        assert!(!same_host("other.example.com:36521", "relay.enoxian.com"));
+    fn the_default_endpoint_is_matched_through_an_implied_port() {
+        assert!(same_endpoint(
+            "relay.enoxian.com:36521",
+            "relay.enoxian.com"
+        ));
+        assert!(same_endpoint("relay.enoxian.com", "relay.enoxian.com"));
+        assert!(!same_endpoint(
+            "other.example.com:36521",
+            "relay.enoxian.com"
+        ));
+    }
+
+    /// A different port on the default host is somebody's own server. Folding
+    /// it into the default would upload the blob to 36521 rather than the
+    /// server `--rendezvous` picked, and leave the link unable to name it.
+    #[test]
+    fn a_different_port_on_the_default_host_is_a_different_endpoint() {
+        assert!(!same_endpoint(
+            "relay.enoxian.com:45561",
+            "relay.enoxian.com"
+        ));
+        assert!(!same_endpoint(
+            "relay.enoxian.com:45561",
+            "relay.enoxian.com:36521"
+        ));
     }
 
     #[test]

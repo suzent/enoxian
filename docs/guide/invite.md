@@ -343,3 +343,4 @@ enoxian://s1/G9Qg1TN8zxAV2hHofrH0vA@pair.example.com:36521
 - **Write-once.** A link cannot be repointed at different contents once shared.
 - **Fetching does not consume.** One-use is enforced where it means something: the grant nonce, burned when the circle admits the joiner.
 - **A short invite needs the relay at redemption time.** Use `--long` when the recipient may not be able to reach it, or when the link has to work with no third party involved.
+- **A TTL longer than 30 days is not shortened.** The relay only keeps a blob that long, and a link printed as valid for 90 days that stops resolving on day 31 would be worse than a long one. `enox invite --ttl 90d` prints the self-contained form and says why.

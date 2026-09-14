@@ -110,8 +110,24 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
     // ~35 characters against ~300. Falls back to the self-contained form when
     // the relay cannot be reached, because an invite that does not exist is
     // worse than a long one.
+    // An invite that outlives the relay's retention must not be shortened: the
+    // link would be printed as valid for its full TTL and quietly stop
+    // resolving partway through, with nothing at hand to explain it.
+    let outlives_store = ttl
+        > chrono::Duration::from_std(crate::invite_blobs::RETENTION)
+            .unwrap_or_else(|_| chrono::Duration::days(30));
+
     let (shown, short_note) = if args.long {
         (uri.clone(), None)
+    } else if outlives_store {
+        (
+            uri.clone(),
+            Some(format!(
+                "a {} invite outlives what a relay keeps ({} days), so it cannot be shortened",
+                args.ttl,
+                crate::invite_blobs::RETENTION.as_secs() / 86_400
+            )),
+        )
     } else {
         match shorten(&uri, rendezvous_addr.as_deref()).await {
             Ok(short) => (short, None),
@@ -178,12 +194,15 @@ async fn shorten(uri: &str, rendezvous_addr: Option<&str>) -> Result<String> {
     // it is not the build's default, which is what keeps the common link short.
     let host = rendezvous_addr
         .and_then(rdvz::http_endpoint_of)
-        // Compared by host, not by the whole string: the address carries a port
-        // and the constant usually does not, and treating the default as
-        // self-hosted would put a redundant hostname in every short link.
+        // Omitted only when host *and* port both match the default. Matching on
+        // the host alone would fold `relay.enoxian.com:45561` into the default
+        // endpoint: the blob would go to port 36521 rather than the server
+        // `--rendezvous` selected, and the link could not name the one intended.
+        // The comparison still has to normalise, because the address carries an
+        // explicit port and the constant usually leaves it implied.
         .filter(|h| {
             crate::defaults::DEFAULT_RENDEZVOUS
-                .map(|d| !rdvz::same_host(h, d))
+                .map(|d| !rdvz::same_endpoint(h, d))
                 .unwrap_or(true)
         });
     let target = host

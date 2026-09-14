@@ -64,9 +64,18 @@ async fn resolve_short(uri: &str, _daemon_client: &reqwest::Client) -> Result<St
         bail!("the relay at {host} returned an implausibly large invite");
     }
 
-    let sealed = resp.bytes().await.context("reading the invite")?;
-    if sealed.len() as u64 > MAX_SEALED_INVITE {
-        bail!("the relay at {host} returned an implausibly large invite");
+    // Bounded while consuming, not after. `bytes()` buffers the whole response
+    // first, so a relay that omits Content-Length and uses chunked encoding
+    // would be allocated for until it finished or the timeout struck — the
+    // header check above never getting a look in. Stopping mid-stream is what
+    // makes the cap real; the header check just fails faster when it is honest.
+    let mut sealed: Vec<u8> = Vec::new();
+    let mut resp = resp;
+    while let Some(chunk) = resp.chunk().await.context("reading the invite")? {
+        if sealed.len() as u64 + chunk.len() as u64 > MAX_SEALED_INVITE {
+            bail!("the relay at {host} returned an implausibly large invite");
+        }
+        sealed.extend_from_slice(&chunk);
     }
 
     let plain = short.key.open(&sealed)?;
@@ -420,5 +429,63 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
                 return Ok(());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod short_invite_tests {
+    /// A relay named in a link can omit Content-Length and stream chunks
+    /// forever. The cap has to bite while the body is being consumed: checking
+    /// it afterwards means the allocation has already happened, and a server
+    /// that never finishes is only stopped by the request timeout.
+    #[tokio::test]
+    async fn redemption_stops_reading_an_endless_relay_response() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Chunked, no Content-Length, and it never sends a terminating chunk.
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 2048];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                    .await;
+                let chunk = vec![b'A'; 16 * 1024];
+                loop {
+                    if stream
+                        .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                        .await
+                        .is_err()
+                        || stream.write_all(&chunk).await.is_err()
+                        || stream.write_all(b"\r\n").await.is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+        });
+
+        let uri = format!(
+            "enoxian://s1/AAAAAAAAAAAAAAAAAAAAAA@127.0.0.1:{}",
+            addr.port()
+        );
+
+        // Well inside the 15s client timeout: if this only stopped on timeout,
+        // it would not finish here.
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            super::resolve_short(&uri, &reqwest::Client::new()),
+        )
+        .await;
+
+        let result = outcome.expect("redemption hung instead of enforcing the cap");
+        let err = result.expect_err("an endless response must not be accepted");
+        assert!(
+            err.to_string().contains("implausibly large"),
+            "stopped for the wrong reason: {err}"
+        );
     }
 }

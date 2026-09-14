@@ -44,11 +44,22 @@ use crate::rate_limit::Limiter;
 
 /// How long a blob is kept.
 ///
-/// Longer than any invite TTL the CLI will mint, so the blob outliving the
-/// invite is the normal case and expiry is decided by the invite's own
-/// timestamp, not by this. A blob whose invite expired is dead weight, and this
-/// is when it gets swept.
-const TTL: Duration = Duration::from_secs(60 * 60 * 24 * 30);
+/// How long a blob is kept: thirty days.
+///
+/// This is a ceiling on how long a *short* invite can work, not on invites in
+/// general — `parse_ttl` happily accepts `90d`, and the guide documents it. An
+/// invite outliving its blob would be the worst kind of failure: a link the CLI
+/// printed as valid for ninety days that quietly stops resolving on day
+/// thirty-one, with nothing at hand to explain why.
+///
+/// So the client checks its TTL against [`RETENTION`] before shortening and
+/// falls back to the self-contained link when it does not fit. Blobs are small,
+/// but they are somebody else's disk; keeping a year of them to serve a rare TTL
+/// is the wrong trade when the long link costs nothing but characters.
+pub const RETENTION: Duration = Duration::from_secs(60 * 60 * 24 * 30);
+
+/// Internal alias, so the sweep reads naturally.
+const TTL: Duration = RETENTION;
 
 /// Largest blob accepted. A sealed invite is a few hundred bytes; 8 KiB is
 /// generous for one and far too small to be worth abusing as storage.
@@ -325,6 +336,16 @@ mod tests {
         }
         let reopened = BlobState::new(dir.path().to_path_buf()).unwrap();
         assert_eq!(get(&reopened, &id()).await.1, b"sealed".to_vec());
+    }
+
+    /// The CLI decides whether to shorten by comparing an invite's TTL against
+    /// this, so it has to be reachable and has to mean what the sweep uses.
+    /// They drifted apart once already: the store kept 30 days while the CLI
+    /// happily minted a 90-day invite and called it valid.
+    #[test]
+    fn the_published_retention_is_the_one_the_store_enforces() {
+        assert_eq!(RETENTION, TTL);
+        assert_eq!(RETENTION.as_secs() / 86_400, 30);
     }
 
     #[tokio::test]
