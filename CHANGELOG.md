@@ -52,6 +52,11 @@ refuses to publish a version whose section is missing or empty.
 - `enox identity show` now says whether a device's attestation actually
   verifies, rather than only that one is present.
 
+### Security
+
+- Updated the bundled `rustls` TLS stack to 0.23.45, picking up the fix for
+  RUSTSEC-2026-0285.
+
 ### Fixed
 
 - The daemon no longer sometimes refuses to start with "execution inbox already

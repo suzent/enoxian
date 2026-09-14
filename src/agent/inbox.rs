@@ -107,6 +107,9 @@ pub enum Admission {
 /// so a restart can lose the race against its own predecessor's release. A
 /// genuine second owner instead holds the lock for its whole lifetime, so only
 /// this sub-millisecond window is worth waiting out before reporting a conflict.
+///
+/// The wait is synchronous, so callers on an async runtime must reach it through
+/// `spawn_blocking` rather than holding a worker for up to a second.
 fn take_ownership(owner: &std::fs::File) -> Result<()> {
     const ATTEMPTS: u32 = 100;
     const PAUSE: std::time::Duration = std::time::Duration::from_millis(10);
