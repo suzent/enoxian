@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -274,13 +274,16 @@ pub fn save(config: &CircleConfig) -> Result<()> {
         .with_context(|| format!("failed to create circle dir {}", dir.display()))?;
     let path = dir.join("config.toml");
     let contents = toml::to_string_pretty(config).context("failed to serialize config")?;
-    std::fs::write(&path, contents)
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    // Holds this circle's PSK and per-circle private key.
+    write_secret(&path, contents)?;
     Ok(())
 }
 
 pub fn load(circle_id: &str) -> Result<CircleConfig> {
     let path = circle_dir(circle_id)?.join("config.toml");
+    // Carries the circle PSK and this device's per-circle private key. Configs
+    // written before secrets had a restrictive mode are tightened here.
+    tighten_if_loose(&path);
     let contents = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let mut config: CircleConfig =
@@ -307,6 +310,8 @@ pub fn load_all() -> Result<Vec<CircleConfig>> {
         let entry = entry?;
         let config_path = entry.path().join("config.toml");
         if config_path.exists() {
+            // As in `load`: PSK and per-circle key, tightened where they are read.
+            tighten_if_loose(&config_path);
             match std::fs::read_to_string(&config_path).and_then(|s| {
                 toml::from_str(&s)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
@@ -402,5 +407,291 @@ keypair_proto_hex = ""
             &PathBuf::from(workspace.to_string_lossy().to_lowercase())
         )
         .unwrap());
+    }
+}
+
+// ── Secrets on disk ───────────────────────────────────────────────────────────
+
+/// Write a file that holds key material, readable only by its owner.
+///
+/// Several files under `~/.enoxian` are secrets in the plain sense that anyone
+/// who reads them can be you: `identity.toml` holds the device seed, a circle's
+/// `config.toml` holds that circle's PSK and per-circle private key, and
+/// `admin.key` holds the admin signing key. All of them were written with the
+/// process umask, which on a typical machine leaves them readable by every
+/// local account.
+///
+/// This does not defend against someone who has taken the disk — for that the
+/// material would have to be encrypted or held by the OS keychain. It defends
+/// against the ordinary case of a shared or multi-account machine, and it is
+/// the difference between "a secret" and "a secret in a world-readable file".
+///
+/// Written through a fresh temporary file that is renamed into place, rather
+/// than by opening the target and tightening it afterwards. Two reasons, both
+/// of which bit the first version of this:
+///
+/// - **An existing file keeps its mode through `open`.** Tightening it meant a
+///   `chmod` whose failure is easy to ignore — and on a filesystem that accepts
+///   writes but not mode changes (some network and FAT mounts, or a file owned
+///   by another account), the secret would land in a world-readable file while
+///   the caller was told it succeeded. A rename brings the *temporary* file's
+///   mode with it, so there is no existing mode to argue with.
+/// - **`truncate` destroys before it secures.** Opening the target with
+///   `truncate(true)` empties it first, so bailing out on a failed `chmod`
+///   would have left an empty `identity.toml` — losing the device seed to a
+///   permissions problem. Nothing touches the target now until the replacement
+///   is complete and verified.
+///
+/// The mode is verified rather than assumed, and a file that cannot be made
+/// private is an error: writing key material somewhere readable is worse than
+/// not writing it.
+pub fn write_secret(path: &std::path::Path, contents: impl AsRef<[u8]>) -> Result<()> {
+    use std::io::Write;
+
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    // Alongside the target, so the rename stays within one filesystem, and
+    // named per-process so two writers cannot collide on it.
+    let tmp = dir.join(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "secret".into()),
+        std::process::id()
+    ));
+
+    let result = (|| -> Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        // `create_new` so this can never land on something already there — a
+        // leftover temp, or a symlink pointing somewhere else.
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        let mut file = options
+            .open(&tmp)
+            .with_context(|| format!("failed to create {}", tmp.display()))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Verified, not assumed: `mode` is a request the filesystem may not
+            // honour, and this is the one moment it can still be caught.
+            let mode = file
+                .metadata()
+                .with_context(|| format!("failed to inspect {}", tmp.display()))?
+                .permissions()
+                .mode()
+                & 0o777;
+            if mode & 0o077 != 0 {
+                bail!(
+                    "refusing to write key material to {}: it is readable by others \
+                     (mode {mode:o}) and this filesystem will not restrict it",
+                    path.display()
+                );
+            }
+        }
+
+        file.write_all(contents.as_ref())
+            .with_context(|| format!("failed to write {}", tmp.display()))?;
+        // Durable before it is visible, so a crash cannot leave the target
+        // renamed onto an empty file.
+        file.sync_all()
+            .with_context(|| format!("failed to flush {}", tmp.display()))?;
+        drop(file);
+
+        std::fs::rename(&tmp, path)
+            .with_context(|| format!("failed to replace {}", path.display()))?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        // Leave nothing behind for the next `create_new` to trip over.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// Tighten a secret file that was written before [`write_secret`] existed.
+///
+/// A fix that only applies to new writes leaves every install made until now
+/// exactly as exposed as it was — and these files are rewritten rarely, so
+/// "it will be fixed next time it is saved" can mean never. Called on the read
+/// paths, where the cost is one `stat` and, once, one `chmod`.
+///
+/// Best effort: a file on a filesystem with no modes, or owned by someone else,
+/// is left alone rather than failing the read.
+pub fn tighten_if_loose(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(meta) = std::fs::metadata(path) else {
+            return;
+        };
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
+#[cfg(all(test, unix))]
+mod secret_file_tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    /// The point of the helper. A file holding a device seed, a circle PSK or
+    /// an admin key must not be readable by other accounts on the machine.
+    #[test]
+    fn a_secret_file_is_readable_only_by_its_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.toml");
+
+        super::write_secret(&path, "device_key_hex = \"deadbeef\"").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "device_key_hex = \"deadbeef\""
+        );
+    }
+
+    /// The reason this writes through a temporary file. Opening the target with
+    /// `truncate(true)` empties it before anything is secured, so a failure
+    /// after that point leaves an empty `identity.toml` — the device seed lost
+    /// to a permissions problem. Nothing may touch the target until the
+    /// replacement is complete.
+    #[test]
+    fn a_failed_write_leaves_the_existing_secret_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.toml");
+        super::write_secret(&path, "device_key_hex = \"original\"").unwrap();
+
+        // A directory that cannot be written to is the portable way to make the
+        // temporary file fail; running as root would bypass it, so check first.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        let blocked = std::fs::write(dir.path().join(".probe"), b"x").is_err();
+
+        if blocked {
+            assert!(
+                super::write_secret(&path, "device_key_hex = \"replacement\"").is_err(),
+                "a write that cannot be secured must fail"
+            );
+        }
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "device_key_hex = \"original\"",
+            "the existing secret was destroyed by a failed write"
+        );
+    }
+
+    /// A failed write must not strand a temporary file, or the next attempt
+    /// trips over it — `create_new` refuses to reuse one.
+    #[test]
+    fn a_failed_write_leaves_no_temporary_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("admin.key");
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        let blocked = std::fs::write(dir.path().join(".probe"), b"x").is_err();
+        let _ = super::write_secret(&path, "key");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        if blocked {
+            let strays: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.ends_with(".tmp"))
+                .collect();
+            assert!(strays.is_empty(), "left behind: {strays:?}");
+        }
+
+        // And a second attempt succeeds rather than colliding with a leftover.
+        super::write_secret(&path, "key").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "key");
+    }
+
+    /// Replacing a secret must not widen it, and must not leave the temporary
+    /// file visible under a name anything else might read.
+    #[test]
+    fn replacing_a_secret_leaves_only_the_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        super::write_secret(&path, "psk_hex = \"one\"").unwrap();
+        super::write_secret(&path, "psk_hex = \"two\"").unwrap();
+
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["config.toml"], "stray files: {names:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "psk_hex = \"two\"");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    /// Every identity file written before this existed is group- and
+    /// world-readable. Tightening only on write would leave them that way,
+    /// possibly forever, since these files are rewritten rarely.
+    #[test]
+    fn an_existing_loose_file_is_tightened_on_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.toml");
+        std::fs::write(&path, "device_key_hex = \"deadbeef\"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        super::tighten_if_loose(&path);
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+    }
+
+    /// A file that is already private is left exactly as it is, including modes
+    /// an operator chose deliberately.
+    #[test]
+    fn an_already_private_file_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("admin.key");
+        std::fs::write(&path, "key").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+
+        super::tighten_if_loose(&path);
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o400, "a read-only key was changed");
+    }
+
+    /// A missing file must not panic — the read paths call this before knowing
+    /// whether there is anything there.
+    #[test]
+    fn a_missing_file_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        super::tighten_if_loose(&dir.path().join("nothing-here"));
+    }
+
+    /// Rewriting must not silently leave a file that was already permissive —
+    /// which is every identity file written before this existed.
+    #[test]
+    fn rewriting_tightens_a_file_that_was_already_loose() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "psk_hex = \"old\"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        super::write_secret(&path, "psk_hex = \"new\"").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "psk_hex = \"new\"");
     }
 }

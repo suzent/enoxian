@@ -147,11 +147,12 @@ async fn offer(base: &str, client: &reqwest::Client) -> Result<()> {
         "  {circles} circle{} passed over. Confirm on the other device to finish.",
         if circles == 1 { "" } else { "s" }
     );
-    if payload.user_attestation_hex.is_none() && payload.user_handle.is_some() {
+    if payload.attestation_chain.is_empty() && payload.user_handle.is_some() {
         println!();
-        println!("  Note: this device does not hold the user root key, so the new device");
-        println!("  joins the circles but is not attested to your user identity. Link it");
-        println!("  from the device you ran `enox identity create-user` on to do that.");
+        println!("  Note: this device cannot vouch for your user identity — it holds");
+        println!("  neither the root key nor a valid attestation of its own. The new");
+        println!("  device joins the circles but is not linked to your user. Link it");
+        println!("  from a device that `enox identity show` calls attested.");
     }
     Ok(())
 }
@@ -163,21 +164,30 @@ fn build_payload(
     offer: &Offer,
     transcript_hash: &str,
 ) -> Result<LinkPayload> {
-    // The root key is only on the device it was created on. Without it this
-    // device can still hand over its circles — it just cannot vouch for the new
-    // device's key, which `offer()` says out loud rather than leaving to be
-    // discovered later.
-    let user = device.user_identity()?;
-    // `attest_device` refuses a device key that is not a decodable libp2p key,
-    // so a target cannot use this step to have the root key sign bytes of its
-    // own choosing.
-    let attestation = match user {
-        Some(ref u) => Some(u.attest_device(&offer.device_pubkey_hex)?),
-        None => None,
-    };
-    let user_pubkey_hex = match user {
-        Some(ref u) => Some(u.pubkey_hex()?),
-        None => None,
+    // Two ways to vouch for the new device. The device that holds the user root
+    // key signs directly. A device that was itself linked signs with its own
+    // device key, extending the chain it holds — which is what lets any linked
+    // device link the next one without the root key ever moving.
+    //
+    // `attest_device` and `attest` both refuse a device key that is not a
+    // decodable libp2p key, so a target cannot use this step to have either key
+    // sign bytes of its own choosing.
+    let (user_pubkey_hex, attestation_chain) = match device.user_identity()? {
+        Some(user) => (
+            Some(user.pubkey_hex()?),
+            vec![crate::identity::ChainLink {
+                signer_pubkey_hex: user.pubkey_hex()?,
+                subject_pubkey_hex: offer.device_pubkey_hex.clone(),
+                sig: user.attest_device(&offer.device_pubkey_hex)?,
+            }],
+        ),
+        None if device.attestation_is_valid() => (
+            device.user_pubkey_hex.clone(),
+            device.attest(&offer.device_pubkey_hex)?,
+        ),
+        // Neither the root key nor a chain to extend: the circles can still be
+        // handed over, the user identity cannot.
+        None => (None, Vec::new()),
     };
 
     let mut invites = Vec::new();
@@ -200,7 +210,7 @@ fn build_payload(
         transcript_hash: transcript_hash.to_string(),
         user_handle: device.user_handle.clone(),
         user_pubkey_hex,
-        user_attestation_hex: attestation,
+        attestation_chain,
         invites,
     })
 }
@@ -309,16 +319,24 @@ async fn join(code_input: &str, base: &str, client: &reqwest::Client) -> Result<
         }
     }
 
-    if let (Some(handle), Some(pubkey), Some(attestation)) = (
+    if let (Some(handle), Some(pubkey), false) = (
         payload.user_handle.clone(),
         payload.user_pubkey_hex.clone(),
-        payload.user_attestation_hex.clone(),
+        payload.attestation_chain.is_empty(),
     ) {
-        // Checked against this device's own key inside `adopt_attestation`, so
-        // an attestation that proves nothing is never written to disk.
-        device.adopt_attestation(handle.clone(), pubkey, attestation)?;
+        // Checked against this device's own key inside `adopt_chain`, so a
+        // chain that proves nothing is never written to disk.
+        let hops = payload.attestation_chain.len();
+        device.adopt_chain(handle.clone(), pubkey, payload.attestation_chain.clone())?;
         device.save()?;
-        println!("  Linked to user '{handle}'.");
+        println!(
+            "  Linked to user '{handle}' ({}).",
+            if hops == 1 {
+                "signed by your user key".to_string()
+            } else {
+                format!("{hops} hops from your user key")
+            }
+        );
     } else if let Some(handle) = payload.user_handle.clone() {
         device.set_user_handle(handle.clone());
         device.save()?;

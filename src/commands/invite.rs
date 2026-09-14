@@ -285,6 +285,10 @@ fn best_listen_addr(addrs: &[String]) -> Option<&str> {
 
 fn try_load_admin_pubkey(circle_id: &str) -> Option<Vec<u8>> {
     let key_path = circle_dir(circle_id).ok()?.join("admin.key");
+    // Admin keys written before secrets had a restrictive mode are tightened
+    // wherever they are read, and on an admin machine this is the path the CLI
+    // reaches long before the daemon's signing path does.
+    crate::config::tighten_if_loose(&key_path);
     let hex = std::fs::read_to_string(&key_path).ok()?;
     let keypair = keypair_from_hex(hex.trim()).ok()?;
     Some(keypair.public().encode_protobuf())

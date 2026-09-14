@@ -149,9 +149,39 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             .sign(owner_claim_msg.as_bytes())
             .map(hex::encode)
             .unwrap_or_default();
+        // What turns the name into something checkable: the device this circle
+        // key was derived from, a signature tying the two together, and the
+        // chain carrying the user root's authority down to that device. A
+        // device that has not been linked to a user publishes the name alone,
+        // exactly as before, and peers will read it as unproven.
+        let device = crate::identity::DeviceIdentity::load().ok();
+        let (user_pubkey_hex, device_pubkey_hex, device_binding_hex, attestation_chain) =
+            match device {
+                Some(ref d) if d.attestation_is_valid() => {
+                    // Signed with the *device* key over this circle key: the
+                    // device authorising the peer, not the peer claiming the
+                    // device. See `identity::binding_message` for why the other
+                    // direction is a spoof anyone in the circle can mount.
+                    let binding = d.device_keypair().ok().and_then(|dk| {
+                        crate::identity::sign_binding(&dk, &config.circle_id, &keypair).ok()
+                    });
+                    (
+                        d.user_pubkey_hex.clone(),
+                        d.device_pubkey_hex().ok(),
+                        binding,
+                        d.attestation_chain.clone(),
+                    )
+                }
+                _ => (None, None, None, Vec::new()),
+            };
+
         let claim = OwnerClaim {
             owner: config.owner.clone(),
             sig: owner_sig,
+            user_pubkey_hex,
+            device_pubkey_hex,
+            device_binding_hex,
+            attestation_chain,
         };
         if let Ok(json_str) = serde_json::to_string(&claim) {
             let claims_map = state.control.get_or_insert_map(MLS_OWNER_CLAIMS_KEY);

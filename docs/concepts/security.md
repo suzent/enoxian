@@ -289,3 +289,36 @@ Message-layer encryption deliberately does not alter native file IO
 or local persistence. Anyone with filesystem access to a member's device can
 still read that circle's content. Treat local disk as trusted and use host
 full-disk encryption where this is a concern.
+
+## Secrets At Rest
+
+Several files under `~/.enoxian` are secrets in the plain sense that anyone who
+reads them can be you:
+
+| File | Holds |
+|------|-------|
+| `identity.toml` | The device seed, and the recovery phrase on the device that created the user identity |
+| `circles/<id>/config.toml` | That circle's PSK and this device's per-circle private key |
+| `circles/<id>/admin.key` | The admin signing key, on an admin machine |
+
+All three are written `0600` through a temporary file that is renamed into place — so the mode comes from the new file rather than from a `chmod` on the old one, a failure cannot leave the target truncated, and a filesystem that will not restrict the file is an error rather than a silent world-readable write. A file found with looser permissions is
+tightened the next time it is read — installs made before this existed are not
+left as they were, which for files rewritten this rarely could otherwise mean
+forever. A file that is already private is left exactly as it is, including a
+stricter mode an operator chose.
+
+On Windows these files inherit the user profile ACL, which already restricts
+them to the owner; there is no portable `chmod` equivalent applied.
+
+### What this does not do
+
+It does not defend against someone holding the disk. The device seed is still
+plaintext, so a lost and unencrypted laptop is a compromised device — and on the
+machine that created the user identity, a compromised *user* identity, because
+the recovery phrase is beside it. Encrypting that material, or handing it to the
+OS keychain, is a separate change; note that the daemon also runs headless,
+where no keychain is available to prompt, so it cannot simply be required.
+
+Nor does it revoke anything. There is no way today to mark a lost device's
+attestation as no longer trusted: per-circle removal (`mls_removed`) works on a
+peer ID, and a device holding the user root key can mint a fresh one.
