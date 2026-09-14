@@ -4,7 +4,7 @@ import type { ApiError as ApiErrorType } from '../api'
 // api.ts reads window.__ENOX_TOKEN__ at module load, so set it before import.
 ;(window as unknown as { __ENOX_TOKEN__?: string }).__ENOX_TOKEN__ = 'test-token'
 
-const { postChat, getChat, ApiError } = await import('../api')
+const { postChat, getChat, ApiError, inviteCircle, enterCircle } = await import('../api')
 
 /** `circle_busy` mirrors what the daemon's `circle_busy()` really sends. */
 function busy(): Response {
@@ -86,5 +86,26 @@ describe('circle_busy retry', () => {
     const res = await settle(getChat('c1'))
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(res).toEqual([])
+  })
+})
+
+
+describe('invite request timeout', () => {
+  it.each([
+    ['generate', () => inviteCircle('c1')],
+    ['join', () => enterCircle('enoxian://s1/test')],
+  ])('lets %s wait for the relay beyond the ordinary JSON timeout', async (_name, start) => {
+    let signal: AbortSignal | undefined
+    let finish!: (value: Response) => void
+    fetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      signal = init.signal as AbortSignal
+      return new Promise<Response>(resolve => { finish = resolve })
+    })
+    const request = start()
+    await vi.advanceTimersByTimeAsync(26_000)
+    expect(signal?.aborted).toBe(false)
+    finish(new Response('{}', { status: 200 }))
+    await request
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
