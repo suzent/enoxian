@@ -54,6 +54,24 @@ The user root key never leaves the device that holds it. The new device ends up 
 
 The receiving device checks the attestation against the key it generated for itself before writing anything, so an attestation that proves nothing never reaches disk. It also refuses to join a *different* user identity than one it already belongs to — moving a device between identities is not something to do by accident.
 
+### Any linked device can link the next one
+
+A device that was linked does not hold the root key, but it does hold a signature chain reaching back to it. Linking from there extends the chain by one link, signed with that device's own key:
+
+```
+user root ──signs──▶ laptop ──signs──▶ phone
+```
+
+`enox identity show` says how far a device sits from the root:
+
+```
+  attestation: valid (2 hops from your user key)
+```
+
+Verification walks the whole chain: every link must be signed by the key the previous link vouched for, the first must be signed by the user root, and the last must name the device presenting it. A key may appear once, so a chain cannot be padded with a cycle.
+
+The root key still never moves. It signs the first link and nothing else.
+
 Check the result with `enox identity show`, which verifies the signature rather than just reporting that one is present:
 
 ```
@@ -113,11 +131,36 @@ Words are separated by spaces. One word on the list — `yo-yo` — contains a h
 
 ## Limits
 
-- **A linked device cannot link a third.** Only the device you ran `enox identity create-user` on stores the mnemonic, so only it can sign an attestation. Link every device from that one. A device without the root key can still pass its circles over — it says so when it does, and the new device joins the circles without being attested.
+- **Chains have a depth limit.** A device four hops from the user root cannot link another; link that one from a device closer to the root. In practice nothing gets near this.
 - **Circles are joined, not yet admitted.** The new device writes a pending entry carrying the invite grant, exactly as `enox enter` does. It is admitted under each circle's own join policy.
 - **Invites in a link payload last 24 hours.** They are meant to be redeemed within seconds; the window is slack for a machine paired now and started later.
 - **One code, one device.** A code admits a single offer. Run `enox link` again for another machine.
 - **A device belongs to one identity.** Linking a device that already belongs to a different user is refused rather than silently reassigned.
+
+---
+
+## Proving who a device belongs to
+
+Inside a circle, a peer publishes an owner claim. Until now that was a name and a signature over it — which proves somebody holds the peer's key, not that they are who the name says. Any peer could write `owner: "suzy"`.
+
+A linked device now publishes three things alongside the name:
+
+| | |
+|---|---|
+| Its device key | The key its attestation chain reaches |
+| A binding | Signed with the circle key, over the device key — ties the peer ID to that device |
+| Its attestation chain | Carries the user root's authority down to the device key |
+
+The binding is needed because a per-circle key is HKDF-derived from the device seed, so a peer ID and a device key have no arithmetic relationship — without a signature there is nothing linking them.
+
+`enox member list` marks a name nobody can check:
+
+```
+  [admin] 12D3KooWAbc…  owner=suzy
+  [member] 12D3KooWXyz…  owner=suzy (unverified)
+```
+
+Two devices belong to the same person when they prove the same user key — not when they happen to write the same name. A peer that was never linked to a user shows as unverified, which is the honest answer for it; nothing is rejected on this basis yet.
 
 ---
 

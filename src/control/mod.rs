@@ -59,7 +59,52 @@ pub const INVITE_NONCES_KEY: &str = "invite_nonces";
 pub struct OwnerClaim {
     pub owner: String,
     /// hex(sign(peer_keypair, "owner:{owner}"))
+    ///
+    /// On its own this proves only that whoever holds this peer's key wrote the
+    /// name — any peer can claim to be "alice". The fields below are what make
+    /// the name mean something.
     pub sig: String,
+    /// hex(protobuf) of the user identity this peer says it belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_pubkey_hex: Option<String>,
+    /// hex(protobuf) of the device key behind this peer's circle key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_pubkey_hex: Option<String>,
+    /// hex(sign(circle_key, binding over circle id + device key)) — ties this
+    /// peer id to that device. Without it the device key would be a free claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_binding_hex: Option<String>,
+    /// Signatures carrying the user root's authority down to the device key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attestation_chain: Vec<crate::identity::ChainLink>,
+}
+
+impl OwnerClaim {
+    /// The user identity this claim *proves*, if it proves one.
+    ///
+    /// Returns the user public key only when all three hold: this peer's own
+    /// key signed for a device key, the user root's authority reaches that
+    /// device key, and the peer signed the name it is claiming. Anything
+    /// missing or inconsistent returns `None` — an unproven claim is not a
+    /// weaker claim, it is a display string with nothing behind it.
+    ///
+    /// A claim written before any of this existed returns `None` too, which is
+    /// the honest answer for it.
+    pub fn verified_user(&self, peer_id: &str, circle_id: &str) -> Option<String> {
+        let user_pubkey = self.user_pubkey_hex.as_deref()?;
+        let device_pubkey = self.device_pubkey_hex.as_deref()?;
+        let binding = self.device_binding_hex.as_deref()?;
+
+        if !crate::identity::verify_binding(peer_id, circle_id, device_pubkey, binding).ok()? {
+            return None;
+        }
+        if !crate::identity::verify_chain(&self.attestation_chain, user_pubkey, device_pubkey)
+            .ok()?
+        {
+            return None;
+        }
+        Some(user_pubkey.to_string())
+    }
 }
 
 /// The invite grant a joining device presents, carried from the invite it used.
@@ -241,6 +286,157 @@ pub struct MemberEntry {
     pub added_at: DateTime<Utc>,
     /// Hex-encoded Ed25519 admin signature of "add:{peer_id}:{role}"
     pub signature: String,
+}
+
+#[cfg(test)]
+mod owner_claim_tests {
+    use super::*;
+    use crate::identity::{sign_binding, ChainLink, DeviceIdentity, UserIdentity};
+
+    const CIRCLE: &str = "8e563c41-f0ec-4225-9764-064f1fb04341";
+
+    /// Build the claim a linked device publishes for a circle.
+    fn claim_for(device: &DeviceIdentity, owner: &str) -> (String, OwnerClaim) {
+        let circle_kp = device.derive_circle_keypair(CIRCLE).unwrap();
+        let peer_id = circle_kp.public().to_peer_id().to_string();
+        let device_pk = device.device_pubkey_hex().unwrap();
+        let claim = OwnerClaim {
+            owner: owner.into(),
+            sig: hex::encode(circle_kp.sign(format!("owner:{owner}").as_bytes()).unwrap()),
+            user_pubkey_hex: device.user_pubkey_hex.clone(),
+            device_pubkey_hex: Some(device_pk.clone()),
+            device_binding_hex: Some(sign_binding(&circle_kp, CIRCLE, &device_pk).unwrap()),
+            attestation_chain: device.attestation_chain.clone(),
+        };
+        (peer_id, claim)
+    }
+
+    fn linked_device(user: &UserIdentity, label: &str) -> DeviceIdentity {
+        let mut d = DeviceIdentity::generate(label.into());
+        let pk = d.device_pubkey_hex().unwrap();
+        d.user_handle = Some(user.handle.clone());
+        d.user_pubkey_hex = Some(user.pubkey_hex().unwrap());
+        d.attestation_chain = vec![ChainLink {
+            signer_pubkey_hex: user.pubkey_hex().unwrap(),
+            subject_pubkey_hex: pk.clone(),
+            sig: user.attest_device(&pk).unwrap(),
+        }];
+        d
+    }
+
+    /// A linked device's claim proves which user it belongs to.
+    #[test]
+    fn a_complete_claim_proves_its_user() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let device = linked_device(&user, "laptop");
+        let (peer_id, claim) = claim_for(&device, "suzy");
+
+        assert_eq!(
+            claim.verified_user(&peer_id, CIRCLE).as_deref(),
+            Some(user.pubkey_hex().unwrap().as_str())
+        );
+    }
+
+    /// Two devices of the same person prove the *same* user key, which is what
+    /// makes grouping them together meaningful rather than a guess from a
+    /// matching display name.
+    #[test]
+    fn two_devices_of_one_user_prove_the_same_identity() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let laptop = linked_device(&user, "laptop");
+
+        let mut phone = DeviceIdentity::generate("phone".into());
+        let chain = laptop.attest(&phone.device_pubkey_hex().unwrap()).unwrap();
+        phone
+            .adopt_chain("suzy".into(), user.pubkey_hex().unwrap(), chain)
+            .unwrap();
+
+        let (laptop_peer, laptop_claim) = claim_for(&laptop, "suzy");
+        let (phone_peer, phone_claim) = claim_for(&phone, "suzy");
+
+        assert_eq!(
+            laptop_claim.verified_user(&laptop_peer, CIRCLE),
+            phone_claim.verified_user(&phone_peer, CIRCLE)
+        );
+        assert!(laptop_claim.verified_user(&laptop_peer, CIRCLE).is_some());
+    }
+
+    /// The whole point. Anyone could always write `owner: "suzy"`; what they
+    /// cannot do is produce the signatures behind it.
+    #[test]
+    fn claiming_someone_elses_name_proves_nothing() {
+        let (suzy, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let real = linked_device(&suzy, "laptop");
+        let (real_peer, real_claim) = claim_for(&real, "suzy");
+        let genuine = real_claim.verified_user(&real_peer, CIRCLE).unwrap();
+
+        // An impostor with its own device, claiming the same display name.
+        let impostor = DeviceIdentity::generate("impostor".into());
+        let (imp_peer, imp_claim) = claim_for(&impostor, "suzy");
+        assert_eq!(imp_claim.owner, "suzy");
+        assert_eq!(
+            imp_claim.verified_user(&imp_peer, CIRCLE),
+            None,
+            "an unbacked name must not verify"
+        );
+
+        // Nor by copying the real claim's proofs onto its own peer id.
+        let mut stolen = real_claim.clone();
+        stolen.owner = "suzy".into();
+        assert_eq!(
+            stolen.verified_user(&imp_peer, CIRCLE),
+            None,
+            "proofs must not transfer to another peer"
+        );
+        assert_ne!(genuine, String::new());
+    }
+
+    /// A claim from a device that was never linked is unproven, not rejected —
+    /// this is every peer today, and they must still appear.
+    #[test]
+    fn a_claim_without_proofs_is_simply_unverified() {
+        let device = DeviceIdentity::generate("plain".into());
+        let (peer_id, mut claim) = claim_for(&device, "someone");
+        claim.user_pubkey_hex = None;
+        claim.attestation_chain.clear();
+        assert_eq!(claim.verified_user(&peer_id, CIRCLE), None);
+
+        // And a claim written before any of this existed.
+        let legacy = OwnerClaim {
+            owner: "someone".into(),
+            sig: String::new(),
+            user_pubkey_hex: None,
+            device_pubkey_hex: None,
+            device_binding_hex: None,
+            attestation_chain: Vec::new(),
+        };
+        assert_eq!(legacy.verified_user(&peer_id, CIRCLE), None);
+    }
+
+    /// A claim proven in one circle must not carry into another.
+    #[test]
+    fn a_claim_does_not_carry_between_circles() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let device = linked_device(&user, "laptop");
+        let (peer_id, claim) = claim_for(&device, "suzy");
+
+        assert!(claim.verified_user(&peer_id, CIRCLE).is_some());
+        assert_eq!(
+            claim.verified_user(&peer_id, "00000000-0000-0000-0000-000000000000"),
+            None
+        );
+    }
+
+    /// Old claims must still deserialise, or upgrading a peer would drop every
+    /// owner name already in the control doc.
+    #[test]
+    fn a_claim_written_before_these_fields_still_parses() {
+        let legacy = r#"{"owner":"alice","sig":"ab12"}"#;
+        let claim: OwnerClaim = serde_json::from_str(legacy).unwrap();
+        assert_eq!(claim.owner, "alice");
+        assert!(claim.user_pubkey_hex.is_none());
+        assert!(claim.attestation_chain.is_empty());
+    }
 }
 
 // ── Chat ──────────────────────────────────────────────────────────────────

@@ -41,9 +41,18 @@ pub struct IdentityFile {
     /// Hex-encoded user root public key — set once, when linked to a user.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_pubkey_hex: Option<String>,
-    /// Hex-encoded user attestation: sign(user_key, device_pubkey || label || issued_at).
+    /// A single attestation signed by the user root key, as written before
+    /// chains existed. Read on load and folded into `attestation_chain`; never
+    /// written again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_attestation_hex: Option<String>,
+    /// The signatures carrying the user root's authority down to this device.
+    ///
+    /// One link when the root key attested this device directly, two when a
+    /// device that was itself linked did it, and so on — which is what lets a
+    /// linked device link the next one without the root key ever moving.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attestation_chain: Vec<ChainLink>,
     /// BIP-39 mnemonic backup of the user key (stored only on the primary device).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_mnemonic: Option<String>,
@@ -62,7 +71,9 @@ pub struct DeviceIdentity {
     pub device_label: String,
     pub user_handle: Option<String>,
     pub user_pubkey_hex: Option<String>,
-    pub user_attestation_hex: Option<String>,
+    /// See [`IdentityFile::attestation_chain`]. Empty when this device has not
+    /// been linked to a user.
+    pub attestation_chain: Vec<ChainLink>,
     pub agents: Vec<String>,
 }
 
@@ -78,7 +89,7 @@ impl DeviceIdentity {
             device_label,
             user_handle: None,
             user_pubkey_hex: None,
-            user_attestation_hex: None,
+            attestation_chain: Vec::new(),
             agents: Vec::new(),
         }
     }
@@ -105,7 +116,8 @@ impl DeviceIdentity {
             device_label: self.device_label.clone(),
             user_handle: self.user_handle.clone(),
             user_pubkey_hex: self.user_pubkey_hex.clone(),
-            user_attestation_hex: self.user_attestation_hex.clone(),
+            user_attestation_hex: None,
+            attestation_chain: self.attestation_chain.clone(),
             user_mnemonic,
             agents: self.agents.clone(),
         };
@@ -125,12 +137,18 @@ impl DeviceIdentity {
         }
         let mut seed = [0u8; 32];
         seed.copy_from_slice(&bytes);
+
+        // Fold a pre-chain attestation into a one-link chain, so a device
+        // written by an older build keeps working and is upgraded the next time
+        // it saves.
+        let attestation_chain = migrate_chain(&file, &seed)?;
+
         Ok(DeviceIdentity {
             seed,
             device_label: file.device_label,
             user_handle: file.user_handle,
             user_pubkey_hex: file.user_pubkey_hex,
-            user_attestation_hex: file.user_attestation_hex,
+            attestation_chain,
             agents: file.agents,
         })
     }
@@ -191,27 +209,23 @@ impl DeviceIdentity {
         Ok(Some(UserIdentity::from_mnemonic(&mnemonic, handle)?))
     }
 
-    /// Adopt a user identity that another device attested for this one.
+    /// Adopt a user identity that another device vouched for this one.
     ///
-    /// Deliberately takes the attestation rather than the root key: the device
-    /// that signed keeps the only copy, and this device gets an identity of its
-    /// own that can be revoked without touching the others.
+    /// Deliberately takes a chain of signatures rather than the root key: the
+    /// device that holds the root keeps the only copy, and this device gets an
+    /// identity of its own that can be revoked without touching the others.
     ///
-    /// The signature is checked here, against this device's own key, so a
-    /// device cannot end up storing an identity it has no proof of. Storing one
-    /// unchecked would be invisible until something tried to rely on it.
-    pub fn adopt_attestation(
+    /// The chain is checked here, against this device's own key, so a device
+    /// cannot end up storing an identity it has no proof of. Storing one
+    /// unchecked would be invisible until something relied on it.
+    pub fn adopt_chain(
         &mut self,
         handle: String,
         user_pubkey_hex: String,
-        attestation_hex: String,
+        chain: Vec<ChainLink>,
     ) -> Result<()> {
-        let device_pubkey_hex = hex::encode(self.device_keypair()?.public().encode_protobuf());
-        if !UserIdentity::verify_attestation(
-            &user_pubkey_hex,
-            &device_pubkey_hex,
-            &attestation_hex,
-        )? {
+        let device_pubkey_hex = self.device_pubkey_hex()?;
+        if !verify_chain(&chain, &user_pubkey_hex, &device_pubkey_hex)? {
             bail!(
                 "the attestation from the other device does not cover this device's key — \
                  nothing was saved"
@@ -219,8 +233,59 @@ impl DeviceIdentity {
         }
         self.user_handle = Some(handle);
         self.user_pubkey_hex = Some(user_pubkey_hex);
-        self.user_attestation_hex = Some(attestation_hex);
+        self.attestation_chain = chain;
         Ok(())
+    }
+
+    /// hex(protobuf) of this device's own public key.
+    pub fn device_pubkey_hex(&self) -> Result<String> {
+        Ok(hex::encode(
+            self.device_keypair()?.public().encode_protobuf(),
+        ))
+    }
+
+    /// Whether this device can prove it belongs to the user it names.
+    pub fn attestation_is_valid(&self) -> bool {
+        let (Some(user_pubkey), Ok(device_pubkey)) =
+            (self.user_pubkey_hex.as_deref(), self.device_pubkey_hex())
+        else {
+            return false;
+        };
+        verify_chain(&self.attestation_chain, user_pubkey, &device_pubkey).unwrap_or(false)
+    }
+
+    /// Vouch for another device, extending this device's own chain by one link.
+    ///
+    /// This is what lets a device that was itself linked link the next one. It
+    /// signs with the device key, not the root key — which it does not have —
+    /// so the result is a longer chain rather than a second root-signed
+    /// attestation. Refuses if this device cannot prove its own standing,
+    /// because a chain built on an unprovable link proves nothing either.
+    pub fn attest(&self, subject_pubkey_hex: &str) -> Result<Vec<ChainLink>> {
+        if !self.attestation_is_valid() {
+            bail!("this device has no valid attestation of its own to extend");
+        }
+        if self.attestation_chain.len() + 1 > MAX_CHAIN_DEPTH {
+            bail!(
+                "this device is already {} links from the user root; link the new device \
+                 from one closer to it",
+                self.attestation_chain.len()
+            );
+        }
+
+        let msg = attestation_message(subject_pubkey_hex)?;
+        let sig = self
+            .device_keypair()?
+            .sign(&msg)
+            .map_err(|e| anyhow::anyhow!("signing an attestation failed: {e}"))?;
+
+        let mut chain = self.attestation_chain.clone();
+        chain.push(ChainLink {
+            signer_pubkey_hex: self.device_pubkey_hex()?,
+            subject_pubkey_hex: subject_pubkey_hex.trim().to_string(),
+            sig: hex::encode(sig),
+        });
+        Ok(chain)
     }
 
     /// The user identity this device already claims, if any.
@@ -321,48 +386,52 @@ impl UserIdentity {
 
     /// Link this user to a device identity (mutates device; saves both).
     pub fn link_device(&self, device: &mut DeviceIdentity, mnemonic: &str) -> Result<()> {
-        let device_pubkey = hex::encode(device.device_keypair()?.public().encode_protobuf());
-        let attestation = self.attest_device(&device_pubkey)?;
+        let device_pubkey = device.device_pubkey_hex()?;
         device.user_handle = Some(self.handle.clone());
         device.user_pubkey_hex = Some(self.pubkey_hex()?);
-        device.user_attestation_hex = Some(attestation);
-        // Store mnemonic on the primary device (where UserIdentity was generated).
+        device.attestation_chain = vec![ChainLink {
+            signer_pubkey_hex: self.pubkey_hex()?,
+            subject_pubkey_hex: device_pubkey.clone(),
+            sig: self.attest_device(&device_pubkey)?,
+        }];
+        device.save()?;
+
+        // The mnemonic lives only on the device the identity was created on,
+        // and `DeviceIdentity` has nowhere to hold it, so it is written here
+        // rather than copied through. `save` preserves whatever is already
+        // there, so this is the only place it ever needs writing.
         let path = identity_path()?;
-        if path.exists() {
-            let raw = std::fs::read_to_string(&path)?;
-            let mut file: IdentityFile = toml::from_str(&raw)?;
-            file.user_handle = device.user_handle.clone();
-            file.user_pubkey_hex = device.user_pubkey_hex.clone();
-            file.user_attestation_hex = device.user_attestation_hex.clone();
-            file.user_mnemonic = Some(mnemonic.to_string());
-            std::fs::write(&path, toml::to_string_pretty(&file)?)?;
-        } else {
-            device.save()?;
-        }
+        let raw = std::fs::read_to_string(&path).context("read identity.toml")?;
+        let mut file: IdentityFile = toml::from_str(&raw).context("parse identity.toml")?;
+        file.user_mnemonic = Some(mnemonic.to_string());
+        std::fs::write(&path, toml::to_string_pretty(&file)?)?;
         Ok(())
     }
 }
+
+// ── Attestation ───────────────────────────────────────────────────────────────
 
 /// Domain tag on an attestation, so a signature made here can never be read as
 /// one made by some other part of the system with the same key.
 const ATTESTATION_DOMAIN: &[u8] = b"enoxian-device-attestation-v1";
 
+/// How many signatures a chain may carry, root included.
+///
+/// A chain exists so a device that was itself linked can link the next one
+/// without the root key. In practice everything is one or two hops from the
+/// root; the cap is here so a malformed or hostile chain cannot be walked
+/// forever, not because four is a meaningful number of devices.
+pub const MAX_CHAIN_DEPTH: usize = 4;
+
 /// The exact bytes an attestation covers.
 ///
-/// Length-prefixed, and over the device key alone. The previous encoding was
-/// `device_pubkey_bytes || device_label` with no prefix, which is ambiguous:
-/// an attestation for (key `AABB`, label `CC`) covers the identical bytes as
-/// one for (key `AABBCC`, label ``), so a single signature could be claimed by
-/// two different device identities. Nothing validated the key either, so the
-/// "key" could be any length the claimant liked.
-///
-/// The label is deliberately not signed. It is a display name the user can
-/// change at will, and binding it here meant `enox identity set-label` silently
-/// and permanently invalidated the device's attestation.
+/// Length-prefixed, and over the device key alone. The label is deliberately
+/// not signed: it is a display name the user can change, and binding it meant
+/// `enox identity set-label` silently invalidated the device's attestation.
 fn attestation_message(device_pubkey_hex: &str) -> Result<Vec<u8>> {
     let device_bytes = hex::decode(device_pubkey_hex.trim()).context("decode device pubkey")?;
-    // A device key is a libp2p public key. Refusing anything else keeps the
-    // root key from being talked into signing bytes of somebody's choosing.
+    // A device key is a libp2p public key. Refusing anything else keeps a
+    // signing key from being talked into signing bytes of somebody's choosing.
     libp2p::identity::PublicKey::try_decode_protobuf(&device_bytes)
         .map_err(|e| anyhow::anyhow!("device public key is not a valid key: {e}"))?;
 
@@ -372,6 +441,178 @@ fn attestation_message(device_pubkey_hex: &str) -> Result<Vec<u8>> {
     msg.extend_from_slice(&len.to_be_bytes());
     msg.extend_from_slice(&device_bytes);
     Ok(msg)
+}
+
+/// One signature in an attestation chain: `signer` vouches for `subject`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChainLink {
+    /// hex(protobuf) of the key that signed.
+    pub signer_pubkey_hex: String,
+    /// hex(protobuf) of the device key being vouched for.
+    pub subject_pubkey_hex: String,
+    /// hex of the signature over [`attestation_message`] for `subject`.
+    pub sig: String,
+}
+
+impl ChainLink {
+    /// Whether this link's signature really is the signer's, over this subject.
+    pub fn is_valid(&self) -> Result<bool> {
+        let signer_bytes =
+            hex::decode(self.signer_pubkey_hex.trim()).context("decode signer pubkey")?;
+        let signer = libp2p::identity::PublicKey::try_decode_protobuf(&signer_bytes)
+            .map_err(|e| anyhow::anyhow!("invalid signer public key: {e}"))?;
+        let sig = hex::decode(self.sig.trim()).context("decode attestation")?;
+        Ok(signer.verify(&attestation_message(&self.subject_pubkey_hex)?, &sig))
+    }
+}
+
+/// Check that `chain` carries `user_pubkey_hex`'s authority down to
+/// `device_pubkey_hex`.
+///
+/// Every link must be signed by the key the previous link vouched for, the
+/// first must be signed by the user root itself, and the last must name this
+/// device. A key may appear as a subject only once, so a chain cannot be padded
+/// with a cycle to get past the depth cap.
+pub fn verify_chain(
+    chain: &[ChainLink],
+    user_pubkey_hex: &str,
+    device_pubkey_hex: &str,
+) -> Result<bool> {
+    if chain.is_empty() || chain.len() > MAX_CHAIN_DEPTH {
+        return Ok(false);
+    }
+
+    let mut seen: Vec<&str> = Vec::with_capacity(chain.len());
+    let mut expected_signer = user_pubkey_hex.trim();
+
+    for link in chain {
+        if link.signer_pubkey_hex.trim() != expected_signer {
+            return Ok(false);
+        }
+        let subject = link.subject_pubkey_hex.trim();
+        if seen.contains(&subject) || subject == expected_signer {
+            return Ok(false);
+        }
+        if !link.is_valid()? {
+            return Ok(false);
+        }
+        seen.push(subject);
+        expected_signer = subject;
+    }
+
+    Ok(expected_signer == device_pubkey_hex.trim())
+}
+
+/// Turn an older identity file's single attestation into a one-link chain.
+///
+/// The old field was a bare signature with the signer implied to be the user
+/// root, so the link is reconstructed from `user_pubkey_hex` and this device's
+/// own key. Returns the stored chain untouched when there already is one.
+fn migrate_chain(file: &IdentityFile, seed: &[u8; 32]) -> Result<Vec<ChainLink>> {
+    if !file.attestation_chain.is_empty() {
+        return Ok(file.attestation_chain.clone());
+    }
+    let (Some(user_pubkey_hex), Some(sig)) = (
+        file.user_pubkey_hex.clone(),
+        file.user_attestation_hex.clone(),
+    ) else {
+        return Ok(Vec::new());
+    };
+    Ok(vec![ChainLink {
+        signer_pubkey_hex: user_pubkey_hex,
+        subject_pubkey_hex: hex::encode(device_public_key(seed)?.encode_protobuf()),
+        sig,
+    }])
+}
+
+/// This device's public key from its seed alone — needed during load, before a
+/// `DeviceIdentity` exists to ask.
+fn device_public_key(seed: &[u8; 32]) -> Result<libp2p::identity::PublicKey> {
+    let hk = Hkdf::<Sha256>::new(Some(b"enoxian-device-v1"), seed);
+    let mut okm = [0u8; 32];
+    hk.expand(b"circle/__device__", &mut okm)
+        .map_err(|_| anyhow::anyhow!("HKDF expand failed"))?;
+    let secret = libp2p::identity::ed25519::SecretKey::try_from_bytes(okm)
+        .map_err(|e| anyhow::anyhow!("ed25519 secret: {e}"))?;
+    Ok(Keypair::from(libp2p::identity::ed25519::Keypair::from(secret)).public())
+}
+
+// ── Device / circle-key binding ───────────────────────────────────────────────
+
+/// Domain tag on the signature linking a circle key to the device that derived
+/// it. Distinct from [`ATTESTATION_DOMAIN`] so the two can never be confused.
+const BINDING_DOMAIN: &[u8] = b"enoxian-circle-device-binding-v1";
+
+/// The bytes a device signs to claim a per-circle key as its own.
+///
+/// A circle key is derived from the device seed through HKDF, so the circle
+/// *public* key cannot be recovered from the device public key — there is no
+/// arithmetic link between a peer ID and the device behind it. This signature
+/// supplies one: made with the circle key, over the device key, it says "the
+/// holder of this peer ID is that device".
+///
+/// Scoped to one circle, so a binding published in a circle the user has left
+/// cannot be replayed into another.
+fn binding_message(circle_id: &str, device_pubkey_hex: &str) -> Result<Vec<u8>> {
+    let device_bytes = hex::decode(device_pubkey_hex.trim()).context("decode device pubkey")?;
+    libp2p::identity::PublicKey::try_decode_protobuf(&device_bytes)
+        .map_err(|e| anyhow::anyhow!("device public key is not a valid key: {e}"))?;
+
+    let circle = circle_id.trim().as_bytes();
+    let mut msg = Vec::with_capacity(BINDING_DOMAIN.len() + 8 + circle.len() + device_bytes.len());
+    msg.extend_from_slice(BINDING_DOMAIN);
+    msg.extend_from_slice(&(circle.len() as u32).to_be_bytes());
+    msg.extend_from_slice(circle);
+    msg.extend_from_slice(&(device_bytes.len() as u32).to_be_bytes());
+    msg.extend_from_slice(&device_bytes);
+    Ok(msg)
+}
+
+/// Sign the binding for `circle_id` with that circle's key.
+pub fn sign_binding(
+    circle_keypair: &Keypair,
+    circle_id: &str,
+    device_pubkey_hex: &str,
+) -> Result<String> {
+    let msg = binding_message(circle_id, device_pubkey_hex)?;
+    let sig = circle_keypair
+        .sign(&msg)
+        .map_err(|e| anyhow::anyhow!("signing the device binding failed: {e}"))?;
+    Ok(hex::encode(sig))
+}
+
+/// Whether `peer_id`'s key really did sign for `device_pubkey_hex`.
+///
+/// The circle public key is recovered from the peer ID itself: an Ed25519 peer
+/// ID carries its key inline, so no lookup is needed and nobody gets to supply
+/// the key their own signature is checked against.
+pub fn verify_binding(
+    peer_id: &str,
+    circle_id: &str,
+    device_pubkey_hex: &str,
+    binding_hex: &str,
+) -> Result<bool> {
+    let peer: libp2p::PeerId = peer_id
+        .trim()
+        .parse()
+        .map_err(|e| anyhow::anyhow!("not a peer id: {e}"))?;
+    let Some(circle_key) = peer_public_key(&peer) else {
+        // Only keys small enough to be embedded can be recovered this way.
+        // Every circle key is Ed25519, so anything else did not come from here.
+        return Ok(false);
+    };
+    let sig = hex::decode(binding_hex.trim()).context("decode device binding")?;
+    Ok(circle_key.verify(&binding_message(circle_id, device_pubkey_hex)?, &sig))
+}
+
+/// Recover the public key an Ed25519 peer ID carries inline.
+fn peer_public_key(peer: &libp2p::PeerId) -> Option<libp2p::identity::PublicKey> {
+    let hash = libp2p::multihash::Multihash::from(*peer);
+    // 0x00 is the identity multihash: the "digest" is the key itself.
+    if hash.code() != 0x00 {
+        return None;
+    }
+    libp2p::identity::PublicKey::try_decode_protobuf(hash.digest()).ok()
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -598,7 +839,15 @@ mod tests {
 
         let mut mine = DeviceIdentity::generate("mine".into());
         let err = mine
-            .adopt_attestation("suzy".into(), user.pubkey_hex().unwrap(), attestation)
+            .adopt_chain(
+                "suzy".into(),
+                user.pubkey_hex().unwrap(),
+                vec![ChainLink {
+                    signer_pubkey_hex: user.pubkey_hex().unwrap(),
+                    subject_pubkey_hex: other_pubkey.clone(),
+                    sig: attestation,
+                }],
+            )
             .unwrap_err();
         assert!(err.to_string().contains("does not cover"), "got: {err}");
         assert!(
@@ -668,10 +917,14 @@ mod tests {
         let attestation = user.attest_device(&device_pubkey).unwrap();
 
         device
-            .adopt_attestation(
+            .adopt_chain(
                 "suzy".into(),
                 user.pubkey_hex().unwrap(),
-                attestation.clone(),
+                vec![ChainLink {
+                    signer_pubkey_hex: user.pubkey_hex().unwrap(),
+                    subject_pubkey_hex: device_pubkey.clone(),
+                    sig: attestation.clone(),
+                }],
             )
             .unwrap();
 
@@ -685,7 +938,206 @@ mod tests {
         // The root key is not among what it took on: adopting sets the handle,
         // the user public key and the signature, and nothing else. That the
         // mnemonic survives a save is `save`'s job, covered separately.
-        assert!(device.user_attestation_hex.is_some());
+        assert!(device.attestation_is_valid());
+    }
+
+    // ── Attestation chains ───────────────────────────────────────────────────
+
+    fn linked(user: &UserIdentity, label: &str) -> DeviceIdentity {
+        let mut d = DeviceIdentity::generate(label.into());
+        let pk = d.device_pubkey_hex().unwrap();
+        d.user_handle = Some(user.handle.clone());
+        d.user_pubkey_hex = Some(user.pubkey_hex().unwrap());
+        d.attestation_chain = vec![ChainLink {
+            signer_pubkey_hex: user.pubkey_hex().unwrap(),
+            subject_pubkey_hex: pk,
+            sig: user.attest_device(&d.device_pubkey_hex().unwrap()).unwrap(),
+        }];
+        d
+    }
+
+    /// The point of chains: a device that was itself linked can link the next
+    /// one, without the root key ever moving. Previously only the device
+    /// holding the mnemonic could attest anything.
+    #[test]
+    fn a_linked_device_can_vouch_for_a_third() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let laptop = linked(&user, "laptop");
+        assert!(laptop.attestation_is_valid());
+        assert!(
+            laptop.user_identity().unwrap_or(None).is_none()
+                || std::env::var("ENOXIAN_HOME").is_ok(),
+            "the linked device is not expected to hold the root key"
+        );
+
+        let mut phone = DeviceIdentity::generate("phone".into());
+        let chain = laptop.attest(&phone.device_pubkey_hex().unwrap()).unwrap();
+        assert_eq!(chain.len(), 2, "root -> laptop -> phone");
+
+        phone
+            .adopt_chain("suzy".into(), user.pubkey_hex().unwrap(), chain)
+            .unwrap();
+        assert!(phone.attestation_is_valid());
+    }
+
+    /// A device with nothing to extend must not manufacture authority.
+    #[test]
+    fn an_unlinked_device_cannot_vouch_for_anything() {
+        let lonely = DeviceIdentity::generate("nobody".into());
+        let other = DeviceIdentity::generate("other".into());
+        let err = lonely
+            .attest(&other.device_pubkey_hex().unwrap())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("no valid attestation"),
+            "got: {err}"
+        );
+    }
+
+    /// A chain must actually reach the device it is presented for.
+    #[test]
+    fn a_chain_for_another_device_does_not_verify() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let laptop = linked(&user, "laptop");
+        let phone = DeviceIdentity::generate("phone".into());
+        let stranger = DeviceIdentity::generate("stranger".into());
+
+        let chain = laptop.attest(&phone.device_pubkey_hex().unwrap()).unwrap();
+        assert!(!verify_chain(
+            &chain,
+            &user.pubkey_hex().unwrap(),
+            &stranger.device_pubkey_hex().unwrap()
+        )
+        .unwrap());
+    }
+
+    /// The chain must start at the user root. A chain that starts anywhere else
+    /// is a device vouching for itself with extra steps.
+    #[test]
+    fn a_chain_that_does_not_start_at_the_user_root_is_refused() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let (mallory, _) = UserIdentity::generate("mallory".into()).unwrap();
+        let laptop = linked(&mallory, "laptop");
+        let phone = DeviceIdentity::generate("phone".into());
+        let chain = laptop.attest(&phone.device_pubkey_hex().unwrap()).unwrap();
+
+        // The chain is internally consistent, but rooted in the wrong user.
+        assert!(verify_chain(
+            &chain,
+            &mallory.pubkey_hex().unwrap(),
+            &phone.device_pubkey_hex().unwrap()
+        )
+        .unwrap());
+        assert!(!verify_chain(
+            &chain,
+            &user.pubkey_hex().unwrap(),
+            &phone.device_pubkey_hex().unwrap()
+        )
+        .unwrap());
+    }
+
+    /// A broken link anywhere invalidates everything below it, or a chain could
+    /// be spliced together from signatures that were never issued as a chain.
+    #[test]
+    fn a_tampered_link_breaks_the_chain() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let laptop = linked(&user, "laptop");
+        let phone = DeviceIdentity::generate("phone".into());
+        let phone_pk = phone.device_pubkey_hex().unwrap();
+
+        for i in 0..2 {
+            let mut chain = laptop.attest(&phone_pk).unwrap();
+            chain[i].sig = hex::encode([0u8; 64]);
+            assert!(
+                !verify_chain(&chain, &user.pubkey_hex().unwrap(), &phone_pk).unwrap(),
+                "link {i} went unnoticed"
+            );
+        }
+
+        // Dropping the root link must not leave a chain that verifies either.
+        let mut chain = laptop.attest(&phone_pk).unwrap();
+        chain.remove(0);
+        assert!(!verify_chain(&chain, &user.pubkey_hex().unwrap(), &phone_pk).unwrap());
+    }
+
+    /// A chain may not be padded with a cycle to walk past the depth cap, and
+    /// an over-long chain is refused outright.
+    #[test]
+    fn a_chain_cannot_cycle_or_run_past_the_cap() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let laptop = linked(&user, "laptop");
+        let laptop_pk = laptop.device_pubkey_hex().unwrap();
+
+        // A link naming the laptop again, after it already appeared.
+        let mut chain = laptop.attest(&laptop_pk).unwrap_or_default();
+        if chain.is_empty() {
+            chain = laptop.attestation_chain.clone();
+            chain.push(ChainLink {
+                signer_pubkey_hex: laptop_pk.clone(),
+                subject_pubkey_hex: laptop_pk.clone(),
+                sig: hex::encode([0u8; 64]),
+            });
+        }
+        assert!(!verify_chain(&chain, &user.pubkey_hex().unwrap(), &laptop_pk).unwrap());
+
+        let too_long = vec![chain[0].clone(); MAX_CHAIN_DEPTH + 1];
+        assert!(!verify_chain(&too_long, &user.pubkey_hex().unwrap(), &laptop_pk).unwrap());
+        assert!(!verify_chain(&[], &user.pubkey_hex().unwrap(), &laptop_pk).unwrap());
+    }
+
+    // ── Circle-key binding ───────────────────────────────────────────────────
+
+    /// The binding is what ties a peer id to a device, since a circle key is
+    /// HKDF-derived and cannot be linked to a device key by arithmetic.
+    #[test]
+    fn a_binding_ties_a_peer_id_to_the_device_behind_it() {
+        let device = DeviceIdentity::generate("laptop".into());
+        let circle = "8e563c41-f0ec-4225-9764-064f1fb04341";
+        let circle_kp = device.derive_circle_keypair(circle).unwrap();
+        let peer_id = circle_kp.public().to_peer_id().to_string();
+        let device_pk = device.device_pubkey_hex().unwrap();
+
+        let binding = sign_binding(&circle_kp, circle, &device_pk).unwrap();
+        assert!(verify_binding(&peer_id, circle, &device_pk, &binding).unwrap());
+    }
+
+    /// A binding is scoped to one circle and one device: it must not carry over
+    /// to another circle, another peer, or another device key.
+    #[test]
+    fn a_binding_does_not_travel() {
+        let device = DeviceIdentity::generate("laptop".into());
+        let other_device = DeviceIdentity::generate("other".into());
+        let circle = "8e563c41-f0ec-4225-9764-064f1fb04341";
+        let circle_kp = device.derive_circle_keypair(circle).unwrap();
+        let peer_id = circle_kp.public().to_peer_id().to_string();
+        let device_pk = device.device_pubkey_hex().unwrap();
+        let binding = sign_binding(&circle_kp, circle, &device_pk).unwrap();
+
+        assert!(
+            !verify_binding(&peer_id, "another-circle", &device_pk, &binding).unwrap(),
+            "replayed into another circle"
+        );
+        assert!(
+            !verify_binding(
+                &peer_id,
+                circle,
+                &other_device.device_pubkey_hex().unwrap(),
+                &binding
+            )
+            .unwrap(),
+            "claimed a different device"
+        );
+
+        let stranger_peer = other_device
+            .derive_circle_keypair(circle)
+            .unwrap()
+            .public()
+            .to_peer_id()
+            .to_string();
+        assert!(
+            !verify_binding(&stranger_peer, circle, &device_pk, &binding).unwrap(),
+            "another peer reused the signature"
+        );
     }
 
     // TOML round-trip — needs `IdentityFile` (private) and `seed` (private).
@@ -702,6 +1154,7 @@ mod tests {
                 user_handle: device.user_handle.clone(),
                 user_pubkey_hex: None,
                 user_attestation_hex: None,
+                attestation_chain: device.attestation_chain.clone(),
                 user_mnemonic: None,
                 agents: device.agents.clone(),
             };
@@ -725,7 +1178,7 @@ mod tests {
             device_label: d.device_label.clone(),
             user_handle: None,
             user_pubkey_hex: None,
-            user_attestation_hex: None,
+            attestation_chain: Vec::new(),
             agents: Vec::new(),
         };
         assert_eq!(
