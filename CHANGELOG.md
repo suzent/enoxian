@@ -184,6 +184,7 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Long chat activity messages now truncate with an ellipsis instead of overlapping neighboring statuses; hover to see the full message.
 - Renaming a device with `enox identity set-label` no longer erases the stored
   recovery phrase. Any save of the identity file used to drop it, so a rename —
   or receiving a link — silently destroyed the only copy of the user root key.
