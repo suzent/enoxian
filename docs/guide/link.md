@@ -151,7 +151,7 @@ A linked device now publishes three things alongside the name:
 | A binding | Signed with the circle key, over the device key — ties the peer ID to that device |
 | Its attestation chain | Carries the user root's authority down to the device key |
 
-The binding is needed because a per-circle key is HKDF-derived from the device seed, so a peer ID and a device key have no arithmetic relationship — without a signature there is nothing linking them.
+The binding is needed because a per-circle key is HKDF-derived from the device seed, so a peer ID and a device key have no arithmetic relationship — without a signature there is nothing linking them. It is signed by the **device** key over the circle key, so producing one needs that device's private key. Signed the other way round it would prove nothing: every peer holds its own circle key, and a device key, user key and chain are all published, so any member could pair someone else's public material with a binding of their own.
 
 `enox member list` marks a name nobody can check:
 

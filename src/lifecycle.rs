@@ -158,13 +158,16 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         let (user_pubkey_hex, device_pubkey_hex, device_binding_hex, attestation_chain) =
             match device {
                 Some(ref d) if d.attestation_is_valid() => {
-                    let device_pubkey = d.device_pubkey_hex().ok();
-                    let binding = device_pubkey.as_deref().and_then(|pk| {
-                        crate::identity::sign_binding(&keypair, &config.circle_id, pk).ok()
+                    // Signed with the *device* key over this circle key: the
+                    // device authorising the peer, not the peer claiming the
+                    // device. See `identity::binding_message` for why the other
+                    // direction is a spoof anyone in the circle can mount.
+                    let binding = d.device_keypair().ok().and_then(|dk| {
+                        crate::identity::sign_binding(&dk, &config.circle_id, &keypair).ok()
                     });
                     (
                         d.user_pubkey_hex.clone(),
-                        device_pubkey,
+                        d.device_pubkey_hex().ok(),
                         binding,
                         d.attestation_chain.clone(),
                     )

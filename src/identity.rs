@@ -543,49 +543,60 @@ fn device_public_key(seed: &[u8; 32]) -> Result<libp2p::identity::PublicKey> {
 /// it. Distinct from [`ATTESTATION_DOMAIN`] so the two can never be confused.
 const BINDING_DOMAIN: &[u8] = b"enoxian-circle-device-binding-v1";
 
-/// The bytes a device signs to claim a per-circle key as its own.
+/// The bytes a device signs to adopt a per-circle key as its own.
 ///
 /// A circle key is derived from the device seed through HKDF, so the circle
 /// *public* key cannot be recovered from the device public key — there is no
 /// arithmetic link between a peer ID and the device behind it. This signature
-/// supplies one: made with the circle key, over the device key, it says "the
-/// holder of this peer ID is that device".
+/// supplies one.
+///
+/// The direction matters, and getting it backwards is a full identity spoof.
+/// Signed by the **device** key over the **circle** key, it says "that device
+/// authorises this peer ID", and only someone holding the device's private key
+/// can say it. Signed the other way — by the circle key over the device key —
+/// it would say only "this peer claims that device", which any member can claim
+/// about anyone: a circle key is the claimant's own, and the device key, user
+/// key and chain are all published in the control doc. An attacker could then
+/// pair a victim's public material with a binding made by their own circle key
+/// and be returned as the victim.
 ///
 /// Scoped to one circle, so a binding published in a circle the user has left
 /// cannot be replayed into another.
-fn binding_message(circle_id: &str, device_pubkey_hex: &str) -> Result<Vec<u8>> {
-    let device_bytes = hex::decode(device_pubkey_hex.trim()).context("decode device pubkey")?;
-    libp2p::identity::PublicKey::try_decode_protobuf(&device_bytes)
-        .map_err(|e| anyhow::anyhow!("device public key is not a valid key: {e}"))?;
-
+fn binding_message(circle_id: &str, circle_pubkey: &[u8]) -> Result<Vec<u8>> {
     let circle = circle_id.trim().as_bytes();
-    let mut msg = Vec::with_capacity(BINDING_DOMAIN.len() + 8 + circle.len() + device_bytes.len());
+    let mut msg = Vec::with_capacity(BINDING_DOMAIN.len() + 8 + circle.len() + circle_pubkey.len());
     msg.extend_from_slice(BINDING_DOMAIN);
     msg.extend_from_slice(&(circle.len() as u32).to_be_bytes());
     msg.extend_from_slice(circle);
-    msg.extend_from_slice(&(device_bytes.len() as u32).to_be_bytes());
-    msg.extend_from_slice(&device_bytes);
+    msg.extend_from_slice(&(circle_pubkey.len() as u32).to_be_bytes());
+    msg.extend_from_slice(circle_pubkey);
     Ok(msg)
 }
 
-/// Sign the binding for `circle_id` with that circle's key.
+/// Sign, with this device's key, the adoption of `circle_keypair` for
+/// `circle_id`.
 pub fn sign_binding(
-    circle_keypair: &Keypair,
+    device_keypair: &Keypair,
     circle_id: &str,
-    device_pubkey_hex: &str,
+    circle_keypair: &Keypair,
 ) -> Result<String> {
-    let msg = binding_message(circle_id, device_pubkey_hex)?;
-    let sig = circle_keypair
+    let msg = binding_message(circle_id, &circle_keypair.public().encode_protobuf())?;
+    let sig = device_keypair
         .sign(&msg)
         .map_err(|e| anyhow::anyhow!("signing the device binding failed: {e}"))?;
     Ok(hex::encode(sig))
 }
 
-/// Whether `peer_id`'s key really did sign for `device_pubkey_hex`.
+/// Whether the device named by `device_pubkey_hex` authorised `peer_id` for
+/// this circle.
 ///
-/// The circle public key is recovered from the peer ID itself: an Ed25519 peer
-/// ID carries its key inline, so no lookup is needed and nobody gets to supply
-/// the key their own signature is checked against.
+/// Verified with the **device** key, over the circle key recovered from the
+/// peer ID itself. Both halves matter:
+///
+/// - the signature is checked against the device key, so producing one needs
+///   that device's private key — the attacker's own circle key buys nothing;
+/// - the circle key comes from the peer ID rather than from the claim, so
+///   nobody supplies the key their own signature is checked against.
 pub fn verify_binding(
     peer_id: &str,
     circle_id: &str,
@@ -601,8 +612,15 @@ pub fn verify_binding(
         // Every circle key is Ed25519, so anything else did not come from here.
         return Ok(false);
     };
+
+    let device_bytes = hex::decode(device_pubkey_hex.trim()).context("decode device pubkey")?;
+    let Ok(device_key) = libp2p::identity::PublicKey::try_decode_protobuf(&device_bytes) else {
+        return Ok(false);
+    };
+
     let sig = hex::decode(binding_hex.trim()).context("decode device binding")?;
-    Ok(circle_key.verify(&binding_message(circle_id, device_pubkey_hex)?, &sig))
+    let msg = binding_message(circle_id, &circle_key.encode_protobuf())?;
+    Ok(device_key.verify(&msg, &sig))
 }
 
 /// Recover the public key an Ed25519 peer ID carries inline.
@@ -1097,8 +1115,54 @@ mod tests {
         let peer_id = circle_kp.public().to_peer_id().to_string();
         let device_pk = device.device_pubkey_hex().unwrap();
 
-        let binding = sign_binding(&circle_kp, circle, &device_pk).unwrap();
+        let binding = sign_binding(&device.device_keypair().unwrap(), circle, &circle_kp).unwrap();
         assert!(verify_binding(&peer_id, circle, &device_pk, &binding).unwrap());
+    }
+
+    /// The attack the first version of this allowed, and the reason the
+    /// signature is made by the device key rather than the circle key.
+    ///
+    /// Everything a peer publishes about its identity — user key, device key,
+    /// attestation chain — is readable by every member. If the binding were
+    /// signed by the *circle* key, a member could pair that public material with
+    /// a binding made by their own circle key and be returned as the victim.
+    /// Signing with the device key means the proof needs the victim's device
+    /// private key, which is never published.
+    #[test]
+    fn a_member_cannot_bind_someone_elses_device_to_their_own_peer() {
+        let circle = "8e563c41-f0ec-4225-9764-064f1fb04341";
+        let victim = DeviceIdentity::generate("victim-laptop".into());
+        let victim_device_pk = victim.device_pubkey_hex().unwrap();
+
+        // An ordinary member of the same circle, with their own circle key.
+        let attacker = DeviceIdentity::generate("attacker".into());
+        let attacker_circle_kp = attacker.derive_circle_keypair(circle).unwrap();
+        let attacker_peer = attacker_circle_kp.public().to_peer_id().to_string();
+
+        // Everything they can copy from the control doc, plus a binding they
+        // sign themselves with the one key they do control.
+        let forged = sign_binding(
+            &attacker.device_keypair().unwrap(),
+            circle,
+            &attacker_circle_kp,
+        )
+        .unwrap();
+        assert!(
+            !verify_binding(&attacker_peer, circle, &victim_device_pk, &forged).unwrap(),
+            "an attacker bound the victim's device to their own peer"
+        );
+
+        // Nor by signing with the circle key, which is what the broken version
+        // verified against.
+        let circle_signed = {
+            let msg =
+                binding_message(circle, &attacker_circle_kp.public().encode_protobuf()).unwrap();
+            hex::encode(attacker_circle_kp.sign(&msg).unwrap())
+        };
+        assert!(
+            !verify_binding(&attacker_peer, circle, &victim_device_pk, &circle_signed).unwrap(),
+            "a circle-key signature was accepted for someone else's device"
+        );
     }
 
     /// A binding is scoped to one circle and one device: it must not carry over
@@ -1111,7 +1175,8 @@ mod tests {
         let circle_kp = device.derive_circle_keypair(circle).unwrap();
         let peer_id = circle_kp.public().to_peer_id().to_string();
         let device_pk = device.device_pubkey_hex().unwrap();
-        let binding = sign_binding(&circle_kp, circle, &device_pk).unwrap();
+        let device_kp = device.device_keypair().unwrap();
+        let binding = sign_binding(&device_kp, circle, &circle_kp).unwrap();
 
         assert!(
             !verify_binding(&peer_id, "another-circle", &device_pk, &binding).unwrap(),
@@ -1137,6 +1202,15 @@ mod tests {
         assert!(
             !verify_binding(&stranger_peer, circle, &device_pk, &binding).unwrap(),
             "another peer reused the signature"
+        );
+
+        // A binding the device made for one of its own circle keys must not be
+        // reusable for a different circle key of the same device.
+        let sibling = device.derive_circle_keypair("sibling-circle").unwrap();
+        let sibling_peer = sibling.public().to_peer_id().to_string();
+        assert!(
+            !verify_binding(&sibling_peer, circle, &device_pk, &binding).unwrap(),
+            "reused across the device's own circle keys"
         );
     }
 

@@ -305,7 +305,9 @@ mod owner_claim_tests {
             sig: hex::encode(circle_kp.sign(format!("owner:{owner}").as_bytes()).unwrap()),
             user_pubkey_hex: device.user_pubkey_hex.clone(),
             device_pubkey_hex: Some(device_pk.clone()),
-            device_binding_hex: Some(sign_binding(&circle_kp, CIRCLE, &device_pk).unwrap()),
+            device_binding_hex: Some(
+                sign_binding(&device.device_keypair().unwrap(), CIRCLE, &circle_kp).unwrap(),
+            ),
             attestation_chain: device.attestation_chain.clone(),
         };
         (peer_id, claim)
@@ -389,6 +391,55 @@ mod owner_claim_tests {
             "proofs must not transfer to another peer"
         );
         assert_ne!(genuine, String::new());
+    }
+
+    /// The spoof the first version of the binding allowed, end to end.
+    ///
+    /// Reusing the victim's binding verbatim fails on the peer id, which the
+    /// test above covers. The real attack does not reuse it: everything a peer
+    /// publishes about its identity is readable by every member, so an attacker
+    /// takes the victim's user key, device key and chain, and mints a *fresh*
+    /// binding with the one key they control. That passed, and `verified_user`
+    /// returned the victim.
+    #[test]
+    fn a_member_cannot_mint_a_binding_to_wear_another_identity() {
+        let (suzy, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let victim = linked_device(&suzy, "victim-laptop");
+        let (victim_peer, victim_claim) = claim_for(&victim, "suzy");
+        assert!(
+            victim_claim.verified_user(&victim_peer, CIRCLE).is_some(),
+            "the genuine claim should verify"
+        );
+
+        // An ordinary member of the circle, with their own device and circle key.
+        let attacker = DeviceIdentity::generate("attacker".into());
+        let attacker_circle_kp = attacker.derive_circle_keypair(CIRCLE).unwrap();
+        let attacker_peer = attacker_circle_kp.public().to_peer_id().to_string();
+
+        let forged = OwnerClaim {
+            owner: "suzy".into(),
+            // Signed with the attacker's own circle key — they hold it.
+            sig: hex::encode(attacker_circle_kp.sign(b"owner:suzy").unwrap()),
+            // Copied wholesale from what the victim published.
+            user_pubkey_hex: victim_claim.user_pubkey_hex.clone(),
+            device_pubkey_hex: victim_claim.device_pubkey_hex.clone(),
+            attestation_chain: victim_claim.attestation_chain.clone(),
+            // Minted fresh, with the only private key the attacker has.
+            device_binding_hex: Some(
+                crate::identity::sign_binding(
+                    &attacker.device_keypair().unwrap(),
+                    CIRCLE,
+                    &attacker_circle_kp,
+                )
+                .unwrap(),
+            ),
+        };
+
+        assert_eq!(
+            forged.verified_user(&attacker_peer, CIRCLE),
+            None,
+            "an attacker was returned as the victim"
+        );
     }
 
     /// A claim from a device that was never linked is unproven, not rejected —
