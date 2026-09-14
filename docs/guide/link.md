@@ -52,6 +52,8 @@ Both devices then show the same six-digit number. Compare them, answer `y` on ea
 
 The user root key never leaves the device that holds it. The new device ends up with an identity of its own, which means it can be removed on its own — a copied root key could not be.
 
+The receiving device checks the attestation against the key it generated for itself before writing anything, so an attestation that proves nothing never reaches disk. It also refuses to join a *different* user identity than one it already belongs to — moving a device between identities is not something to do by accident.
+
 Check the result with `enox identity show`, which verifies the signature rather than just reporting that one is present:
 
 ```
@@ -89,6 +91,7 @@ The server is trusted with nothing:
 - The offer is sealed under a key derived from the code, so the operator cannot read the new device's key or hostname.
 - The payload is sealed under the X25519 secret, which the server never has.
 - A substituted message fails the confirmation number.
+- Pairing requests carry no credentials. The CLI's usual HTTP client sends the local daemon's bearer token on every request; the mailbox is deliberately given a separate client with no ambient credentials, so a pairing server never sees one.
 
 An operator learns that two devices paired, and roughly when. Mailboxes are write-once per slot, capped in size and number, and expire after two minutes. Each source gets 60 requests per 10 seconds — about four times what a real pairing needs — counted per IPv4 address and per IPv6 `/64`.
 
@@ -114,6 +117,7 @@ Words are separated by spaces. One word on the list — `yo-yo` — contains a h
 - **Circles are joined, not yet admitted.** The new device writes a pending entry carrying the invite grant, exactly as `enox enter` does. It is admitted under each circle's own join policy.
 - **Invites in a link payload last 24 hours.** They are meant to be redeemed within seconds; the window is slack for a machine paired now and started later.
 - **One code, one device.** A code admits a single offer. Run `enox link` again for another machine.
+- **A device belongs to one identity.** Linking a device that already belongs to a different user is refused rather than silently reassigned.
 
 ---
 

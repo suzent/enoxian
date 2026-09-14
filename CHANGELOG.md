@@ -52,6 +52,24 @@ refuses to publish a version whose section is missing or empty.
 - `enox identity show` now says whether a device's attestation actually
   verifies, rather than only that one is present.
 
+### Fixed
+
+- Renaming a device with `enox identity set-label` no longer erases the stored
+  recovery phrase. Any save of the identity file used to drop it, so a rename —
+  or receiving a link — silently destroyed the only copy of the user root key.
+
+- Renaming a device no longer invalidates its attestation. The device label was
+  part of what the attestation signed, so a rename permanently broke it with no
+  way to reissue one.
+
+### Security
+
+- `enox link` and rendezvous address resolution no longer send the local
+  daemon's API token to the remote bootstrap server. Both used the CLI's shared
+  HTTP client, which carries that token as a default header, so talking to a
+  pairing or bootstrap host disclosed a privileged local credential over plain
+  HTTP.
+
 ### Changed
 
 - Invite links are much shorter. A typical `enox invite` link is now around 300

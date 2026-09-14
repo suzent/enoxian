@@ -47,7 +47,18 @@ const INVITE_TTL: &str = "24h";
 
 const POLL_INTERVAL: Duration = Duration::from_millis(700);
 
-pub async fn run(args: LinkArgs, client: &reqwest::Client) -> Result<()> {
+/// Most a mailbox slot can hold, mirroring the server's own cap with a little
+/// slack. `--server` can name any host, so the client does not take the
+/// server's word for how much it is about to be sent.
+const MAX_REPLY: u64 = 80 * 1024;
+
+pub async fn run(args: LinkArgs, _daemon_client: &reqwest::Client) -> Result<()> {
+    // Deliberately not the caller's client. That one carries the local daemon's
+    // bearer token as a default header, and every request below goes to a
+    // bootstrap host over plain HTTP — handing a privileged local credential to
+    // whoever runs it, before the user has confirmed anything.
+    let client = &crate::outbound::client();
+
     let server = match args.server {
         Some(ref s) => s.clone(),
         None => crate::defaults::DEFAULT_RENDEZVOUS
@@ -157,8 +168,11 @@ fn build_payload(
     // device's key, which `offer()` says out loud rather than leaving to be
     // discovered later.
     let user = device.user_identity()?;
+    // `attest_device` refuses a device key that is not a decodable libp2p key,
+    // so a target cannot use this step to have the root key sign bytes of its
+    // own choosing.
     let attestation = match user {
-        Some(ref u) => Some(u.attest_device(&offer.device_pubkey_hex, &offer.device_label)?),
+        Some(ref u) => Some(u.attest_device(&offer.device_pubkey_hex)?),
         None => None,
     };
     let user_pubkey_hex = match user {
@@ -278,12 +292,31 @@ async fn join(code_input: &str, base: &str, client: &reqwest::Client) -> Result<
     // not confirm cannot reach this code at all.
     let payload = agreed.open_payload(&sealed_payload)?;
 
+    // A device that already belongs to one user must not be quietly moved to
+    // another. Refuse before writing anything; re-linking to the same identity
+    // is fine and re-attests.
+    if let (Some(existing), Some(incoming)) = (
+        device.claimed_user_pubkey(),
+        payload.user_pubkey_hex.as_deref(),
+    ) {
+        if existing != incoming {
+            bail!(
+                "this device already belongs to user '{}' — linking it to a different \
+                 identity would strand it. Run `enox identity show` on both devices, and \
+                 remove this one from the old identity first if that is what you want.",
+                device.user_handle.as_deref().unwrap_or("(unknown)")
+            );
+        }
+    }
+
     if let (Some(handle), Some(pubkey), Some(attestation)) = (
         payload.user_handle.clone(),
         payload.user_pubkey_hex.clone(),
         payload.user_attestation_hex.clone(),
     ) {
-        device.adopt_attestation(handle.clone(), pubkey, attestation);
+        // Checked against this device's own key inside `adopt_attestation`, so
+        // an attestation that proves nothing is never written to disk.
+        device.adopt_attestation(handle.clone(), pubkey, attestation)?;
         device.save()?;
         println!("  Linked to user '{handle}'.");
     } else if let Some(handle) = payload.user_handle.clone() {
@@ -369,11 +402,19 @@ async fn poll(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
             .await
             .context("could not reach the pairing server")?;
         if resp.status().is_success() {
-            return Ok(resp
-                .bytes()
-                .await
-                .context("reading the pairing reply")?
-                .to_vec());
+            // A slot is capped at `MAX_SLOT` server-side, but `--server` can
+            // name any host, so the cap is enforced here too rather than
+            // buffering whatever arrives.
+            if let Some(len) = resp.content_length() {
+                if len > MAX_REPLY {
+                    bail!("the pairing server returned an implausibly large reply");
+                }
+            }
+            let body = resp.bytes().await.context("reading the pairing reply")?;
+            if body.len() as u64 > MAX_REPLY {
+                bail!("the pairing server returned an implausibly large reply");
+            }
+            return Ok(body.to_vec());
         }
         if Instant::now() >= deadline {
             bail!(

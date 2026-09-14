@@ -90,13 +90,23 @@ impl DeviceIdentity {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        // Carry the recovery phrase forward. It lives only in the file —
+        // `DeviceIdentity` has nowhere to hold it — so rewriting without
+        // reading first destroys the single copy of the user root key. This
+        // used to happen on every `enox identity set-label` and on receiving a
+        // link, silently and with no way back.
+        let user_mnemonic = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| toml::from_str::<IdentityFile>(&raw).ok())
+            .and_then(|existing| existing.user_mnemonic);
+
         let file = IdentityFile {
             device_key_hex: hex::encode(self.seed),
             device_label: self.device_label.clone(),
             user_handle: self.user_handle.clone(),
             user_pubkey_hex: self.user_pubkey_hex.clone(),
             user_attestation_hex: self.user_attestation_hex.clone(),
-            user_mnemonic: None, // never write mnemonic back
+            user_mnemonic,
             agents: self.agents.clone(),
         };
         let toml = toml::to_string_pretty(&file).context("serialize identity")?;
@@ -186,15 +196,36 @@ impl DeviceIdentity {
     /// Deliberately takes the attestation rather than the root key: the device
     /// that signed keeps the only copy, and this device gets an identity of its
     /// own that can be revoked without touching the others.
+    ///
+    /// The signature is checked here, against this device's own key, so a
+    /// device cannot end up storing an identity it has no proof of. Storing one
+    /// unchecked would be invisible until something tried to rely on it.
     pub fn adopt_attestation(
         &mut self,
         handle: String,
         user_pubkey_hex: String,
         attestation_hex: String,
-    ) {
+    ) -> Result<()> {
+        let device_pubkey_hex = hex::encode(self.device_keypair()?.public().encode_protobuf());
+        if !UserIdentity::verify_attestation(
+            &user_pubkey_hex,
+            &device_pubkey_hex,
+            &attestation_hex,
+        )? {
+            bail!(
+                "the attestation from the other device does not cover this device's key — \
+                 nothing was saved"
+            );
+        }
         self.user_handle = Some(handle);
         self.user_pubkey_hex = Some(user_pubkey_hex);
         self.user_attestation_hex = Some(attestation_hex);
+        Ok(())
+    }
+
+    /// The user identity this device already claims, if any.
+    pub fn claimed_user_pubkey(&self) -> Option<&str> {
+        self.user_pubkey_hex.as_deref()
     }
 
     // ── Display helpers ───────────────────────────────────────────────────────
@@ -260,16 +291,14 @@ impl UserIdentity {
         Ok(hex::encode(self.keypair()?.public().encode_protobuf()))
     }
 
-    /// Sign an attestation binding a device pubkey to this user.
-    /// Returns hex-encoded signature over (device_pubkey_bytes || device_label).
-    pub fn attest_device(&self, device_pubkey_hex: &str, device_label: &str) -> Result<String> {
-        let kp = self.keypair()?;
-        let device_bytes = hex::decode(device_pubkey_hex).context("decode device pubkey")?;
-        let mut msg = device_bytes;
-        msg.extend_from_slice(device_label.as_bytes());
-        let ed = kp.try_into_ed25519().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let sig = ed.sign(&msg);
-        Ok(hex::encode(sig))
+    /// Sign an attestation binding a device public key to this user.
+    pub fn attest_device(&self, device_pubkey_hex: &str) -> Result<String> {
+        let msg = attestation_message(device_pubkey_hex)?;
+        let ed = self
+            .keypair()?
+            .try_into_ed25519()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(hex::encode(ed.sign(&msg)))
     }
 
     /// Check an attestation against the user key that supposedly signed it.
@@ -281,23 +310,19 @@ impl UserIdentity {
     pub fn verify_attestation(
         user_pubkey_hex: &str,
         device_pubkey_hex: &str,
-        device_label: &str,
         attestation_hex: &str,
     ) -> Result<bool> {
         let user_bytes = hex::decode(user_pubkey_hex.trim()).context("decode user pubkey")?;
         let user_key = libp2p::identity::PublicKey::try_decode_protobuf(&user_bytes)
             .map_err(|e| anyhow::anyhow!("invalid user public key: {e}"))?;
         let sig = hex::decode(attestation_hex.trim()).context("decode attestation")?;
-
-        let mut msg = hex::decode(device_pubkey_hex.trim()).context("decode device pubkey")?;
-        msg.extend_from_slice(device_label.as_bytes());
-        Ok(user_key.verify(&msg, &sig))
+        Ok(user_key.verify(&attestation_message(device_pubkey_hex)?, &sig))
     }
 
     /// Link this user to a device identity (mutates device; saves both).
     pub fn link_device(&self, device: &mut DeviceIdentity, mnemonic: &str) -> Result<()> {
         let device_pubkey = hex::encode(device.device_keypair()?.public().encode_protobuf());
-        let attestation = self.attest_device(&device_pubkey, &device.device_label)?;
+        let attestation = self.attest_device(&device_pubkey)?;
         device.user_handle = Some(self.handle.clone());
         device.user_pubkey_hex = Some(self.pubkey_hex()?);
         device.user_attestation_hex = Some(attestation);
@@ -316,6 +341,37 @@ impl UserIdentity {
         }
         Ok(())
     }
+}
+
+/// Domain tag on an attestation, so a signature made here can never be read as
+/// one made by some other part of the system with the same key.
+const ATTESTATION_DOMAIN: &[u8] = b"enoxian-device-attestation-v1";
+
+/// The exact bytes an attestation covers.
+///
+/// Length-prefixed, and over the device key alone. The previous encoding was
+/// `device_pubkey_bytes || device_label` with no prefix, which is ambiguous:
+/// an attestation for (key `AABB`, label `CC`) covers the identical bytes as
+/// one for (key `AABBCC`, label ``), so a single signature could be claimed by
+/// two different device identities. Nothing validated the key either, so the
+/// "key" could be any length the claimant liked.
+///
+/// The label is deliberately not signed. It is a display name the user can
+/// change at will, and binding it here meant `enox identity set-label` silently
+/// and permanently invalidated the device's attestation.
+fn attestation_message(device_pubkey_hex: &str) -> Result<Vec<u8>> {
+    let device_bytes = hex::decode(device_pubkey_hex.trim()).context("decode device pubkey")?;
+    // A device key is a libp2p public key. Refusing anything else keeps the
+    // root key from being talked into signing bytes of somebody's choosing.
+    libp2p::identity::PublicKey::try_decode_protobuf(&device_bytes)
+        .map_err(|e| anyhow::anyhow!("device public key is not a valid key: {e}"))?;
+
+    let len = u32::try_from(device_bytes.len()).context("device pubkey is implausibly long")?;
+    let mut msg = Vec::with_capacity(ATTESTATION_DOMAIN.len() + 4 + device_bytes.len());
+    msg.extend_from_slice(ATTESTATION_DOMAIN);
+    msg.extend_from_slice(&len.to_be_bytes());
+    msg.extend_from_slice(&device_bytes);
+    Ok(msg)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -443,6 +499,114 @@ mod tests {
         assert!(advertisable(&cmd(&["npx", "some-acp-agent"])));
     }
 
+    /// The recovery phrase lives only in the file, so every `save` has to carry
+    /// it forward. It used not to: `enox identity set-label` and receiving a
+    /// link both rewrote identity.toml without it, destroying the only copy of
+    /// the user root key with no way back.
+    #[test]
+    fn saving_does_not_destroy_the_recovery_phrase() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("ENOXIAN_HOME", home.path());
+
+        let (user, mnemonic) = UserIdentity::generate("suzy".into()).unwrap();
+        let mut device = DeviceIdentity::generate("first-machine".into());
+        device.save().unwrap();
+        user.link_device(&mut device, &mnemonic).unwrap();
+
+        let stored = |()| -> Option<String> {
+            let raw = std::fs::read_to_string(home.path().join("identity.toml")).unwrap();
+            toml::from_str::<IdentityFile>(&raw).unwrap().user_mnemonic
+        };
+        assert_eq!(stored(()).as_deref(), Some(mnemonic.as_str()));
+
+        // Any ordinary save — a rename, adopting a handle, receiving a link.
+        device.device_label = "renamed".into();
+        device.save().unwrap();
+        assert_eq!(
+            stored(()).as_deref(),
+            Some(mnemonic.as_str()),
+            "a plain save erased the recovery phrase"
+        );
+
+        // And the device can still act as the root holder afterwards.
+        assert!(device.user_identity().unwrap().is_some());
+        std::env::remove_var("ENOXIAN_HOME");
+    }
+
+    /// The label is a display name the user can change. Binding it into the
+    /// signature meant renaming a device permanently invalidated its
+    /// attestation, with no way to reissue one.
+    #[test]
+    fn renaming_a_device_does_not_invalidate_its_attestation() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let mut device = DeviceIdentity::generate("before".into());
+        let device_pubkey =
+            hex::encode(device.device_keypair().unwrap().public().encode_protobuf());
+        let attestation = user.attest_device(&device_pubkey).unwrap();
+
+        device.device_label = "after".into();
+        assert!(UserIdentity::verify_attestation(
+            &user.pubkey_hex().unwrap(),
+            &device_pubkey,
+            &attestation
+        )
+        .unwrap());
+    }
+
+    /// The signed bytes must name exactly one device key. The old encoding was
+    /// `pubkey_bytes || label` with no length prefix, so an attestation for
+    /// (key `AABB`, label `CC`) covered the same bytes as one for (key
+    /// `AABBCC`, label ``) — one signature, two device identities.
+    #[test]
+    fn an_attestation_cannot_be_reinterpreted_as_another_key() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let device = DeviceIdentity::generate("machine".into());
+        let key = device.device_keypair().unwrap().public().encode_protobuf();
+        let attestation = user.attest_device(&hex::encode(&key)).unwrap();
+        let user_pubkey = user.pubkey_hex().unwrap();
+
+        // The same bytes with something appended must not verify.
+        let mut extended = key.clone();
+        extended.push(0x61);
+        assert!(
+            !UserIdentity::verify_attestation(&user_pubkey, &hex::encode(&extended), &attestation)
+                .unwrap_or(false),
+            "a longer key reused the signature"
+        );
+    }
+
+    /// A device key has to be a real key. Without that check the root key will
+    /// sign whatever bytes a peer sends during `enox link`.
+    #[test]
+    fn the_root_key_refuses_to_sign_something_that_is_not_a_key() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        assert!(user
+            .attest_device(&hex::encode(b"not a key at all"))
+            .is_err());
+        assert!(user.attest_device("").is_err());
+        assert!(user.attest_device("nothex").is_err());
+    }
+
+    /// An attestation that does not cover this device must never reach disk —
+    /// storing one unchecked is invisible until something relies on it.
+    #[test]
+    fn adopting_refuses_an_attestation_for_a_different_device() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let other = DeviceIdentity::generate("someone-else".into());
+        let other_pubkey = hex::encode(other.device_keypair().unwrap().public().encode_protobuf());
+        let attestation = user.attest_device(&other_pubkey).unwrap();
+
+        let mut mine = DeviceIdentity::generate("mine".into());
+        let err = mine
+            .adopt_attestation("suzy".into(), user.pubkey_hex().unwrap(), attestation)
+            .unwrap_err();
+        assert!(err.to_string().contains("does not cover"), "got: {err}");
+        assert!(
+            mine.user_pubkey_hex.is_none(),
+            "nothing should have been set"
+        );
+    }
+
     /// An attestation must verify against the user key that signed it, and
     /// against nothing else. `enox link` sends one to another device, so a
     /// signature over the wrong bytes would be discovered only much later.
@@ -453,48 +617,43 @@ mod tests {
         let device_pubkey =
             hex::encode(device.device_keypair().unwrap().public().encode_protobuf());
 
-        let attestation = user
-            .attest_device(&device_pubkey, &device.device_label)
-            .unwrap();
-        let user_pubkey = user.pubkey_hex().unwrap();
-
+        let attestation = user.attest_device(&device_pubkey).unwrap();
         assert!(UserIdentity::verify_attestation(
-            &user_pubkey,
+            &user.pubkey_hex().unwrap(),
             &device_pubkey,
-            &device.device_label,
             &attestation
         )
         .unwrap());
     }
 
-    /// The label is signed too, so neither half can be swapped for another
-    /// device's — otherwise an attestation would transfer between machines.
+    /// An attestation names one device and one user. Neither end may be swapped
+    /// for another's, or it would transfer between machines or identities.
     #[test]
-    fn an_attestation_does_not_transfer_to_another_device_or_label() {
+    fn an_attestation_does_not_transfer_to_another_device_or_user() {
         let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
         let device = DeviceIdentity::generate("suzy-laptop".into());
         let other = DeviceIdentity::generate("someone-else".into());
         let device_pubkey =
             hex::encode(device.device_keypair().unwrap().public().encode_protobuf());
         let other_pubkey = hex::encode(other.device_keypair().unwrap().public().encode_protobuf());
-        let attestation = user.attest_device(&device_pubkey, "suzy-laptop").unwrap();
+        let attestation = user.attest_device(&device_pubkey).unwrap();
         let user_pubkey = user.pubkey_hex().unwrap();
 
-        let check = |pk: &str, label: &str| {
-            UserIdentity::verify_attestation(&user_pubkey, pk, label, &attestation).unwrap()
-        };
-        assert!(!check(&other_pubkey, "suzy-laptop"), "device key swapped");
-        assert!(!check(&device_pubkey, "someone-else"), "label swapped");
+        assert!(
+            !UserIdentity::verify_attestation(&user_pubkey, &other_pubkey, &attestation).unwrap(),
+            "device key swapped"
+        );
 
-        // Nor against a different user's key.
         let (other_user, _) = UserIdentity::generate("mallory".into()).unwrap();
-        assert!(!UserIdentity::verify_attestation(
-            &other_user.pubkey_hex().unwrap(),
-            &device_pubkey,
-            "suzy-laptop",
-            &attestation
-        )
-        .unwrap());
+        assert!(
+            !UserIdentity::verify_attestation(
+                &other_user.pubkey_hex().unwrap(),
+                &device_pubkey,
+                &attestation
+            )
+            .unwrap(),
+            "user key swapped"
+        );
     }
 
     /// `adopt_attestation` is what a linked device runs. It must take on the
@@ -506,27 +665,26 @@ mod tests {
         let mut device = DeviceIdentity::generate("new-machine".into());
         let device_pubkey =
             hex::encode(device.device_keypair().unwrap().public().encode_protobuf());
-        let attestation = user
-            .attest_device(&device_pubkey, &device.device_label)
-            .unwrap();
+        let attestation = user.attest_device(&device_pubkey).unwrap();
 
-        device.adopt_attestation(
-            "suzy".into(),
-            user.pubkey_hex().unwrap(),
-            attestation.clone(),
-        );
+        device
+            .adopt_attestation(
+                "suzy".into(),
+                user.pubkey_hex().unwrap(),
+                attestation.clone(),
+            )
+            .unwrap();
 
         assert_eq!(device.user_handle.as_deref(), Some("suzy"));
         assert!(UserIdentity::verify_attestation(
             device.user_pubkey_hex.as_ref().unwrap(),
             &device_pubkey,
-            &device.device_label,
             &attestation
         )
         .unwrap());
         // The root key is not among what it took on: adopting sets the handle,
         // the user public key and the signature, and nothing else. That the
-        // mnemonic is never written is `save`'s job, covered separately.
+        // mnemonic survives a save is `save`'s job, covered separately.
         assert!(device.user_attestation_hex.is_some());
     }
 

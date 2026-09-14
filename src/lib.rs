@@ -16,6 +16,7 @@ pub mod invite;
 pub mod lifecycle;
 pub mod mls;
 pub mod network;
+pub mod outbound;
 pub mod pair_mailbox;
 pub mod pairing;
 pub mod presence;

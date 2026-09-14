@@ -37,12 +37,7 @@ fn show() -> Result<()> {
         let verdict = match device.user_pubkey_hex.as_ref() {
             Some(pk) => {
                 let device_pubkey = hex::encode(kp.public().encode_protobuf());
-                match UserIdentity::verify_attestation(
-                    pk,
-                    &device_pubkey,
-                    &device.device_label,
-                    attestation,
-                ) {
+                match UserIdentity::verify_attestation(pk, &device_pubkey, attestation) {
                     Ok(true) => "valid",
                     Ok(false) => "DOES NOT VERIFY — re-link this device",
                     Err(_) => "unreadable",

@@ -10,10 +10,13 @@ use anyhow::{bail, Context, Result};
 /// For the short forms, the CLI fetches `GET http://<host>:<port>/peer-id` from the
 /// bootstrap server's built-in HTTP endpoint, then constructs the full multiaddr.
 /// Default port: 36521.
-pub async fn resolve(input: &str, client: &reqwest::Client) -> Result<String> {
+pub async fn resolve(input: &str, _daemon_client: &reqwest::Client) -> Result<String> {
     if input.starts_with('/') {
         return Ok(input.to_string());
     }
+    // Not the caller's client: it carries the local daemon's bearer token as a
+    // default header, and `<host>/peer-id` is somebody else's server.
+    let client = &crate::outbound::client();
 
     let (host, port) = split_host_port(input, 36521);
 
@@ -79,10 +82,12 @@ pub async fn resolve_default_relay() -> Option<String> {
 /// Short host forms use the same HTTP `/peer-id` endpoint as rendezvous
 /// resolution, but relay traffic itself runs on TCP port `http_port + 1` by
 /// default so it does not collide with the HTTP control endpoint.
-pub async fn resolve_relay(input: &str, client: &reqwest::Client) -> Result<String> {
+pub async fn resolve_relay(input: &str, _daemon_client: &reqwest::Client) -> Result<String> {
     if input.starts_with('/') {
         return Ok(input.to_string());
     }
+    // As `resolve`: a bootstrap host must not be handed daemon credentials.
+    let client = &crate::outbound::client();
 
     let (host, http_port) = split_host_port(input, 36521);
     let relay_port = http_port.saturating_add(1);

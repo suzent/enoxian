@@ -45,6 +45,15 @@ const MAX_SLOT: usize = 64 * 1024;
 /// flight is confusing.
 const MAX_MAILBOXES: usize = 1024;
 
+/// Sources tracked for rate limiting at once.
+///
+/// The limiter needs a bound of its own, or it becomes the thing it was added
+/// to prevent: one entry per distinct source, and over IPv6 a single host
+/// commonly controls enough /64s to add them faster than the window retires
+/// them. Past this, a source with no entry yet is refused — fail closed, the
+/// same as the mailbox cap.
+const MAX_TRACKED_SOURCES: usize = 8192;
+
 /// A mailbox id is the hex of a 32-byte HKDF output. Anything else is not one.
 const ID_LEN: usize = 32;
 
@@ -150,6 +159,12 @@ impl MailboxState {
     /// Charge one request against a source's budget. `false` means refuse.
     fn allow(inner: &mut Inner, key: RateKey) -> bool {
         let now = Instant::now();
+        // A source already being tracked is always charged; only a new one can
+        // be turned away for want of room, so the table cannot be grown without
+        // limit by arriving from ever more addresses.
+        if !inner.seen.contains_key(&key) && inner.seen.len() >= MAX_TRACKED_SOURCES {
+            return false;
+        }
         let entry = inner.seen.entry(key).or_insert((0, now));
         if now.duration_since(entry.1) >= RATE_WINDOW {
             *entry = (0, now);
@@ -549,6 +564,70 @@ mod tests {
 
         assert_eq!(RateKey::from(a), RateKey::from(b), "same /64");
         assert_ne!(RateKey::from(a), RateKey::from(elsewhere), "different /64");
+    }
+
+    /// The limiter needs a bound of its own, or it becomes the thing it was
+    /// added to prevent — one entry per source, grown from ever more addresses.
+    #[tokio::test]
+    async fn the_tracking_table_cannot_be_grown_without_limit() {
+        let state = MailboxState::new();
+        for i in 0..MAX_TRACKED_SOURCES {
+            let _ = get_slot(
+                State(state.clone()),
+                peer_seq(i),
+                Path((id(), "offer".to_string())),
+            )
+            .await;
+        }
+        assert_eq!(state.0.lock().await.seen.len(), MAX_TRACKED_SOURCES);
+
+        // A source with no entry yet is turned away rather than admitted.
+        assert_eq!(
+            get_slot(
+                State(state.clone()),
+                peer_seq(MAX_TRACKED_SOURCES + 1),
+                Path((id(), "offer".to_string())),
+            )
+            .await
+            .0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(state.0.lock().await.seen.len(), MAX_TRACKED_SOURCES);
+    }
+
+    /// A source already being tracked keeps its budget when the table is full,
+    /// so a flood of new addresses cannot push a live pairing out.
+    #[tokio::test]
+    async fn a_tracked_source_still_works_when_the_table_is_full() {
+        let state = MailboxState::new();
+        let mine = peer_seq(0);
+        let _ = get_slot(
+            State(state.clone()),
+            mine,
+            Path((id(), "offer".to_string())),
+        )
+        .await;
+
+        for i in 1..MAX_TRACKED_SOURCES + 50 {
+            let _ = get_slot(
+                State(state.clone()),
+                peer_seq(i),
+                Path((id(), "offer".to_string())),
+            )
+            .await;
+        }
+
+        assert_ne!(
+            get_slot(
+                State(state.clone()),
+                mine,
+                Path((id(), "offer".to_string())),
+            )
+            .await
+            .0,
+            StatusCode::TOO_MANY_REQUESTS,
+            "a live pairing was pushed out by a flood of new sources"
+        );
     }
 
     /// Nothing may outlive the pairing window, or the server becomes storage.

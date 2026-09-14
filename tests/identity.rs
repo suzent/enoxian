@@ -136,9 +136,7 @@ fn attestation_signature_is_64_bytes() {
     let (user, _) = UserIdentity::generate("alice".to_string()).unwrap();
     let device = DeviceIdentity::generate("laptop".to_string());
     let device_pubkey = hex::encode(device.device_keypair().unwrap().public().encode_protobuf());
-    let attestation = user
-        .attest_device(&device_pubkey, &device.device_label)
-        .unwrap();
+    let attestation = user.attest_device(&device_pubkey).unwrap();
     // Ed25519 signature = 64 bytes → 128 hex chars
     assert_eq!(
         attestation.len(),
@@ -155,12 +153,8 @@ fn different_users_produce_different_attestations_for_same_device() {
     let (u1, _) = UserIdentity::generate("alice".to_string()).unwrap();
     let (u2, _) = UserIdentity::generate("bob".to_string()).unwrap();
 
-    let att1 = u1
-        .attest_device(&device_pubkey, &device.device_label)
-        .unwrap();
-    let att2 = u2
-        .attest_device(&device_pubkey, &device.device_label)
-        .unwrap();
+    let att1 = u1.attest_device(&device_pubkey).unwrap();
+    let att2 = u2.attest_device(&device_pubkey).unwrap();
     assert_ne!(att1, att2);
 }
 
