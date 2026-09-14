@@ -186,7 +186,7 @@ struct P2PInfo {
 ///
 /// The key names the blob and unseals it, so the relay is handed an id that
 /// says nothing about the key and a body it cannot read.
-async fn shorten(uri: &str, rendezvous_addr: Option<&str>) -> Result<String> {
+pub(crate) async fn shorten(uri: &str, rendezvous_addr: Option<&str>) -> Result<String> {
     // The same rendezvous server this invite embeds, so a joiner that can reach
     // the circle can reach its invite too — and so `--rendezvous` aims both at
     // once. Reading it back out of the circle config instead would ignore that

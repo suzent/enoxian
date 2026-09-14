@@ -82,6 +82,15 @@ async fn resolve_short(uri: &str, _daemon_client: &reqwest::Client) -> Result<St
     String::from_utf8(plain).context("the invite behind this link is not valid text")
 }
 
+/// Resolve once before decoding, shared by the CLI and management API.
+pub(crate) async fn resolve_target(target: &str, client: &reqwest::Client) -> Result<String> {
+    if invite::is_short(target) {
+        resolve_short(target, client).await
+    } else {
+        Ok(target.to_owned())
+    }
+}
+
 pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
     // ── Step 1: Resolve credentials from invite URI or legacy flags ───────────
     let (
@@ -97,11 +106,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         // A short invite carries only a key; its contents are sealed on a
         // relay. Fetch and open before anything else, so everything downstream
         // sees an ordinary invite.
-        let target = if invite::is_short(&args.target) {
-            resolve_short(&args.target, client).await?
-        } else {
-            args.target.clone()
-        };
+        let target = resolve_target(&args.target, client).await?;
         let mut payload = invite::decode(&target)?;
         invite::check_expiry(&payload)?;
         // An invite that named the default relay or rendezvous server carried a

@@ -44,6 +44,10 @@ refuses to publish a version whose section is missing or empty.
 - Relay operators and clients can query `GET /version` for the running package
   version and support for short invites and device linking, without SSH access.
 
+- The web interface now creates short invites, with a full-invite option and
+  automatic fallback when the relay is unavailable or has not been updated.
+  Joining through a short invite now starts the Circle immediately.
+
 - Any linked device can now link the next one. Previously only the device you
   ran `enox identity create-user` on could, because only it stored the recovery
   phrase. A linked device now extends the signature chain it already holds,
