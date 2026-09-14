@@ -91,7 +91,7 @@ A Circle is the shared workspace. Run this once on any machine:
   peer-id   : 12D3KooW...
   workspace : /Users/suzy/enoxian/MyCircle
 
-  invite    : enoxian://v1/CRxkUjpNaBcDeFgH...
+  invite    : enoxian://v2/CRxkUjpNaBcDeFgH...
 
   Share the invite link to let peers join (valid for 7d).
   Generate a new link anytime: enox invite "MyCircle"
@@ -230,7 +230,7 @@ enox open
 On another machine, join using the invite link (no quotes needed):
 
 ```bash
-enox enter enoxian://v1/CRxkUjpNaBcDeFgH...
+enox enter enoxian://v2/CRxkUjpNaBcDeFgH...
 ```
 
 ```
@@ -263,7 +263,7 @@ when available. You can also pass an explicit peer, relay, or rendezvous address
 ```bash
 enox invite MyCircle --peer /ip4/1.2.3.4/tcp/9091
 enox invite MyCircle --rendezvous enox.yourdomain.com
-enox enter enoxian://v1/...
+enox enter enoxian://v2/...
 ```
 
 A Circle with no rendezvous or relay configured falls back to a

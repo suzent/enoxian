@@ -194,7 +194,7 @@ enox init --name <NAME> [--ttl <DURATION>] [--dir <PATH>] [--owner <NAME>]
   peer-id   : 12D3KooW...
   workspace : /Users/suzy/enoxian/MyCircle
 
-  invite    : enoxian://v1/CRxkUjpNaBcDeFgH...
+  invite    : enoxian://v2/CRxkUjpNaBcDeFgH...
 
   Share the invite link to let peers join (valid for 7d).
   Generate a new link anytime: enox invite "MyCircle"
@@ -207,9 +207,9 @@ enox init --name <NAME> [--ttl <DURATION>] [--dir <PATH>] [--owner <NAME>]
 Join a Circle using an invite link.
 
 ```bash
-enox enter enoxian://v1/CRxkUjpNaBcDeFgH...
-enox enter enoxian://v1/... --dir ~/projects/shared
-enox enter enoxian://v1/... --rendezvous /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<id>
+enox enter enoxian://v2/CRxkUjpNaBcDeFgH...
+enox enter enoxian://v2/... --dir ~/projects/shared
+enox enter enoxian://v2/... --rendezvous /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<id>
 ```
 
 | Flag | Default | Description |

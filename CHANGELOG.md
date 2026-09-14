@@ -46,6 +46,11 @@ refuses to publish a version whose section is missing or empty.
   Settings to keep the previous three-minute recency routing. Explicitly configured
   windows are preserved.
 
+- Invite links are much shorter. A typical `enox invite` link is now around 300
+  characters where it used to run past 800, so it survives a chat message
+  without being wrapped or truncated. Links already in circulation keep working
+  until their own expiry — nothing needs to be reissued.
+
 ### Added
 
 - Agents can run in parallel across Circles while keeping ordered turns and one
