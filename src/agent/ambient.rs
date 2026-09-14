@@ -94,6 +94,7 @@ mod tests {
 
     fn msg(text: &str, author: Author, ts: i64, agent: &str) -> ChatMessage {
         ChatMessage {
+            thread_root: None,
             id: "m".into(),
             agent_id: agent.into(),
             text: text.into(),

@@ -17,6 +17,35 @@ use tower::ServiceExt;
 const CIRCLE: &str = "circle-engagement";
 const ME: &str = "peer-local";
 
+// Run each case in a child with its own device settings. Changing process-wide
+// environment from parallel async tests would race and touch the user's config.
+fn isolated(name: &str, window: Option<u64>) -> bool {
+    if std::env::var("ENOXIAN_ENGAGEMENT_TEST").as_deref() == Ok(name) {
+        return true;
+    }
+    let home = tempfile::tempdir().unwrap();
+    if let Some(window) = window {
+        std::fs::write(
+            home.path().join("agents.toml"),
+            format!("engagement_window_secs = {window}\n"),
+        )
+        .unwrap();
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture"])
+        .env("ENOXIAN_HOME", home.path())
+        .env("ENOXIAN_ENGAGEMENT_TEST", name)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    false
+}
+
 fn harness() -> (axum::Router, AppState, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new(
@@ -89,6 +118,12 @@ fn conversation(state: &AppState) {
 
 #[tokio::test]
 async fn the_composer_is_told_which_agent_a_reply_would_reach() {
+    if !isolated(
+        "the_composer_is_told_which_agent_a_reply_would_reach",
+        Some(180),
+    ) {
+        return;
+    }
     let (router, state, _d) = harness();
     conversation(&state);
 
@@ -103,6 +138,12 @@ async fn the_composer_is_told_which_agent_a_reply_would_reach() {
 
 #[tokio::test]
 async fn there_is_no_engagement_before_an_agent_has_replied() {
+    if !isolated(
+        "there_is_no_engagement_before_an_agent_has_replied",
+        Some(180),
+    ) {
+        return;
+    }
     let (router, state, _d) = harness();
     enoxian::api::chat::post_message(
         state_ref(&state),
@@ -122,6 +163,9 @@ fn state_ref(s: &AppState) -> &AppState {
 
 #[tokio::test]
 async fn esc_dismisses_the_window_and_it_stays_dismissed() {
+    if !isolated("esc_dismisses_the_window_and_it_stays_dismissed", Some(180)) {
+        return;
+    }
     let (router, state, _d) = harness();
     conversation(&state);
     assert_eq!(
@@ -142,6 +186,12 @@ async fn esc_dismisses_the_window_and_it_stays_dismissed() {
 
 #[tokio::test]
 async fn a_later_reply_opens_a_fresh_window_after_a_dismissal() {
+    if !isolated(
+        "a_later_reply_opens_a_fresh_window_after_a_dismissal",
+        Some(180),
+    ) {
+        return;
+    }
     let (router, state, _d) = harness();
     conversation(&state);
     send(&router, post("chat/engagement/exit", serde_json::json!({}))).await;
@@ -155,10 +205,32 @@ async fn a_later_reply_opens_a_fresh_window_after_a_dismissal() {
 
 #[tokio::test]
 async fn the_window_length_is_reported_so_the_composer_can_explain_itself() {
+    if !isolated(
+        "the_window_length_is_reported_so_the_composer_can_explain_itself",
+        Some(75),
+    ) {
+        return;
+    }
     let (router, _state, _d) = harness();
     let (_, body) = send(&router, get("chat/engagement")).await;
     assert!(
-        body["window_secs"].as_i64().is_some(),
+        body["window_secs"].as_i64() == Some(75),
         "the composer needs the window to describe it: {body}"
     );
+}
+
+#[tokio::test]
+async fn fresh_device_requires_explicit_threads_instead_of_recency() {
+    if !isolated(
+        "fresh_device_requires_explicit_threads_instead_of_recency",
+        None,
+    ) {
+        return;
+    }
+    let (router, state, _d) = harness();
+    conversation(&state);
+    let (status, body) = send(&router, get("chat/engagement")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["window_secs"], 0);
+    assert!(body["agent"].is_null());
 }

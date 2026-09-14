@@ -44,6 +44,27 @@ impl HandledMentions {
         format!("{message_id}::{mention}")
     }
 
+    /// Legacy suppression evidence only. A handled marker does not prove the
+    /// old in-memory queue ever executed the turn.
+    pub fn contains(&self, message_id: &str, mention: &str) -> bool {
+        self.seen
+            .lock()
+            .unwrap()
+            .contains(&Self::key(message_id, mention))
+    }
+
+    pub fn entries(&self) -> Vec<(String, String)> {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|key| {
+                key.split_once("::")
+                    .map(|(id, mention)| (id.to_string(), mention.to_string()))
+            })
+            .collect()
+    }
+
     /// Record `(message_id, mention)` as handled. Returns `true` if it was newly
     /// added (caller should act), `false` if already handled (caller must skip).
     /// Appends to disk on first sight so the record survives a restart.

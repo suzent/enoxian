@@ -3,11 +3,11 @@
 How an agent in a Circle decides that a chat message is *for it*, and what it is
 allowed to do once it decides.
 
-**Status: implemented.** Every section below has shipped. Where the built thing
-diverges from the original design the section says so and why — the notable
-ones are §1.1 (derived from the transcript rather than stored per device),
-§1.3 (the Circle-wide lock kept, per the spec's own fallback), and §3.3 (path
-acyclicity dropped for a larger budget).
+**Status: parallel runtime implemented in the working tree.** See
+[Parallel execution](parallel-execution.md) and [Execution inbox](execution-inbox.md)
+for current implementation, verification, and limits. The design discussion below
+retains historical context. Explicit threads now replace recency guessing by default;
+explicit recency overrides remain supported.
 
 Background reading, not restated here: [guide/agents.md](../guide/agents.md)
 for how mentions, targeting, and the per-device execution gate work, and
@@ -98,9 +98,9 @@ message, so an explicit mention and a follow-up never both fire.
 
 The engagement ends on the first of:
 
-- **Timeout.** Default 3 minutes since the agent's last reply, renewed by each
-  reply. Configurable as `engagement_window_secs` in `agents.toml`; `0`
-  disables the feature.
+- **Timeout.** The default is now `0` (explicit replies/mentions only). A configured
+  `engagement_window_secs` enables a recency window renewed by each agent reply;
+  existing explicit values are preserved.
 - **Redirection.** The speaker mentions any agent — including the same one.
   Explicit addressing always wins and re-arms the window.
 - **Exit.** The speaker dismisses it in the composer (below). A dismissal
@@ -131,38 +131,17 @@ will be queued`.
 
 ### 1.3 Per-agent run queue
 
-Concurrent runs are already prevented, but by a lock that is both too coarse
-and too blunt for conversational use. `driver::launch` refuses to start when any
-managed change session is open:
+Different agents now execute concurrently; turns for the same agent/Circle remain
+ordered. A device-wide capacity limit defaults to four. Per-agent OS conversation
+leases also cover manual launches, preserving one ACP conversation per agent/Circle.
+The durable inbox bounds pending turns at four per agent, 64 per Circle and 256 per
+device, with visible overflow outcomes. Pending turns survive restart; interrupted
+runs require explicit retry.
 
-> managed agent '…' is already running in this Circle (session …)
-
-That is **Circle-wide**, not per agent: while `@claude` works, mentioning
-`@codex` fails too. And it fails *loudly* — `react()` turns the error into a
-`system` chat post. Under mention-only usage that is tolerable, because a second
-mention during a run is rare and the message explains itself. Follow-up routing
-makes rapid consecutive messages the normal case, and the same lock turns every
-one of them into a failure notice in the transcript.
-
-So the work here is **narrowing the lock and adding a queue**, not adding
-mutual exclusion that is missing:
-
-- Scope the guard to `(circle, agent)` so unrelated agents run in parallel.
-  This is the part that needs care: `LocalChangeSession::load_managed` is
-  currently a single per-Circle record, and the proposal baseline story assumes
-  one managed writer at a time. Two agents writing concurrently against one
-  baseline is a genuinely open question — **if it does not hold, keep the
-  Circle-wide lock and queue across it**, which still fixes the UX.
-- Queue subsequent messages for a busy agent in arrival order and deliver them
-  as separate turns, rather than failing them into chat. Cap the depth (say 4),
-  dropping the oldest with a visible note.
-
-**As built, the lock stayed Circle-wide and the queue sits across it** — the
-fallback this section names. Narrowing it needs `LocalChangeSession` to hold
-more than one open managed session and the proposal baseline to tolerate two
-concurrent writers, neither of which is true today. A single worker drains the
-queue in arrival order, four deep per agent, which also means the Circle-wide
-lock is never contended from the reaction loop at all.
+The earlier singleton `managed_session.json` and timestamp attribution have been
+replaced by per-run records and operation-level ACP write evidence. Ambient writes
+remain pending proposals. Other native writes retain unknown attribution rather
+than being assigned to whichever process happened to be running.
 
 A rejected alternative: coalescing queued messages into one turn. It reads well
 in the transcript but loses the boundary between "and another thing" and a
@@ -525,11 +504,17 @@ are the minimum:
   memory: the device that would run the next turn is usually not the device
   whose user hit stop, so a local flag would stop nothing.
 
-One decision fell out of building it. Reading the stop list needs a
+The durable inbox now retains stop markers across restart without a time-based
+expiry and rechecks them before launching queued work. If the control document is
+busy, the worker defers the request and retries; it does not misreport cancellation
+or assume permission to launch.
+
+Historically, reading the stop list needed a
 transaction on the control doc, which is routinely busy, and the first cut
 treated "cannot read" as "stopped". That is the instinctive choice for a brake
 and it was wrong: every busy moment silently refused a delegation, so the
-feature broke at random. It now fails **open** with a warning. The asymmetry
+feature broke at random. The legacy boolean helper fails **open** with a warning; inbox execution uses the
+retryable check described above. The asymmetry
 justifies it — spend is bounded by the budget and the per-root ledger, neither
 of which touches this doc, so a missed stop costs one extra turn, while a false
 stop costs the whole feature.
@@ -547,12 +532,9 @@ message's budget. An ambient agent that passes (§2.3) spends nothing.
 
 ## 4. Phasing
 
-All shipped. The order actually taken put **delegation (§3) first**, out of the
-sequence below, because it was independently useful and did not depend on the
-rest. That skipping had a cost worth recording: §1.3 describes the Circle-wide
-lock as too coarse and too loud, and running delegation over it produced exactly
-the failure the section predicts — `@agent failed to start · already running`
-in the transcript, for something a user is entitled to do.
+The original rollout put delegation first. The working-tree implementation now
+replaces the Circle-wide execution lock with the parallel runtime described above.
+The historical sequencing below explains the dependencies.
 
 1. **Run queue** (§1.3) — independently useful, and a prerequisite for the
    rest.

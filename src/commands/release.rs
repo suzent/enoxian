@@ -15,6 +15,9 @@ pub async fn run(
     if let Some(token) = actor_token {
         body["actor_token"] = Value::String(token.to_string());
     }
+    if let Ok(run) = std::env::var("ENOXIAN_RUN_ID") {
+        body["run_id"] = Value::String(run);
+    }
     let resp = client
         .post(format!("{base}/release"))
         .json(&body)

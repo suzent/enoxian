@@ -10,6 +10,7 @@ pub const DEFAULT_TOKEN_TTL_HOURS: i64 = 1;
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct ActorIdentity {
     pub registration_id: String,
+    pub run_id: Option<String>,
     pub agent_id: String,
     pub circle_id: String,
     pub peer_id: String,
@@ -26,6 +27,7 @@ impl ActorTokenRegistry {
     pub fn issue(&self, circle_id: &str, peer_id: &str, agent_id: &str) -> (String, ActorIdentity) {
         let now = Utc::now();
         let identity = ActorIdentity {
+            run_id: None,
             registration_id: uuid::Uuid::new_v4().to_string(),
             agent_id: agent_id.to_string(),
             circle_id: circle_id.to_string(),
@@ -49,6 +51,22 @@ impl ActorTokenRegistry {
         let token = format!("enox_at_{}", hex::encode(digest.finalize()));
         self.entries.insert(token_hash(&token), identity.clone());
         (token, identity)
+    }
+
+    pub fn bind_run(&self, token: &str, run_id: &str) {
+        if let Some(mut identity) = self.entries.get_mut(&token_hash(token)) {
+            identity.run_id = Some(run_id.to_string());
+        }
+    }
+
+    pub fn revoke(&self, token: &str) {
+        self.entries.remove(&token_hash(token));
+    }
+
+    pub fn renew(&self, token: &str) {
+        if let Some(mut identity) = self.entries.get_mut(&token_hash(token)) {
+            identity.expires_at = Utc::now() + Duration::hours(DEFAULT_TOKEN_TTL_HOURS);
+        }
     }
 
     pub fn validate(

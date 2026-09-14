@@ -232,6 +232,14 @@ export default function DeviceSettings({ onClose }: Props) {
                     These are this device's settings — never shared with the Circle.
                   </span>
                 </div>
+                {scope === 'global' && <label className="block py-2 text-xs">
+                  Maximum concurrent agents on this device
+                  <select className="ml-2 border px-2 py-1" disabled={busy} value={cfg.max_concurrent_runs ?? 4}
+                    onChange={e => void run(() => setEngagement({ max_concurrent_runs: Number(e.target.value) }))}>
+                    {[1, 2, 4, 8, 16, 32].map(n => <option key={n} value={n}>{n === 1 ? '1 (serial)' : n}</option>)}
+                  </select>
+                  <span className="block text-slate">Takes effect after restarting the daemon. Queued requests are retained.</span>
+                </label>}
                 {scope === 'circle' && !activeCircleId ? null : (
                   <EngagementSettings
                     agentNames={cfg.agents.map(a => a.name)}

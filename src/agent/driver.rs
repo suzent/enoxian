@@ -10,9 +10,9 @@
 //!   Gives a real prompt-turn lifecycle and, when the agent uses client fs
 //!   methods, mediated per-write access.
 //!
-//! Either way the run happens inside a `LocalChangeSession`. Session metadata
-//! is retained for future attribution work; today the ambient engine records
-//! direct filesystem writes as accepted, revertible history.
+//! Every run has a durable change record and per-agent conversation lease.
+//! Supported ACP writes carry operation evidence; unmediated writes remain
+//! unattributed history. Conversation IDs are persisted before releasing the lease.
 
 use super::acp::{agent_message_text, AcpSession, ClientHooks, PermissionDecision};
 use super::config::{AgentCommand, Driver};
@@ -93,6 +93,10 @@ impl ReplyBuf {
 }
 
 struct PolicyHooks {
+    workspace: PathBuf,
+    circle_dir: PathBuf,
+    session: LocalChangeSession,
+    coordination: Option<crate::state::AppState>,
     allow: bool,
     /// Segmented capture of the agent's streamed messages. `&self`-only trait,
     /// hence the shared mutable cell.
@@ -103,6 +107,101 @@ struct PolicyHooks {
 }
 
 impl ClientHooks for PolicyHooks {
+    fn on_spawn(&self, pid: u32) -> Result<()> {
+        crate::proposal::runs::atomic_json(
+            &self
+                .circle_dir
+                .join("managed_runs")
+                .join(format!("{}.json", self.session.session_id)),
+            &crate::proposal::runs::RunRecord {
+                writes_consumed: false,
+                session: self.session.clone(),
+                owner_pid: std::process::id(),
+                child_pid: Some(pid),
+                interrupted: false,
+            },
+        )
+    }
+    fn run_id(&self) -> Option<&str> {
+        Some(&self.session.session_id)
+    }
+    fn write_file(&self, path: &Path, content: &[u8]) -> Result<()> {
+        use yrs::{ReadTxn, Transact};
+        let _order = crate::proposal::evidence::WRITE_ORDER
+            .lock()
+            .map_err(|_| anyhow::anyhow!("write journal poisoned"))?;
+        let mut owns_lock = false;
+        let annotate = |detail| {
+            if let Some(state) = &self.coordination {
+                if let Some(inbox) = state
+                    .execution_inbox
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(std::sync::Weak::upgrade)
+                {
+                    let _ = inbox.annotate_running(&self.session.session_id, detail);
+                }
+            }
+        };
+        let txn = self
+            .coordination
+            .as_ref()
+            .map(|state| state.control.try_transact())
+            .transpose()
+            .map_err(|_| anyhow::anyhow!("Circle busy; retry write"))?;
+        if let (Some(state), Some(txn)) = (&self.coordination, &txn) {
+            let rel = path
+                .strip_prefix(&self.workspace)?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if let Some(log) = txn.get_array(crate::control::LOCK_LOG_KEY) {
+                if crate::control::arbitration::is_locked_by_other_run(
+                    &log,
+                    txn,
+                    &rel,
+                    self.session.actor_id.as_deref().unwrap_or(""),
+                    &state.peer_id,
+                    Some(&self.session.session_id),
+                ) {
+                    annotate(Some(format!("waiting for file lock: {rel}")));
+                    anyhow::bail!("file locked by another agent or run: {rel}");
+                }
+                owns_lock =
+                    crate::control::arbitration::compute_lock_holders(&log, txn).contains_key(&rel);
+            }
+        }
+        // chmod is a cooperative signal, not per-process isolation. The
+        // owning native hook may write, then restores the visible lock mode.
+        let permissions = std::fs::metadata(path)
+            .ok()
+            .map(|m| m.permissions())
+            .filter(|p| p.readonly());
+        if let Some(original) = &permissions {
+            anyhow::ensure!(owns_lock, "read-only file without a verified owned lock");
+            let mut writable = original.clone();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                writable.set_mode(writable.mode() | 0o200);
+            }
+            #[cfg(not(unix))]
+            writable.set_readonly(false);
+            std::fs::set_permissions(path, writable)?;
+        }
+        annotate(None);
+        let result = crate::proposal::evidence::write_ordered(
+            &self.workspace,
+            &self.circle_dir,
+            &self.session,
+            path,
+            content,
+        );
+        if let Some(original) = permissions {
+            std::fs::set_permissions(path, original)?;
+        }
+        result
+    }
     fn on_permission(&self, tool: &Value) -> PermissionDecision {
         tracing::info!("[agent] permission requested: {}", compact(tool));
         if self.allow {
@@ -134,6 +233,9 @@ impl ClientHooks for PolicyHooks {
 
 /// One agent run request.
 pub struct LaunchRequest<'a> {
+    pub run_id: Option<&'a str>,
+    pub trigger_id: Option<&'a str>,
+    pub coordination: Option<crate::state::AppState>,
     pub agent_name: &'a str,
     pub cmd: &'a AgentCommand,
     /// The full prompt handed to the agent (task + any injected world context).
@@ -160,9 +262,26 @@ struct ManagedActor<'a> {
     token: Option<&'a str>,
 }
 
+fn resumable_session<'a>(
+    memory: Option<&'a super::memory::Record>,
+    fallback: Option<&'a str>,
+) -> Option<&'a str> {
+    memory
+        .map(|r| r.session_id.as_str())
+        .filter(|id| !id.is_empty())
+        .or(fallback.filter(|id| !id.is_empty()))
+}
+
 /// Launch a permitted agent, running the given task under a change session.
 /// Returns once the agent finishes its work.
 pub async fn launch(req: LaunchRequest<'_>) -> Result<LaunchOutcome> {
+    launch_cancellable(req, &tokio_util::sync::CancellationToken::new()).await
+}
+
+pub async fn launch_cancellable(
+    req: LaunchRequest<'_>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<LaunchOutcome> {
     let mode = match req.initiator {
         // A managed run enoxian owns the process tree for → verified process.
         Initiator::Local | Initiator::RemoteMember => SessionMode::ManagedProcess,
@@ -175,19 +294,28 @@ pub async fn launch(req: LaunchRequest<'_>) -> Result<LaunchOutcome> {
         req.base_snapshot.to_string(),
         mode,
     );
+    if let Some(id) = req.run_id {
+        crate::proposal::validate_storage_id("run", id)?;
+        session.session_id = id.into();
+    }
+    session.trigger_id = req.trigger_id.map(str::to_string);
     session.requested_agent = Some(req.agent_name.to_string());
     session.relay_path = req.relay_path.clone();
     session.actor_id = Some(req.agent_name.to_string());
-    if let Some(existing) = LocalChangeSession::load_managed(req.circle_dir) {
-        if existing.is_open() {
-            anyhow::bail!(
-                "managed agent '{}' is already running in this Circle (session {})",
-                existing.actor_id.as_deref().unwrap_or("?"),
-                existing.session_id
-            );
-        }
+    let mut lease = crate::proposal::runs::RunLease::acquire(req.circle_dir, session.clone())?;
+    if let (Some(state), Some(token)) = (&req.coordination, req.actor_token) {
+        state.actor_tokens.bind_run(token, &session.session_id);
     }
-    session.save_managed(req.circle_dir)?;
+    let _device = crate::proposal::runs::DeviceLease::acquire_cancellable(
+        &crate::proposal::runs::device_slots_dir()?,
+        &req.circle_dir
+            .join("managed_runs")
+            .join(format!("{}.json", session.session_id)),
+        super::config::AgentConfig::load().max_concurrent_runs,
+        cancel,
+        std::time::Duration::from_secs(30),
+    )
+    .await?;
     tracing::info!(
         "[agent] launching `{}` ({:?}) session={} resume={:?} task_len={}",
         req.agent_name,
@@ -204,8 +332,10 @@ pub async fn launch(req: LaunchRequest<'_>) -> Result<LaunchOutcome> {
         token: req.actor_token,
     };
 
+    let memory = super::memory::load(req.circle_dir, req.agent_name);
+    let resume = resumable_session(memory.as_ref(), req.resume);
     let run_result = match req.cmd.driver {
-        Driver::Argv => run_argv(req.cmd, req.task, &run_dir, actor)
+        Driver::Argv => run_argv(req.cmd, req.task, &run_dir, actor, &mut lease)
             .await
             .map(|detail| (detail, None, None)),
         Driver::Acp => run_acp(
@@ -213,15 +343,26 @@ pub async fn launch(req: LaunchRequest<'_>) -> Result<LaunchOutcome> {
             req.initiator,
             req.task,
             &run_dir,
-            req.resume,
+            resume,
             actor,
+            &mut lease,
+            req.workspace,
+            req.circle_dir,
+            req.coordination.clone(),
         )
         .await
         .map(|r| (r.detail, r.reply, r.acp_session_id)),
     };
 
-    session.finish();
-    session.save_managed(req.circle_dir)?;
+    if let Ok((_, _, Some(sid))) = &run_result {
+        super::memory::save_session(req.circle_dir, req.agent_name, sid)?;
+    }
+    lease.finish()?;
+    if let Some(state) = &req.coordination {
+        if let Err(error) = crate::proposal::runs::release_finished_locks(state) {
+            tracing::warn!("lock cleanup deferred: {error}");
+        }
+    }
     let (detail, reply, acp_session_id) = run_result?;
     Ok(LaunchOutcome {
         session_id: session.session_id,
@@ -238,24 +379,38 @@ struct AcpRun {
     acp_session_id: Option<String>,
 }
 
+struct ProcessTree(u32);
+impl Drop for ProcessTree {
+    fn drop(&mut self) {
+        super::spawn::kill_tree(self.0);
+    }
+}
+
 async fn run_argv(
     cmd: &AgentCommand,
     task: &str,
     run_dir: &Path,
     actor: ManagedActor<'_>,
+    lease: &mut crate::proposal::runs::RunLease,
 ) -> Result<String> {
     let rendered = cmd.render(task);
     let (program, args) = rendered.split_first().context("empty agent command")?;
     let mut command = super::spawn::command(program, args);
     super::spawn::apply_actor_env(&mut command, actor.agent_id, actor.circle_id, actor.token);
-    let status = command
+    command.env("ENOXIAN_RUN_ID", &lease.record.session.session_id);
+    let mut child = command
         .current_dir(run_dir)
-        .status()
-        .await
+        .kill_on_drop(true)
+        .spawn()
         .with_context(|| format!("failed to spawn agent `{program}`"))?;
+    let _tree = ProcessTree(child.id().context("child PID missing")?);
+    lease.child(_tree.0)?;
+    let status = child.wait().await?;
+    anyhow::ensure!(status.success(), "agent `{program}` exited with {status}");
     Ok(format!("exit {status}"))
 }
 
+#[allow(clippy::too_many_arguments)] // Explicit per-run context stays scoped to this adapter.
 async fn run_acp(
     cmd: &AgentCommand,
     _initiator: Initiator,
@@ -263,6 +418,10 @@ async fn run_acp(
     run_dir: &Path,
     resume: Option<&str>,
     actor: ManagedActor<'_>,
+    lease: &mut crate::proposal::runs::RunLease,
+    workspace: &Path,
+    circle_dir: &Path,
+    coordination: Option<crate::state::AppState>,
 ) -> Result<AcpRun> {
     // Always allow the agent to act *within the workspace* — that is its job,
     // and enoxian captures whatever it writes as accepted proposal history.
@@ -272,6 +431,10 @@ async fn run_acp(
     // mistaken for the current reply. Turned on just before we prompt.
     let capturing = Arc::new(AtomicBool::new(false));
     let hooks = PolicyHooks {
+        coordination: coordination.clone(),
+        workspace: workspace.canonicalize()?,
+        circle_dir: circle_dir.to_path_buf(),
+        session: lease.record.session.clone(),
         allow: true,
         reply: reply.clone(),
         capturing: capturing.clone(),
@@ -289,9 +452,20 @@ async fn run_acp(
     .await
     .context("ACP handshake failed")?;
 
+    if let Some(pid) = acp.process_id() {
+        lease.child(pid)?;
+    }
+
     // Now capture only the reply to *this* prompt.
     capturing.store(true, Ordering::Relaxed);
-    let result = acp.prompt(task).await;
+    let prompt = if resume.is_some() && !acp.was_resumed() {
+        let context = coordination.as_ref().map(|state| super::context::recovery_context(state, actor.agent_id))
+            .unwrap_or_else(|| "Previous ACP session could not be restored; private conversation memory is unavailable. Retrieve Circle chat if needed.\n\n".into());
+        format!("{context}{task}")
+    } else {
+        task.to_string()
+    };
+    let result = acp.prompt(&prompt).await;
     let acp_session_id = acp.session_id().map(str::to_string);
     acp.shutdown().await;
     let turn = result.context("ACP prompt turn failed")?;
@@ -355,5 +529,16 @@ mod tests {
     #[test]
     fn no_output_is_none() {
         assert_eq!(ReplyBuf::default().into_reply(), None);
+    }
+    #[test]
+    fn seen_only_memory_does_not_attempt_an_empty_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        super::super::memory::save_seen(dir.path(), "a", "message").unwrap();
+        let memory = super::super::memory::load(dir.path(), "a").unwrap();
+        assert_eq!(resumable_session(Some(&memory), Some("")), None);
+        assert_eq!(
+            resumable_session(Some(&memory), Some("fallback")),
+            Some("fallback")
+        );
     }
 }

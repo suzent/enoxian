@@ -1,7 +1,6 @@
 use crate::control::{
-    arbitration::{append_lock_entry, compute_lock_state, is_locked_by_other},
-    fs_lock::set_readonly,
-    CircleEvent, LockAction, LockEntry, Task, TaskStatus, LOCK_LOG_KEY, TASKS_KEY,
+    arbitration::append_lock_entry, fs_lock::set_readonly, CircleEvent, LockAction, LockEntry,
+    Task, TaskStatus, LOCK_LOG_KEY, TASKS_KEY,
 };
 use crate::daemon::DaemonState;
 use crate::state::AppState;
@@ -19,6 +18,7 @@ use yrs::{Any, Map, Out, ReadTxn, Transact, WriteTxn};
 
 #[derive(Deserialize)]
 pub struct PathRequest {
+    pub run_id: Option<String>,
     pub path: String,
     pub agent_id: Option<String>,
     pub actor_token: Option<String>,
@@ -27,7 +27,7 @@ pub struct PathRequest {
 pub async fn bind_path(
     State(daemon): State<DaemonState>,
     Path(circle_id): Path<String>,
-    Json(req): Json<PathRequest>,
+    Json(mut req): Json<PathRequest>,
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
@@ -39,7 +39,27 @@ pub async fn bind_path(
                 .into_response()
         }
     };
-    let actor = match super::actor::resolve_actor(
+    req.path = match crate::proposal::canonical_workspace_path(
+        &state.workspace,
+        std::path::Path::new(&req.path),
+    ) {
+        Ok(path) => match state.workspace.canonicalize().ok().and_then(|root| {
+            path.strip_prefix(root)
+                .ok()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+        }) {
+            Some(path) => path,
+            None => return StatusCode::BAD_REQUEST.into_response(),
+        },
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error.to_string()})),
+            )
+                .into_response()
+        }
+    };
+    let mut actor = match super::actor::resolve_actor(
         &state,
         req.actor_token.as_deref(),
         req.agent_id.clone(),
@@ -48,31 +68,13 @@ pub async fn bind_path(
         Ok(actor) => actor,
         Err(error) => return error.into_response(),
     };
-    let agent_id = actor.agent_id.clone();
-
-    let conflict = {
-        let txn = match state.control.try_transact() {
-            Ok(txn) => txn,
-            Err(_) => return super::circle_busy(),
-        };
-        txn.get_array(LOCK_LOG_KEY).and_then(|lock_log| {
-            if is_locked_by_other(&lock_log, &txn, &req.path, &agent_id, &actor.peer_id) {
-                let holders = compute_lock_state(&lock_log, &txn);
-                Some(holders.get(&req.path).cloned().unwrap_or_default())
-            } else {
-                None
-            }
-        })
-    };
-
-    if let Some(holder) = conflict {
+    if let Err(error) = attach_run(&state, &mut actor, req.run_id.as_deref(), false) {
         return (
             StatusCode::CONFLICT,
-            Json(json!({ "error": "already locked", "held_by": holder })),
+            Json(json!({"error": error.to_string()})),
         )
             .into_response();
     }
-
     write_bind(&state, req, actor).await
 }
 
@@ -84,6 +86,7 @@ async fn write_bind(
     let agent_id = actor.agent_id.clone();
     {
         let entry = LockEntry {
+            run_id: actor.run_id.clone(),
             entry_id: uuid::Uuid::new_v4().to_string(),
             agent_id: agent_id.clone(),
             peer_id: actor.peer_id,
@@ -96,6 +99,20 @@ async fn write_bind(
             Err(_) => return super::circle_busy(),
         };
         let lock_log = txn.get_or_insert_array(LOCK_LOG_KEY);
+        if crate::control::arbitration::is_locked_by_other_run(
+            &lock_log,
+            &txn,
+            &req.path,
+            &agent_id,
+            &entry.peer_id,
+            entry.run_id.as_deref(),
+        ) {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "path belongs to another agent or run"})),
+            )
+                .into_response();
+        }
         let _ = append_lock_entry(&lock_log, &mut txn, &entry);
     }
 
@@ -118,7 +135,7 @@ async fn write_bind(
 pub async fn release_path(
     State(daemon): State<DaemonState>,
     Path(circle_id): Path<String>,
-    Json(req): Json<PathRequest>,
+    Json(mut req): Json<PathRequest>,
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
@@ -130,7 +147,27 @@ pub async fn release_path(
                 .into_response()
         }
     };
-    let actor = match super::actor::resolve_actor(
+    req.path = match crate::proposal::canonical_workspace_path(
+        &state.workspace,
+        std::path::Path::new(&req.path),
+    ) {
+        Ok(path) => match state.workspace.canonicalize().ok().and_then(|root| {
+            path.strip_prefix(root)
+                .ok()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+        }) {
+            Some(path) => path,
+            None => return StatusCode::BAD_REQUEST.into_response(),
+        },
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error.to_string()})),
+            )
+                .into_response()
+        }
+    };
+    let mut actor = match super::actor::resolve_actor(
         &state,
         req.actor_token.as_deref(),
         req.agent_id,
@@ -139,10 +176,18 @@ pub async fn release_path(
         Ok(actor) => actor,
         Err(error) => return error.into_response(),
     };
+    if let Err(error) = attach_run(&state, &mut actor, req.run_id.as_deref(), true) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response();
+    }
     let agent_id = actor.agent_id.clone();
 
     {
         let entry = LockEntry {
+            run_id: actor.run_id.clone(),
             entry_id: uuid::Uuid::new_v4().to_string(),
             agent_id: agent_id.clone(),
             peer_id: actor.peer_id,
@@ -155,6 +200,20 @@ pub async fn release_path(
             Err(_) => return super::circle_busy(),
         };
         let lock_log = txn.get_or_insert_array(LOCK_LOG_KEY);
+        if crate::control::arbitration::is_locked_by_other_run(
+            &lock_log,
+            &txn,
+            &req.path,
+            &agent_id,
+            &entry.peer_id,
+            entry.run_id.as_deref(),
+        ) {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "path belongs to another agent or run"})),
+            )
+                .into_response();
+        }
         let _ = append_lock_entry(&lock_log, &mut txn, &entry);
     }
 
@@ -172,6 +231,36 @@ pub async fn release_path(
         Json(json!({ "status": "released", "path": req.path })),
     )
         .into_response()
+}
+
+fn attach_run(
+    state: &AppState,
+    actor: &mut crate::actor_token::ActorIdentity,
+    id: Option<&str>,
+    releasing: bool,
+) -> anyhow::Result<()> {
+    let Some(id) = id else {
+        return Ok(());
+    };
+    crate::proposal::validate_storage_id("run", id)?;
+    anyhow::ensure!(
+        actor.run_id.as_deref().is_none_or(|bound| bound == id),
+        "token belongs to another run"
+    );
+    let record: crate::proposal::runs::RunRecord = serde_json::from_slice(&std::fs::read(
+        state
+            .circle_dir
+            .join("managed_runs")
+            .join(format!("{id}.json")),
+    )?)?;
+    anyhow::ensure!(
+        record.session.circle_id == state.circle_id
+            && record.session.actor_id.as_deref() == Some(actor.agent_id.as_str()),
+        "run belongs to another actor"
+    );
+    anyhow::ensure!(releasing || record.session.is_open(), "run has finished");
+    actor.run_id = Some(id.to_string());
+    Ok(())
 }
 
 // ── Task claiming / completion ─────────────────────────────────────────────
@@ -427,6 +516,7 @@ mod tests {
     fn actor(agent_id: &str, peer_id: &str) -> crate::actor_token::ActorIdentity {
         let now = chrono::Utc::now();
         crate::actor_token::ActorIdentity {
+            run_id: None,
             registration_id: "registration".into(),
             agent_id: agent_id.into(),
             circle_id: "circle".into(),

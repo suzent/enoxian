@@ -1,3 +1,4 @@
+import ExecutionStatus from './ExecutionStatus'
 import { Fragment, useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import type { Attachment, ChatActivity, ChatMessage, EngagementView, Member, Presence } from '../types'
 import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, getEngagement, exitEngagement, MAX_ATTACHMENT_BYTES } from '../api'
@@ -220,7 +221,7 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
         {msg.reply_to && (
           <a className="chat-message__parent" href={`#chat-message-${msg.reply_to}`}>
             <span aria-hidden="true">↳ </span>
-            {replyParent?.text.trim() || 'Earlier message'}
+            {replyParent?.text.trim() || 'Waiting for the referenced message to sync'}
           </a>
         )}
         {showSender && (
@@ -780,9 +781,11 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
   const startReply = useCallback((msg: ChatMessage) => {
     const path = msg.relay?.path ?? []
     const agent = path.length > 0 ? path[path.length - 1] : msg.agent_id
-    setReplyTo({ id: msg.id, agent })
+    const member = members.find(m => m.peer_id === msg.peer_id)
+    const recipient = member?.owner && member?.device_label ? `${member.owner}/${member.device_label}/${agent}` : `${agent}${msg.peer_id ? ` on ${msg.peer_id.slice(-8)}` : ''}`
+    setReplyTo({ id: msg.id, agent: recipient })
     inputRef.current?.focus()
-  }, [])
+  }, [members])
 
   const refreshEngagement = useCallback(() => {
     if (!activeCircleId) return
@@ -927,6 +930,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
         <div ref={bottomRef} />
       </div>
 
+      {activeCircleId && <ExecutionStatus circleId={activeCircleId} />}
       <div
         className={`chat-composer${dragging ? ' chat-composer--dragging' : ''}`}
         onDragOver={e => { e.preventDefault(); if (!activeCircle?.disabled) setDragging(true) }}

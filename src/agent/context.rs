@@ -1,62 +1,15 @@
-//! Building the prompt enoxian hands to a mentioned agent.
+//! Prompt context is separate from the agent's persistent ACP conversation.
 //!
-//! The agent's own *memory* is carried by ACP session resume (agent-owned,
-//! restored silently on `session/load`). This module supplies the *world
-//! context* — what the agent needs to know about the enoxian environment — and,
-//! crucially, frames it so the agent does not conversationally reply to the
-//! background instead of doing the task.
-//!
-//! ## Prompt structure
-//!
-//! Every prompt ends with a single REQUEST the agent should answer. Anything
-//! before it is background, wrapped in an explicit CONTEXT block the agent is
-//! told not to reply to. This is what prevents the "greeting soup" (the agent
-//! answering the brief and each chat line before doing the work).
-//!
-//! Fresh session (or a session that was lost — the recovery path):
-//!
-//! ```text
-//! The block between <context> tags below is background about your environment.
-//! Do NOT reply to it; use it only to inform your response to the REQUEST.
-//! <context>
-//! <standing brief: who you are, the circle, proposals, that replies go to chat>
-//! <member roster>
-//! Recent conversation in this room:
-//!   <sender>: <text>
-//!   ...
-//! </context>
-//!
-//! REQUEST from <sender> (@mention). Respond only to this:
-//! <task>
-//! ```
-//!
-//! Resumed session — the agent already holds the brief and its own history in
-//! its restored session, so the standing brief is omitted. What resume does
-//! *not* restore is what the room said while the agent was away: members talk,
-//! other agents reply, proposals are accepted or reverted, and none of it
-//! reaches a session the agent was not part of. So a resumed prompt carries the
-//! messages posted since the agent's last turn — and nothing more:
-//!
-//! ```text
-//! The block between <context> tags below is background about your environment.
-//! Do NOT reply to it; use it only to inform your response to the REQUEST.
-//! <context>
-//! Posted in this room since your last turn:
-//!   <sender>: <text>
-//!   ...
-//! </context>
-//!
-//! REQUEST from <sender> (@mention) in circle "<name>". Respond only to this:
-//! <task>
-//! ```
-//!
-//! When nothing was said in between, the delta is empty and the prompt is the
-//! REQUEST alone. The seen-mark that bounds the delta lives in
-//! [`super::memory`].
+//! A turn receives a bounded, chronological page after its delivered-input
+//! cursor, plus explicit thread ancestors and a standing Circle brief. The
+//! cursor advances through supplied input only, never to an outgoing reply.
+//! Omitted history is named as omitted and can be retrieved through the paginated
+//! chat API. The driver identifies failed ACP resume and adds recovery context.
+//! Background stays in <context>; the user's request is the final instruction.
 
-use crate::control::{ChatMessage, MemberEntry, CHAT_KEY, MEMBER_LIST_KEY};
+use crate::control::{ChatMessage, MemberEntry, MEMBER_LIST_KEY};
 use crate::state::AppState;
-use yrs::{Any, Array, Map, Out, ReadTxn, Transact};
+use yrs::{Any, Map, Out, ReadTxn, Transact};
 
 /// How many recent chat lines to include as conversational context. Also caps
 /// the resumed-session delta, so a long absence cannot blow up the prompt.
@@ -70,11 +23,8 @@ const FRESH_CHAT_HEADING: &str = "Recent conversation in this room:";
 /// previous reply is in there, which is accurate — it is what the room saw.
 const DELTA_CHAT_HEADING: &str = "Posted in this room since your last turn:";
 
-/// Compose the prompt. `resume` is the agent's stored record when it has a
-/// session to continue, which both omits the standing brief and bounds the chat
-/// block to what was posted since its last turn. `trigger_id` is the mention
-/// being handled; it is kept out of the chat block because it is already the
-/// REQUEST. See the module docs for the exact shape.
+/// Compatibility wrapper for callers that need only the prompt text. Runtime
+/// callers use `build_delivery` to retain the precise input cursor as well.
 pub fn build_prompt(
     state: &AppState,
     agent_id: &str,
@@ -83,25 +33,102 @@ pub fn build_prompt(
     resume: Option<&super::memory::Record>,
     trigger_id: &str,
 ) -> String {
-    // Gather the environment context from the control doc, then compose. The
-    // composition itself is pure (`compose`) so it can be unit-tested without an
-    // AppState.
-    let brief = resume.is_none().then(|| standing_brief(state, agent_id));
+    build_delivery(state, agent_id, sender, task, resume, trigger_id).prompt
+}
+
+pub struct Delivery {
+    pub prompt: String,
+    pub cursor: Option<String>,
+}
+
+pub fn build_delivery(
+    state: &AppState,
+    agent_id: &str,
+    sender: &str,
+    task: &str,
+    resume: Option<&super::memory::Record>,
+    trigger_id: &str,
+) -> Delivery {
+    let all = state.transcript();
     let since = resume.map(|r| r.last_seen_message.as_str());
-    let heading = if resume.is_some() {
-        DELTA_CHAT_HEADING
-    } else {
-        FRESH_CHAT_HEADING
+    let after = since
+        .and_then(|id| all.iter().position(|m| m.id == id))
+        .map(|i| i + 1);
+    let start = after.unwrap_or_else(|| all.len().saturating_sub(RECENT_CHAT_LINES));
+    let end = (start + RECENT_CHAT_LINES).min(all.len());
+    let cursor = all[start..end].last().map(|m| m.id.clone());
+    let mut recent = window(&all[start..end], None, trigger_id);
+    // Keep a contiguous catch-up cursor, but also show the room as it is now
+    // and the original trigger's neighborhood after an offline backlog.
+    let mut supplied: std::collections::HashSet<_> = (start..end).collect();
+    let mut extra = |range: std::ops::Range<usize>, heading: &str| {
+        let lines: Vec<_> = range
+            .filter(|i| supplied.insert(*i))
+            .map(|i| all[i].clone())
+            .collect();
+        if !lines.is_empty() {
+            recent.push_str(&format!(
+                "\n{heading}\n{}",
+                window(&lines, None, trigger_id)
+            ));
+        }
     };
-    let recent = Some(recent_chat(state, since, trigger_id)).filter(|s| !s.is_empty());
-    compose(
-        &state.circle_name,
-        sender,
-        task,
-        brief.as_deref(),
-        recent.as_deref(),
-        heading,
-    )
+    extra(
+        all.len().saturating_sub(RECENT_CHAT_LINES)..all.len(),
+        "Latest room context:",
+    );
+    if let Some(trigger) = all.iter().position(|m| m.id == trigger_id) {
+        extra(
+            trigger.saturating_sub(6)..(trigger + 6).min(all.len()),
+            "Context around the original request:",
+        );
+    }
+    if end < all.len() || (after.is_none() && start > 0) {
+        recent.push_str(&format!("\nHistory omitted from this prompt. Retrieve pages from GET /circles/{}/api/chat?after_id={}&limit=100. Omitted lines have NOT been delivered.", state.circle_id, if after.is_some() { cursor.as_deref().unwrap_or("") } else { "" }));
+    }
+    // Include ancestors of the explicit request even if outside the room page.
+    let mut parent = all
+        .iter()
+        .find(|m| m.id == trigger_id)
+        .and_then(|m| m.reply_to.clone());
+    let mut visited = std::collections::HashSet::new();
+    while let Some(id) = parent {
+        if !visited.insert(id.clone()) || visited.len() > 32 {
+            break;
+        }
+        let Some(message) = all.iter().find(|m| m.id == id) else {
+            break;
+        };
+        if !all[start..end].iter().any(|m| m.id == id) {
+            recent.push_str(&format!(
+                "\nThread ancestor {} ({} on {}): {}",
+                message.id, message.agent_id, message.peer_id, message.text
+            ));
+        }
+        parent = message.reply_to.clone();
+    }
+    // Keep the brief available even when session/load falls back to session/new.
+    let brief = standing_brief(state, agent_id);
+    Delivery {
+        prompt: compose(
+            &state.circle_name,
+            sender,
+            task,
+            Some(&brief),
+            Some(&recent),
+            if resume.is_some() {
+                DELTA_CHAT_HEADING
+            } else {
+                FRESH_CHAT_HEADING
+            },
+        ),
+        cursor,
+    }
+}
+
+pub fn recovery_context(state: &AppState, agent: &str) -> String {
+    format!("<context>\nThe previous ACP conversation could not be restored. Its private memory is unavailable.\n{}\nRecent room history:\n{}\nFor older history, retrieve GET /circles/{}/api/chat?limit=100, then continue with after_id equal to the last returned message ID.\n</context>\n\n",
+        standing_brief(state, agent), window(&state.transcript(), None, ""), state.circle_id)
 }
 
 /// Pure prompt composition. `brief` is `Some` only for a fresh session; `recent`
@@ -266,28 +293,6 @@ fn member_labels(state: &AppState) -> Vec<String> {
 /// mark no longer in the log both fall back to the last few lines, which is
 /// bounded and more useful than sending nothing. `exclude` drops the mention
 /// being handled, since it is already the REQUEST.
-fn recent_chat(state: &AppState, since: Option<&str>, exclude: &str) -> String {
-    let Ok(txn) = state.control.try_transact() else {
-        return String::new();
-    };
-    let Some(arr) = txn.get_array(CHAT_KEY) else {
-        return String::new();
-    };
-    let mut seen = std::collections::HashSet::new();
-    let all: Vec<ChatMessage> = arr
-        .iter(&txn)
-        .filter_map(|item| {
-            if let Out::Any(Any::String(s)) = item {
-                serde_json::from_str::<ChatMessage>(&s).ok()
-            } else {
-                None
-            }
-        })
-        .filter(|message| seen.insert(message.id.clone()))
-        .collect();
-    window(&all, since, exclude)
-}
-
 /// The chat window, split out from the yrs read so it can be unit-tested.
 fn window(all: &[ChatMessage], since: Option<&str>, exclude: &str) -> String {
     let after = since
@@ -315,6 +320,7 @@ mod tests {
 
     fn msg(id: &str, sender: &str, text: &str) -> ChatMessage {
         ChatMessage {
+            thread_root: None,
             id: id.to_string(),
             agent_id: sender.to_string(),
             text: text.to_string(),

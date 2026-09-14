@@ -12,11 +12,13 @@ pub mod adapters;
 pub mod blob;
 pub mod diff;
 pub mod engine;
+pub mod evidence;
 pub mod gc;
 pub mod journal;
 pub mod merge;
 pub mod model;
 pub mod policy;
+pub mod runs;
 pub mod session;
 pub mod snapshot;
 pub mod store;
@@ -127,5 +129,73 @@ mod validation_tests {
         );
         assert!(validate_for_circle(&proposal, "circle-a").is_ok());
         assert!(validate_for_circle(&proposal, "circle-b").is_err());
+    }
+}
+
+/// Resolve symlink aliases (including a not-yet-created leaf) and keep native
+/// hooks and cooperative locks on the same workspace-relative key.
+pub fn canonical_workspace_path(workspace: &Path, raw: &Path) -> Result<std::path::PathBuf> {
+    let root = workspace.canonicalize()?;
+    let candidate = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        root.join(raw)
+    };
+    let mut existing = candidate.as_path();
+    let mut suffix = Vec::new();
+    while !existing.exists() {
+        // A dangling symlink must not be treated as a new regular file.
+        if std::fs::symlink_metadata(existing).is_ok() {
+            bail!("dangling path alias");
+        }
+        suffix.push(
+            existing
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("invalid path"))?
+                .to_owned(),
+        );
+        existing = existing
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("invalid path"))?;
+    }
+    let mut resolved = existing.canonicalize()?;
+    for part in suffix.into_iter().rev() {
+        resolved.push(part);
+    }
+    let rel = resolved
+        .strip_prefix(&root)
+        .map_err(|_| anyhow::anyhow!("path escapes workspace"))?;
+    validate_workspace_path(&rel.to_string_lossy().replace('\\', "/"))?;
+    Ok(resolved)
+}
+
+#[cfg(all(test, unix))]
+mod path_lock_tests {
+    use super::*;
+    #[test]
+    fn aliases_replacements_and_missing_leaves_use_a_stable_key() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        let file = root.join("file");
+        std::fs::write(&file, "one").unwrap();
+        std::os::unix::fs::symlink(&file, root.join("alias")).unwrap();
+        assert_eq!(
+            canonical_workspace_path(&root, Path::new("alias")).unwrap(),
+            file
+        );
+        std::fs::rename(&file, root.join("moved")).unwrap();
+        assert_eq!(
+            canonical_workspace_path(&root, Path::new("file")).unwrap(),
+            file
+        );
+        assert!(canonical_workspace_path(&root, Path::new("alias")).is_err());
+        std::fs::write(&file, "replacement").unwrap();
+        assert_eq!(
+            canonical_workspace_path(&root, Path::new("file")).unwrap(),
+            file
+        );
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("outside")).unwrap();
+        assert!(canonical_workspace_path(&root, Path::new("outside/new")).is_err());
     }
 }

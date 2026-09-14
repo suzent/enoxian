@@ -25,123 +25,246 @@ use tokio_util::sync::CancellationToken;
 
 pub fn spawn_reaction(state: AppState, token: CancellationToken) {
     tokio::spawn(async move {
-        if let Err(e) = run(state, token).await {
-            tracing::warn!("[agent] reaction loop stopped: {e:#}");
+        loop {
+            match run(state.clone(), token.clone()).await {
+                Ok(()) => break,
+                Err(error) => tracing::warn!("[agent] reaction loop unavailable: {error:#}"),
+            }
+            // A previous Circle instance may still be finishing a process and
+            // holding inbox ownership after disable/re-enable. Retry acquisition
+            // without resetting history or starting a second owner.
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {},
+            }
         }
     });
 }
 
 async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     let mut events = state.events.subscribe();
-
-    // Durable dedup: act on each (message, mention) at most once *ever*, not
-    // just once per run. On reconnect, P2P sync replays the whole chat history
-    // as fresh CRDT updates and the observer fires AgentMentioned for every
-    // historical message; without a persisted guard, every past mention would
-    // re-launch its agent on each restart. This survives restarts.
     let handled = super::handled::HandledMentions::load(&state.circle_dir);
-    let ledger = std::sync::Arc::new(RelayLedger::default());
-    let queue = RunQueue::new();
-    spawn_run_worker(state.clone(), queue.clone(), token.clone());
-
-    // Cheap first-line filter: a mention older than daemon start is almost
-    // certainly replayed history. The durable set is the real guard; this just
-    // avoids logging/looking up ancient messages. Grace of 2s for clock skew.
-    let cutoff = chrono::Utc::now().timestamp() - 2;
-    tracing::info!(
-        "[agent] reaction loop started for circle {} (fresh cutoff ts={cutoff})",
-        state.circle_id
-    );
-
+    let inbox = std::sync::Arc::new(super::inbox::Inbox::open(
+        &state.circle_dir,
+        chrono::Utc::now().timestamp(),
+    )?);
+    *state.execution_inbox.write().unwrap() = Some(std::sync::Arc::downgrade(&inbox));
+    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    let worker_token = token.child_token();
+    let _cancel_worker = worker_token.clone().drop_guard();
+    let mut worker = spawn_run_worker(state.clone(), inbox.clone(), wake.clone(), worker_token);
+    // This boundary is only for ambient observations. Addressed work uses the
+    // persisted activation boundary, not a new cutoff on every daemon start.
+    let live_since = chrono::Utc::now().timestamp() - 2;
+    let mut reconcile = tokio::time::interval(std::time::Duration::from_secs(5));
+    reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             _ = token.cancelled() => break,
+            result = &mut worker => {
+                result??;
+                anyhow::bail!("execution worker stopped unexpectedly; recovering owner");
+            },
+            _ = reconcile.tick() => {
+                if let Err(error) = crate::proposal::runs::release_finished_locks(&state) { tracing::debug!("lock cleanup deferred: {error}"); }
+                reconcile_requests(&state, &handled, &inbox, &wake);
+            }
             evt = events.recv() => match evt {
-                // A message with no agent mention may still be a follow-up to
-                // the agent that just replied to this speaker (§1.1).
                 Ok(CircleEvent::MessagePosted { message }) => {
-                    if message.ts < cutoff {
-                        continue;
-                    }
                     let cfg = AgentConfig::load();
-                    offer_ambient(&state, &handled, &ledger, &queue, &cfg, &message);
-                    let Some(engagement) = resolve_followup(&state, &message, &cfg) else {
-                        continue;
-                    };
-                    // The whole text is the task: there is no mention prefix to
-                    // strip.
-                    dispatch(
-                        &state,
-                        &handled,
-                        &ledger,
-                        &queue,
-                        &cfg,
-                        DispatchRequest {
-                            agent: &engagement.agent,
-                            mention_key: &super::engagement::dedup_key(&engagement.agent),
-                            task: message.text.clone(),
-                            message: &message,
-                            relay: Some(super::engagement::followup_relay(
-                                &message.id,
-                                &message.peer_id,
-                            )),
-                            implicit: true,
-                            ambient: false,
-                        },
-                    );
+                    admit_message(&state, &handled, &inbox, &wake, &cfg, &message,
+                        message.ts >= live_since);
                 }
-                Ok(CircleEvent::AgentMentioned { agent_id, message }) => {
-                    // Old message (replayed history) — skip cheaply.
-                    if message.ts < cutoff {
-                        continue;
+                Ok(CircleEvent::RelayStopped { root }) => {
+                    for entry in inbox.entries().into_iter().filter(|e| e.status == super::inbox::Status::Pending && e.request.relay.as_ref().is_some_and(|r| r.root == root)) {
+                        inbox.transition(&entry.run_id, super::inbox::Status::Pending, super::inbox::Status::Cancelled,
+                            Some("chain stopped".into()), chrono::Utc::now().timestamp())?;
                     }
-                    // `agent_id` is the stored mention body — possibly scoped as
-                    // owner/device/agent. Only agent-level targets launch; user-
-                    // and device-level mentions are notify-only.
-                    let Some(mention) = Mention::parse(&agent_id) else { continue };
-                    let Some((agent, scope)) = mention.agent_target() else {
-                        tracing::debug!("[agent] `{agent_id}` is a notify-only mention — not launching");
-                        continue;
-                    };
-
-                    // If the mention is scoped to a specific device, only that
-                    // device reacts. A device never runs an agent addressed to a
-                    // different device.
-                    if let Some((owner, device)) = scope {
-                        if !targets_this_device(&state, owner, device) {
-                            continue;
-                        }
-                    }
-
-                    // Reload config per mention so edits to agents.toml take
-                    // effect without a daemon restart — mentions are rare.
-                    let cfg = AgentConfig::load();
-                    dispatch(
-                        &state,
-                        &handled,
-                        &ledger,
-                        &queue,
-                        &cfg,
-                        DispatchRequest {
-                            agent,
-                            mention_key: &agent_id,
-                            task: strip_mention(&message.text, &agent_id),
-                            message: &message,
-                            relay: message.relay.clone(),
-                            implicit: false,
-                            ambient: false,
-                        },
-                    );
+                    wake.notify_one();
                 }
+                // MessagePosted is the single admission path. AgentMentioned
+                // is also emitted for the same message and must not fan out a
+                // second time, especially when a peer replays the transcript.
                 Ok(_) => {}
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("[agent] reaction stream lagged by {n}; some mentions dropped");
+                    tracing::warn!("[agent] reaction stream lagged by {n}; reconciling inbox");
+                    reconcile_requests(&state, &handled, &inbox, &wake);
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
         }
+        anyhow::ensure!(
+            inbox.is_healthy(),
+            "execution inbox unavailable; recovering owner"
+        );
     }
     Ok(())
+}
+
+fn reconcile_requests(
+    state: &AppState,
+    handled: &super::handled::HandledMentions,
+    inbox: &super::inbox::Inbox,
+    wake: &tokio::sync::Notify,
+) {
+    reconcile_requests_with_config(state, handled, inbox, wake, &AgentConfig::load());
+}
+
+fn reconcile_requests_with_config(
+    state: &AppState,
+    handled: &super::handled::HandledMentions,
+    inbox: &super::inbox::Inbox,
+    wake: &tokio::sync::Notify,
+    cfg: &AgentConfig,
+) {
+    let mut history = state.transcript();
+    for (message_id, mention_key) in handled.entries() {
+        let Some(message) = history.iter().find(|m| m.id == message_id) else {
+            continue;
+        };
+        let Some(mention) = Mention::parse(&mention_key) else {
+            continue;
+        };
+        let Some((agent, scope)) = mention.agent_target() else {
+            continue;
+        };
+        if scope.is_some_and(|(owner, device)| !targets_this_device(state, owner, device)) {
+            continue;
+        }
+        let request = super::inbox::Request {
+            agent: agent.to_string(),
+            mention_key: mention_key.clone(),
+            message: message.clone(),
+            task: strip_mention(&message.text, &mention_key),
+            relay: message.relay.clone(),
+            implicit: false,
+            ambient: false,
+        };
+        if let Err(error) = inbox.record_suppressed(request, message.ts) {
+            tracing::warn!("legacy inbox import failed: {error}");
+        }
+    }
+    history.sort_by(|a, b| a.ts.cmp(&b.ts).then(a.id.cmp(&b.id)));
+    for message in history {
+        // Reconciliation delivers explicit work, never stale room observations
+        // or recency guesses newly invented by later transcript changes.
+        if !message.mentions.is_empty() || message.reply_to.is_some() {
+            admit_message(state, handled, inbox, wake, cfg, &message, false);
+        }
+    }
+    let _ = crate::api::execution::publish(state, inbox);
+    wake.notify_one();
+}
+
+fn message_author_scope(state: &AppState, peer: &str) -> Option<(String, String)> {
+    use yrs::{Any, Map, Out, ReadTxn, Transact};
+    let txn = state.control.try_transact().ok()?;
+    let members = txn.get_map(crate::control::MEMBER_LIST_KEY)?;
+    members.iter(&txn).find_map(|(_, value)| {
+        let Out::Any(Any::String(raw)) = value else {
+            return None;
+        };
+        let member: crate::control::MemberEntry = serde_json::from_str(&raw).ok()?;
+        (member.peer_id == peer).then_some((member.owner, member.device_label))
+    })
+}
+
+fn admit_message(
+    state: &AppState,
+    handled: &super::handled::HandledMentions,
+    inbox: &super::inbox::Inbox,
+    wake: &tokio::sync::Notify,
+    cfg: &AgentConfig,
+    message: &crate::control::ChatMessage,
+    live: bool,
+) {
+    if message.ts < inbox.activated_at() || message.author == crate::control::Author::System {
+        return;
+    }
+    let agent_reply = message.author == crate::control::Author::Agent
+        || message
+            .relay
+            .as_ref()
+            .and_then(super::relay::poster)
+            .is_some();
+    let mentions = if agent_reply {
+        // The author's scope is taken from its peer, not this receiving device.
+        // Never allow a missing relay on an agent-authored message to mint work.
+        if message
+            .relay
+            .as_ref()
+            .and_then(super::relay::poster)
+            .is_none()
+        {
+            return;
+        }
+        let writer = message_author_scope(state, &message.peer_id);
+        super::relay::triggerable_mentions(
+            message,
+            super::relay::RELAY_TURNS_CEILING,
+            writer
+                .as_ref()
+                .map(|(owner, device)| (owner.as_str(), device.as_str())),
+        )
+    } else {
+        message.mentions.clone()
+    };
+    for body in mentions {
+        let Some(mention) = Mention::parse(&body) else {
+            continue;
+        };
+        let Some((agent, scope)) = mention.agent_target() else {
+            continue;
+        };
+        if scope.is_some_and(|(owner, device)| !targets_this_device(state, owner, device)) {
+            continue;
+        }
+        dispatch(
+            state,
+            handled,
+            inbox,
+            wake,
+            cfg,
+            DispatchRequest {
+                agent,
+                mention_key: &body,
+                task: strip_mention(&message.text, &body),
+                message,
+                relay: message.relay.clone(),
+                implicit: false,
+                ambient: false,
+            },
+        );
+    }
+    let engagement = if live || message.reply_to.is_some() {
+        resolve_followup(state, message, cfg)
+    } else {
+        None
+    };
+    if live
+        && message.ts >= chrono::Utc::now().timestamp() - 30
+        && ambient_route_allowed(message, engagement.as_ref())
+    {
+        offer_ambient(state, handled, inbox, wake, cfg, message);
+    }
+    if let Some(engagement) = engagement.filter(|e| e.peer_id == state.peer_id) {
+        dispatch(
+            state,
+            handled,
+            inbox,
+            wake,
+            cfg,
+            DispatchRequest {
+                agent: &engagement.agent,
+                mention_key: &super::engagement::dedup_key(&engagement.agent),
+                task: message.text.clone(),
+                message,
+                relay: Some(super::relay::mint(&message.id, &message.peer_id)),
+                implicit: true,
+                ambient: false,
+            },
+        );
+    }
 }
 
 /// Everything needed to decide whether a turn runs, from either entry path:
@@ -166,141 +289,78 @@ struct DispatchRequest<'a> {
 fn dispatch(
     state: &AppState,
     handled: &super::handled::HandledMentions,
-    ledger: &RelayLedger,
-    queue: &RunQueue,
+    inbox: &super::inbox::Inbox,
+    wake: &tokio::sync::Notify,
     cfg: &AgentConfig,
     req: DispatchRequest<'_>,
 ) {
     let settings = cfg.resolved(&state.circle_id);
-    if settings.reaction != Reaction::Push {
-        tracing::debug!("[agent] pull policy — ignoring `{}`", req.agent);
+    if settings.reaction != Reaction::Push || cfg.resolve(req.agent).is_none() {
         return;
     }
-    let Some(cmd) = cfg.resolve(req.agent).cloned() else {
-        // Not one of this device's agents — nothing to do.
-        return;
-    };
-
-    // Delegation gate. Only an agent-authored trigger is budgeted; a follow-up
-    // is a human's message and mints its own (§3.3).
-    if !req.implicit && !req.ambient {
-        let delegated = req
-            .relay
-            .as_ref()
-            .and_then(|r| super::relay::poster(r))
-            .map(str::to_string);
-        if let Some(via) = &delegated {
-            // Would this wake the very agent that posted the message, on the
-            // machine that posted it? Comparing peer ids answers exactly what
-            // labels only approximate — and this is the guard that makes a
-            // one-agent loop impossible, so the sender-side check can stay
-            // narrow enough to allow cross-device hand-offs.
-            if req.message.peer_id == state.peer_id && via == req.agent {
-                tracing::debug!(
-                    "[agent] `{}` mentioned itself on this device — not re-waking it",
-                    req.agent
-                );
-                return;
-            }
-            // Delegation is not opt-in. An agent allowed into this Circle is
-            // reachable by the other agents in it; the allowlist and the
-            // reaction policy above already decide whether it may run here at
-            // all, and the budget below bounds what a chain can cost. A second
-            // switch only meant hand-offs failed silently until someone found
-            // it.
-            let relay = req.relay.as_ref().expect("delegated implies a relay");
-            if crate::api::chat::relay_is_stopped(state, &relay.root) {
-                tracing::info!(
-                    "[agent] cascade {} was stopped — not waking `{}`",
-                    relay.root,
-                    req.agent
-                );
-                publish_relay_skipped(state, req.agent, &req.message.id, "cascade stopped");
-                return;
-            }
-            if !super::relay::has_budget(relay, settings.max_relay_turns) {
-                tracing::info!(
-                    "[agent] relay budget spent on cascade {} — not waking `{}`",
-                    relay.root,
-                    req.agent
-                );
-                publish_relay_skipped(state, req.agent, &req.message.id, "relay budget spent");
-                return;
-            }
-            if !ledger.charge(&relay.root, settings.max_relay_turns) {
-                tracing::info!(
-                    "[agent] cascade {} has spent this device's budget — not waking `{}`",
-                    relay.root,
-                    req.agent
-                );
-                publish_relay_skipped(state, req.agent, &req.message.id, "relay budget spent");
-                return;
-            }
-        }
-    }
-
-    // Only durable-dedup turns that passed every check and are about to run.
-    if !handled.mark_new(&req.message.id, req.mention_key) {
-        tracing::debug!(
-            "[agent] {}::{} already handled — skipping",
-            req.message.id,
-            req.mention_key
-        );
+    // Imported markers suppress replay but are never called completed jobs.
+    if handled.contains(&req.message.id, req.mention_key) {
         return;
     }
-
-    if req.implicit {
-        tracing::info!(
-            "[agent] routing a follow-up to `{}` (no mention needed)",
-            req.agent
-        );
-    }
-    publish_agent_activity(
-        state,
-        req.agent,
-        &req.message.id,
-        ChatActivityKind::Seen,
-        true,
-    );
-
-    // Sender-origin sets the acceptance-policy posture. For a relayed turn this
-    // resolves from the *root human*, not the agent that mentioned us —
-    // otherwise an agent could launder a remote member's request into a local
-    // one by relaying it.
-    let initiator = if req.ambient {
-        // Nobody asked. Whatever it writes is held for review (§2.4).
-        Initiator::Ambient
-    } else if attributed_local(state, req.message) {
-        Initiator::Local
-    } else {
-        Initiator::RemoteMember
-    };
-
-    let agent_id = req.agent.to_string();
-    let dropped = queue.push(QueuedTurn {
-        agent_id: agent_id.clone(),
-        cmd,
+    let request = super::inbox::Request {
+        agent: req.agent.to_string(),
+        mention_key: req.mention_key.to_string(),
+        message: req.message.clone(),
         task: req.task,
-        sender: req.message.agent_id.clone(),
-        message_id: req.message.id.clone(),
-        initiator,
         relay: req.relay,
+        implicit: req.implicit,
         ambient: req.ambient,
-    });
-    if let Some(dropped_id) = dropped {
-        // Dropping a message the user wrote is lossy, and rare by construction
-        // — so unlike a queued turn, it is worth a line in the transcript.
-        tracing::warn!(
-            "[agent] queue for `{agent_id}` is full — dropped the oldest turn ({dropped_id})"
-        );
-        let _ = crate::api::chat::post_message(
-            state,
-            "system".to_string(),
-            format!(
-                "@{agent_id} has {MAX_QUEUED_PER_AGENT} messages waiting — the oldest was dropped"
-            ),
-            crate::api::chat::Trigger::System,
-        );
+    };
+    if request.delegated()
+        && request.message.peer_id == state.peer_id
+        && request.relay.as_ref().and_then(super::relay::poster) == Some(req.agent)
+    {
+        return;
+    }
+    match inbox.admit(
+        request,
+        settings.max_relay_turns,
+        chrono::Utc::now().timestamp(),
+    ) {
+        Ok(super::inbox::Admission::Duplicate) => {}
+        Ok(super::inbox::Admission::Rejected(entry)) => {
+            publish_relay_skipped(
+                state,
+                &entry.request.agent,
+                &entry.request.message.id,
+                entry.detail.as_deref().unwrap_or("not admitted"),
+            );
+        }
+        Ok(super::inbox::Admission::Accepted { entry, displaced }) => {
+            publish_agent_activity(
+                state,
+                &entry.request.agent,
+                &entry.request.message.id,
+                ChatActivityKind::Seen,
+                true,
+            );
+            for dropped in displaced {
+                publish_relay_skipped(
+                    state,
+                    &dropped.request.agent,
+                    &dropped.request.message.id,
+                    dropped
+                        .detail
+                        .as_deref()
+                        .unwrap_or("queue capacity exceeded"),
+                );
+            }
+            wake.notify_one();
+        }
+        Err(error) => {
+            tracing::error!("[agent] could not persist request: {error:#}");
+            publish_relay_skipped(
+                state,
+                req.agent,
+                &req.message.id,
+                "execution inbox could not be saved",
+            );
+        }
     }
 }
 
@@ -308,8 +368,8 @@ fn dispatch(
 fn offer_ambient(
     state: &AppState,
     handled: &super::handled::HandledMentions,
-    ledger: &RelayLedger,
-    queue: &RunQueue,
+    inbox: &super::inbox::Inbox,
+    wake: &tokio::sync::Notify,
     cfg: &AgentConfig,
     message: &crate::control::ChatMessage,
 ) {
@@ -345,8 +405,8 @@ fn offer_ambient(
         dispatch(
             state,
             handled,
-            ledger,
-            queue,
+            inbox,
+            wake,
             cfg,
             DispatchRequest {
                 agent: &agent,
@@ -373,7 +433,19 @@ fn mentions_an_agent(message: &crate::control::ChatMessage) -> bool {
     })
 }
 
-/// Resolve a follow-up for a message that named no agent.
+/// Decide ambient eligibility before device filtering: a remote target is
+/// still an addressed conversation. An unresolved explicit reply must not
+/// silently become an invitation to unrelated ambient agents.
+fn ambient_route_allowed(
+    message: &crate::control::ChatMessage,
+    engagement: Option<&super::engagement::Engagement>,
+) -> bool {
+    message.reply_to.is_none() && engagement.is_none() && !mentions_an_agent(message)
+}
+
+/// Resolve a follow-up for a message that named no agent, including remote
+/// targets. The caller filters execution to the target device after deciding
+/// whether the message belongs to an addressed conversation.
 fn resolve_followup(
     state: &AppState,
     message: &crate::control::ChatMessage,
@@ -382,214 +454,274 @@ fn resolve_followup(
     if !super::engagement::is_followup_candidate(message, mentions_an_agent(message)) {
         return None;
     }
-    let history: Vec<_> = state
-        .transcript()
-        .into_iter()
-        .filter(|m| m.id != message.id)
-        .collect();
+    let mut history = state.transcript();
     // An explicit reply-to wins outright: the user pointed at a message, which
     // is addressing, so no window and no recency guess applies (§1.4).
     if let Some(reply_to) = &message.reply_to {
-        let target = super::engagement::resolve_reply_to(&history, reply_to);
-        return target.filter(|e| e.peer_id == state.peer_id);
+        return super::engagement::resolve_reply_to(&history, reply_to);
     }
-    let engagement = super::engagement::resolve(
+    // Only history preceding this message may establish a recency target.
+    // Keep same-second ordering from the transcript rather than dropping valid
+    // rapid replies or consulting later agent answers during reconciliation.
+    if let Some(index) = history.iter().position(|m| m.id == message.id) {
+        history.truncate(index);
+    }
+    history.retain(|m| m.ts <= message.ts);
+    super::engagement::resolve(
         &history,
         &message.peer_id,
         message.ts,
         cfg.resolved(&state.circle_id).engagement_window_secs,
         state.engagement_dismissed(&message.peer_id).as_ref(),
-    )?;
-    // A follow-up must wake the machine that ran the reply — and only that
-    // machine. Every device evaluates this rule, so without the check they
-    // would all answer.
-    (engagement.peer_id == state.peer_id).then_some(engagement)
+    )
 }
 
-/// One agent turn waiting to run. Owned, because it outlives the event that
-/// produced it.
-struct QueuedTurn {
-    agent_id: String,
-    cmd: super::config::AgentCommand,
-    task: String,
-    sender: String,
-    message_id: String,
-    initiator: Initiator,
-    relay: Option<Relay>,
-    ambient: bool,
+/// A FIFO device permit bounds provider processes across all Circles. Each
+/// Circle offers at most one candidate per agent; the conversation lease also
+/// covers manual CLI launches. Configuration changes resize on daemon restart.
+fn device_permits() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
+    static POOL: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+        std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        std::sync::Arc::new(tokio::sync::Semaphore::new(
+            AgentConfig::load().max_concurrent_runs.clamp(1, 32),
+        ))
+    })
 }
 
-/// How many turns may wait for one agent before the oldest is dropped.
-///
-/// Deep enough to absorb someone typing three messages in a row while an agent
-/// works; shallow enough that a queue cannot silently grow into a backlog the
-/// user has forgotten about.
-const MAX_QUEUED_PER_AGENT: usize = 4;
-
-/// Serialized run queue for a Circle.
-///
-/// `driver::launch` refuses to start while any managed change session is open,
-/// and that lock is Circle-wide. Before this, a mention arriving during a run
-/// hit the refusal and was turned into a `system` chat post — a failure notice
-/// for something the user is entitled to do. Follow-up routing (§1.1) makes
-/// consecutive messages normal, which would have made that the common case.
-///
-/// So turns queue instead of racing. A single worker drains them in arrival
-/// order, which also means the Circle-wide lock is never contended from here.
-///
-/// The spec (§1.3) would rather the lock were per-agent so unrelated agents run
-/// in parallel. That needs `LocalChangeSession` to hold more than one open
-/// managed session and the proposal baseline to tolerate two concurrent
-/// writers, which it does not today — so this takes the fallback the spec
-/// names: keep the Circle-wide lock and queue across it.
-#[derive(Clone)]
-struct RunQueue {
-    pending: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<QueuedTurn>>>,
+fn spawn_run_worker(
+    state: AppState,
+    inbox: std::sync::Arc<super::inbox::Inbox>,
     wake: std::sync::Arc<tokio::sync::Notify>,
-}
-
-impl RunQueue {
-    fn new() -> Self {
-        Self {
-            pending: Default::default(),
-            wake: Default::default(),
-        }
-    }
-
-    /// Enqueue a turn. Returns the message id of a turn dropped to make room,
-    /// if the agent's queue was already full.
-    fn push(&self, turn: QueuedTurn) -> Option<String> {
-        let mut pending = self.pending.lock().unwrap();
-        let agent = turn.agent_id.clone();
-        let queued = pending.iter().filter(|t| t.agent_id == agent).count();
-        // Drop the *oldest* rather than refusing the newest: the most recent
-        // message is the one the user is waiting on, and an older one is more
-        // likely to have been superseded by it.
-        let dropped = if queued >= MAX_QUEUED_PER_AGENT {
-            pending
-                .iter()
-                .position(|t| t.agent_id == agent)
-                .and_then(|i| pending.remove(i))
-                .map(|t| t.message_id)
-        } else {
-            None
-        };
-        pending.push_back(turn);
-        drop(pending);
-        self.wake.notify_one();
-        dropped
-    }
-
-    fn pop(&self) -> Option<QueuedTurn> {
-        self.pending.lock().unwrap().pop_front()
-    }
-
-    /// How many turns are waiting for this agent. The composer derives its
-    /// "will be queued" hint from the agent's activity indicator instead, so
-    /// this exists for tests.
-    #[cfg(test)]
-    fn depth_for(&self, agent: &str) -> usize {
-        self.pending
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|t| t.agent_id == agent)
-            .count()
-    }
-}
-
-/// Drain the queue one turn at a time for the life of the Circle.
-fn spawn_run_worker(state: AppState, queue: RunQueue, token: CancellationToken) {
+    token: CancellationToken,
+) -> tokio::task::JoinHandle<anyhow::Result<()>> {
     tokio::spawn(async move {
+        let mut failure = None;
+        let mut active = std::collections::HashSet::new();
+        let mut tasks = tokio::task::JoinSet::new();
+        let mut paused = std::collections::HashSet::new();
         loop {
-            let Some(turn) = queue.pop() else {
-                tokio::select! {
-                    _ = token.cancelled() => break,
-                    _ = queue.wake.notified() => continue,
-                }
-            };
             if token.is_cancelled() {
                 break;
             }
-            run_one(&state, turn).await;
+            for entry in inbox
+                .entries()
+                .into_iter()
+                .filter(|e| e.status == super::inbox::Status::Pending)
+            {
+                let agent = entry.request.agent;
+                if paused.contains(&agent) || !active.insert(agent.clone()) {
+                    continue;
+                }
+                let state = state.clone();
+                let inbox = inbox.clone();
+                let cancel = token.clone();
+                tasks.spawn(async move {
+                    let result = async {
+                        let _permit = tokio::select! {
+                            _ = cancel.cancelled() => return Ok(false),
+                            permit = device_permits().clone().acquire_owned() => permit?,
+                        };
+                        // Policy and chain stops are checked after acquiring the
+                        // permit, immediately before the durable running claim.
+                        run_next_cancellable(
+                            &state,
+                            &inbox,
+                            &AgentConfig::load(),
+                            Some(&agent),
+                            &cancel,
+                        )
+                        .await
+                    }
+                    .await;
+                    (agent, result)
+                });
+            }
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = wake.notified() => { paused.clear(); },
+                joined = tasks.join_next(), if !tasks.is_empty() => {
+                    match joined {
+                        Some(Ok((agent, Ok(progress)))) => {
+                            active.remove(&agent);
+                            if !progress { paused.insert(agent); }
+                        },
+                        Some(Ok((agent, Err(error)))) => {
+                            tracing::error!("[agent] execution worker {agent} stopped: {error:#}");
+                            failure = Some(error);
+                            token.cancel();
+                            break;
+                        },
+                        Some(Err(error)) => { failure = Some(error.into()); token.cancel(); break; },
+                        None => {},
+                    }
+                }
+            }
         }
-    });
+        // Disable/stop-chain never implicitly kills an already running turn.
+        while tasks.join_next().await.is_some() {}
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    })
 }
 
-async fn run_one(state: &AppState, turn: QueuedTurn) {
-    let QueuedTurn {
-        agent_id,
-        cmd,
-        task,
-        sender,
-        message_id,
-        initiator,
-        relay,
-        ambient,
-    } = turn;
-    if let Err(e) = react(
-        state,
-        Turn {
-            agent_id: &agent_id,
-            cmd: &cmd,
-            task: &task,
-            sender: &sender,
-            message_id: &message_id,
-            initiator,
-            relay,
-            ambient,
-        },
-    )
-    .await
+#[cfg(test)]
+async fn run_next_with_config(
+    state: &AppState,
+    inbox: &super::inbox::Inbox,
+    cfg: &AgentConfig,
+) -> anyhow::Result<bool> {
+    run_next_for_agent(state, inbox, cfg, None).await
+}
+
+#[cfg(test)]
+async fn run_next_for_agent(
+    state: &AppState,
+    inbox: &super::inbox::Inbox,
+    cfg: &AgentConfig,
+    agent: Option<&str>,
+) -> anyhow::Result<bool> {
+    run_next_cancellable(state, inbox, cfg, agent, &CancellationToken::new()).await
+}
+
+async fn run_next_cancellable(
+    state: &AppState,
+    inbox: &super::inbox::Inbox,
+    cfg: &AgentConfig,
+    agent: Option<&str>,
+    cancel: &CancellationToken,
+) -> anyhow::Result<bool> {
+    use super::inbox::Status;
+    if ProposalStore::open(&state.workspace)?
+        .baseline_id()
+        .is_none()
     {
-        publish_agent_activity(
-            state,
-            &agent_id,
-            &message_id,
-            ChatActivityKind::Working,
-            false,
-        );
-        tracing::warn!("[agent] run of `{agent_id}` failed: {e:#}");
-        let reason = concise_error(&e);
-        let text = format!("@{agent_id} failed to start · {reason}");
-        let _ = crate::api::chat::post_message(
-            state,
-            "system".to_string(),
-            text,
-            crate::api::chat::Trigger::System,
-        );
+        return Ok(false);
     }
-}
-
-/// This device's own count of agent turns it has run per cascade root.
-///
-/// The `spent` field on the wire is a hint from a peer that could have forged
-/// it, so it can only ever *shrink* a budget, never extend one. This ledger is
-/// the local truth: a cascade that re-enters this device several times cannot
-/// spend more turns here than this device allows in total, whatever the wire
-/// says.
-///
-/// Bounded by construction — an entry is only made for a root that actually
-/// ran something here, and the map is dropped with the daemon. A restart
-/// forgetting a cascade is acceptable: the cascade is long over.
-#[derive(Default)]
-struct RelayLedger {
-    spent: std::sync::Mutex<std::collections::HashMap<String, u8>>,
-}
-
-impl RelayLedger {
-    /// Charge one turn against `root` if this device's ceiling allows it.
-    /// Returns false when the cascade has already cost this device its limit.
-    fn charge(&self, root: &str, max: u8) -> bool {
-        let ceiling = max.min(crate::agent::relay::RELAY_TURNS_CEILING);
-        let mut spent = self.spent.lock().unwrap();
-        let entry = spent.entry(root.to_string()).or_insert(0);
-        if *entry >= ceiling {
-            return false;
+    for entry in inbox
+        .entries()
+        .into_iter()
+        .filter(|e| e.status == Status::Pending && agent.is_none_or(|a| e.request.agent == a))
+    {
+        let request = &entry.request;
+        let rejection = match launch_rejection(state, request, cfg) {
+            Ok(reason) => reason,
+            Err(_) => continue, // Unknown stop state is retried, never treated as permission.
+        };
+        if let Some(reason) = rejection {
+            inbox.transition(
+                &entry.run_id,
+                Status::Pending,
+                Status::Cancelled,
+                Some(reason.into()),
+                chrono::Utc::now().timestamp(),
+            )?;
+            publish_relay_skipped(state, &request.agent, &request.message.id, reason);
+            continue;
         }
-        *entry += 1;
-        true
+        if cfg.resolved(&state.circle_id).reaction != Reaction::Push {
+            continue;
+        }
+        let Some(cmd) = cfg.resolve(&request.agent) else {
+            continue;
+        };
+        if !inbox.transition(
+            &entry.run_id,
+            Status::Pending,
+            Status::Running,
+            None,
+            chrono::Utc::now().timestamp(),
+        )? {
+            continue;
+        }
+        let _ = crate::api::execution::publish(state, inbox);
+        let initiator = if request.ambient {
+            Initiator::Ambient
+        } else if attributed_local(state, &request.message) {
+            Initiator::Local
+        } else {
+            Initiator::RemoteMember
+        };
+        let result = react(
+            state,
+            Turn {
+                run_id: &entry.run_id,
+                agent_id: &request.agent,
+                cmd,
+                task: &request.task,
+                sender: &request.message.agent_id,
+                message_id: &request.message.id,
+                initiator,
+                relay: request.relay.clone(),
+                ambient: request.ambient,
+            },
+            cancel,
+        )
+        .await;
+        let (status, detail) = match result {
+            Ok(()) => (Status::Completed, None),
+            Err(error) if error.is::<crate::proposal::runs::ConversationBusy>() => (
+                Status::Pending,
+                Some("waiting for the previous conversation turn".into()),
+            ),
+            Err(error) if error.is::<crate::proposal::runs::DeviceCapacityUnavailable>() => (
+                Status::Pending,
+                Some("waiting for device capacity; no process launched".into()),
+            ),
+            Err(error) => {
+                let reason = concise_error(&error);
+                tracing::warn!("[agent] run {} failed: {error:#}", entry.run_id);
+                publish_relay_skipped(state, &request.agent, &request.message.id, &reason);
+                (Status::Failed, Some(reason))
+            }
+        };
+        inbox.transition(
+            &entry.run_id,
+            Status::Running,
+            status,
+            detail,
+            chrono::Utc::now().timestamp(),
+        )?;
+        let _ = crate::api::execution::publish(state, inbox);
+        return Ok(status != Status::Pending);
     }
+    Ok(false)
+}
+
+/// Stop markers are checked at launch, including human-rooted pending turns.
+/// Policy withdrawal pauses work; it never executes a stale persisted command.
+fn launch_rejection(
+    state: &AppState,
+    request: &super::inbox::Request,
+    cfg: &AgentConfig,
+) -> anyhow::Result<Option<&'static str>> {
+    if let Some(relay) = &request.relay {
+        if crate::api::chat::try_relay_is_stopped(state, &relay.root)? {
+            return Ok(Some("cascade stopped"));
+        }
+    }
+    if request.delegated()
+        && !super::relay::has_budget(
+            request.relay.as_ref().unwrap(),
+            cfg.resolved(&state.circle_id).max_relay_turns,
+        )
+    {
+        return Ok(Some("relay budget spent"));
+    }
+    if request.ambient && !cfg.resolved(&state.circle_id).is_ambient(&request.agent) {
+        return Ok(Some("ambient participation disabled"));
+    }
+    if let Some((_, Some((owner, device)))) = Mention::parse(&request.mention_key)
+        .as_ref()
+        .and_then(|m| m.agent_target())
+    {
+        if !targets_this_device(state, owner, device) {
+            return Ok(Some("recipient device changed"));
+        }
+    }
+    Ok(None)
 }
 
 fn concise_error(error: &anyhow::Error) -> String {
@@ -605,6 +737,7 @@ fn concise_error(error: &anyhow::Error) -> String {
 
 /// One agent turn: everything the run needs that is not the daemon state.
 struct Turn<'a> {
+    run_id: &'a str,
     agent_id: &'a str,
     cmd: &'a super::config::AgentCommand,
     task: &'a str,
@@ -618,8 +751,19 @@ struct Turn<'a> {
     ambient: bool,
 }
 
-async fn react(state: &AppState, turn: Turn<'_>) -> anyhow::Result<()> {
+struct ManagedToken {
+    registry: crate::actor_token::ActorTokenRegistry,
+    token: String,
+}
+impl Drop for ManagedToken {
+    fn drop(&mut self) {
+        self.registry.revoke(&self.token);
+    }
+}
+
+async fn react(state: &AppState, turn: Turn<'_>, cancel: &CancellationToken) -> anyhow::Result<()> {
     let Turn {
+        run_id,
         agent_id,
         cmd,
         task,
@@ -643,8 +787,9 @@ async fn react(state: &AppState, turn: Turn<'_>) -> anyhow::Result<()> {
     // Give the agent enough context about where it is. On a resumed session the
     // agent already has history, so we send a lean per-turn header; on a fresh
     // session we include the standing brief about the enoxian environment.
-    let mut prompt =
-        super::context::build_prompt(state, agent_id, sender, task, resume.as_ref(), message_id);
+    let delivery =
+        super::context::build_delivery(state, agent_id, sender, task, resume.as_ref(), message_id);
+    let mut prompt = delivery.prompt;
     if ambient {
         prompt.push_str("\n\n");
         prompt.push_str(super::ambient::ambient_instruction());
@@ -652,20 +797,30 @@ async fn react(state: &AppState, turn: Turn<'_>) -> anyhow::Result<()> {
     let (actor_token, _) = state
         .actor_tokens
         .issue(&state.circle_id, &state.peer_id, agent_id);
+    let _token_lease = ManagedToken {
+        registry: state.actor_tokens.clone(),
+        token: actor_token.clone(),
+    };
 
-    let launch = driver::launch(driver::LaunchRequest {
-        agent_name: agent_id,
-        cmd,
-        task: &prompt,
-        workspace: &state.workspace,
-        base_snapshot: &base_snapshot,
-        circle_id: &state.circle_id,
-        circle_dir: &state.circle_dir,
-        actor_token: Some(&actor_token),
-        relay_path: relay.as_ref().map(|r| r.path.clone()).unwrap_or_default(),
-        initiator,
-        resume: resume.as_ref().map(|r| r.session_id.as_str()),
-    });
+    let launch = driver::launch_cancellable(
+        driver::LaunchRequest {
+            run_id: Some(run_id),
+            trigger_id: Some(message_id),
+            coordination: Some(state.clone()),
+            agent_name: agent_id,
+            cmd,
+            task: &prompt,
+            workspace: &state.workspace,
+            base_snapshot: &base_snapshot,
+            circle_id: &state.circle_id,
+            circle_dir: &state.circle_dir,
+            actor_token: Some(&actor_token),
+            relay_path: relay.as_ref().map(|r| r.path.clone()).unwrap_or_default(),
+            initiator,
+            resume: resume.as_ref().map(|r| r.session_id.as_str()),
+        },
+        cancel,
+    );
     tokio::pin!(launch);
 
     // Long agent runs renew their lease. If this process disappears, peers
@@ -676,22 +831,15 @@ async fn react(state: &AppState, turn: Turn<'_>) -> anyhow::Result<()> {
     let outcome = loop {
         tokio::select! {
             result = &mut launch => break result?,
-            _ = heartbeat.tick() => publish_agent_activity(
+            _ = heartbeat.tick() => { state.actor_tokens.renew(&actor_token); publish_agent_activity(
                 state,
                 agent_id,
                 message_id,
                 ChatActivityKind::Working,
                 true,
-            ),
+            ); },
         }
     };
-
-    // Remember the ACP session so the next mention continues the conversation.
-    if let Some(sid) = &outcome.acp_session_id {
-        if let Err(e) = super::memory::save_session(&state.circle_dir, agent_id, sid) {
-            tracing::warn!("[agent] failed to persist session for `{agent_id}`: {e}");
-        }
-    }
 
     tracing::info!(
         "[agent] `{agent_id}` finished: session={} {}",
@@ -713,7 +861,9 @@ async fn react(state: &AppState, turn: Turn<'_>) -> anyhow::Result<()> {
             .is_some_and(super::ambient::is_pass)
     {
         tracing::info!("[agent] `{agent_id}` passed on {message_id}");
-        mark_seen(state, agent_id, message_id);
+        if let Some(cursor) = &delivery.cursor {
+            mark_seen(state, agent_id, cursor);
+        }
         publish_agent_activity_detailed(
             state,
             agent_id,
@@ -733,19 +883,26 @@ async fn react(state: &AppState, turn: Turn<'_>) -> anyhow::Result<()> {
         // Post under the agent's name, carrying this cascade's relay forward.
         // A mention in the reply may wake another agent, but only within the
         // budget the rooting human message minted — see `agent::relay`.
-        let posted = crate::api::chat::post_message(
+        let posted = crate::api::chat::post_reply(
             state,
             agent_id.to_string(),
             reply.to_string(),
+            Vec::new(),
             crate::api::chat::Trigger::AgentReply {
                 agent: agent_id.to_string(),
                 parent: relay,
             },
+            Some(message_id.to_string()),
         );
-        mark_seen(state, agent_id, posted.as_deref().unwrap_or(message_id));
+        posted?;
+        if let Some(cursor) = &delivery.cursor {
+            mark_seen(state, agent_id, cursor);
+        }
     } else {
         tracing::debug!("[agent] `{agent_id}` produced no text reply to post");
-        mark_seen(state, agent_id, message_id);
+        if let Some(cursor) = &delivery.cursor {
+            mark_seen(state, agent_id, cursor);
+        }
     }
     publish_agent_activity(
         state,
@@ -945,7 +1102,292 @@ mod tests {
             owner.into(),
             crate::mls::new_mls_state(crate::mls::MlsIdentity::generate(peer).unwrap(), None),
         );
+        let store = ProposalStore::open(&state.workspace).unwrap();
+        let baseline = crate::proposal::snapshot::Snapshot::new(Default::default());
+        store.save_snapshot(&baseline).unwrap();
+        store.set_baseline(&baseline.id).unwrap();
         (state, dir)
+    }
+
+    #[test]
+    fn addressed_routes_exclude_ambient_on_every_device() {
+        use crate::control::{Author, ChatMessage, CHAT_KEY};
+        use yrs::Array;
+
+        for target_peer in ["local", "remote"] {
+            let (state, _dir) = test_state("local", "suzy");
+            let parent = super::super::relay::mint("root", "human");
+            let reply = ChatMessage {
+                thread_root: None,
+                id: "answer".into(),
+                agent_id: "claude".into(),
+                text: "Previous answer".into(),
+                mentions: vec![],
+                ts: 100,
+                peer_id: target_peer.into(),
+                attachments: vec![],
+                relay: Some(super::super::relay::extend(&parent, "claude")),
+                author: Author::Agent,
+                reply_to: None,
+            };
+            {
+                let mut txn = state.control.transact_mut();
+                let chat = txn.get_or_insert_array(CHAT_KEY);
+                chat.push_back(
+                    &mut txn,
+                    Any::String(serde_json::to_string(&reply).unwrap().into()),
+                );
+            }
+            let mut message = ChatMessage {
+                thread_root: None,
+                id: "next".into(),
+                agent_id: "suzy".into(),
+                text: "Please explain that answer in more detail".into(),
+                mentions: vec![],
+                ts: 110,
+                peer_id: "human".into(),
+                attachments: vec![],
+                relay: Some(super::super::relay::mint("next", "human")),
+                author: Author::Human,
+                reply_to: None,
+            };
+            let mut cfg = AgentConfig {
+                engagement_window_secs: 180,
+                ..AgentConfig::default()
+            };
+            // Legacy follow-ups suppress ambient even when the target is remote.
+            let target = resolve_followup(&state, &message, &cfg).unwrap();
+            assert_eq!(target.peer_id, target_peer);
+            assert!(!ambient_route_allowed(&message, Some(&target)));
+
+            // Explicit replies still route after the time window is disabled.
+            cfg.engagement_window_secs = 0;
+            message.reply_to = Some("answer".into());
+            let target = resolve_followup(&state, &message, &cfg).unwrap();
+            assert_eq!(target.peer_id, target_peer);
+            assert!(!ambient_route_allowed(&message, Some(&target)));
+
+            message.reply_to = Some("not-synced-yet".into());
+            assert!(resolve_followup(&state, &message, &cfg).is_none());
+            assert!(!ambient_route_allowed(&message, None));
+
+            // An explicit mention overrides a conflicting reply destination.
+            message.mentions = vec!["suzy/other/codex".into()];
+            assert!(resolve_followup(&state, &message, &cfg).is_none());
+            assert!(!ambient_route_allowed(&message, None));
+
+            message.reply_to = None;
+            message.mentions.clear();
+            assert!(resolve_followup(&state, &message, &cfg).is_none());
+            assert!(ambient_route_allowed(&message, None));
+        }
+    }
+
+    fn add_chat(state: &AppState, message: &crate::control::ChatMessage) {
+        use yrs::Array;
+        let mut txn = state.control.transact_mut();
+        let chat = txn.get_or_insert_array(crate::control::CHAT_KEY);
+        chat.push_back(
+            &mut txn,
+            Any::String(serde_json::to_string(message).unwrap().into()),
+        );
+    }
+
+    fn inbox_config() -> AgentConfig {
+        let mut cfg = AgentConfig {
+            reaction: Reaction::Push,
+            ..Default::default()
+        };
+        cfg.agents.insert(
+            "claude".into(),
+            super::super::config::AgentCommand::default(),
+        );
+        cfg.agents.insert(
+            "codex".into(),
+            super::super::config::AgentCommand::default(),
+        );
+        cfg.ambient = vec!["claude".into()];
+        cfg
+    }
+
+    #[test]
+    fn reconnect_recovers_an_offline_mention_behind_newer_chat_once() {
+        use super::super::inbox::{tests::request, Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        drop(inbox); // Target shuts down; the activation boundary remains.
+        let mut old = request("historic", "claude").message;
+        old.ts = 90;
+        let missed = request("offline", "claude").message;
+        let mut newer = request("newer-chatter", "claude").message;
+        newer.ts = 110;
+        newer.mentions.clear();
+        add_chat(&state, &old);
+        add_chat(&state, &missed);
+        add_chat(&state, &newer);
+        let inbox = Inbox::open(dir.path(), 200).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let cfg = inbox_config();
+        for _ in 0..3 {
+            reconcile_requests_with_config(&state, &handled, &inbox, &wake, &cfg);
+        }
+        let entries = inbox.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].request.message.id, "offline");
+        assert_eq!(entries[0].status, Status::Pending);
+    }
+
+    #[test]
+    fn explicit_reply_waits_for_missing_parent_and_legacy_markers_stay_suppressed() {
+        use super::super::inbox::{tests::request, Inbox};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let cfg = inbox_config();
+        let legacy = request("old-queue", "claude").message;
+        handled.mark_new(&legacy.id, "claude");
+        add_chat(&state, &legacy);
+        let mut reply = request("reply", "claude").message;
+        reply.mentions.clear();
+        reply.reply_to = Some("parent".into());
+        add_chat(&state, &reply);
+        reconcile_requests_with_config(&state, &handled, &inbox, &wake, &cfg);
+        assert!(
+            inbox
+                .entries()
+                .iter()
+                .all(|e| e.status == super::super::inbox::Status::LegacySuppressed),
+            "missing parent must not wake ambient agents"
+        );
+        let mut parent = request("parent", "claude").message;
+        parent.ts = 95;
+        parent.mentions.clear();
+        parent.peer_id = "local".into();
+        parent.author = crate::control::Author::Agent;
+        parent.relay = Some(super::super::relay::extend(
+            &super::super::relay::mint("root", "sender"),
+            "claude",
+        ));
+        add_chat(&state, &parent);
+        reconcile_requests_with_config(&state, &handled, &inbox, &wake, &cfg);
+        assert_eq!(inbox.entries().len(), 2);
+        assert_eq!(
+            inbox.entries()[0].status,
+            super::super::inbox::Status::LegacySuppressed
+        );
+        assert_eq!(inbox.entries()[1].request.message.id, "reply");
+    }
+
+    #[test]
+    fn replayed_agent_replies_do_not_fan_out_to_every_mention() {
+        use super::super::inbox::{tests::request, Inbox};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let mut message = request("delegation", "claude").message;
+        message.author = crate::control::Author::Agent;
+        message.mentions = vec!["claude".into(), "codex".into()];
+        message.relay = Some(super::super::relay::extend(
+            &super::super::relay::mint("root", "sender"),
+            "suzent",
+        ));
+        add_chat(&state, &message);
+        let wake = tokio::sync::Notify::new();
+        let cfg = inbox_config();
+        reconcile_requests_with_config(&state, &handled, &inbox, &wake, &cfg);
+        assert_eq!(inbox.entries().len(), 1);
+        assert_eq!(inbox.entries()[0].request.agent, "claude");
+    }
+
+    #[test]
+    fn replay_skips_scoped_self_mentions_using_the_authors_device() {
+        use super::super::inbox::{tests::request, Inbox};
+        for author_peer in ["local", "remote"] {
+            let (state, dir) = test_state("local", "suzy");
+            add_member(&state, author_peer, "suzy", "writers-device");
+            let inbox = Inbox::open(dir.path(), 100).unwrap();
+            let handled = super::super::handled::HandledMentions::load(dir.path());
+            let mut message = request("delegation", "claude").message;
+            message.author = crate::control::Author::Agent;
+            message.peer_id = author_peer.into();
+            message.mentions = vec!["suzy/writers-device/claude".into(), "codex".into()];
+            message.relay = Some(super::super::relay::extend(
+                &super::super::relay::mint("root", "sender"),
+                "claude",
+            ));
+            admit_message(
+                &state,
+                &handled,
+                &inbox,
+                &tokio::sync::Notify::new(),
+                &inbox_config(),
+                &message,
+                false,
+            );
+            assert_eq!(inbox.entries().len(), 1);
+            assert_eq!(inbox.entries()[0].request.agent, "codex");
+        }
+    }
+
+    #[tokio::test]
+    async fn stopped_pending_turn_is_cancelled_before_launch_even_under_pull_policy() {
+        use super::super::inbox::{tests::request, Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        inbox.admit(request("stopped", "claude"), 20, 100).unwrap();
+        crate::api::chat::mark_relay_stopped(&state, "stopped").unwrap();
+        let mut cfg = inbox_config();
+        cfg.reaction = Reaction::Pull;
+        assert!(!run_next_with_config(&state, &inbox, &cfg).await.unwrap());
+        assert_eq!(inbox.entries()[0].status, Status::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn unknown_stop_state_defers_execution_without_cancelling() {
+        use super::super::inbox::{tests::request, Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        inbox.admit(request("pending", "claude"), 20, 100).unwrap();
+        let txn = state.control.transact_mut();
+        assert!(!run_next_with_config(&state, &inbox, &inbox_config())
+            .await
+            .unwrap());
+        assert_eq!(inbox.entries()[0].status, Status::Pending);
+        drop(txn);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pending_turn_uses_current_policy_and_command_and_records_real_completion() {
+        use super::super::inbox::{tests::request, Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        inbox.admit(request("work", "claude"), 20, 100).unwrap();
+        let mut cfg = inbox_config();
+        cfg.reaction = Reaction::Pull;
+        assert!(!run_next_with_config(&state, &inbox, &cfg).await.unwrap());
+        assert_eq!(inbox.entries()[0].status, Status::Pending);
+        cfg.reaction = Reaction::Push;
+        cfg.agents.get_mut("claude").unwrap().command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "printf ran >> runs.log".into(),
+        ];
+        assert!(run_next_with_config(&state, &inbox, &cfg).await.unwrap());
+        assert_eq!(inbox.entries()[0].status, Status::Completed);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("runs.log")).unwrap(),
+            "ran"
+        );
+        assert!(!run_next_with_config(&state, &inbox, &cfg).await.unwrap());
+        inbox.admit(request("failure", "claude"), 20, 101).unwrap();
+        cfg.agents.get_mut("claude").unwrap().command =
+            vec!["/bin/sh".into(), "-c".into(), "exit 7".into()];
+        assert!(run_next_with_config(&state, &inbox, &cfg).await.unwrap());
+        assert_eq!(inbox.entries()[1].status, Status::Failed);
+        assert!(!run_next_with_config(&state, &inbox, &cfg).await.unwrap());
     }
 
     fn add_member(state: &AppState, peer: &str, owner: &str, device: &str) {
@@ -1025,94 +1467,176 @@ mod tests {
             );
         }
     }
-
-    fn queued(agent: &str, message_id: &str) -> QueuedTurn {
-        QueuedTurn {
-            agent_id: agent.into(),
-            cmd: super::super::config::AgentCommand::default(),
-            task: String::new(),
-            sender: "suzy".into(),
-            message_id: message_id.into(),
-            initiator: Initiator::Local,
-            relay: None,
-            ambient: false,
-        }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn different_agents_cross_a_process_barrier_and_finish_independently() {
+        use super::super::inbox::{tests::request, Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        inbox.admit(request("one", "claude"), 20, 100).unwrap();
+        inbox.admit(request("two", "codex"), 20, 101).unwrap();
+        let mut cfg = inbox_config();
+        let mut a = cfg.agents["claude"].clone();
+        a.command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "touch a.ready; while [ ! -f b.ready ]; do sleep 0.01; done; echo a > a.done".into(),
+        ];
+        let mut b = a.clone();
+        b.command[2] =
+            "touch b.ready; while [ ! -f a.ready ]; do sleep 0.01; done; echo b > b.done".into();
+        cfg.agents.insert("claude".into(), a);
+        cfg.agents.insert("codex".into(), b);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (a, b) = tokio::join!(
+                run_next_for_agent(&state, &inbox, &cfg, Some("claude")),
+                run_next_for_agent(&state, &inbox, &cfg, Some("codex"))
+            );
+            assert!(a.unwrap());
+            assert!(b.unwrap());
+        })
+        .await
+        .expect("serialized agents deadlock at this barrier");
+        assert!(inbox
+            .entries()
+            .iter()
+            .all(|e| e.status == Status::Completed));
+        assert_eq!(crate::proposal::runs::list(dir.path()).unwrap().len(), 2);
     }
 
     #[test]
-    fn turns_run_in_arrival_order() {
-        let q = RunQueue::new();
-        for id in ["m1", "m2", "m3"] {
-            assert!(q.push(queued("claude", id)).is_none());
+    fn context_cursor_does_not_skip_the_backlog_or_concurrent_messages() {
+        let (state, _) = test_state("local", "suzy");
+        for i in 0..30 {
+            let mut m = super::super::inbox::tests::request(&format!("m{i}"), "claude").message;
+            m.text = format!("message {i}");
+            add_chat(&state, &m);
         }
-        let order: Vec<String> = std::iter::from_fn(|| q.pop())
-            .map(|t| t.message_id)
-            .collect();
-        assert_eq!(order, ["m1", "m2", "m3"]);
-    }
-
-    #[test]
-    fn a_busy_agent_queues_instead_of_failing() {
-        // The behaviour that replaces "@agent failed to start · already
-        // running": a second message during a run is accepted, not refused.
-        let q = RunQueue::new();
-        assert!(q.push(queued("claude", "m1")).is_none());
-        assert!(q.push(queued("claude", "m2")).is_none());
-        assert_eq!(q.depth_for("claude"), 2);
-    }
-
-    #[test]
-    fn one_agents_backlog_does_not_squeeze_out_another() {
-        let q = RunQueue::new();
-        for i in 0..MAX_QUEUED_PER_AGENT {
-            assert!(q.push(queued("claude", &format!("c{i}"))).is_none());
-        }
-        assert!(
-            q.push(queued("codex", "x1")).is_none(),
-            "the cap is per agent, not per Circle"
+        let resume = super::super::memory::Record {
+            session_id: "session".into(),
+            last_seen_message: "m0".into(),
+        };
+        let delivered = super::super::context::build_delivery(
+            &state,
+            "claude",
+            "suzy",
+            "do it",
+            Some(&resume),
+            "m29",
         );
-        assert_eq!(q.depth_for("codex"), 1);
+        assert_eq!(delivered.cursor.as_deref(), Some("m12"));
+        assert!(delivered.prompt.contains("message 1"));
+        assert!(delivered.prompt.contains("message 28"));
+        assert!(delivered.prompt.contains("Latest room context:"));
+        assert!(delivered
+            .prompt
+            .contains("Omitted lines have NOT been delivered"));
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_manual_turn_keeps_automatic_work_pending_until_the_conversation_is_free() {
+        use super::super::inbox::{tests::request, Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        inbox.admit(request("queued", "claude"), 20, 100).unwrap();
+        let mut session = crate::proposal::session::LocalChangeSession::start(
+            state.circle_id.clone(),
+            "base".into(),
+            crate::proposal::session::SessionMode::ManagedProcess,
+        );
+        session.actor_id = Some("claude".into());
+        let mut cfg = inbox_config();
+        cfg.agents.get_mut("claude").unwrap().command =
+            vec!["/bin/sh".into(), "-c".into(), "exit 0".into()];
+        let manual = crate::proposal::runs::RunLease::acquire(dir.path(), session).unwrap();
+        assert!(!run_next_with_config(&state, &inbox, &cfg).await.unwrap());
+        assert_eq!(inbox.entries()[0].status, Status::Pending);
+        drop(manual);
+        assert!(run_next_with_config(&state, &inbox, &cfg).await.unwrap());
+        assert_eq!(inbox.entries()[0].status, Status::Completed);
+    }
+    #[tokio::test]
+    async fn worker_errors_reach_its_supervisor() {
+        use super::super::inbox::{tests::request, Inbox};
+        let (mut state, dir) = test_state("local", "suzy");
+        let blocked = dir.path().join("not-a-directory");
+        std::fs::write(&blocked, "blocked").unwrap();
+        state.workspace = blocked;
+        let inbox = std::sync::Arc::new(Inbox::open(dir.path(), 100).unwrap());
+        inbox.admit(request("m", "claude"), 20, 100).unwrap();
+        let worker = spawn_run_worker(
+            state,
+            inbox,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+            CancellationToken::new(),
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), worker)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
     }
 
-    #[test]
-    fn an_overfull_queue_drops_the_oldest_and_says_which() {
-        let q = RunQueue::new();
-        for i in 0..MAX_QUEUED_PER_AGENT {
-            assert!(q.push(queued("claude", &format!("m{i}"))).is_none());
-        }
-        // The newest message is the one the user is waiting on, so the oldest
-        // goes — and the caller is told, because this loses a real message.
-        assert_eq!(q.push(queued("claude", "new")).as_deref(), Some("m0"));
-        assert_eq!(q.depth_for("claude"), MAX_QUEUED_PER_AGENT);
-        let remaining: Vec<String> = std::iter::from_fn(|| q.pop())
-            .map(|t| t.message_id)
-            .collect();
-        assert_eq!(remaining, ["m1", "m2", "m3", "new"]);
-    }
-
-    #[test]
-    fn an_empty_queue_pops_nothing() {
-        assert!(RunQueue::new().pop().is_none());
-    }
-
-    #[test]
-    fn ledger_stops_a_cascade_at_this_devices_ceiling() {
-        let ledger = RelayLedger::default();
-        for _ in 0..3 {
-            assert!(ledger.charge("root-a", 3));
-        }
-        assert!(!ledger.charge("root-a", 3));
-        // A different cascade is unaffected — the budget is per root, not
-        // per device-lifetime.
-        assert!(ledger.charge("root-b", 3));
-    }
-
-    #[test]
-    fn ledger_honours_the_hard_ceiling_over_config() {
-        let ledger = RelayLedger::default();
-        for _ in 0..crate::agent::relay::RELAY_TURNS_CEILING {
-            assert!(ledger.charge("root", 250));
-        }
-        assert!(!ledger.charge("root", 250));
+    #[tokio::test]
+    async fn persistence_failure_reopens_the_owner_without_daemon_restart() {
+        use super::super::inbox::{tests::request, Inbox};
+        let (state, dir) = test_state("local", "suzy");
+        let cancel = CancellationToken::new();
+        spawn_reaction(state.clone(), cancel.clone());
+        let wait = async {
+            loop {
+                if let Some(inbox) = state
+                    .execution_inbox
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(std::sync::Weak::upgrade)
+                {
+                    break inbox;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        let inbox = tokio::time::timeout(std::time::Duration::from_secs(2), wait)
+            .await
+            .unwrap();
+        let old = std::sync::Arc::downgrade(&inbox);
+        let path = Inbox::path(dir.path());
+        let original = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(inbox.admit(request("m", "claude"), 20, 100).is_err());
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, original).unwrap();
+        drop(inbox);
+        let mut message = request("wake", "claude").message;
+        message.author = crate::control::Author::System;
+        state
+            .events
+            .send(CircleEvent::MessagePosted { message })
+            .unwrap();
+        let recovered = async {
+            loop {
+                let ready = state
+                    .execution_inbox
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|current| {
+                        !current.ptr_eq(&old)
+                            && current.upgrade().is_some_and(|inbox| inbox.is_healthy())
+                    });
+                if ready {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(8), recovered)
+            .await
+            .unwrap();
+        cancel.cancel();
     }
 }

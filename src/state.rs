@@ -58,6 +58,7 @@ pub struct AppState {
     /// Short-lived local bearer tokens that let externally spawned agents
     /// attribute actions to a label vouched for by this device.
     pub actor_tokens: crate::actor_token::ActorTokenRegistry,
+    pub execution_inbox: Arc<RwLock<Option<std::sync::Weak<crate::agent::inbox::Inbox>>>>,
     /// Externally-confirmed TCP multiaddrs for this node (populated by Identify / ExternalAddrConfirmed).
     /// Used by `enox invite` to auto-embed a connectable peer address.
     pub p2p_external_addrs: Arc<RwLock<Vec<String>>>,
@@ -534,6 +535,7 @@ impl AppState {
             session_id,
             peer_id,
             actor_tokens: crate::actor_token::ActorTokenRegistry::default(),
+            execution_inbox: Arc::new(RwLock::new(None)),
             p2p_external_addrs: Arc::new(RwLock::new(Vec::new())),
             p2p_listen_addrs: Arc::new(RwLock::new(Vec::new())),
             peer_connections: Arc::new(RwLock::new(HashMap::new())),

@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 pub struct Record {
     /// ACP session id to resume. Empty if we have none.
     pub session_id: String,
-    /// Id of the last chat message the agent has already seen — its own reply
-    /// to the previous mention, or that mention itself when it said nothing.
+    /// Id of the last contiguous chat message delivered in its input context.
+    /// Posting an output never advances this cursor.
     /// Empty for a record written before this field existed.
     #[serde(default)]
     pub last_seen_message: String,
@@ -79,6 +79,7 @@ pub fn load(circle_dir: &Path, agent: &str) -> Option<Record> {
 
 /// Persist the ACP session id, preserving any seen-mark already stored.
 pub fn save_session(circle_dir: &Path, agent: &str, session_id: &str) -> std::io::Result<()> {
+    let _guard = mutation_lock(circle_dir, agent)?;
     let mut record = load(circle_dir, agent).unwrap_or_default();
     record.session_id = session_id.to_string();
     write(circle_dir, agent, &record)
@@ -92,17 +93,29 @@ pub fn save_session(circle_dir: &Path, agent: &str, session_id: &str) -> std::io
 /// *passes* on its very first turn (engagement spec §2.3) never writes one, so
 /// the mark never advanced and it re-read the same history on every later turn.
 pub fn save_seen(circle_dir: &Path, agent: &str, message_id: &str) -> std::io::Result<()> {
+    let _guard = mutation_lock(circle_dir, agent)?;
     let mut record = load(circle_dir, agent).unwrap_or_default();
     record.last_seen_message = message_id.to_string();
     write(circle_dir, agent, &record)
 }
 
+fn mutation_lock(circle_dir: &Path, agent: &str) -> std::io::Result<std::fs::File> {
+    std::fs::create_dir_all(dir(circle_dir))?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path(circle_dir, agent).with_extension("lock"))?;
+    file.lock()?;
+    Ok(file)
+}
+
 fn write(circle_dir: &Path, agent: &str, record: &Record) -> std::io::Result<()> {
     let d = dir(circle_dir);
     std::fs::create_dir_all(&d)?;
-    let json = serde_json::to_string(record)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path(circle_dir, agent), json)
+    crate::proposal::runs::atomic_json(&path(circle_dir, agent), record)
+        .map_err(std::io::Error::other)
 }
 
 /// Forget an agent's session (e.g. a user "reset conversation" action). Not

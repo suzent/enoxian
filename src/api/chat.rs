@@ -21,17 +21,14 @@ use yrs::{Any, Array, Map, Out, ReadTxn, Transact, WriteTxn};
 /// from fanning out an unbounded number of blob fetches to every peer.
 const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
 
-/// How long a cascade stop is honoured. A cascade is minutes long at the very
-/// outside, so an hour is generous; past that the entry is dead weight and the
-/// next write prunes it.
-const RELAY_STOP_TTL_SECS: i64 = 3600;
-
 const TYPING_TTL_SECS: i64 = 6;
 pub(crate) const AGENT_ACTIVITY_TTL_SECS: i64 = 45;
 
 #[derive(Deserialize)]
 pub struct ChatQuery {
     pub since: Option<i64>,
+    pub after_id: Option<String>,
+    pub limit: Option<usize>,
 }
 
 pub async fn get_chat(
@@ -69,7 +66,24 @@ pub async fn get_chat(
         .filter(|message| seen.insert(message.id.clone()))
         .filter(|m| q.since.map(|s| m.ts > s).unwrap_or(true))
         .collect();
-    Json(messages).into_response()
+    let start = match q.after_id.as_deref().filter(|id| !id.is_empty()) {
+        Some(id) => match messages.iter().position(|m| m.id == id) {
+            Some(index) => index + 1,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "unknown message cursor"})),
+                )
+                    .into_response()
+            }
+        },
+        None => 0,
+    };
+    let end = q
+        .limit
+        .map(|limit| (start + limit.clamp(1, 200)).min(messages.len()))
+        .unwrap_or(messages.len());
+    Json(&messages[start..end]).into_response()
 }
 
 #[derive(Deserialize)]
@@ -418,7 +432,19 @@ fn post_inner(
         )),
         Trigger::System => None,
     };
+    let thread_root = reply_to
+        .as_ref()
+        .map(|parent| {
+            state
+                .transcript()
+                .iter()
+                .find(|m| &m.id == parent)
+                .and_then(|m| m.thread_root.clone())
+                .unwrap_or_else(|| parent.clone())
+        })
+        .or_else(|| Some(id.clone()));
     let msg = ChatMessage {
+        thread_root,
         id,
         agent_id: sender,
         text,
@@ -800,18 +826,11 @@ pub(crate) fn mark_relay_stopped(state: &crate::state::AppState, root: &str) -> 
         .try_transact_mut()
         .map_err(|_| anyhow::anyhow!("circle state busy"))?;
     let map = txn.get_or_insert_map(RELAY_STOPS_KEY);
-    let stale = map
-        .iter(&txn)
-        .filter_map(|(key, value)| match value {
-            Out::Any(Any::BigInt(ts)) if now - ts > RELAY_STOP_TTL_SECS => Some(key.to_string()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    for key in stale {
-        map.remove(&mut txn, key.as_str());
-    }
     map.insert(&mut txn, root, Any::BigInt(now));
     drop(txn);
+    // A stopped root may have pending work on an offline peer. Keep its
+    // tombstone durable; elapsed time cannot make that work safe to launch.
+    crate::store::control::save(&state.circle_dir, &state.control)?;
     let _ = state.events.send(CircleEvent::RelayStopped {
         root: root.to_string(),
     });
@@ -823,29 +842,27 @@ pub(crate) fn mark_relay_stopped(state: &crate::state::AppState, root: &str) -> 
 /// Read on the receiving device before each relayed turn, so a stop from any
 /// peer is honoured wherever the next turn would have run.
 pub fn relay_is_stopped(state: &crate::state::AppState, root: &str) -> bool {
-    let Ok(txn) = state.control.try_transact() else {
-        // The doc is momentarily busy. Fail *open* — and deliberately so, even
-        // though this is a brake.
-        //
-        // Treating unreadable as "stopped" was the first cut and it was wrong
-        // in practice: contention here is routine, not exceptional, so every
-        // busy moment silently refused a delegation and the feature appeared
-        // to break at random. The asymmetry favours reading it this way. Spend
-        // is bounded by the budget and the per-root ledger, neither of which
-        // touches this doc, so a missed stop costs one extra turn before the
-        // next check catches it — while a false stop costs the whole feature.
-        tracing::warn!(
-            "[agent] could not read the stop list for cascade {root}; \
-             allowing this turn — the relay budget still bounds it"
-        );
-        return false;
-    };
+    try_relay_is_stopped(state, root).unwrap_or_else(|error| {
+        tracing::warn!("[agent] stop state unavailable for {root}: {error}");
+        false
+    })
+}
+
+/// Execution can defer a queued turn when the control doc is busy rather than
+/// confusing "unknown" with either a cancellation or permission to launch.
+pub(crate) fn try_relay_is_stopped(
+    state: &crate::state::AppState,
+    root: &str,
+) -> anyhow::Result<bool> {
+    let txn = state
+        .control
+        .try_transact()
+        .map_err(|_| anyhow::anyhow!("circle state busy"))?;
     let Some(map) = txn.get_map(RELAY_STOPS_KEY) else {
-        return false;
+        return Ok(false);
     };
-    let now = chrono::Utc::now().timestamp();
-    matches!(
+    Ok(matches!(
         map.get(&txn, root),
-        Some(Out::Any(Any::BigInt(ts))) if now - ts <= RELAY_STOP_TTL_SECS
-    )
+        Some(Out::Any(Any::BigInt(_)))
+    ))
 }

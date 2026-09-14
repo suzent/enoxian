@@ -26,9 +26,9 @@
 //! independently restored peers create distinct Yjs items for the same message
 //! and multiply duplicates whenever their control docs merge.
 //!
-//! Restore runs at startup **before** the swarm connects. Restored chat carries
-//! its original (old) timestamps, so the agent reaction loop's `ts` cutoff skips
-//! it — a restored mention never re-triggers an agent.
+//! Restore runs before the swarm connects. The recipient-local execution inbox
+//! reconciles eligible addressed work against its activation boundary and durable
+//! delivery states; restoring a transcript is not evidence that work completed.
 //!
 //! At-rest note: chat is written **plaintext** (like workspace files). Content
 //! encryption is M17; until then this is a known at-rest exposure, documented in
@@ -52,6 +52,10 @@ fn path(circle_dir: &Path) -> PathBuf {
 /// The persisted subset of the control doc.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ControlSnapshot {
+    #[serde(default)]
+    lock_log: Vec<String>,
+    #[serde(default)]
+    execution_receipts: std::collections::BTreeMap<String, String>,
     /// Chat messages (JSON strings, as stored in the CRDT array), time-windowed.
     #[serde(default)]
     chat: Vec<String>,
@@ -70,6 +74,9 @@ struct ControlSnapshot {
     /// and resurrect it on the peer that deleted it.
     #[serde(default)]
     deletions: std::collections::BTreeMap<String, String>,
+    /// Stop decisions cannot expire while a peer may have offline work.
+    #[serde(default)]
+    relay_stops: std::collections::BTreeMap<String, i64>,
 }
 
 /// A `ChatMessage` is stored as a JSON string in the array; we only need its
@@ -88,6 +95,12 @@ struct IdOnly {
 /// it to `<circle_dir>/control.json`. Called on a debounced timer and at clean
 /// shutdown.
 pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
+    // API stop acknowledgements and the background saver may overlap. Acquire
+    // before taking a snapshot so an older snapshot cannot replace a newer one.
+    static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = SAVE_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("control saver poisoned"))?;
     let cutoff = chrono::Utc::now().timestamp() - CHAT_RETENTION_DAYS * 86_400;
     let snap = {
         let txn = control
@@ -129,7 +142,37 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
             .map(|map| map_strings(&map, &txn))
             .unwrap_or_default();
 
+        let relay_stops = txn
+            .get_map(crate::control::RELAY_STOPS_KEY)
+            .map(|map| {
+                map.iter(&txn)
+                    .filter_map(|(key, value)| match value {
+                        Out::Any(Any::BigInt(ts)) => Some((key.to_string(), ts)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         ControlSnapshot {
+            lock_log: txn
+                .get_array(crate::control::LOCK_LOG_KEY)
+                .map(|log| {
+                    log.iter(&txn)
+                        .filter_map(|v| {
+                            if let Out::Any(Any::String(s)) = v {
+                                Some(s.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            execution_receipts: txn
+                .get_map(crate::api::execution::RECEIPTS_KEY)
+                .map(|map| map_strings(&map, &txn))
+                .unwrap_or_default(),
+            relay_stops,
             chat,
             tasks,
             members,
@@ -143,8 +186,15 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
     // Write atomically: temp file + rename, so a crash mid-write can't truncate
     // the last good snapshot.
     let tmp = path(circle_dir).with_extension("json.tmp");
-    std::fs::write(&tmp, &json)?;
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+    }
     std::fs::rename(&tmp, path(circle_dir))?;
+    #[cfg(unix)]
+    std::fs::File::open(circle_dir)?.sync_all()?;
     Ok(())
 }
 
@@ -176,6 +226,20 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
         let removed = txn.get_or_insert_map(MLS_REMOVED_KEY);
         let deletions = txn.get_or_insert_map(crate::control::DELETIONS_KEY);
         let chat = txn.get_or_insert_array(CHAT_KEY);
+        let locks = txn.get_or_insert_array(crate::control::LOCK_LOG_KEY);
+        if locks.len(&txn) == 0 {
+            for entry in &snap.lock_log {
+                locks.push_back(&mut txn, entry.as_str());
+            }
+        }
+        let receipts = txn.get_or_insert_map(crate::api::execution::RECEIPTS_KEY);
+        for (id, value) in &snap.execution_receipts {
+            receipts.insert(&mut txn, id.as_str(), value.as_str());
+        }
+        let relay_stops = txn.get_or_insert_map(crate::control::RELAY_STOPS_KEY);
+        for (root, ts) in &snap.relay_stops {
+            relay_stops.insert(&mut txn, root.as_str(), Any::BigInt(*ts));
+        }
         for (k, v) in &snap.tasks {
             tasks.insert(&mut txn, k.as_str(), v.as_str());
         }

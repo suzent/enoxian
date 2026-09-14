@@ -308,6 +308,7 @@ Two further per-circle routes are used by the local UI:
 |--------|------|---------|
 | `GET`/`POST` | `/circles/<id>/api/connectivity` | Read or set embedded peer, relay, and rendezvous addresses |
 | `GET`/`POST` | `/circles/<id>/api/chat/activity` | Read or publish agent chat activity indicators |
+| `GET` | `/circles/<id>/api/chat/executions` | Inspect local durable delivery status (paginated; optional `message_id` filter) |
 | `GET` | `/circles/<id>/api/chat/engagement` | What the next mention-less message will do |
 | `POST` | `/circles/<id>/api/chat/engagement/exit` | Dismiss the follow-up window |
 | `POST` | `/circles/<id>/api/chat/relay/stop` | Halt a delegation cascade |
@@ -403,6 +404,16 @@ attachment. At most 10 attachments per message.
 is allowed to trigger — for a human post, all of them)
 
 ---
+
+### `GET /circles/<id>/api/chat/executions`
+
+Read recipient-local execution summaries without changing run state. Supports
+`message_id`, `limit` (default 50, maximum 200), and `before` (the previous page's
+`next_cursor`). Returns `peer_id`, `activated_at`, `runs`, and `next_cursor`.
+Run states include `pending`, `running`, `completed`, `failed`, `interrupted`,
+`cancelled`, and `expired`. Prompt bodies, executable commands and credentials are
+not returned. This is local status, not a cross-device delivery receipt.
+See [Execution inbox](../development/execution-inbox.md) for lifecycle and recovery.
 
 ### `GET /circles/<id>/api/chat/engagement`
 
@@ -836,3 +847,16 @@ data: <json>\n\n
 ### `GET /circles/<id>/ws/yjs`
 
 Yjs sync WebSocket for collaborative document editing. Connect with a standard Yjs provider (e.g. `y-websocket`). See [protocol.md](protocol.md) for the sync protocol.
+
+### Execution delivery and explicit retries
+
+`GET /circles/{id}/api/chat/deliveries` returns recent replicated, sanitized run
+receipts and the local peer ID. These are last-known recipient states, not presence.
+`POST /circles/{id}/api/chat/executions/{run_id}` accepts an `action` of `retry` or
+`cancel`; cancellation applies only to pending runs, and retry preserves the previous
+attempt. Requests to mutate a remote run must go to its recipient device.
+
+Chat reads support `after_id` and `limit` (1–200) for chronological history pages.
+New chat records include optional `thread_root` and explicit `reply_to`; neither
+changes the ACP conversation key. Device-scoped engagement updates may include
+`max_concurrent_runs` (1–32; restart the daemon after changing it).

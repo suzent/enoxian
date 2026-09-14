@@ -12,12 +12,16 @@ pub fn compute_lock_state<T: ReadTxn>(lock_log: &ArrayRef, txn: &T) -> HashMap<S
 }
 
 #[derive(Clone)]
-struct LockHolder {
-    agent_id: String,
-    peer_id: String,
+pub(crate) struct LockHolder {
+    pub(crate) run_id: Option<String>,
+    pub(crate) agent_id: String,
+    pub(crate) peer_id: String,
 }
 
-fn compute_lock_holders<T: ReadTxn>(lock_log: &ArrayRef, txn: &T) -> HashMap<String, LockHolder> {
+pub(crate) fn compute_lock_holders<T: ReadTxn>(
+    lock_log: &ArrayRef,
+    txn: &T,
+) -> HashMap<String, LockHolder> {
     let mut holders: HashMap<String, LockHolder> = HashMap::new();
 
     for item in lock_log.iter(txn) {
@@ -33,6 +37,7 @@ fn compute_lock_holders<T: ReadTxn>(lock_log: &ArrayRef, txn: &T) -> HashMap<Str
             LockAction::Acquire => {
                 // First acquire without a release = lock holder
                 holders.entry(entry.path).or_insert(LockHolder {
+                    run_id: entry.run_id,
                     agent_id: entry.agent_id,
                     peer_id: entry.peer_id,
                 });
@@ -67,8 +72,24 @@ pub fn is_locked_by_other<T: ReadTxn>(
         .unwrap_or(false)
 }
 
+pub fn is_locked_by_other_run<T: ReadTxn>(
+    log: &ArrayRef,
+    txn: &T,
+    path: &str,
+    agent: &str,
+    peer: &str,
+    run: Option<&str>,
+) -> bool {
+    compute_lock_holders(log, txn).get(path).is_some_and(|h| {
+        h.agent_id != agent
+            || (!h.peer_id.is_empty() && h.peer_id != peer)
+            || h.run_id.as_deref() != run
+    })
+}
+
 fn same_actor(holder: &LockHolder, entry: &LockEntry) -> bool {
-    holder.agent_id == entry.agent_id
+    holder.run_id == entry.run_id
+        && holder.agent_id == entry.agent_id
         && (holder.peer_id.is_empty()
             || entry.peer_id.is_empty()
             || holder.peer_id == entry.peer_id)
@@ -94,6 +115,7 @@ mod tests {
 
     fn entry(agent_id: &str, peer_id: &str, action: LockAction) -> LockEntry {
         LockEntry {
+            run_id: None,
             entry_id: uuid::Uuid::new_v4().to_string(),
             agent_id: agent_id.to_string(),
             peer_id: peer_id.to_string(),
@@ -140,6 +162,34 @@ mod tests {
             "src/shared.rs",
             "codex",
             "peer-a"
+        ));
+    }
+    #[test]
+    fn an_old_run_cannot_release_the_same_agents_new_lock() {
+        let doc = Doc::new();
+        let log = doc.get_or_insert_array("locks");
+        let mut txn = doc.transact_mut();
+        let mut acquire = entry("a", "peer", LockAction::Acquire);
+        acquire.run_id = Some("new".into());
+        append_lock_entry(&log, &mut txn, &acquire).unwrap();
+        let mut release = entry("a", "peer", LockAction::Release);
+        release.run_id = Some("old".into());
+        append_lock_entry(&log, &mut txn, &release).unwrap();
+        assert!(is_locked_by_other_run(
+            &log,
+            &txn,
+            "src/shared.rs",
+            "a",
+            "peer",
+            Some("old")
+        ));
+        assert!(!is_locked_by_other_run(
+            &log,
+            &txn,
+            "src/shared.rs",
+            "a",
+            "peer",
+            Some("new")
         ));
     }
 }

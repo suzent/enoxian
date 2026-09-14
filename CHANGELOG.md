@@ -41,12 +41,25 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
+- Follow-ups now use explicit reply threads by default. Configurations that omit
+  `engagement_window_secs` now use `0` instead of `180`; set it to `180` in Device
+  Settings to keep the previous three-minute recency routing. Explicitly configured
+  windows are preserved.
+
 - Invite links are much shorter. A typical `enox invite` link is now around 300
   characters where it used to run past 800, so it survives a chat message
   without being wrapped or truncated. Links already in circulation keep working
   until their own expiry — nothing needs to be reissued.
 
 ### Added
+
+- Agents can run in parallel across Circles while keeping ordered turns and one
+  conversation per agent in each Circle. Device Settings controls concurrency.
+- Durable delivery queues recover mentions after reconnects and restarts, with
+  delivery status, explicit reply threads, and retry or cancel controls in chat.
+- Managed native writes carry per-run change evidence and locks, preserving
+  attribution when agents work concurrently. Stopped reply chains remain stopped
+  after restarting the daemon.
 
 - `enox update` now updates stable installs itself: it downloads the release
   archive published for your platform, verifies it against the release
@@ -142,15 +155,13 @@ refuses to publish a version whose section is missing or empty.
   reads the handle from the Circle, and says that changing your handle applies
   to Circles you join later, not ones you are already in.
 
-<<<<<<< HEAD
 - Renaming this device now takes effect immediately instead of at the next
   restart. The name is the middle part of every handle that addresses an agent
   here (`@you/device/agent`) and what this device checks an incoming mention
   against, so a rename used to leave the Circle addressing a name the device no
   longer answered to — with nothing to say why.
 
-=======
->>>>>>> origin/main
+
 - Per-Circle agent settings are easier to find and harder to misread. The
   settings entry said "LOCAL DEVICE" while the panel behind it also held
   per-Circle behaviour, the scope tab named the Circle only in passing, and
