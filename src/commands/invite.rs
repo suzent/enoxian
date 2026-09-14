@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::Utc;
 
 use crate::{
@@ -106,13 +106,33 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
         grant,
     })?;
 
+    // A short link keeps the payload on the relay and carries only the key —
+    // ~35 characters against ~300. Falls back to the self-contained form when
+    // the relay cannot be reached, because an invite that does not exist is
+    // worse than a long one.
+    let (shown, short_note) = if args.long {
+        (uri.clone(), None)
+    } else {
+        match shorten(&uri, rendezvous_addr.as_deref()).await {
+            Ok(short) => (short, None),
+            Err(e) => (
+                uri.clone(),
+                Some(format!("could not reach the relay to shorten this ({e})")),
+            ),
+        }
+    };
+
     println!(
         "✦ Invite for '{}' (valid {}):",
         config.circle_name, args.ttl
     );
     println!();
-    println!("  {uri}");
+    println!("  {shown}");
     println!();
+    if let Some(note) = short_note {
+        println!("  ({note} — this is the self-contained link)");
+        println!();
+    }
 
     // Show the user what was auto-embedded so they're not surprised.
     println!("  Embedded connectivity:");
@@ -144,6 +164,49 @@ struct P2PInfo {
     peer_id: String,
     external_addrs: Vec<String>,
     listen_addrs: Vec<String>,
+}
+
+/// Seal an encoded invite, leave it on the relay, and return the short link.
+///
+/// The key names the blob and unseals it, so the relay is handed an id that
+/// says nothing about the key and a body it cannot read.
+async fn shorten(uri: &str, rendezvous_addr: Option<&str>) -> Result<String> {
+    // The same rendezvous server this invite embeds, so a joiner that can reach
+    // the circle can reach its invite too — and so `--rendezvous` aims both at
+    // once. Reading it back out of the circle config instead would ignore that
+    // flag and quietly post to the default relay. Named in the link only when
+    // it is not the build's default, which is what keeps the common link short.
+    let host = rendezvous_addr
+        .and_then(rdvz::http_endpoint_of)
+        // Compared by host, not by the whole string: the address carries a port
+        // and the constant usually does not, and treating the default as
+        // self-hosted would put a redundant hostname in every short link.
+        .filter(|h| {
+            crate::defaults::DEFAULT_RENDEZVOUS
+                .map(|d| !rdvz::same_host(h, d))
+                .unwrap_or(true)
+        });
+    let target = host
+        .clone()
+        .or_else(|| crate::defaults::DEFAULT_RENDEZVOUS.map(str::to_string))
+        .context("this build has no default relay to hold a short invite")?;
+
+    let key = invite::ShortKey::generate()?;
+    let sealed = key.seal(uri.as_bytes())?;
+
+    let base = crate::outbound::blob_base(&target);
+    let status = crate::outbound::client()
+        .post(format!("{base}/{}", key.blob_id()))
+        .body(sealed)
+        .send()
+        .await
+        .context("could not reach the relay")?
+        .status();
+    if !status.is_success() {
+        bail!("the relay refused the invite ({status})");
+    }
+
+    Ok(invite::ShortInvite { key, host }.encode())
 }
 
 async fn fetch_p2p_info(client: &reqwest::Client, api_base: &str) -> Option<P2PInfo> {

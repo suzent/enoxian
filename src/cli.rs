@@ -426,6 +426,15 @@ pub struct InviteArgs {
     /// (e.g. /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<peer_id>)
     #[arg(long)]
     pub rendezvous: Option<String>,
+
+    /// Print the self-contained link instead of the short one.
+    ///
+    /// A short invite keeps its contents sealed on the relay and carries only
+    /// the key, which is ~35 characters against ~300. Use this when the
+    /// recipient may not be able to reach the relay, or when the link has to
+    /// work with no third party involved at all.
+    #[arg(long)]
+    pub long: bool,
 }
 
 #[derive(clap::Args, Clone)]

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use libp2p::{
     core::muxing::StreamMuxerBox,
     dcutr,
@@ -22,6 +22,57 @@ use crate::{
     network::behaviour::{EnochBehaviour, EnochEvent},
 };
 
+/// Most a relay may hand back for one invite, mirroring its own cap with slack.
+/// A short link can name any host, so the client does not take that host's word
+/// for how much it is about to be sent.
+const MAX_SEALED_INVITE: u64 = 16 * 1024;
+
+/// Fetch and open a short invite, yielding the self-contained link it stands for.
+async fn resolve_short(uri: &str, _daemon_client: &reqwest::Client) -> Result<String> {
+    let short = invite::ShortInvite::decode(uri)?;
+    let host = short
+        .host
+        .clone()
+        .or_else(|| crate::defaults::DEFAULT_RENDEZVOUS.map(str::to_string))
+        .context(
+            "this short invite names no relay and this build has no default — \
+             ask for the long form of the link",
+        )?;
+
+    // Not the caller's client: it carries the local daemon's bearer token, and
+    // this request goes to a relay named by whoever wrote the link.
+    let base = crate::outbound::blob_base(&host);
+    let resp = crate::outbound::client()
+        .get(format!("{base}/{}", short.key.blob_id()))
+        .send()
+        .await
+        .with_context(|| format!("could not reach the relay at {host}"))?;
+
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        bail!(
+            "the relay at {host} has nothing for this invite — it may have expired, \
+             or been minted against a different relay"
+        );
+    }
+    if !resp.status().is_success() {
+        bail!(
+            "the relay at {host} refused this invite ({})",
+            resp.status()
+        );
+    }
+    if resp.content_length().is_some_and(|n| n > MAX_SEALED_INVITE) {
+        bail!("the relay at {host} returned an implausibly large invite");
+    }
+
+    let sealed = resp.bytes().await.context("reading the invite")?;
+    if sealed.len() as u64 > MAX_SEALED_INVITE {
+        bail!("the relay at {host} returned an implausibly large invite");
+    }
+
+    let plain = short.key.open(&sealed)?;
+    String::from_utf8(plain).context("the invite behind this link is not valid text")
+}
+
 pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
     // ── Step 1: Resolve credentials from invite URI or legacy flags ───────────
     let (
@@ -34,7 +85,15 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         admin_pubkey_hex,
         join_grant,
     ) = if args.target.starts_with("enoxian://") {
-        let mut payload = invite::decode(&args.target)?;
+        // A short invite carries only a key; its contents are sealed on a
+        // relay. Fetch and open before anything else, so everything downstream
+        // sees an ordinary invite.
+        let target = if invite::is_short(&args.target) {
+            resolve_short(&args.target, client).await?
+        } else {
+            args.target.clone()
+        };
+        let mut payload = invite::decode(&target)?;
         invite::check_expiry(&payload)?;
         // An invite that named the default relay or rendezvous server carried a
         // flag instead of an address, to keep the link short. Turning that back

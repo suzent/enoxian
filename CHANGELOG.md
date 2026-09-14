@@ -41,6 +41,14 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- `enox invite` now prints a short link — 35 characters, against ~300 — by
+  keeping the invite's contents sealed on the same relay it already points at
+  and carrying only the key. The relay is handed an id that says nothing about
+  that key and a body it cannot read. `--long` prints the self-contained link,
+  and so does `enox invite` on its own when the relay cannot be reached.
+
+### Added
+
 - `enox link` puts your identity on a second device without the 24-word
   mnemonic. Run it on the machine you already use, type the four words it prints
   on the new one, check that both screens show the same six-digit number, and
