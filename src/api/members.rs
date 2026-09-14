@@ -487,6 +487,19 @@ pub async fn list_pending(
         }
     }
     entries.sort_by_key(|a| a.requested_at);
+    let entries: Vec<_> = entries
+        .into_iter()
+        .map(|entry| {
+            let error = state
+                .approval_errors
+                .get(&entry.peer_id)
+                .map(|e| e.value().clone());
+            let mut value = serde_json::to_value(entry).expect("pending entry is serializable");
+            value["automatic"] = json!(state.join_policy == crate::config::JoinPolicy::Auto);
+            value["approval_error"] = json!(error);
+            value
+        })
+        .collect();
     Json(entries).into_response()
 }
 
@@ -559,6 +572,18 @@ pub async fn approve_member(
         {
             let mut mls_locked = state.mls.lock().await;
             if let Ok(mut txn) = state.control.try_transact_mut() {
+                if mls_locked
+                    .group
+                    .as_ref()
+                    .and_then(|group| group.leaf_index_for_peer(&req.peer_id))
+                    .is_some()
+                {
+                    let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
+                    pending.remove(&mut txn, req.peer_id.as_str());
+                    state.approval_errors.remove(&req.peer_id);
+                    return Json(json!({"status": "already_member", "peer_id": req.peer_id}))
+                        .into_response();
+                }
                 // Read what we need from the same transaction we will write to.
                 let Some(kp_hex) = txn
                     .get_map(MLS_KEY_PACKAGES_KEY)
@@ -969,6 +994,31 @@ mod tests {
         assert_eq!(commit_count(&fx), 1, "the commit must be published");
         assert!(map_has(&fx, MEMBER_LIST_KEY, &peer), "member recorded");
         assert!(map_has(&fx, MLS_WELCOMES_KEY, &peer), "welcome published");
+
+        // A stale request for an existing MLS member is an idempotent cleanup.
+        {
+            let mut txn = fx.state.control.transact_mut();
+            let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
+            pending.insert(&mut txn, peer.as_str(), "{}");
+        }
+        let admitted_epoch = epoch(&fx);
+        let resp = approve_member(
+            State(fx.daemon.clone()),
+            Path(CIRCLE.into()),
+            Json(ApproveMemberRequest {
+                peer_id: peer.clone(),
+                role: None,
+                owner: "alice".into(),
+                admin_signature: sign(&fx.admin, &format!("add:{peer}:member:owner:alice")),
+                agents: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(epoch(&fx), admitted_epoch);
+        assert_eq!(commit_count(&fx), 1);
+        assert!(!map_has(&fx, MLS_PENDING_KEY, &peer));
     }
 
     #[tokio::test]
