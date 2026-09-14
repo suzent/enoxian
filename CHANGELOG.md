@@ -39,6 +39,8 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-14
+
 ### Added
 
 - Relay operators and clients can query `GET /version` for the running package
@@ -856,7 +858,8 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/suzent/enoxian/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/suzent/enoxian/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/suzent/enoxian/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/suzent/enoxian/compare/v0.6.1...v0.6.2
