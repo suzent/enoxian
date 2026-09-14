@@ -113,6 +113,46 @@ pub async fn resolve_relay(input: &str, client: &reqwest::Client) -> Result<Stri
     }
 }
 
+/// Whether `addr` is the address `resolve_relay` would produce for the
+/// compiled-in [`crate::defaults::DEFAULT_RELAY`].
+///
+/// Judged offline, by host and port, so minting an invite does not have to ask
+/// the bootstrap server just to discover it is about to embed the default. The
+/// peer ID is deliberately not compared: it is the one part of the address the
+/// joiner will fetch fresh anyway, and a server that has rotated its key would
+/// otherwise make every invite grow by an address that is already stale.
+///
+/// A wrong `false` only costs bytes — the address is embedded verbatim, which
+/// is what v1 always did.
+pub fn is_default_relay(addr: &str) -> bool {
+    let Some(host) = crate::defaults::DEFAULT_RELAY else {
+        return false;
+    };
+    let (host, http_port) = split_host_port(host, 36521);
+    matches_prefix(addr, &host, "tcp", http_port.saturating_add(1), "")
+}
+
+/// As [`is_default_relay`], for [`crate::defaults::DEFAULT_RENDEZVOUS`].
+pub fn is_default_rendezvous(addr: &str) -> bool {
+    let Some(host) = crate::defaults::DEFAULT_RENDEZVOUS else {
+        return false;
+    };
+    let (host, port) = split_host_port(host, 36521);
+    matches_prefix(addr, &host, "udp", port, "/quic-v1")
+}
+
+/// Whether `addr` starts with the host/transport/port that resolving `host`
+/// would have produced, using the same `/ip4` vs `/dns4` choice as `resolve`.
+fn matches_prefix(addr: &str, host: &str, transport: &str, port: u16, suffix: &str) -> bool {
+    let scheme = if host.parse::<std::net::Ipv4Addr>().is_ok() {
+        "ip4"
+    } else {
+        "dns4"
+    };
+    let prefix = format!("/{scheme}/{host}/{transport}/{port}{suffix}/");
+    addr.starts_with(&prefix)
+}
+
 fn split_host_port(input: &str, default_port: u16) -> (String, u16) {
     // Handle host:port
     if let Some(colon) = input.rfind(':') {
@@ -122,4 +162,65 @@ fn split_host_port(input: &str, default_port: u16) -> (String, u16) {
         }
     }
     (input.to_string(), default_port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The address the default relay resolves to must be recognised as the
+    /// default, or every invite would carry it verbatim and v2's saving would
+    /// quietly disappear.
+    #[test]
+    fn the_resolved_default_relay_is_recognised() {
+        let Some(host) = crate::defaults::DEFAULT_RELAY else {
+            return; // a build with no default has nothing to elide
+        };
+        let addr = format!("/dns4/{host}/tcp/36522/p2p/12D3KooWanything");
+        assert!(is_default_relay(&addr));
+    }
+
+    #[test]
+    fn the_resolved_default_rendezvous_is_recognised() {
+        let Some(host) = crate::defaults::DEFAULT_RENDEZVOUS else {
+            return;
+        };
+        let addr = format!("/dns4/{host}/udp/36521/quic-v1/p2p/12D3KooWanything");
+        assert!(is_default_rendezvous(&addr));
+    }
+
+    /// A server on the default host but a different port is somebody's own
+    /// deployment. Treating it as the default would send joiners to the public
+    /// one instead, so the port has to be part of the judgement.
+    #[test]
+    fn a_different_port_on_the_default_host_is_not_the_default() {
+        let Some(host) = crate::defaults::DEFAULT_RELAY else {
+            return;
+        };
+        let addr = format!("/dns4/{host}/tcp/9999/p2p/12D3KooWanything");
+        assert!(!is_default_relay(&addr));
+    }
+
+    #[test]
+    fn another_host_is_not_the_default() {
+        assert!(!is_default_relay(
+            "/dns4/relay.example.com/tcp/36522/p2p/12D3KooWanything"
+        ));
+        assert!(!is_default_rendezvous(
+            "/ip4/203.0.113.17/udp/36521/quic-v1/p2p/12D3KooWanything"
+        ));
+    }
+
+    /// The relay runs TCP and the rendezvous server QUIC, on different ports.
+    /// Confusing the two would put a circuit address in the discovery list.
+    #[test]
+    fn the_two_services_are_not_interchangeable() {
+        let Some(host) = crate::defaults::DEFAULT_RELAY else {
+            return;
+        };
+        let relay = format!("/dns4/{host}/tcp/36522/p2p/12D3KooWanything");
+        let rendezvous = format!("/dns4/{host}/udp/36521/quic-v1/p2p/12D3KooWanything");
+        assert!(!is_default_rendezvous(&relay));
+        assert!(!is_default_relay(&rendezvous));
+    }
 }

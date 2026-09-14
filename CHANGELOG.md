@@ -39,6 +39,13 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Changed
+
+- Invite links are much shorter. A typical `enox invite` link is now around 300
+  characters where it used to run past 800, so it survives a chat message
+  without being wrapped or truncated. Links already in circulation keep working
+  until their own expiry — nothing needs to be reissued.
+
 ### Added
 
 - `enox update` now updates stable installs itself: it downloads the release

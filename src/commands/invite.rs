@@ -77,6 +77,17 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
     // Embed admin pubkey if admin.key is present (only on admin machines)
     let admin_pubkey_bytes = try_load_admin_pubkey(&config.circle_id);
 
+    // A server that is just the compiled-in default travels as a flag, not an
+    // address — the two together are ~190 bytes of invite naming something the
+    // joiner's own binary already knows. The check is against the address, not
+    // against which branch above produced it: a member who joined through the
+    // default relay has it saved in their circle config, and would otherwise
+    // embed it verbatim every time they invite someone.
+    let relay_is_default = relay_addr.as_deref().is_some_and(rdvz::is_default_relay);
+    let rendezvous_is_default = rendezvous_addr
+        .as_deref()
+        .is_some_and(rdvz::is_default_rendezvous);
+
     // Signed with this member's own circle key — any member can invite; the
     // grant records which of them did, so the invite can be checked against
     // their standing when it is redeemed.
@@ -88,10 +99,12 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
         expires_at,
         peer_addr: peer_addr.clone(),
         admin_pubkey_bytes,
-        relay_addr: relay_addr.clone(),
-        rendezvous_addr: rendezvous_addr.clone(),
+        relay_addr: relay_addr.clone().filter(|_| !relay_is_default),
+        rendezvous_addr: rendezvous_addr.clone().filter(|_| !rendezvous_is_default),
+        relay_is_default,
+        rendezvous_is_default,
         grant,
-    });
+    })?;
 
     println!(
         "✦ Invite for '{}' (valid {}):",

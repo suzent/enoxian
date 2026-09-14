@@ -128,7 +128,7 @@ Invite another machine or agent host:
 
 ```sh
 enox invite my-project
-enox enter enoxian://v1/...
+enox enter enoxian://v2/...
 ```
 
 See [docs/guide/getting-started.md](docs/guide/getting-started.md) for the

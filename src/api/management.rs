@@ -238,6 +238,16 @@ pub async fn generate_invite(
         crate::commands::rendezvous::resolve_default().await
     };
 
+    // A server that is just the compiled-in default travels as a flag rather
+    // than an address — see `commands::invite` for why the check is against the
+    // address itself and not against which branch produced it.
+    let relay_is_default = relay_addr
+        .as_deref()
+        .is_some_and(crate::commands::rendezvous::is_default_relay);
+    let rendezvous_is_default = rendezvous_addr
+        .as_deref()
+        .is_some_and(crate::commands::rendezvous::is_default_rendezvous);
+
     // Sign the invite with this member's own circle key. Every member has one,
     // so any member can still invite; the grant records which of them did.
     let grant = invite::sign_grant(&config.circle_id, &config.keypair_proto_hex, expires_at)
@@ -246,17 +256,29 @@ pub async fn generate_invite(
             e
         })
         .ok();
-    let uri = invite::encode(&InvitePayload {
+    let uri = match invite::encode(&InvitePayload {
         circle_id: config.circle_id.clone(),
         psk_bytes: psk,
         circle_name: Some(config.circle_name.clone()),
         expires_at,
         peer_addr: peer_addr.clone(),
         admin_pubkey_bytes,
-        relay_addr: relay_addr.clone(),
-        rendezvous_addr: rendezvous_addr.clone(),
+        relay_addr: relay_addr.clone().filter(|_| !relay_is_default),
+        rendezvous_addr: rendezvous_addr.clone().filter(|_| !rendezvous_is_default),
+        relay_is_default,
+        rendezvous_is_default,
         grant,
-    });
+    }) {
+        Ok(uri) => uri,
+        Err(e) => {
+            tracing::error!("[invite] could not encode invite: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("could not encode invite: {e}") })),
+            )
+                .into_response();
+        }
+    };
 
     Json(json!({
         "invite_uri": uri,

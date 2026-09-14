@@ -34,8 +34,13 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         admin_pubkey_hex,
         join_grant,
     ) = if args.target.starts_with("enoxian://") {
-        let payload = invite::decode(&args.target)?;
+        let mut payload = invite::decode(&args.target)?;
         invite::check_expiry(&payload)?;
+        // An invite that named the default relay or rendezvous server carried a
+        // flag instead of an address, to keep the link short. Turning that back
+        // into a multiaddr means asking the bootstrap server for its peer ID,
+        // which is why it happens here and not inside `decode`.
+        invite::resolve_defaults(&mut payload).await;
 
         let name = payload
             .circle_name
