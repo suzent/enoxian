@@ -301,7 +301,7 @@ reads them can be you:
 | `circles/<id>/config.toml` | That circle's PSK and this device's per-circle private key |
 | `circles/<id>/admin.key` | The admin signing key, on an admin machine |
 
-All three are written `0600`, and a file found with looser permissions is
+All three are written `0600` through a temporary file that is renamed into place — so the mode comes from the new file rather than from a `chmod` on the old one, a failure cannot leave the target truncated, and a filesystem that will not restrict the file is an error rather than a silent world-readable write. A file found with looser permissions is
 tightened the next time it is read — installs made before this existed are not
 left as they were, which for files rewritten this rarely could otherwise mean
 forever. A file that is already private is left exactly as it is, including a
