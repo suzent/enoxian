@@ -54,6 +54,12 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- The daemon no longer sometimes refuses to start with "execution inbox already
+  has an active owner" right after a restart. It could lose a race against its
+  own previous instance's release of the inbox lock, because a concurrently
+  launched agent process briefly inherits that lock; the daemon now waits the
+  moment out instead of giving up.
+
 - Renaming a device with `enox identity set-label` no longer erases the stored
   recovery phrase. Any save of the identity file used to drop it, so a rename —
   or receiving a link — silently destroyed the only copy of the user root key.

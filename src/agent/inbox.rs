@@ -98,6 +98,31 @@ pub enum Admission {
     Accepted { entry: Entry, displaced: Vec<Entry> },
 }
 
+/// Take the exclusive owner lock, waiting out a departing owner's fork window.
+///
+/// `flock` belongs to the open file description, not the fd, so a child forked
+/// between the owner's open and that child's `exec` keeps the lock alive after
+/// the owner closes its own fd. `O_CLOEXEC` clears the fd at `exec`, but the
+/// window before it is real, and this daemon forks constantly to launch agents,
+/// so a restart can lose the race against its own predecessor's release. A
+/// genuine second owner instead holds the lock for its whole lifetime, so only
+/// this sub-millisecond window is worth waiting out before reporting a conflict.
+fn take_ownership(owner: &std::fs::File) -> Result<()> {
+    const ATTEMPTS: u32 = 100;
+    const PAUSE: std::time::Duration = std::time::Duration::from_millis(10);
+    for remaining in (0..ATTEMPTS).rev() {
+        match owner.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) if remaining > 0 => std::thread::sleep(PAUSE),
+            Err(error) => {
+                return Err(anyhow::Error::new(error)
+                    .context("execution inbox already has an active owner"))
+            }
+        }
+    }
+    unreachable!("the final attempt either takes the lock or reports the conflict")
+}
+
 impl Inbox {
     pub fn path(circle_dir: &Path) -> PathBuf {
         circle_dir.join("execution_inbox.json")
@@ -141,9 +166,7 @@ impl Inbox {
             .read(true)
             .write(true)
             .open(circle_dir.join("execution_inbox.lock"))?;
-        owner
-            .try_lock()
-            .context("execution inbox already has an active owner")?;
+        take_ownership(&owner)?;
         let mut snapshot = Self::read(circle_dir)?.unwrap_or(Snapshot {
             version: 1,
             activated_at: now - 2,
