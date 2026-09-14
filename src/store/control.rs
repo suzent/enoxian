@@ -69,6 +69,12 @@ struct ControlSnapshot {
     /// restarts while the transport PSK remains stable.
     #[serde(default)]
     removed: std::collections::BTreeMap<String, String>,
+    /// user_pubkey_hex -> DistrustEntry JSON. An authorization boundary, so it
+    /// has to outlive every device being offline at once: without it, a circle
+    /// that all restarts forgets who it disowned, and a compromised identity
+    /// walks back in.
+    #[serde(default)]
+    distrusted_users: std::collections::BTreeMap<String, String>,
     /// rel_path -> deletion JSON string. Without this a tombstone would not
     /// survive a restart, and the restarted device would re-advertise the file
     /// and resurrect it on the peer that deleted it.
@@ -137,6 +143,10 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
             .get_map(MLS_REMOVED_KEY)
             .map(|map| map_strings(&map, &txn))
             .unwrap_or_default();
+        let distrusted_users = txn
+            .get_map(crate::control::DISTRUSTED_USERS_KEY)
+            .map(|map| map_strings(&map, &txn))
+            .unwrap_or_default();
         let deletions = txn
             .get_map(crate::control::DELETIONS_KEY)
             .map(|map| map_strings(&map, &txn))
@@ -177,6 +187,7 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
             tasks,
             members,
             removed,
+            distrusted_users,
             deletions,
         }
     };
@@ -224,6 +235,7 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
         let tasks = txn.get_or_insert_map(TASKS_KEY);
         let members = txn.get_or_insert_map(MEMBER_LIST_KEY);
         let removed = txn.get_or_insert_map(MLS_REMOVED_KEY);
+        let distrusted = txn.get_or_insert_map(crate::control::DISTRUSTED_USERS_KEY);
         let deletions = txn.get_or_insert_map(crate::control::DELETIONS_KEY);
         let chat = txn.get_or_insert_array(CHAT_KEY);
         let locks = txn.get_or_insert_array(crate::control::LOCK_LOG_KEY);
@@ -249,6 +261,9 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
         for (k, v) in &snap.removed {
             removed.insert(&mut txn, k.as_str(), v.as_str());
         }
+        for (k, v) in &snap.distrusted_users {
+            distrusted.insert(&mut txn, k.as_str(), v.as_str());
+        }
         for (k, v) in &snap.deletions {
             deletions.insert(&mut txn, k.as_str(), v.as_str());
         }
@@ -262,11 +277,12 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
     }
 
     tracing::info!(
-        "[control] restored {} chat, {} tasks, {} members, {} removals, {} deletions from disk",
+        "[control] restored {} chat, {} tasks, {} members, {} removals, {} distrusted, {} deletions from disk",
         snap.chat.len(),
         snap.tasks.len(),
         snap.members.len(),
         snap.removed.len(),
+        snap.distrusted_users.len(),
         snap.deletions.len()
     );
     Ok(())
@@ -342,6 +358,43 @@ mod tests {
                 assert_eq!(d.peer_id, "p1");
             }
             other => panic!("tombstone lost across restart: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Distrust is an authorization boundary, so it has to outlive every device
+    /// in the circle being offline at once. Without it in the snapshot, a
+    /// circle that all restarts forgets who it disowned and the compromised
+    /// identity walks back in — while the CLI still reported it as distrusted.
+    #[test]
+    fn distrust_survives_a_restart() {
+        let tmp = std::env::temp_dir().join(format!("enox-ctrl-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let record = r#"{"user_pubkey_hex":"0801122000112233","at":"2026-08-11T00:00:00Z","admin_signature":"ab12"}"#;
+
+        let src = Doc::new();
+        {
+            let distrusted = src.get_or_insert_map(crate::control::DISTRUSTED_USERS_KEY);
+            let mut txn = src.transact_mut();
+            distrusted.insert(&mut txn, "0801122000112233", record);
+        }
+        save(&tmp, &src).unwrap();
+
+        let dst = Doc::new();
+        restore(&tmp, &dst).unwrap();
+        let distrusted = dst.get_or_insert_map(crate::control::DISTRUSTED_USERS_KEY);
+        let txn = dst.transact();
+        match distrusted.get(&txn, "0801122000112233") {
+            Some(Out::Any(Any::String(raw))) => {
+                let entry: crate::control::DistrustEntry = serde_json::from_str(&raw).unwrap();
+                assert_eq!(entry.user_pubkey_hex, "0801122000112233");
+                // The signature has to survive too: without it the restored
+                // record would be refused as unsigned, which is the same as
+                // losing it.
+                assert_eq!(entry.admin_signature, "ab12");
+            }
+            other => panic!("distrust lost across restart: {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }

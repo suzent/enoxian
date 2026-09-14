@@ -1652,6 +1652,50 @@ async fn remove_pending_entry(state: &AppState, peer_str: &str, reason: &str) {
 ///
 /// Reads from the caller's transaction so the whole admission decision sees one
 /// consistent view of membership.
+/// The distrusted user identity this peer proves, if it proves one.
+///
+/// Only a peer that *proves* an identity can be caught here: a device that
+/// publishes no owner claim has no identity to match against. That is the
+/// current posture rather than a hole — nothing yet requires a joiner to prove
+/// who it is, so distrust disowns an identity rather than screening every
+/// stranger. Requiring proof is the step after this one.
+pub(crate) fn distrusted_identity<T: yrs::ReadTxn>(
+    txn: &T,
+    circle_id: &str,
+    admin_pubkey_hex: &str,
+    peer_id: &str,
+) -> Option<String> {
+    use yrs::{Any, Map, Out};
+
+    let distrusted = txn.get_map(crate::control::DISTRUSTED_USERS_KEY)?;
+    let claim = txn
+        .get_map(MLS_OWNER_CLAIMS_KEY)
+        .and_then(|m| m.get(txn, peer_id))
+        .and_then(|v| match v {
+            Out::Any(Any::String(s)) => serde_json::from_str::<OwnerClaim>(&s).ok(),
+            _ => None,
+        })?;
+
+    let user = claim.verified_user(peer_id, circle_id)?;
+    let entry = distrusted.get(txn, user.as_str()).and_then(|v| match v {
+        Out::Any(Any::String(s)) => serde_json::from_str::<crate::control::DistrustEntry>(&s).ok(),
+        _ => None,
+    })?;
+
+    // The record has to carry the admin's signature, not merely exist. The
+    // control document is replicated and every member can write to it, so
+    // treating presence as authority would let any member lock anybody out of
+    // the circle by adding an entry of their own.
+    if !entry.is_authentic(admin_pubkey_hex) {
+        warn!(
+            "[member] ignoring an unsigned distrust record for {}",
+            &user[..user.len().min(16)]
+        );
+        return None;
+    }
+    Some(user)
+}
+
 fn grant_admits<T: yrs::ReadTxn>(
     txn: &T,
     circle_id: &str,
@@ -1762,6 +1806,23 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                         _ => None,
                     })
                     .and_then(|entry| entry.join_grant);
+                // A circle that has disowned an identity must not readmit it,
+                // including on a device minted after the fact — which is the
+                // whole point, since whoever holds a stolen root key can make
+                // as many devices as they like.
+                if let Some(user) = distrusted_identity(
+                    &txn,
+                    &state.circle_id,
+                    &state.admin_pubkey_hex,
+                    &peer_id_str,
+                ) {
+                    warn!(
+                        "[member] refused {peer_id_str}: its user identity {} is distrusted",
+                        &user[..user.len().min(16)]
+                    );
+                    return;
+                }
+
                 if let Err(reason) =
                     grant_admits(&txn, &state.circle_id, &peer_id_str, presented.as_ref())
                 {

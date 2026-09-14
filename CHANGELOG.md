@@ -39,16 +39,15 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
-### Security
-
-- The recovery phrase is no longer written to disk. It is shown once when you
-  run `enox identity create-user` and never saved, so a lost or stolen machine
-  is a lost device rather than a lost identity. Adding devices does not need it
-  — `enox link` uses the device's own attestation. An older install that still
-  has one is told so by `enox identity show`, and `enox identity forget-phrase`
-  removes it after showing the words one last time.
-
 ### Added
+
+- `enox member distrust` disowns a user identity in a Circle, refusing every
+  device that proves it — including devices made afterwards, which is what
+  `enox member remove` cannot do when someone else holds the user root key.
+  `enox member trust` takes it back, and `enox member list` marks a distrusted
+  identity. Scoped to the Circle deliberately: in the case that motivates
+  revocation the root key is on the lost device, so an admin of the Circle is
+  the one who can still speak.
 
 - Relay operators and clients can query `GET /version` for the running package
   version and support for short invites and device linking, without SSH access.
@@ -301,6 +300,14 @@ refuses to publish a version whose section is missing or empty.
   across and send it to whichever circle you had moved to.
 
 ### Security
+
+- The recovery phrase is no longer written to disk. It is shown once when you
+  run `enox identity create-user` and never saved, so a lost or stolen machine
+  is a lost device rather than a lost identity. Adding devices does not need it
+  — `enox link` uses the device's own attestation. An older install that still
+  has one is told so by `enox identity show`, and `enox identity forget-phrase`
+  removes it after showing the words one last time.
+
 
 - Files holding key material — `identity.toml`, a circle's `config.toml`, and
   `admin.key` — are now written `0600` instead of inheriting the process umask,

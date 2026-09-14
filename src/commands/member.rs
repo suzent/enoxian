@@ -128,7 +128,9 @@ pub async fn run(
                         // An owner nobody can check is a display string. Say so
                         // rather than presenting it as the same kind of fact as
                         // a name backed by the user key's signature.
-                        let owner_mark = if owner.is_empty() || m["verified_user"].is_string() {
+                        let owner_mark = if m["distrusted"].as_bool() == Some(true) {
+                            " (DISTRUSTED)"
+                        } else if owner.is_empty() || m["verified_user"].is_string() {
                             ""
                         } else {
                             " (unverified)"
@@ -166,6 +168,41 @@ pub async fn run(
                 "admin_signature": DAEMON_SIGNS,
             });
             let val = post_member_action(client, &base, &body).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&val)?);
+            } else {
+                println!("✦ {}", val["status"].as_str().unwrap_or("done"));
+            }
+        }
+
+        MemberAction::Distrust { target, reason } => {
+            // The signed message covers the user key the daemon resolves from a
+            // peer id, which only it can see — so it signs, as with `add`.
+            let body = serde_json::json!({
+                "target": target,
+                "reason": reason,
+                "admin_signature": DAEMON_SIGNS,
+            });
+            let url = format!("{base}/distrust");
+            let val = post_member_action(client, &url, &body).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&val)?);
+            } else {
+                let key = val["user_pubkey_hex"].as_str().unwrap_or("");
+                println!("✦ Distrusted {}", &key[..key.len().min(24)]);
+                println!("  Every device proving this identity is refused from now on,");
+                println!("  including any made later. Devices already in the Circle stay");
+                println!("  until you remove them: enox member remove <peer-id>");
+            }
+        }
+
+        MemberAction::Trust { target } => {
+            let body = serde_json::json!({
+                "target": target,
+                "admin_signature": DAEMON_SIGNS,
+            });
+            let url = format!("{base}/trust");
+            let val = post_member_action(client, &url, &body).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&val)?);
             } else {
