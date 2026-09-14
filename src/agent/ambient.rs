@@ -5,14 +5,14 @@
 //! may answer or decline. Nothing about it is addressed, which is what makes it
 //! both the interesting idea and the expensive one.
 //!
-//! Three things keep it from being a token furnace:
+//! Participation is bounded by these gates and the shared execution queue:
 //!
 //! - **Human-authored only** (§2.1). An unaddressed agent's output can never
 //!   become another unaddressed agent's input, so there is no fixpoint to chase.
 //! - **A heuristic gate** (§2.5) that costs nothing, skipping the traffic that
 //!   dominates the volume before any model is asked.
-//! - **A per-message cap** (§2.3) so three ambient agents do not all answer one
-//!   line.
+//! - **Shared capacity**. Every enabled listener can be offered a message,
+//!   but device concurrency and per-agent/Circle queue bounds still apply.
 
 use crate::control::{Author, ChatMessage};
 
@@ -28,12 +28,6 @@ const MIN_AMBIENT_CHARS: usize = 24;
 /// It has just had its say; volunteering again immediately is the pile-on the
 /// spec warns about, and the room reads as the agent talking to itself.
 const AMBIENT_QUIET_SECS: i64 = 30;
-
-/// How many ambient replies one message may produce across all agents here.
-///
-/// Three ambient agents that all find a message relevant produce three replies
-/// to one line. One is a contribution; three is a pile-on.
-pub const MAX_AMBIENT_REPLIES_PER_MESSAGE: usize = 1;
 
 /// The reply that means "nothing to add" (§2.3).
 const PASS_TOKEN: &str = "PASS";

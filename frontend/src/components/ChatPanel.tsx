@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import ExecutionStatus from './ExecutionStatus'
 import { Fragment, useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import type { Attachment, ChatActivity, ChatMessage, EngagementView, Member, Presence } from '../types'
@@ -16,6 +17,8 @@ const CATCH_UP_MAX_ATTEMPTS = 5
 const CATCH_UP_BACKOFF_MS = 500
 
 interface Props {
+  onActivityNavigate?: () => void
+  activityContainer?: HTMLDivElement | null
   onMessage?: () => void
   variant?: 'rail' | 'main'
   hideActiveCircleGlyph?: boolean
@@ -220,8 +223,8 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
       <div className="chat-message__body">
         {msg.reply_to && (
           <a className="chat-message__parent" href={`#chat-message-${msg.reply_to}`}>
-            <span aria-hidden="true">↳ </span>
-            {replyParent?.text.trim() || 'Waiting for the referenced message to sync'}
+            <span className="chat-message__parent-label"><span aria-hidden="true">↳</span> Replying to</span>
+            <span className="chat-message__parent-preview">{replyParent?.text.trim() || 'Waiting for the referenced message to sync'}</span>
           </a>
         )}
         {showSender && (
@@ -279,7 +282,7 @@ interface Draft {
 
 const EMPTY_DRAFT: Draft = { nodes: [], attachments: [] }
 
-export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircleGlyph = false }: Props) {
+export default function ChatPanel({ activityContainer, onActivityNavigate, onMessage, variant = 'rail', hideActiveCircleGlyph = false }: Props) {
   const { activeCircleId, circles, status } = useApp()
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -930,7 +933,7 @@ export default function ChatPanel({ onMessage, variant = 'rail', hideActiveCircl
         <div ref={bottomRef} />
       </div>
 
-      {activeCircleId && <ExecutionStatus circleId={activeCircleId} />}
+      {activeCircleId && activityContainer && createPortal(<ExecutionStatus onNavigate={onActivityNavigate} circleId={activeCircleId} members={members} messages={messages} />, activityContainer)}
       <div
         className={`chat-composer${dragging ? ' chat-composer--dragging' : ''}`}
         onDragOver={e => { e.preventDefault(); if (!activeCircle?.disabled) setDragging(true) }}

@@ -41,6 +41,13 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
+- Read-the-room agents now take turns fairly. Choose a listener count per message,
+  or cycle the count from one up to that limit. Selected requests use the shared
+  execution queue instead of favoring the first configured agent.
+- Agent activity shows device names, original messages and plain-language outcomes;
+  completed runs are collapsed in the sidebar and legacy import records are hidden.
+
+
 - Follow-ups now use explicit reply threads by default. Configurations that omit
   `engagement_window_secs` now use `0` instead of `180`; set it to `180` in Device
   Settings to keep the previous three-minute recency routing. Explicitly configured
@@ -145,6 +152,11 @@ refuses to publish a version whose section is missing or empty.
 - Chat mentions use compact inline labels, agents lead their sender headers, and explicit replies show a linked source preview with a clearer reply composer.
 
 ### Fixed
+
+- Imported read-the-room history no longer appears as agents named `~ambient:...`
+  or offers retries for old listening observations. Agents that pass now show
+  “No reply needed” in their activity history.
+
 
 - Expanding completed tasks no longer shifts task-list content when the scrollbar appears.
 

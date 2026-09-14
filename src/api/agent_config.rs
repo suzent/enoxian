@@ -67,6 +67,8 @@ struct AddressedAs {
 
 #[derive(Serialize)]
 struct SettingsView {
+    ambient_responders: usize,
+    ambient_rotate_count: bool,
     reaction: String,
     engagement_window_secs: i64,
     ambient: Vec<String>,
@@ -93,6 +95,8 @@ struct CircleSettingsView {
 
 fn settings_view(s: &crate::agent::config::ResolvedSettings) -> SettingsView {
     SettingsView {
+        ambient_responders: s.ambient_responders,
+        ambient_rotate_count: s.ambient_rotate_count,
         reaction: format!("{:?}", s.reaction).to_lowercase(),
         engagement_window_secs: s.engagement_window_secs,
         ambient: s.ambient.clone(),
@@ -276,6 +280,10 @@ pub async fn set_reaction(Json(req): Json<SetReactionRequest>) -> impl IntoRespo
 /// tokens is the device that decides what they are spent on.
 #[derive(Deserialize)]
 pub struct SetEngagementRequest {
+    #[serde(default, deserialize_with = "double_option")]
+    pub ambient_responders: Option<Option<usize>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub ambient_rotate_count: Option<Option<bool>>,
     pub max_concurrent_runs: Option<usize>,
     #[serde(default)]
     pub circle_id: Option<String>,
@@ -349,6 +357,13 @@ pub async fn set_engagement(
     let scope = req.circle_id.clone().filter(|id| !id.is_empty());
     let resp = edit(move |cfg| {
         validate(&req, &cfg.agents)?;
+        if req
+            .ambient_responders
+            .flatten()
+            .is_some_and(|n| !(1..=32).contains(&n))
+        {
+            return Err("ambient_responders must be 1–32".into());
+        }
         if let Some(limit) = req.max_concurrent_runs {
             if scope.is_some() || !(1..=32).contains(&limit) {
                 return Err("max_concurrent_runs must be 1–32 at device scope".into());
@@ -357,6 +372,12 @@ pub async fn set_engagement(
         }
         match scope {
             None => {
+                if let Some(Some(value)) = req.ambient_responders {
+                    cfg.ambient_responders = value;
+                }
+                if let Some(Some(value)) = req.ambient_rotate_count {
+                    cfg.ambient_rotate_count = value;
+                }
                 // Global scope answers every question, so `null` is not a
                 // meaningful value here — there is nothing above to inherit.
                 if let Some(Some(value)) = &req.reaction {
@@ -374,6 +395,12 @@ pub async fn set_engagement(
             }
             Some(circle_id) => {
                 let over = cfg.circles.entry(circle_id.clone()).or_default();
+                if let Some(value) = req.ambient_responders {
+                    over.ambient_responders = value;
+                }
+                if let Some(value) = req.ambient_rotate_count {
+                    over.ambient_rotate_count = value;
+                }
                 if let Some(value) = &req.reaction {
                     over.reaction = match value {
                         Some(v) => Some(parse_reaction(v)?),

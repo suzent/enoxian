@@ -295,7 +295,10 @@ expensive turn is worth taking. The architecture constrains the options:
 
 **Shipped with the heuristic gate**, as recommended: messages under 24
 characters with no attachment are skipped, an agent that spoke in the last 30
-seconds is left alone, and at most one ambient reply is offered per message. All
+seconds is left alone. Eligible listeners are selected least-recently-offered first. `ambient_responders`
+(default 1) sets how many are offered each message; `ambient_rotate_count` optionally
+cycles from one up to that limit. Selection history survives restart, and duplicate
+messages do not cause new selections. Shared execution capacity and queue bounds apply. All
 three run before any model is asked, so the traffic that dominates the volume
 costs nothing. Measure real Circles before reaching for anything smarter.
 
