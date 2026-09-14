@@ -461,31 +461,24 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         }
     }
 
-    // If admin and auto join policy, observe pending map
+    // Sweep immediately (including restored requests) and periodically. Pending
+    // entries and key packages can arrive separately or be updated in place.
     let is_admin = cdir.join("admin.key").exists();
     if is_admin && config.join_policy == JoinPolicy::Auto {
-        let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
-        let state_for_pending = state.clone();
-        let mls_for_pending = mls.clone();
-        let pending_sub = pending_map.observe(
-            move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
-                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
-                if !is_p2p {
-                    return;
-                }
-                for (key, change) in event.keys(txn) {
-                    if let yrs::types::EntryChange::Inserted(_) = change {
-                        let peer_id_str = key.to_string();
-                        let s = state_for_pending.clone();
-                        let m = mls_for_pending.clone();
-                        tokio::spawn(async move {
-                            auto_approve(peer_id_str, s, m).await;
-                        });
+        let approval_state = state.clone();
+        let approval_token = token.clone();
+        tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(std::time::Duration::from_secs(5));
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = approval_token.cancelled() => break,
+                    _ = ticks.tick() => {
+                        retry_pending_approvals(&approval_state).await;
                     }
                 }
-            },
-        );
-        std::mem::forget(pending_sub);
+            }
+        });
     }
 
     // ── Welcome consumer ─────────────────────────────────────────────────────
@@ -1719,6 +1712,34 @@ fn grant_admits<T: yrs::ReadTxn>(
 const APPROVAL_RETRIES: u32 = 10;
 const APPROVAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
+async fn retry_pending_approvals(state: &AppState) {
+    use yrs::{Map, ReadTxn, Transact};
+    let peers: Vec<String> = {
+        let Ok(txn) = state.control.try_transact() else {
+            return;
+        };
+        txn.get_map(MLS_PENDING_KEY)
+            .map(|pending| {
+                pending
+                    .iter(&txn)
+                    .map(|(peer, _)| peer.to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    state.approval_errors.retain(|peer, _| peers.contains(peer));
+    for peer in peers {
+        auto_approve(peer, state.clone(), state.mls.clone()).await;
+    }
+}
+
+fn record_approval_error(state: &AppState, peer: &str, reason: String) {
+    if state.approval_errors.get(peer).as_deref() != Some(&reason) {
+        warn!("[member] automatic approval of {peer} failed: {reason}");
+        state.approval_errors.insert(peer.to_owned(), reason);
+    }
+}
+
 async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::SharedMlsState) {
     use yrs::{Any, Map, Out, ReadTxn, Transact, WriteTxn};
 
@@ -1737,6 +1758,24 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
         {
             let mut mls_locked = mls.lock().await;
             if let Ok(mut txn) = state.control.try_transact_mut() {
+                // Another attempt or a manual decision may already have finished.
+                let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
+                if pending.get(&txn, peer_id_str.as_str()).is_none() {
+                    state.approval_errors.remove(&peer_id_str);
+                    return;
+                }
+                // The coordination member list includes provisional self-entries;
+                // only the actual encrypted group proves completed admission.
+                if mls_locked
+                    .group
+                    .as_ref()
+                    .and_then(|group| group.leaf_index_for_peer(&peer_id_str))
+                    .is_some()
+                {
+                    pending.remove(&mut txn, peer_id_str.as_str());
+                    state.approval_errors.remove(&peer_id_str);
+                    return;
+                }
                 let Some(kp_hex) = txn
                     .get_map(MLS_KEY_PACKAGES_KEY)
                     .and_then(|kp_map| kp_map.get(&txn, peer_id_str.as_str()))
@@ -1745,9 +1784,19 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                         _ => None,
                     })
                 else {
+                    record_approval_error(
+                        &state,
+                        &peer_id_str,
+                        "Waiting for device key package".into(),
+                    );
                     return;
                 };
                 let Ok(kp_bytes) = hex::decode(&kp_hex) else {
+                    record_approval_error(
+                        &state,
+                        &peer_id_str,
+                        "Invalid device key package encoding".into(),
+                    );
                     return;
                 };
 
@@ -1765,36 +1814,25 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                 if let Err(reason) =
                     grant_admits(&txn, &state.circle_id, &peer_id_str, presented.as_ref())
                 {
-                    warn!("[member] refused automatic approval of {peer_id_str}: {reason}");
+                    record_approval_error(&state, &peer_id_str, reason);
                     // Leave the request pending rather than discarding it: an
                     // admin can still approve deliberately, which is the right
                     // escape hatch for a legitimate joiner whose invite lapsed.
                     return;
                 }
 
-                let (commit_bytes, welcome_bytes, ratchet_tree_bytes) = match mls_locked
-                    .add_member(&kp_bytes)
-                {
-                    Ok(t) => t,
-                    Err(_) => {
-                        // Most likely already in the MLS group — e.g. the daemon
-                        // restarted and re-wrote a pending entry before sync caught
-                        // up. Retire the stale request so the UI stops showing it.
-                        let already_member = matches!(
-                            txn.get_map(MEMBER_LIST_KEY)
-                                .and_then(|m| m.get(&txn, peer_id_str.as_str())),
-                            Some(Out::Any(Any::String(_)))
-                        );
-                        if already_member {
-                            let pending_map = txn.get_or_insert_map(MLS_PENDING_KEY);
-                            pending_map.remove(&mut txn, peer_id_str.as_str());
-                            info!(
-                                    "[member] removed stale pending entry for {peer_id_str} (already a member)"
-                                );
+                let (commit_bytes, welcome_bytes, ratchet_tree_bytes) =
+                    match mls_locked.add_member(&kp_bytes) {
+                        Ok(t) => t,
+                        Err(error) => {
+                            record_approval_error(
+                                &state,
+                                &peer_id_str,
+                                format!("MLS admission failed: {error}"),
+                            );
+                            return;
                         }
-                        return;
-                    }
-                };
+                    };
                 let epoch = mls_locked.current_epoch().unwrap_or(0);
 
                 let (owner, agent_id, device_label, agents) = txn
@@ -1849,6 +1887,7 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                 member_map.insert(&mut txn, peer_id_str.as_str(), member_json.as_str());
                 let pending_map = txn.get_or_insert_map(MLS_PENDING_KEY);
                 pending_map.remove(&mut txn, peer_id_str.as_str());
+                state.approval_errors.remove(&peer_id_str);
                 // Burn the nonce in the same transaction that admits, so an
                 // invite cannot admit twice even under a concurrent redemption.
                 if let Some(grant) = presented.as_ref() {
@@ -2242,6 +2281,124 @@ mod tests {
         txn.get_map(MLS_PENDING_KEY)
             .and_then(|pending| pending.get(&txn, peer))
             .is_some()
+    }
+
+    async fn automatic_state() -> (AppState, tempfile::TempDir) {
+        let mut state = test_state();
+        let dir = tempfile::tempdir().unwrap();
+        state.circle_dir = dir.path().to_path_buf();
+        state.join_policy = JoinPolicy::Auto;
+        let identity = crate::mls::MlsIdentity::generate("peer-local").unwrap();
+        let group = crate::mls::MlsGroupManager::create(&identity).unwrap();
+        state.mls = crate::mls::new_mls_state(identity, Some(group));
+        (state, dir)
+    }
+
+    fn seed_valid_request(state: &AppState, peer: &str) {
+        let issuer = libp2p::identity::Keypair::generate_ed25519();
+        let expires_at = chrono::Utc::now() + chrono::Duration::hours(1);
+        let grant = crate::invite::sign_grant(
+            &state.circle_id,
+            &hex::encode(issuer.to_protobuf_encoding().unwrap()),
+            expires_at,
+        )
+        .unwrap();
+        let entry = PendingEntry {
+            peer_id: peer.into(),
+            owner: "owner".into(),
+            agent_id: peer.into(),
+            device_label: String::new(),
+            agents: vec![],
+            owner_sig: String::new(),
+            requested_at: chrono::Utc::now(),
+            join_grant: Some(crate::control::JoinGrant {
+                inviter_pubkey_hex: grant.inviter_pubkey_hex,
+                nonce: grant.nonce,
+                sig: grant.sig,
+                expires_at,
+            }),
+        };
+        let mut txn = state.control.transact_mut();
+        let members = txn.get_or_insert_map(MEMBER_LIST_KEY);
+        members.insert(&mut txn, issuer.public().to_peer_id().to_string(), "{}");
+        let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
+        pending.insert(&mut txn, peer, serde_json::to_string(&entry).unwrap());
+    }
+
+    #[tokio::test]
+    async fn automatic_sweep_retries_restored_request_when_key_package_arrives() {
+        let (state, _dir) = automatic_state().await;
+        let peer = "peer-joiner";
+        seed_valid_request(&state, peer);
+        retry_pending_approvals(&state).await;
+        assert!(is_pending(&state, peer));
+        assert!(state.approval_errors.contains_key(peer));
+        let identity = crate::mls::MlsIdentity::generate(peer).unwrap();
+        {
+            let mut txn = state.control.transact_mut();
+            let packages = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+            packages.insert(
+                &mut txn,
+                peer,
+                hex::encode(identity.generate_key_package().unwrap()),
+            );
+        }
+        retry_pending_approvals(&state).await;
+        assert!(!is_pending(&state, peer));
+        assert!(!state.approval_errors.contains_key(peer));
+        assert_eq!(state.mls.lock().await.current_epoch(), Some(1));
+        // A stale request after admission must not consume its grant again or
+        // issue another add commit, even if the member list is incomplete.
+        seed_pending(&state, peer);
+        retry_pending_approvals(&state).await;
+        assert!(!is_pending(&state, peer));
+        assert_eq!(state.mls.lock().await.current_epoch(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn automatic_sweep_keeps_mls_failure_pending_despite_provisional_member() {
+        let (state, _dir) = automatic_state().await;
+        let peer = "peer-joiner";
+        seed_valid_request(&state, peer);
+        {
+            let mut txn = state.control.transact_mut();
+            let members = txn.get_or_insert_map(MEMBER_LIST_KEY);
+            members.insert(&mut txn, peer, "{}");
+            let packages = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+            packages.insert(&mut txn, peer, hex::encode(b"invalid MLS key package"));
+        }
+        retry_pending_approvals(&state).await;
+        assert!(is_pending(&state, peer));
+        assert!(state
+            .approval_errors
+            .get(peer)
+            .unwrap()
+            .contains("MLS admission failed"));
+        assert_eq!(state.mls.lock().await.current_epoch(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn automatic_sweep_does_not_admit_without_valid_invite() {
+        let (state, _dir) = automatic_state().await;
+        let peer = "peer-joiner";
+        seed_pending(&state, peer);
+        {
+            let identity = crate::mls::MlsIdentity::generate(peer).unwrap();
+            let mut txn = state.control.transact_mut();
+            let packages = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+            packages.insert(
+                &mut txn,
+                peer,
+                hex::encode(identity.generate_key_package().unwrap()),
+            );
+        }
+        retry_pending_approvals(&state).await;
+        assert!(is_pending(&state, peer));
+        assert_eq!(
+            state.approval_errors.get(peer).unwrap().value(),
+            "no invite grant presented"
+        );
+        assert_eq!(state.mls.lock().await.current_epoch(), Some(0));
     }
 
     /// Regression: a joining device writes a provisional self-signed member

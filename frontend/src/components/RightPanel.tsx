@@ -564,7 +564,7 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
           {/* Pending approvals */}
           {pending.length > 0 && (
             <div className="px-4 py-3 border-b border-dashed border-obsidian/30 flex flex-col gap-2 font-mono text-[11px]">
-              <div className="group-label approval-label">AWAITING APPROVAL</div>
+              <div className="group-label approval-label">{pending.every(p => p.automatic) ? 'AUTOMATIC ADMISSION' : 'AWAITING APPROVAL'}</div>
               {pending.map(p => (
                 <div key={p.peer_id} className="flex flex-col gap-1 pb-2 border-b border-dashed border-obsidian/20 last:border-0">
                   <div className="flex justify-between items-start gap-1">
@@ -579,6 +579,8 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
                     </div>
                     <span className="text-[9px] text-slate shrink-0">{age(p.requested_at.toString())}</span>
                   </div>
+                  {p.approval_error && <div role="alert" className="text-[10px] break-words">{p.approval_error}</div>}
+                  {p.automatic && <div className="text-[9px] text-slate">{p.approval_error ? 'Automatic admission will retry.' : 'Completing automatic admission…'}</div>}
                   {isAdmin ? (
                     <div className="flex gap-1 mt-0.5">
                       <button onClick={() => handleApprove(p.peer_id, p.owner)} className="text-[9px] border border-obsidian px-2 py-0.5 hover:bg-obsidian hover:text-alabaster font-bold">APPROVE</button>
