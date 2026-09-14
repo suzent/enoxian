@@ -280,6 +280,11 @@ pub enum IdentityAction {
         /// Your chosen handle (e.g. "suzy")
         handle: String,
     },
+    /// Remove a recovery phrase left on disk by an older install.
+    ///
+    /// Shows the words one last time and asks before removing them. Linking
+    /// devices does not need them — `enox link` uses this device's attestation.
+    ForgetPhrase,
     /// Link this device to an existing user via a BIP-39 mnemonic.
     LinkUser {
         /// Your user handle
@@ -297,6 +302,23 @@ pub struct MemberArgs {
 
 #[derive(Subcommand)]
 pub enum MemberAction {
+    /// Disown a user identity in this Circle.
+    ///
+    /// Every device proving that identity is refused, including ones made
+    /// afterwards — which is what `remove` cannot do, since whoever holds a
+    /// stolen root key can mint more. Takes a peer ID or a user public key.
+    Distrust {
+        /// Peer ID of one of their devices, or the user public key itself
+        target: String,
+        /// Why, kept with the record
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Take back a distrust, letting that identity rejoin.
+    Trust {
+        /// Peer ID of one of their devices, or the user public key itself
+        target: String,
+    },
     /// List members
     List,
     /// Add a member (auto-signs with admin.key if present)

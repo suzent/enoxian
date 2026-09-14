@@ -109,7 +109,7 @@ pub async fn link_device(Json(req): Json<LinkDeviceRequest>) -> impl IntoRespons
                 .into_response()
         }
     };
-    if let Err(e) = user.link_device(&mut device, &req.mnemonic) {
+    if let Err(e) = user.link_device(&mut device) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": e.to_string()})),
@@ -152,7 +152,7 @@ pub async fn create_user_identity(Json(req): Json<SetIdentityRequest>) -> impl I
                 .into_response()
         }
     };
-    if let Err(e) = user.link_device(&mut device, &mnemonic) {
+    if let Err(e) = user.link_device(&mut device) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": e.to_string()})),

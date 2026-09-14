@@ -41,6 +41,21 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- `enox member distrust` disowns a user identity in a Circle, refusing every
+  device that proves it — including devices made afterwards, which is what
+  `enox member remove` cannot do when someone else holds the user root key.
+  `enox member trust` takes it back, and `enox member list` marks a distrusted
+  identity. Scoped to the Circle deliberately: in the case that motivates
+  revocation the root key is on the lost device, so an admin of the Circle is
+  the one who can still speak.
+
+- Relay operators and clients can query `GET /version` for the running package
+  version and support for short invites and device linking, without SSH access.
+
+- The web interface now creates short invites, with a full-invite option and
+  automatic fallback when the relay is unavailable or has not been updated.
+  Joining through a short invite now starts the Circle immediately.
+
 - Any linked device can now link the next one. Previously only the device you
   ran `enox identity create-user` on could, because only it stored the recovery
   phrase. A linked device now extends the signature chain it already holds,
@@ -186,6 +201,14 @@ refuses to publish a version whose section is missing or empty.
 
 - Automatic-admission circles retry pending requests after restarts and delayed key packages, clear stale requests for existing encrypted-group members, and show admission errors in the member panel.
 
+- Long chat activity messages now truncate with an ellipsis instead of overlapping neighboring statuses; hover to see the full message.
+
+- The daemon no longer sometimes refuses to start with "execution inbox already
+  has an active owner" right after a restart. It could lose a race against its
+  own previous instance's release of the inbox lock, because a concurrently
+  launched agent process briefly inherits that lock; the daemon now waits the
+  moment out instead of giving up.
+
 - Renaming a device with `enox identity set-label` no longer erases the stored
   recovery phrase. Any save of the identity file used to drop it, so a rename —
   or receiving a link — silently destroyed the only copy of the user root key.
@@ -279,6 +302,14 @@ refuses to publish a version whose section is missing or empty.
   across and send it to whichever circle you had moved to.
 
 ### Security
+
+- The recovery phrase is no longer written to disk. It is shown once when you
+  run `enox identity create-user` and never saved, so a lost or stolen machine
+  is a lost device rather than a lost identity. Adding devices does not need it
+  — `enox link` uses the device's own attestation. An older install that still
+  has one is told so by `enox identity show`, and `enox identity forget-phrase`
+  removes it after showing the words one last time.
+
 
 - Files holding key material — `identity.toml`, a circle's `config.toml`, and
   `admin.key` — are now written `0600` instead of inheriting the process umask,

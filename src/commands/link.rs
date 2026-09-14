@@ -164,30 +164,23 @@ fn build_payload(
     offer: &Offer,
     transcript_hash: &str,
 ) -> Result<LinkPayload> {
-    // Two ways to vouch for the new device. The device that holds the user root
-    // key signs directly. A device that was itself linked signs with its own
-    // device key, extending the chain it holds — which is what lets any linked
-    // device link the next one without the root key ever moving.
+    // One way to vouch for the new device: extend the chain this one holds,
+    // signing with its own device key. There used to be a second path, reading
+    // the root key back off disk to sign directly, and dropping it is what lets
+    // the recovery phrase stop living there — the chain reaches just as far.
     //
-    // `attest_device` and `attest` both refuse a device key that is not a
-    // decodable libp2p key, so a target cannot use this step to have either key
-    // sign bytes of its own choosing.
-    let (user_pubkey_hex, attestation_chain) = match device.user_identity()? {
-        Some(user) => (
-            Some(user.pubkey_hex()?),
-            vec![crate::identity::ChainLink {
-                signer_pubkey_hex: user.pubkey_hex()?,
-                subject_pubkey_hex: offer.device_pubkey_hex.clone(),
-                sig: user.attest_device(&offer.device_pubkey_hex)?,
-            }],
-        ),
-        None if device.attestation_is_valid() => (
+    // `attest` refuses a device key that is not a decodable libp2p key, so a
+    // target cannot use this step to have the device key sign bytes of its own
+    // choosing.
+    let (user_pubkey_hex, attestation_chain) = if device.attestation_is_valid() {
+        (
             device.user_pubkey_hex.clone(),
             device.attest(&offer.device_pubkey_hex)?,
-        ),
-        // Neither the root key nor a chain to extend: the circles can still be
-        // handed over, the user identity cannot.
-        None => (None, Vec::new()),
+        )
+    } else {
+        // No chain to extend: the circles can still be handed over, the user
+        // identity cannot.
+        (None, Vec::new())
     };
 
     let mut invites = Vec::new();

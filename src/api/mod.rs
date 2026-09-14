@@ -178,6 +178,14 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
             post(members::promote_member),
         )
         .route(
+            "/circles/{circle_id}/members/distrust",
+            post(members::distrust_user),
+        )
+        .route(
+            "/circles/{circle_id}/members/trust",
+            post(members::trust_user),
+        )
+        .route(
             "/circles/{circle_id}/members/pending",
             get(members::list_pending),
         )

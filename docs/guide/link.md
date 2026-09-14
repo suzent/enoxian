@@ -166,10 +166,24 @@ Two devices belong to the same person when they prove the same user key — not 
 
 ## Recovering without another device
 
-If every device is gone, the mnemonic from `enox identity create-user` is the way back:
+The recovery phrase is shown once, when you create the identity, and **is not saved anywhere**. Write it down then; nothing will show it to you again.
+
+It is not needed to add devices — `enox link` from any device you are already signed in on does that, using that device's attestation. The phrase is for the case where no device is left:
 
 ```bash
 enox identity link-user "suzy" "<24 words>"
 ```
 
 That path is disaster recovery. `enox link` is the one to use whenever you still have a working device — it does not put the root key on a clipboard.
+
+### If an older install left one on disk
+
+Before this, the phrase was kept in `identity.toml` on the device that created the identity, because only a device holding the root key could vouch for another. Attestation chains removed that need, and what was left was a phrase whose presence turned a lost laptop into a lost identity — permanently, since there is no revocation.
+
+`enox identity show` says so when it finds one. It is not deleted for you: those words may be the only copy anyone has. When you have written them down:
+
+```bash
+enox identity forget-phrase
+```
+
+It shows them one last time, asks, and removes them. The device keeps its identity and can still link new ones.

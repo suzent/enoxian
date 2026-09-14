@@ -120,14 +120,7 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
     // mounted here because the bootstrap server is the one address both
     // machines already know how to reach; it is trusted with nothing — see
     // `crate::pair_mailbox`.
-    let app = Router::new()
-        .route("/peer-id", get(peer_id_handler))
-        .with_state(peer_id_str.clone())
-        .nest("/pair", crate::pair_mailbox::router(MailboxState::new()))
-        // `/invite` holds sealed short-invite payloads. Like `/pair` it is
-        // trusted with nothing — see `crate::invite_blobs` — but unlike `/pair`
-        // it is backed by files, because an invite outlives a restart.
-        .nest("/invite", crate::invite_blobs::router(blobs));
+    let app = http_router(peer_id_str.clone(), blobs);
     let http_addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(http_addr)
@@ -323,6 +316,29 @@ fn is_public_ipv6(ip: std::net::Ipv6Addr) -> bool {
         && !is_unicast_link_local
 }
 
+/// Public bootstrap metadata and sealed-blob endpoints; no daemon credentials.
+fn http_router(peer_id: String, blobs: crate::invite_blobs::BlobState) -> Router {
+    Router::new()
+        .route("/peer-id", get(peer_id_handler))
+        .route("/version", get(version_handler))
+        .with_state(peer_id)
+        .nest("/pair", crate::pair_mailbox::router(MailboxState::new()))
+        .nest("/invite", crate::invite_blobs::router(blobs))
+}
+
+async fn version_handler() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "capabilities": {
+                "short_invites": true,
+                "device_linking": true,
+            },
+        })),
+    )
+}
+
 async fn peer_id_handler(State(peer_id): State<String>) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "peer_id": peer_id }))
 }
@@ -346,6 +362,53 @@ fn load_or_create_keypair() -> Result<libp2p::identity::Keypair> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn version_is_public_uncached_and_preserves_peer_id_response() {
+        use axum::{
+            body::{to_bytes, Body},
+            http::{Request, StatusCode},
+        };
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = crate::invite_blobs::BlobState::new(dir.path().to_owned()).unwrap();
+        let app = http_router("test-peer".into(), blobs);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/version")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "capabilities": { "short_invites": true, "device_linking": true },
+            })
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/peer-id")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(json, serde_json::json!({ "peer_id": "test-peer" }));
+    }
 
     fn addr(value: &str) -> Multiaddr {
         value.parse().unwrap()

@@ -962,9 +962,22 @@ button[role="tab"][aria-selected="true"] {
 
 .chat-activity__item {
   min-width: 0;
+  overflow: hidden;
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  white-space: nowrap;
+}
+
+.chat-activity__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-activity__more {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
@@ -4639,3 +4652,24 @@ select option {
 .ui-select__option svg { flex-shrink: 0; }
 .ui-select__option.is-active { background: var(--fg-obsidian); color: var(--surface-panel); }
 .ui-select__group { margin: 4px 0; padding: 8px 6px 4px; border-top: 1px solid var(--fg-slate); color: var(--fg-slate); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+
+input.invite-link-value {
+  user-select: text;
+}
+
+input.invite-link-value:focus-visible {
+  outline: 2px solid var(--fg-obsidian);
+  outline-offset: 2px;
+}
+
+.invite-link-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.invite-link-note {
+  margin: 0;
+  color: var(--fg-slate);
+  font-size: var(--ui-small);
+}
