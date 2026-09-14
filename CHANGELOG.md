@@ -199,6 +199,8 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Discovery and reconnect attempts now share per-peer backoff, and short-lived connections no longer reset it, reducing relay request bursts when peers repeatedly disconnect.
+
 - Automatic-admission circles retry pending requests after restarts and delayed key packages, clear stale requests for existing encrypted-group members, and show admission errors in the member panel.
 
 - Long chat activity messages now truncate with an ellipsis instead of overlapping neighboring statuses; hover to see the full message.
