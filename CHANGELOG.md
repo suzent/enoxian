@@ -184,6 +184,8 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Automatic-admission circles retry pending requests after restarts and delayed key packages, clear stale requests for existing encrypted-group members, and show admission errors in the member panel.
+
 - Renaming a device with `enox identity set-label` no longer erases the stored
   recovery phrase. Any save of the identity file used to drop it, so a rename —
   or receiving a link — silently destroyed the only copy of the user root key.
