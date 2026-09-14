@@ -41,6 +41,9 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Relay operators and clients can query `GET /version` for the running package
+  version and support for short invites and device linking, without SSH access.
+
 - Any linked device can now link the next one. Previously only the device you
   ran `enox identity create-user` on could, because only it stored the recovery
   phrase. A linked device now extends the signature chain it already holds,

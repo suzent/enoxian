@@ -245,6 +245,10 @@ sudo firewall-cmd --reload
 curl http://your-vps:36521/peer-id
 # {"peer_id":"12D3KooWrdv..."}
 
+# Query the running relay binary's version and capabilities
+curl http://your-vps:36521/version
+# {"version":"<package-version>","capabilities":{"short_invites":true,"device_linking":true}}
+
 # Check service status on the VPS
 systemctl status enoxian-bootstrap
 
@@ -253,6 +257,16 @@ journalctl -u enoxian-bootstrap -f
 ```
 
 ---
+
+`GET /version` is public and read-only. It reports the running binary's package
+version, not a release lookup or the version of a binary replaced on disk.
+Responses use `Cache-Control: no-store` so probes can observe a restarted server.
+Check `capabilities.short_invites` for sealed invite storage and
+`capabilities.device_linking` for the pairing mailbox instead of guessing from
+version numbers. These flags describe supported endpoints, not current storage
+capacity or successful end-to-end P2P connectivity. Older relays return 404 for
+this endpoint; treat that as unknown capability and retain full-invite fallback.
+An upgraded relay must be restarted before the endpoint becomes available.
 
 ## How it works
 
