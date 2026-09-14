@@ -164,6 +164,10 @@ pub const DEFAULT_ENGAGEMENT_WINDOW_SECS: i64 = 0;
 /// always a concrete answer at the bottom.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct EngagementSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ambient_responders: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ambient_rotate_count: Option<bool>,
     /// How this device reacts to mentions here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reaction: Option<Reaction>,
@@ -186,6 +190,8 @@ pub struct EngagementSettings {
 /// Settings with every question answered — what a caller actually works with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedSettings {
+    pub ambient_responders: usize,
+    pub ambient_rotate_count: bool,
     pub reaction: Reaction,
     pub engagement_window_secs: i64,
     pub ambient: Vec<String>,
@@ -201,6 +207,10 @@ impl ResolvedSettings {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AgentConfig {
+    #[serde(default = "default_ambient_responders")]
+    pub ambient_responders: usize,
+    #[serde(default)]
+    pub ambient_rotate_count: bool,
     /// Device-wide execution cap. Set to 1 for serial rollback; restart to resize.
     #[serde(default = "default_max_concurrent_runs")]
     pub max_concurrent_runs: usize,
@@ -236,6 +246,13 @@ impl AgentConfig {
     pub fn resolved(&self, circle_id: &str) -> ResolvedSettings {
         let over = self.circles.get(circle_id);
         ResolvedSettings {
+            ambient_responders: over
+                .and_then(|o| o.ambient_responders)
+                .unwrap_or(self.ambient_responders)
+                .clamp(1, 32),
+            ambient_rotate_count: over
+                .and_then(|o| o.ambient_rotate_count)
+                .unwrap_or(self.ambient_rotate_count),
             reaction: over.and_then(|o| o.reaction).unwrap_or(self.reaction),
             engagement_window_secs: over
                 .and_then(|o| o.engagement_window_secs)
@@ -276,6 +293,10 @@ impl AgentConfig {
     }
 }
 
+fn default_ambient_responders() -> usize {
+    1
+}
+
 fn default_max_concurrent_runs() -> usize {
     4
 }
@@ -284,6 +305,8 @@ impl Default for AgentConfig {
     /// Matches serde defaults so empty files and load failures resolve alike.
     fn default() -> Self {
         Self {
+            ambient_responders: 1,
+            ambient_rotate_count: false,
             max_concurrent_runs: default_max_concurrent_runs(),
             reaction: Reaction::default(),
             engagement_window_secs: DEFAULT_ENGAGEMENT_WINDOW_SECS,
@@ -581,5 +604,16 @@ command = ["claude-agent-acp"]
     fn unregistered_agent_is_not_resolved() {
         let cfg = AgentConfig::from_toml(CONFIG).unwrap();
         assert!(cfg.resolve("openclaw").is_none());
+    }
+    #[test]
+    fn listener_limits_default_conservatively_and_inherit_by_circle() {
+        let cfg = AgentConfig::from_toml("ambient_responders = 3\nambient_rotate_count = true\n[circles.quiet]\nambient_responders = 1\nambient_rotate_count = false\n").unwrap();
+        assert_eq!(cfg.resolved("other").ambient_responders, 3);
+        assert!(cfg.resolved("other").ambient_rotate_count);
+        assert_eq!(cfg.resolved("quiet").ambient_responders, 1);
+        assert!(!cfg.resolved("quiet").ambient_rotate_count);
+        let defaults = AgentConfig::from_toml("").unwrap();
+        assert_eq!(defaults.resolved("any").ambient_responders, 1);
+        assert!(!defaults.resolved("any").ambient_rotate_count);
     }
 }

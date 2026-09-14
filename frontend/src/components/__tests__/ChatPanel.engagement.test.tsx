@@ -140,7 +140,7 @@ describe('explicit reply-to', () => {
     ])
     render(<ChatPanel />)
 
-    expect(await screen.findByRole('link', { name: 'Waiting for the referenced message to sync' })).toHaveAttribute('href', '#chat-message-question')
+    expect(await screen.findByRole('link', { name: /Replying to\s*Waiting for the referenced message to sync/ })).toHaveAttribute('href', '#chat-message-question')
     const reply = await screen.findByRole('button', { name: 'reply' })
     await userEvent.click(reply)
 

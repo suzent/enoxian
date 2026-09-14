@@ -8,6 +8,7 @@ import { shortenAgentId, peerLabel } from '../lib/displayName'
 import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
 
 interface Props {
+  activityRef?: (element: HTMLDivElement | null) => void
   onFileSelect: (path: string | null) => void
   selectedFile: string | null
   activeTab: RightPanelTab
@@ -60,7 +61,7 @@ const CONNECTION_BADGE: Record<NonNullable<Presence['connections']>[number]['kin
 }
 
 
-export default function RightPanel({ onFileSelect, selectedFile, activeTab, onActiveTabChange }: Props) {
+export default function RightPanel({ activityRef, onFileSelect, selectedFile, activeTab, onActiveTabChange }: Props) {
   const { activeCircleId, circles, reloadCircles, status } = useApp()
   const [presence, setPresence] = useState<Presence[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
@@ -521,7 +522,7 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
 
       {/* ── MEMBERS tab ─────────────────────────────────────────────────── */}
       {activeTab === 'members' && (
-        <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+        <div className="sidebar-members flex flex-col min-h-0 overflow-hidden">
           {/* Invite row */}
           <div className="section-header">
             <span>MEMBERS</span>
@@ -655,6 +656,8 @@ export default function RightPanel({ onFileSelect, selectedFile, activeTab, onAc
           </div>
         </div>
       )}
+
+      <div ref={activityRef} className="sidebar-agent-activity" hidden={activeTab !== 'members'} />
 
       {/* ── TASKS tab ───────────────────────────────────────────────────── */}
       {activeTab === 'tasks' && (

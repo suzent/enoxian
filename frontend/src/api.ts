@@ -107,6 +107,8 @@ export const setAgentReaction = (reaction: 'push' | 'pull') =>
  *  clears the override so the setting inherits again — which is why this takes
  *  `T | null` rather than `T | undefined`. */
 export const setEngagement = (patch: {
+  ambient_responders?: number | null
+  ambient_rotate_count?: boolean | null
   max_concurrent_runs?: number
   circle_id?: string
   reaction?: 'push' | 'pull' | null

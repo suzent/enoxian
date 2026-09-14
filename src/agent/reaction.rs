@@ -122,7 +122,11 @@ fn reconcile_requests_with_config(
         let Some(message) = history.iter().find(|m| m.id == message_id) else {
             continue;
         };
-        let Some(mention) = Mention::parse(&mention_key) else {
+        let ambient = mention_key.starts_with("~ambient:");
+        let target = mention_key
+            .strip_prefix("~ambient:")
+            .unwrap_or(&mention_key);
+        let Some(mention) = Mention::parse(target) else {
             continue;
         };
         let Some((agent, scope)) = mention.agent_target() else {
@@ -138,7 +142,7 @@ fn reconcile_requests_with_config(
             task: strip_mention(&message.text, &mention_key),
             relay: message.relay.clone(),
             implicit: false,
-            ambient: false,
+            ambient,
         };
         if let Err(error) = inbox.record_suppressed(request, message.ts) {
             tracing::warn!("legacy inbox import failed: {error}");
@@ -376,7 +380,7 @@ fn offer_ambient(
     // Which agents read the room *here*. An agent can be ambient in a working
     // Circle and silent in a social one, so the answer is per Circle.
     let settings = cfg.resolved(&state.circle_id);
-    let ambient: Vec<String> = settings
+    let mut ambient: Vec<String> = settings
         .ambient
         .iter()
         .filter(|name| cfg.agents.contains_key(*name))
@@ -390,18 +394,38 @@ fn offer_ambient(
         return;
     }
     let history = state.transcript();
-    let mut offered = 0;
-    for agent in ambient {
-        if offered >= super::ambient::MAX_AMBIENT_REPLIES_PER_MESSAGE {
-            tracing::debug!(
-                "[agent] ambient cap reached for {} — `{agent}` not offered",
-                message.id
-            );
-            break;
-        }
-        if super::ambient::spoke_recently(&history, &agent, message.ts) {
-            continue;
-        }
+    let previous = inbox.entries();
+    // One selection per message, including PASS and queued attempts. Replay must
+    // not rotate into additional listeners after a reconnect or duplicate event.
+    if previous
+        .iter()
+        .any(|e| e.request.ambient && e.request.message.id == message.id)
+    {
+        return;
+    }
+    ambient.retain(|agent| {
+        !super::ambient::spoke_recently(&history, agent, message.ts)
+            && !handled.contains(&message.id, &format!("~ambient:{agent}"))
+    });
+    // Least recently offered first, so slow providers and PASS count as turns.
+    // Stable ties preserve the configured order only for never-offered agents.
+    ambient.sort_by_key(|agent| {
+        previous
+            .iter()
+            .rposition(|e| e.request.ambient && e.request.agent == *agent)
+    });
+    let max = settings.ambient_responders.min(ambient.len());
+    let offered_messages: std::collections::HashSet<_> = previous
+        .iter()
+        .filter(|e| e.request.ambient)
+        .map(|e| e.request.message.id.as_str())
+        .collect();
+    let count = if settings.ambient_rotate_count && max > 0 {
+        1 + offered_messages.len() % max
+    } else {
+        max
+    };
+    for agent in ambient.into_iter().take(count) {
         dispatch(
             state,
             handled,
@@ -420,7 +444,6 @@ fn offer_ambient(
                 ambient: true,
             },
         );
-        offered += 1;
     }
 }
 
@@ -661,7 +684,7 @@ async fn run_next_cancellable(
         )
         .await;
         let (status, detail) = match result {
-            Ok(()) => (Status::Completed, None),
+            Ok(detail) => (Status::Completed, detail),
             Err(error) if error.is::<crate::proposal::runs::ConversationBusy>() => (
                 Status::Pending,
                 Some("waiting for the previous conversation turn".into()),
@@ -761,7 +784,11 @@ impl Drop for ManagedToken {
     }
 }
 
-async fn react(state: &AppState, turn: Turn<'_>, cancel: &CancellationToken) -> anyhow::Result<()> {
+async fn react(
+    state: &AppState,
+    turn: Turn<'_>,
+    cancel: &CancellationToken,
+) -> anyhow::Result<Option<String>> {
     let Turn {
         run_id,
         agent_id,
@@ -872,7 +899,7 @@ async fn react(state: &AppState, turn: Turn<'_>, cancel: &CancellationToken) -> 
             true,
             Some("nothing to add".to_string()),
         );
-        return Ok(());
+        return Ok(Some("No reply needed".into()));
     }
     if let Some(reply) = outcome
         .reply
@@ -911,7 +938,7 @@ async fn react(state: &AppState, turn: Turn<'_>, cancel: &CancellationToken) -> 
         ChatActivityKind::Working,
         false,
     );
-    Ok(())
+    Ok(None)
 }
 
 /// Remember the last chat line this agent has seen — its own reply, or the
@@ -1638,5 +1665,97 @@ mod tests {
             .await
             .unwrap();
         cancel.cancel();
+    }
+    #[test]
+    fn selected_listeners_get_one_queued_turn() {
+        use super::super::inbox::{tests::request, Inbox};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let mut cfg = inbox_config();
+        cfg.ambient = vec!["claude".into(), "codex".into()];
+        cfg.ambient_responders = 2;
+        let mut message = request("all-listeners", "claude").message;
+        message.text = "Could someone help explain how synchronization works?".into();
+        message.mentions.clear();
+        offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+        offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+        let entries = inbox.entries();
+        assert_eq!(entries.len(), 2);
+        assert!(entries
+            .iter()
+            .all(|e| e.request.ambient && e.status == super::super::inbox::Status::Pending));
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| e.request.agent.as_str())
+                .collect::<Vec<_>>(),
+            ["claude", "codex"]
+        );
+    }
+
+    #[test]
+    fn old_ambient_markers_import_as_real_agent_history() {
+        use super::super::inbox::{tests::request, Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let message = request("old-observation", "claude").message;
+        add_chat(&state, &message);
+        handled.mark_new(&message.id, "~ambient:claude");
+        reconcile_requests_with_config(
+            &state,
+            &handled,
+            &inbox,
+            &tokio::sync::Notify::new(),
+            &inbox_config(),
+        );
+        let entries = inbox.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].request.agent, "claude");
+        assert!(entries[0].request.ambient);
+        assert_eq!(entries[0].status, Status::LegacySuppressed);
+        assert!(inbox.retry(&entries[0].run_id, 20, 101).is_err());
+    }
+    #[test]
+    fn listener_rotation_survives_restart_and_can_vary_the_count() {
+        use super::super::inbox::{tests::request, Inbox};
+        let (state, dir) = test_state("local", "suzy");
+        let mut inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let mut cfg = inbox_config();
+        cfg.ambient = vec!["claude".into(), "codex".into()];
+        cfg.ambient_responders = 1;
+        for i in 0..4 {
+            let mut message = request(&format!("rotate{i}"), "claude").message;
+            message.text = "Please explain how the synchronization strategy works".into();
+            message.mentions.clear();
+            offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+            let entries = inbox.entries();
+            assert_eq!(
+                entries.last().unwrap().request.agent,
+                if i % 2 == 0 { "claude" } else { "codex" }
+            );
+            drop(inbox);
+            inbox = Inbox::open(dir.path(), 101).unwrap();
+        }
+        cfg.ambient_responders = 2;
+        cfg.ambient_rotate_count = true;
+        for (i, expected) in [(4, 1), (5, 2), (6, 1)] {
+            let mut message = request(&format!("rotate{i}"), "claude").message;
+            message.text = "Please explain how the synchronization strategy works".into();
+            message.mentions.clear();
+            offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+            assert_eq!(
+                inbox
+                    .entries()
+                    .iter()
+                    .filter(|e| e.request.message.id == message.id)
+                    .count(),
+                expected
+            );
+        }
     }
 }

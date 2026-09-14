@@ -177,3 +177,21 @@ could hide a surviving process, and missing ambient metadata could incorrectly
 auto-accept its writes. Errors identify the affected file and instruct the operator
 to verify the agent has stopped and restore the record from backup. This remains a
 fail-closed condition for the affected Circle, not an automatic deletion or reset.
+
+
+### Listening selection and activity
+
+Read-the-room selection rotates least-recently-offered agents rather than using
+fixed configuration order. `ambient_responders` (1–32, default 1) sets the number
+of listeners considered per human message, bounded by eligible agents.
+`ambient_rotate_count` (default false) cycles that count from one up to the limit.
+Both settings support Circle overrides. Selection counts offers, including PASS,
+and uses durable inbox history so restarts and duplicate events do not reset it.
+Unselected listeners wait for a later message; selected work uses the normal queue.
+Explicit mentions and reply threads continue to choose their own recipients.
+
+The sidebar activity panel separates current requests, unsuccessful runs and
+recent history, and hides legacy imports. A completed ambient PASS records “No reply needed”. Malformed
+legacy `~ambient:` agent names are normalized without replaying old observations;
+old ambient retries that were stuck Pending are cancelled, and legacy ambient
+observations must be requested again with a fresh message.

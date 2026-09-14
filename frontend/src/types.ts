@@ -208,6 +208,8 @@ export interface EngagementView {
 
 /** Settings with every question answered, for one scope. */
 export interface SettingsView {
+  ambient_responders?: number
+  ambient_rotate_count?: boolean
   reaction: 'push' | 'pull'
   /** Seconds an agent stays in conversation with whoever it replied to, so a
    *  follow-up needs no mention. 0 disables follow-up routing. */
@@ -220,6 +222,8 @@ export interface SettingsView {
 
 /** What one Circle sets for itself. An absent field inherits the global value. */
 export interface CircleOverrides {
+  ambient_responders?: number
+  ambient_rotate_count?: boolean
   reaction?: 'push' | 'pull'
   engagement_window_secs?: number
   ambient?: string[]
@@ -264,6 +268,8 @@ export interface DiscoveredAgent {
 }
 
 export interface ExecutionRun {
+  admitted_at?: number
+  updated_at?: number
   peer_id?: string
   run_id: string
   message_id: string

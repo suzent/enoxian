@@ -55,6 +55,7 @@ function loadLayoutPreferences(): LayoutPreferences {
 function Layout() {
   const { activeCircleId, circles, circlesLoaded, circlesError, status, reloadCircles } = useApp()
 
+  const [activityContainer, setActivityContainer] = useState<HTMLDivElement | null>(null)
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [ritual, setRitual] = useState<{ mode: RitualMode; label?: string } | null>(null)
   const [showLanding, setShowLanding] = useState(false)
@@ -323,7 +324,7 @@ function Layout() {
             {!compactLayout && (
               <>
                 <div className={`workspace-view workspace-view--chat${selectedFile ? '' : ' is-active'}`} aria-hidden={!!selectedFile}>
-                  <ChatPanel variant="main" hideActiveCircleGlyph={!!ritual} />
+                  <ChatPanel onActivityNavigate={() => { setSelectedFile(null); setMobileDrawer(null) }} activityContainer={activityContainer} variant="main" hideActiveCircleGlyph={!!ritual} />
                 </div>
                 {selectedFile && (
                   <div key={selectedFile} className="workspace-view workspace-view--file is-active">
@@ -353,6 +354,7 @@ function Layout() {
           ><span aria-hidden="true" /></div>
 
           <RightPanel
+            activityRef={setActivityContainer}
             onFileSelect={onFileSelect}
             selectedFile={selectedFile}
             activeTab={layoutPreferences.rightPanelTab}
@@ -366,7 +368,7 @@ function Layout() {
               {compactLayout && (
                 <>
                   <div className={`workspace-view workspace-view--chat${selectedFile ? '' : ' is-active'}`} aria-hidden={!!selectedFile}>
-                    <ChatPanel variant="main" hideActiveCircleGlyph={!!ritual} />
+                    <ChatPanel onActivityNavigate={() => { setSelectedFile(null); setMobileDrawer(null) }} activityContainer={activityContainer} variant="main" hideActiveCircleGlyph={!!ritual} />
                   </div>
                   {selectedFile && (
                     <div key={selectedFile} className="workspace-view workspace-view--file is-active">

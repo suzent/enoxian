@@ -61,8 +61,8 @@ describe('circle scope', () => {
       <EngagementSettings agentNames={['claude']} global={GLOBAL} circle={circle()}
         scope="circle" busy={false} onChange={vi.fn()} />,
     )
-    // Four settings, all inherited.
-    expect(screen.getAllByText('Using default')).toHaveLength(4)
+    // Six settings, all inherited.
+    expect(screen.getAllByText('Using default')).toHaveLength(6)
     // And the inherited value is visible, not hidden.
     expect(screen.getByLabelText('Follow-up window in seconds')).toHaveValue(180)
   })
@@ -74,7 +74,7 @@ describe('circle scope', () => {
         scope="circle" busy={false} onChange={vi.fn()} />,
     )
     expect(screen.getAllByRole('button', { name: 'Use default' })).toHaveLength(1)
-    expect(screen.getAllByText('Using default')).toHaveLength(3)
+    expect(screen.getAllByText('Using default')).toHaveLength(5)
   })
 
   it('reset clears the override rather than writing a value', async () => {
@@ -97,7 +97,7 @@ describe('circle scope', () => {
         scope="circle" busy={false} onChange={vi.fn()} />,
     )
     expect(screen.getByLabelText('Follow-up window in seconds')).toHaveValue(0)
-    expect(screen.getByText(/every message needs an explicit @mention/)).toBeTruthy()
+    expect(screen.getByText(/Use Reply on an agent’s message/)).toBeTruthy()
   })
 })
 
@@ -118,7 +118,7 @@ describe('reading the room', () => {
         scope="global" busy={false} onChange={onChange} />,
     )
     await userEvent.click(screen.getByRole('checkbox', { name: '@claude' }))
-    expect(confirmSpy.mock.calls[0][0]).toMatch(/sent to this agent's model provider/)
+    expect(confirmSpy.mock.calls[0][0]).toMatch(/sent to this agent’s model provider/)
     expect(onChange).toHaveBeenCalledWith({ ambient: ['claude'] })
   })
 
@@ -168,3 +168,16 @@ it('is inert while a save is in flight', async () => {
   expect(onChange).not.toHaveBeenCalled()
 })
 
+
+
+describe('listener rotation', () => {
+  it('edits count and variable-count mode independently at Circle scope', async () => {
+    const onChange = vi.fn()
+    render(<EngagementSettings agentNames={['claude', 'codex']} global={GLOBAL}
+      circle={circle()} scope="circle" busy={false} onChange={onChange} />)
+    fireEvent.change(screen.getByLabelText('Listeners per message'), { target: { value: '2' } })
+    expect(onChange).toHaveBeenLastCalledWith({ ambient_responders: 2 })
+    await userEvent.click(screen.getByLabelText('Vary the number of listeners'))
+    expect(onChange).toHaveBeenLastCalledWith({ ambient_rotate_count: true })
+  })
+})

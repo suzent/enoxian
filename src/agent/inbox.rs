@@ -106,10 +106,24 @@ impl Inbox {
     pub fn read(circle_dir: &Path) -> Result<Option<Snapshot>> {
         match std::fs::read(Self::path(circle_dir)) {
             Ok(bytes) => {
-                let snapshot: Snapshot =
+                let mut snapshot: Snapshot =
                     serde_json::from_slice(&bytes).context("invalid execution inbox")?;
                 if snapshot.version != 1 {
                     bail!("unsupported execution inbox version {}", snapshot.version);
+                }
+                // Earlier imports mistook an internal dedup marker for an
+                // agent name. Repair metadata without replaying old observations.
+                for entry in &mut snapshot.entries {
+                    if let Some(agent) = entry.request.agent.strip_prefix("~ambient:") {
+                        entry.request.agent = agent.to_string();
+                        entry.request.ambient = true;
+                        if entry.status == Status::Pending {
+                            entry.status = Status::Cancelled;
+                            entry.detail = Some(
+                                "Older listening request; send a new message to ask again".into(),
+                            );
+                        }
+                    }
                 }
                 Ok(Some(snapshot))
             }
@@ -209,6 +223,10 @@ impl Inbox {
             .iter()
             .find(|e| e.run_id == run_id)
             .context("unknown run")?;
+        anyhow::ensure!(
+            !(old.status == Status::LegacySuppressed && old.request.ambient),
+            "older listening requests cannot be replayed; send a new message instead"
+        );
         anyhow::ensure!(
             matches!(
                 old.status,
@@ -849,5 +867,24 @@ pub(crate) mod tests {
             inbox.snapshot.lock().unwrap().charges["root"],
             crate::agent::relay::RELAY_TURNS_CEILING
         );
+    }
+    #[test]
+    fn previously_imported_ambient_names_are_repaired_without_replaying() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        inbox
+            .record_suppressed(request("old", "~ambient:claude"), 100)
+            .unwrap();
+        inbox
+            .admit(request("bad-retry", "~ambient:codex"), 20, 100)
+            .unwrap();
+        drop(inbox);
+        let inbox = Inbox::open(dir.path(), 200).unwrap();
+        let entries = inbox.entries();
+        assert_eq!(entries[0].request.agent, "claude");
+        assert_eq!(entries[0].status, Status::LegacySuppressed);
+        assert_eq!(entries[1].request.agent, "codex");
+        assert_eq!(entries[1].status, Status::Cancelled);
+        assert!(entries.iter().all(|e| e.request.ambient));
     }
 }

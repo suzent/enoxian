@@ -3,6 +3,8 @@ import type { CircleSettingsView, SettingsView } from '../types'
 /** One setting, at one scope. `null` means "inherit" and is only offered on a
  *  Circle — the global scope has nothing above it to inherit from. */
 export type Patch = {
+  ambient_responders?: number | null
+  ambient_rotate_count?: boolean | null
   reaction?: 'push' | 'pull' | null
   engagement_window_secs?: number | null
   ambient?: string[] | null
@@ -82,10 +84,10 @@ export default function EngagementSettings({
           <span>{effective.reaction === 'push' ? 'on' : 'off'}</span>
         </label>,
         effective.reaction === 'push'
-          ? 'A mention starts the agent here.'
-          : 'Mentions never start anything on this machine.')}
+          ? 'Mentions and enabled read-the-room agents can start runs here.'
+          : 'Automatic replies are paused on this device, including read-the-room.')}
 
-      {row('engagement_window_secs', 'Follow-up window',
+      {row('engagement_window_secs', 'Unthreaded follow-ups',
         <span className="engagement-number">
           <input
             type="number" min={0} step={30}
@@ -97,8 +99,8 @@ export default function EngagementSettings({
           <span>sec</span>
         </span>,
         effective.engagement_window_secs > 0
-          ? `Replying to an agent needs no mention for ${effective.engagement_window_secs}s.`
-          : 'Off — every message needs an explicit @mention.')}
+          ? `A new, unaddressed message may go to the last agent for ${effective.engagement_window_secs}s. Use Reply to choose an agent explicitly.`
+          : 'Use Reply on an agent’s message or @mention it. New messages do not automatically go to the last speaker.')}
 
       {row('max_relay_turns', 'Hand-off chain limit',
         <span className="engagement-number">
@@ -127,9 +129,9 @@ export default function EngagementSettings({
                   onChange={() => {
                     if (!on && !window.confirm(
                       `Let @${name} read the room?\n\n` +
-                      'Every message anyone types here will be sent to this agent\'s model ' +
-                      'provider — not just the ones addressed to it. Everyone in the Circle can ' +
-                      'see that it is listening.',
+                      'New, unaddressed human messages may be sent to this agent’s model provider. ' +
+                      'Selected listeners can run, which uses their model providers. ' +
+                      'The agent may reply or choose to stay quiet. Everyone can see that it is listening.',
                     )) return
                     onChange({
                       ambient: on
@@ -145,7 +147,23 @@ export default function EngagementSettings({
         </div>,
         effective.ambient.length === 0
           ? 'Nobody — agents answer only when addressed.'
-          : 'These answer messages that name no agent, and stay quiet otherwise.')}
+          : effective.reaction !== 'push'
+            ? 'Listening is paused. Turn on automatic agent runs above to activate these listeners.'
+            : 'Listeners take turns on new, unaddressed human messages. Those selected can reply or stay quiet; the others wait for a later message. Short messages, recent speakers, and agent messages are skipped.')}
+      {row('ambient_responders', 'Listeners per message',
+        <input type="number" min={1} max={32} aria-label="Listeners per message" className="border px-2 py-1 w-20"
+          value={effective.ambient_responders ?? 1} disabled={busy}
+          onChange={e => onChange({ ambient_responders: Math.min(32, Math.max(1, Number(e.target.value) || 1)) })} />,
+        'Choose how many listeners may consider each message on this device. Agents take turns fairly; each may reply or stay quiet. Selected requests queue when execution slots are full.')}
+      {row('ambient_rotate_count', 'Vary the number of listeners',
+        <label className="engagement-toggle"><input type="checkbox" aria-label="Vary the number of listeners"
+          checked={effective.ambient_rotate_count ?? false} disabled={busy}
+          onChange={e => onChange({ ambient_rotate_count: e.target.checked })} /><span>{effective.ambient_rotate_count ? 'on' : 'off'}</span></label>,
+        effective.ambient_rotate_count
+          ? `Cycle through 1 to ${effective.ambient_responders ?? 1} listeners across messages, limited by who is eligible.`
+          : 'Keep the same listener limit while rotating which agents get a turn.')}
+
+
     </div>
   )
 }
