@@ -41,6 +41,9 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Relay operators and clients can query `GET /version` for the running package
+  version and support for short invites and device linking, without SSH access.
+
 - The web interface now creates short invites, with a full-invite option and
   automatic fallback when the relay is unavailable or has not been updated.
   Joining through a short invite now starts the Circle immediately.
