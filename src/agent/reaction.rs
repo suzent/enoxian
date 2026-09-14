@@ -44,10 +44,16 @@ pub fn spawn_reaction(state: AppState, token: CancellationToken) {
 async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     let mut events = state.events.subscribe();
     let handled = super::handled::HandledMentions::load(&state.circle_dir);
-    let inbox = std::sync::Arc::new(super::inbox::Inbox::open(
-        &state.circle_dir,
-        chrono::Utc::now().timestamp(),
-    )?);
+    // `Inbox::open` waits out a departing owner's fork window, so it can block
+    // for up to a second. Keep that off a runtime worker: the supervisor above
+    // already retries every five seconds, so a real conflict costs nothing here.
+    let circle_dir = state.circle_dir.clone();
+    let inbox = std::sync::Arc::new(
+        tokio::task::spawn_blocking(move || {
+            super::inbox::Inbox::open(&circle_dir, chrono::Utc::now().timestamp())
+        })
+        .await??,
+    );
     *state.execution_inbox.write().unwrap() = Some(std::sync::Arc::downgrade(&inbox));
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
     let worker_token = token.child_token();

@@ -81,17 +81,27 @@ pub async fn enter_circle(
     State(daemon): State<DaemonState>,
     Json(payload): Json<EnterReq>,
 ) -> impl IntoResponse {
-    // Extract circle_id from invite URI before running, so we can spawn it afterward.
-    let circle_id_hint = if payload.target.starts_with("enoxian://") {
-        crate::invite::decode(&payload.target)
-            .ok()
-            .map(|p| p.circle_id)
+    let http_client = reqwest::Client::new();
+    // Resolve s1 before extracting the ID, then pass the resolved link to enter
+    // so it is fetched only once and the joined Circle is started immediately.
+    let target = match enter::resolve_target(payload.target.trim(), &http_client).await {
+        Ok(target) => target,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let circle_id_hint = if target.starts_with("enoxian://") {
+        crate::invite::decode(&target).ok().map(|p| p.circle_id)
     } else {
-        Some(payload.target.clone())
+        Some(target.clone())
     };
 
     let args = EnterArgs {
-        target: payload.target,
+        target,
         secret: payload.secret,
         peer: payload.peer,
         rendezvous: None,
@@ -102,7 +112,6 @@ pub async fn enter_circle(
         no_verify: true,
     };
 
-    let http_client = reqwest::Client::new();
     match enter::run(args, &http_client).await {
         Ok(_) => {
             let resolved_circle_id = circle_id_hint.as_deref().and_then(|hint| {
@@ -280,8 +289,12 @@ pub async fn generate_invite(
         }
     };
 
+    // The API currently issues seven-day invites, within the relay's retention.
+    let (shown, short_note) = short_or_full(&uri, rendezvous_addr.as_deref()).await;
     Json(json!({
-        "invite_uri": uri,
+        "invite_uri": shown,
+        "long_invite_uri": uri,
+        "short_note": short_note,
         // Tell the frontend what was embedded so it can show a connectivity hint
         "connectivity": {
             "peer_addr": peer_addr,
@@ -290,6 +303,17 @@ pub async fn generate_invite(
         }
     }))
     .into_response()
+}
+
+/// Old or unavailable relays must not prevent users from sharing an invite.
+async fn short_or_full(uri: &str, rendezvous: Option<&str>) -> (String, Option<&'static str>) {
+    match crate::commands::invite::shorten(uri, rendezvous).await {
+        Ok(short) => (short, None),
+        Err(_) => (
+            uri.to_owned(),
+            Some("Short invite unavailable: the relay could not store it. Use this full invite instead."),
+        ),
+    }
 }
 
 /// Pick the best listen addr for embedding in an invite.
@@ -408,4 +432,93 @@ pub async fn leave_circle(
     }
 
     Json(json!({ "status": "left" })).into_response()
+}
+
+#[cfg(test)]
+mod short_invite_tests {
+    use super::*;
+    use axum::Router;
+
+    async fn relay(app: Router) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        (format!("/ip4/127.0.0.1/tcp/{}", addr.port()), server)
+    }
+
+    #[tokio::test]
+    async fn short_invite_recovers_the_circle_id_and_same_full_invitation() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = Router::new().nest(
+            "/invite",
+            crate::invite_blobs::router(
+                crate::invite_blobs::BlobState::new(dir.path().to_owned()).unwrap(),
+            ),
+        );
+        let (rdvz, server) = relay(app).await;
+        let id = uuid::Uuid::new_v4().to_string();
+        let full = invite::encode(&InvitePayload {
+            circle_id: id.clone(),
+            psk_bytes: [7; 32],
+            circle_name: Some("test".into()),
+            expires_at: chrono::Utc::now() + chrono::Duration::days(7),
+            peer_addr: None,
+            admin_pubkey_bytes: None,
+            relay_addr: None,
+            rendezvous_addr: None,
+            relay_is_default: false,
+            rendezvous_is_default: false,
+            grant: None,
+        })
+        .unwrap();
+        let (short, note) = short_or_full(&full, Some(&rdvz)).await;
+        assert!(invite::is_short(&short));
+        assert!(note.is_none());
+        let resolved = enter::resolve_target(&short, &reqwest::Client::new())
+            .await
+            .unwrap();
+        assert_eq!(resolved, full);
+        assert_eq!(invite::decode(&resolved).unwrap().circle_id, id);
+        // enter::run receives the resolved link, so no second relay request is needed.
+        server.abort();
+        assert_eq!(
+            enter::resolve_target(&resolved, &reqwest::Client::new())
+                .await
+                .unwrap(),
+            full
+        );
+    }
+
+    #[tokio::test]
+    async fn short_invite_falls_back_when_old_relay_has_no_invite_endpoint() {
+        let (rdvz, server) = relay(Router::new()).await;
+        let (uri, note) = short_or_full("enoxian://v2/existing", Some(&rdvz)).await;
+        assert_eq!(uri, "enoxian://v2/existing");
+        assert!(note.is_some());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn short_invite_invalid_input_returns_a_client_error() {
+        let response = enter_circle(
+            State(DaemonState::new()),
+            Json(EnterReq {
+                target: "enoxian://s1/invalid".into(),
+                secret: None,
+                peer: None,
+                dir: None,
+                owner: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 }

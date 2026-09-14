@@ -280,6 +280,11 @@ pub enum IdentityAction {
         /// Your chosen handle (e.g. "suzy")
         handle: String,
     },
+    /// Remove a recovery phrase left on disk by an older install.
+    ///
+    /// Shows the words one last time and asks before removing them. Linking
+    /// devices does not need them — `enox link` uses this device's attestation.
+    ForgetPhrase,
     /// Link this device to an existing user via a BIP-39 mnemonic.
     LinkUser {
         /// Your user handle

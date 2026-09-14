@@ -981,10 +981,12 @@ export default function ChatPanel({ activityContainer, onActivityNavigate, onMes
             {liveActivities.slice(0, 3).map(activity => (
               <span key={activity.activity_id} className={`chat-activity__item chat-activity__item--${activity.kind}`}>
                 <i aria-hidden="true" />
-                {describeActivity(activity)}
+                <span className="chat-activity__text" title={describeActivity(activity)}>
+                  {describeActivity(activity)}
+                </span>
               </span>
             ))}
-            {liveActivities.length > 3 && <span>+{liveActivities.length - 3} active</span>}
+            {liveActivities.length > 3 && <span className="chat-activity__more">+{liveActivities.length - 3} active</span>}
             {runningCascadeRoot && (
               <button
                 type="button"

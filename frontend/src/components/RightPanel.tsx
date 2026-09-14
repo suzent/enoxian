@@ -1,3 +1,4 @@
+import InviteLink from './InviteLink'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Presence, Task, Member, PendingEntry, Proposal } from '../types'
 import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, createFile, renameFile, deleteFile, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember, enableCircle, disableCircle, leaveCircle, getProposals } from '../api'
@@ -83,7 +84,10 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
   const [openFolders, setOpenFolders] = useState<Set<string>>(() => new Set())
   const [inviteUri, setInviteUri] = useState<string | null>(null)
   const [inviteConnectivity, setInviteConnectivity] = useState<{peer_addr: string|null, relay_addr: string|null, rendezvous_addr: string|null} | null>(null)
-  const [inviteCopied, setInviteCopied] = useState(false)
+  const [longInviteUri, setLongInviteUri] = useState<string | undefined>()
+  const [inviteNote, setInviteNote] = useState<string | null>(null)
+  const [inviteLoading, setInviteLoading] = useState(false)
+  const inviteRequestRef = useRef(0)
   const [memberActionError, setMemberActionError] = useState<string | null>(null)
   const [confirmModal, setConfirmModal] = useState<{ title: string; subject: string; body?: string; onConfirm: () => void } | null>(null)
   const [renameModal, setRenameModal] = useState<{ path: string; value: string } | null>(null)
@@ -95,6 +99,15 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
     selectedFileRef.current = selectedFile
     if (selectedFile) setPreviewFile(null)
   }, [selectedFile])
+
+  useEffect(() => {
+    setInviteUri(null)
+    setLongInviteUri(undefined)
+    setInviteNote(null)
+    setInviteConnectivity(null)
+    setInviteLoading(false)
+    return () => { inviteRequestRef.current += 1 }
+  }, [activeCircleId])
 
   const openFileInCenter = useCallback((path: string | null) => {
     setPreviewFile(null)
@@ -427,20 +440,26 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
   const fileTree = buildTree(files)
 
   const handleInvite = async () => {
-    if (!activeCircleId) return
+    if (!activeCircleId || inviteLoading) return
     if (inviteUri) {
       setInviteUri(null)
       setInviteConnectivity(null)
-      setInviteCopied(false)
       return
     }
+    const request = ++inviteRequestRef.current
+    setInviteLoading(true)
+    setMemberActionError(null)
     try {
       const res = await inviteCircle(activeCircleId)
-      setMemberActionError(null)
+      if (request !== inviteRequestRef.current) return
       setInviteUri(res.invite_uri)
+      setLongInviteUri(res.long_invite_uri)
+      setInviteNote(res.short_note ?? null)
       setInviteConnectivity(res.connectivity ?? null)
     } catch (err: any) {
-      setMemberActionError(err.message || 'Unable to create invite')
+      if (request === inviteRequestRef.current) setMemberActionError(err.message || 'Unable to create invite')
+    } finally {
+      if (request === inviteRequestRef.current) setInviteLoading(false)
     }
   }
 
@@ -526,24 +545,12 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
           {/* Invite row */}
           <div className="section-header">
             <span>MEMBERS</span>
-            <button onClick={handleInvite} aria-expanded={!!inviteUri} aria-label={inviteUri ? 'Close invite details' : 'Create invite'}>{inviteUri ? '×' : '+'}</button>
+            <button onClick={handleInvite} disabled={inviteLoading} aria-busy={inviteLoading} aria-expanded={!!inviteUri} aria-label={inviteUri ? 'Close invite details' : 'Create invite'}>{inviteLoading ? '…' : inviteUri ? '×' : '+'}</button>
           </div>
 
           {inviteUri && (
             <div className="panel-action-form">
-              <div className="panel-action-form__heading">
-                <strong>INVITE LINK</strong>
-                <span>Share with a trusted collaborator</span>
-              </div>
-              <div className="panel-action-form__inline">
-                <span className="panel-action-form__value" title={inviteUri}>
-                  {inviteUri.slice(0, 20)}···{inviteUri.slice(-6)}
-                </span>
-                <button
-                  onClick={() => { navigator.clipboard.writeText(inviteUri); setInviteCopied(true); setTimeout(() => setInviteCopied(false), 2000) }}
-                  className={`panel-action-form__button panel-action-form__button--primary${inviteCopied ? ' is-complete' : ''}`}
-                >{inviteCopied ? 'COPIED ✓' : 'COPY'}</button>
-              </div>
+              <InviteLink key={inviteUri} uri={inviteUri} longUri={longInviteUri} note={inviteNote} />
               {inviteConnectivity && (() => {
                 const wan = inviteConnectivity.peer_addr || inviteConnectivity.relay_addr || inviteConnectivity.rendezvous_addr
                 const tags: string[] = []
