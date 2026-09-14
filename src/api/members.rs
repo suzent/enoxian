@@ -73,15 +73,27 @@ pub async fn list_members(
     // user identity it can actually prove, and is absent when it cannot — which
     // is the case for every peer that has not been linked to a user, and for
     // any peer claiming a name it has no signatures for.
+    // Identities this circle has disowned, read in the same transaction so a
+    // member and the verdict on it cannot come from different moments.
+    let distrusted: std::collections::HashSet<String> = txn
+        .get_map(crate::control::DISTRUSTED_USERS_KEY)
+        .map(|m| m.iter(&txn).map(|(k, _)| k.to_string()).collect())
+        .unwrap_or_default();
+
     let enriched: Vec<serde_json::Value> = members
         .into_iter()
         .map(|m| {
             let verified = claims
                 .get(&m.peer_id)
                 .and_then(|c| c.verified_user(&m.peer_id, &circle_id));
+            // Only a proven identity can be distrusted: an unproven name is not
+            // an identity to disown, and saying otherwise would let a display
+            // string carry a verdict meant for a key.
+            let is_distrusted = verified.as_deref().is_some_and(|u| distrusted.contains(u));
             let mut val = serde_json::to_value(&m).unwrap_or_else(|_| json!({}));
             if let Some(obj) = val.as_object_mut() {
                 obj.insert("verified_user".into(), json!(verified));
+                obj.insert("distrusted".into(), json!(is_distrusted));
             }
             val
         })
@@ -1079,4 +1091,150 @@ mod tests {
         };
         assert!(crate::invite::verify_grant(CIRCLE, &as_invite, g.expires_at).is_ok());
     }
+}
+
+// ── Distrust ──────────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct DistrustRequest {
+    /// The identity to disown. Either the user public key itself, or a peer id
+    /// whose owner claim proves one — the daemon resolves the second to the
+    /// first, because only it can see the claims.
+    pub target: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub admin_signature: String,
+}
+
+/// Turn a peer id into the user key its owner claim proves, or pass a user key
+/// straight through.
+///
+/// A peer id that proves nothing cannot be distrusted: there would be no
+/// identity to name, and disowning the peer id alone is what `member remove`
+/// already does.
+fn resolve_user_target(state: &crate::state::AppState, target: &str) -> anyhow::Result<String> {
+    let target = target.trim();
+    if !target.starts_with("12D3Koo") {
+        return Ok(target.to_string());
+    }
+    let txn = state
+        .control
+        .try_transact()
+        .map_err(|_| anyhow::anyhow!("circle is busy"))?;
+    let claim = txn
+        .get_map(crate::control::MLS_OWNER_CLAIMS_KEY)
+        .and_then(|m| m.get(&txn, target))
+        .and_then(|v| match v {
+            Out::Any(Any::String(s)) => serde_json::from_str::<crate::control::OwnerClaim>(&s).ok(),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("no owner claim from {target}"))?;
+
+    claim
+        .verified_user(target, &state.circle_id)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{target} does not prove a user identity, so there is nothing to distrust — \
+             use `enox member remove` to evict the device"
+            )
+        })
+}
+
+pub async fn distrust_user(
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
+    Json(req): Json<DistrustRequest>,
+) -> impl IntoResponse {
+    set_distrust(daemon, circle_id, req, true).await
+}
+
+pub async fn trust_user(
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
+    Json(req): Json<DistrustRequest>,
+) -> impl IntoResponse {
+    set_distrust(daemon, circle_id, req, false).await
+}
+
+async fn set_distrust(
+    daemon: DaemonState,
+    circle_id: String,
+    req: DistrustRequest,
+    distrust: bool,
+) -> axum::response::Response {
+    let Some(state) = daemon.get(&circle_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "circle not found"})),
+        )
+            .into_response();
+    };
+
+    let user_pubkey_hex = match resolve_user_target(&state, &req.target) {
+        Ok(k) => k,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    };
+
+    // The signature covers the resolved user key, not what the caller typed —
+    // otherwise distrusting by peer id would sign a different string than the
+    // one recorded, and the record could not be checked later.
+    let msg = if distrust {
+        crate::control::distrust_message(&user_pubkey_hex)
+    } else {
+        crate::control::trust_message(&user_pubkey_hex)
+    };
+    let sig = match resolve_admin_sig(&circle_id, msg.as_bytes(), &req.admin_signature) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error": format!("admin signature required: {e}")})),
+            )
+                .into_response()
+        }
+    };
+    if let Err(e) = verify_admin_sig(&state.admin_pubkey_hex, msg.as_bytes(), &sig) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": format!("invalid admin signature: {e}")})),
+        )
+            .into_response();
+    }
+
+    let Ok(mut txn) = state.control.try_transact_mut() else {
+        return super::circle_busy();
+    };
+    let map = txn.get_or_insert_map(crate::control::DISTRUSTED_USERS_KEY);
+    if distrust {
+        let entry = crate::control::DistrustEntry {
+            user_pubkey_hex: user_pubkey_hex.clone(),
+            reason: req.reason.clone(),
+            at: chrono::Utc::now(),
+            admin_signature: sig,
+        };
+        let Ok(json_str) = serde_json::to_string(&entry) else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "could not record the distrust"})),
+            )
+                .into_response();
+        };
+        map.insert(&mut txn, user_pubkey_hex.as_str(), json_str.as_str());
+    } else {
+        map.remove(&mut txn, user_pubkey_hex.as_str());
+    }
+    drop(txn);
+
+    Json(json!({
+        "status": if distrust { "distrusted" } else { "trusted" },
+        "user_pubkey_hex": user_pubkey_hex,
+    }))
+    .into_response()
 }

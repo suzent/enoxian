@@ -41,6 +41,16 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- `enox member distrust` disowns a user identity in a Circle, refusing every
+  device that proves it — including devices made afterwards, which is what
+  `enox member remove` cannot do when someone else holds the user root key.
+  `enox member trust` takes it back, and `enox member list` marks a distrusted
+  identity. Scoped to the Circle deliberately: in the case that motivates
+  revocation the root key is on the lost device, so an admin of the Circle is
+  the one who can still speak.
+
+### Added
+
 - Any linked device can now link the next one. Previously only the device you
   ran `enox identity create-user` on could, because only it stored the recovery
   phrase. A linked device now extends the signature chain it already holds,

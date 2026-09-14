@@ -51,6 +51,21 @@ pub const MLS_OWNER_CLAIMS_KEY: &str = "mls_owner_claims";
 /// Used as a sync-level gate: removed peers are rejected before any CRDT data
 /// is exchanged, even during the brief window before PSK rotation completes.
 pub const MLS_REMOVED_KEY: &str = "mls_removed";
+/// Map[user_pubkey_hex → DistrustEntry JSON] — user identities this circle has
+/// disowned.
+///
+/// Scoped to the circle on purpose. The obvious place to revoke an identity is
+/// the user root key that issued it, but in the case that motivates revocation
+/// — a lost or stolen device — the root key is *on that device*, so whoever has
+/// it can revoke the rightful owner just as easily. An admin of a circle can
+/// always speak for that circle, and that is where the damage lands.
+///
+/// Distrusting an identity disowns every device proving it, present and future,
+/// because a device is only ever as trusted as the identity behind it. That is
+/// the point: an attacker holding the root key can mint new devices, and
+/// removing them one peer at a time never finishes.
+pub const DISTRUSTED_USERS_KEY: &str = "distrusted_users";
+
 /// Nonces of invite grants already redeemed. An invite admits one device; the
 /// nonce is recorded here so presenting it again is refused.
 pub const INVITE_NONCES_KEY: &str = "invite_nonces";
@@ -105,6 +120,29 @@ impl OwnerClaim {
         }
         Some(user_pubkey.to_string())
     }
+}
+
+/// A user identity this circle has disowned.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DistrustEntry {
+    /// hex(protobuf) of the user root public key being disowned.
+    pub user_pubkey_hex: String,
+    /// Whatever the admin wrote down, shown wherever the distrust is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub at: DateTime<Utc>,
+    /// hex(sign(admin_key, "distrust:{user_pubkey_hex}"))
+    pub admin_signature: String,
+}
+
+/// The message an admin signs to disown a user identity.
+pub fn distrust_message(user_pubkey_hex: &str) -> String {
+    format!("distrust:{}", user_pubkey_hex.trim())
+}
+
+/// The message an admin signs to take a distrust back.
+pub fn trust_message(user_pubkey_hex: &str) -> String {
+    format!("trust:{}", user_pubkey_hex.trim())
 }
 
 /// The invite grant a joining device presents, carried from the invite it used.
@@ -747,4 +785,119 @@ pub enum CircleEvent {
     WorkspaceEventAppended {
         event_id: String,
     },
+}
+
+#[cfg(test)]
+mod distrust_tests {
+    use super::*;
+    use crate::identity::{sign_binding, ChainLink, DeviceIdentity, UserIdentity};
+
+    const CIRCLE: &str = "8e563c41-f0ec-4225-9764-064f1fb04341";
+
+    fn linked_device(user: &UserIdentity, label: &str) -> DeviceIdentity {
+        let mut d = DeviceIdentity::generate(label.into());
+        let pk = d.device_pubkey_hex().unwrap();
+        d.user_handle = Some(user.handle.clone());
+        d.user_pubkey_hex = Some(user.pubkey_hex().unwrap());
+        d.attestation_chain = vec![ChainLink {
+            signer_pubkey_hex: user.pubkey_hex().unwrap(),
+            subject_pubkey_hex: pk.clone(),
+            sig: user.attest_device(&pk).unwrap(),
+        }];
+        d
+    }
+
+    fn claim_for(device: &DeviceIdentity) -> (String, OwnerClaim) {
+        let circle_kp = device.derive_circle_keypair(CIRCLE).unwrap();
+        let peer_id = circle_kp.public().to_peer_id().to_string();
+        let claim = OwnerClaim {
+            owner: device.user_handle.clone().unwrap_or_default(),
+            sig: String::new(),
+            user_pubkey_hex: device.user_pubkey_hex.clone(),
+            device_pubkey_hex: Some(device.device_pubkey_hex().unwrap()),
+            device_binding_hex: Some(
+                sign_binding(&device.device_keypair().unwrap(), CIRCLE, &circle_kp).unwrap(),
+            ),
+            attestation_chain: device.attestation_chain.clone(),
+        };
+        (peer_id, claim)
+    }
+
+    /// The reason distrust is keyed on the identity rather than the device.
+    ///
+    /// Whoever holds a stolen root key can mint devices without limit, so
+    /// removing them one peer at a time never finishes. Every device proving the
+    /// same identity — including one made after the distrust — resolves to the
+    /// same key, which is the thing a circle can actually refuse.
+    #[test]
+    fn every_device_of_an_identity_resolves_to_the_one_key() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let laptop = linked_device(&user, "laptop");
+
+        // A device minted after the fact, as an attacker with the root key would.
+        let later = linked_device(&user, "minted-later");
+
+        let (laptop_peer, laptop_claim) = claim_for(&laptop);
+        let (later_peer, later_claim) = claim_for(&later);
+
+        let a = laptop_claim.verified_user(&laptop_peer, CIRCLE).unwrap();
+        let b = later_claim.verified_user(&later_peer, CIRCLE).unwrap();
+        assert_eq!(a, b, "devices of one identity must resolve to one key");
+        assert_eq!(a, user.pubkey_hex().unwrap());
+    }
+
+    /// A different identity must not be caught by someone else's distrust.
+    #[test]
+    fn another_identity_is_not_covered() {
+        let (suzy, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let (mallory, _) = UserIdentity::generate("mallory".into()).unwrap();
+
+        let (p1, c1) = claim_for(&linked_device(&suzy, "laptop"));
+        let (p2, c2) = claim_for(&linked_device(&mallory, "laptop"));
+
+        assert_ne!(
+            c1.verified_user(&p1, CIRCLE).unwrap(),
+            c2.verified_user(&p2, CIRCLE).unwrap()
+        );
+    }
+
+    /// The signed message covers the resolved user key, so a record can be
+    /// checked later against the key it names rather than whatever was typed.
+    #[test]
+    fn the_signed_messages_name_the_user_key() {
+        let key = "0801122000112233";
+        assert_eq!(distrust_message(key), "distrust:0801122000112233");
+        assert_eq!(trust_message(key), "trust:0801122000112233");
+        // Distrust and its undo must never be the same bytes, or one signature
+        // would serve for both.
+        assert_ne!(distrust_message(key), trust_message(key));
+        // Whitespace is normalised, so a copied-in key signs the same string.
+        assert_eq!(
+            distrust_message("  0801122000112233 "),
+            distrust_message(key)
+        );
+    }
+
+    /// A distrust record round-trips, and carries who said so.
+    #[test]
+    fn a_distrust_record_round_trips() {
+        let entry = DistrustEntry {
+            user_pubkey_hex: "0801122000112233".into(),
+            reason: Some("laptop stolen".into()),
+            at: Utc::now(),
+            admin_signature: "ab12".into(),
+        };
+        let back: DistrustEntry =
+            serde_json::from_str(&serde_json::to_string(&entry).unwrap()).unwrap();
+        assert_eq!(back, entry);
+    }
+
+    /// A peer that proves nothing has no identity to distrust — the record is
+    /// keyed on a user key, and an unproven display name is not one.
+    #[test]
+    fn a_peer_that_proves_nothing_has_no_identity_to_distrust() {
+        let plain = DeviceIdentity::generate("unlinked".into());
+        let (peer, claim) = claim_for(&plain);
+        assert_eq!(claim.verified_user(&peer, CIRCLE), None);
+    }
 }
