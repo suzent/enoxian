@@ -135,6 +135,33 @@ pub struct DistrustEntry {
     pub admin_signature: String,
 }
 
+impl DistrustEntry {
+    /// Whether this record was really signed by `admin_pubkey_hex`.
+    ///
+    /// The control document is replicated and every member can write to it, so
+    /// the presence of an entry proves nothing — any member could add one and
+    /// lock an arbitrary identity out of the circle. Only the admin signature
+    /// over [`distrust_message`] makes it authority, and it is checked wherever
+    /// the record is *enforced*, not where it arrives.
+    pub fn is_authentic(&self, admin_pubkey_hex: &str) -> bool {
+        if admin_pubkey_hex.trim().is_empty() {
+            // A circle with no admin key recorded cannot check anything; refuse
+            // to act on the record rather than take it on faith.
+            return false;
+        }
+        let Ok(bytes) = hex::decode(admin_pubkey_hex.trim()) else {
+            return false;
+        };
+        let Ok(key) = libp2p::identity::PublicKey::try_decode_protobuf(&bytes) else {
+            return false;
+        };
+        let Ok(sig) = hex::decode(self.admin_signature.trim()) else {
+            return false;
+        };
+        key.verify(distrust_message(&self.user_pubkey_hex).as_bytes(), &sig)
+    }
+}
+
 /// The message an admin signs to disown a user identity.
 pub fn distrust_message(user_pubkey_hex: &str) -> String {
     format!("distrust:{}", user_pubkey_hex.trim())
@@ -890,6 +917,81 @@ mod distrust_tests {
         let back: DistrustEntry =
             serde_json::from_str(&serde_json::to_string(&entry).unwrap()).unwrap();
         assert_eq!(back, entry);
+    }
+
+    /// The control document is replicated and every member can write to it, so
+    /// an entry that merely exists proves nothing. Without the signature check,
+    /// any member could add one and lock an arbitrary identity out of the
+    /// circle — a denial of service available to everybody inside it.
+    #[test]
+    fn a_distrust_record_is_only_authority_when_the_admin_signed_it() {
+        use libp2p::identity::Keypair;
+
+        let admin = Keypair::generate_ed25519();
+        let admin_hex = hex::encode(admin.public().encode_protobuf());
+        let target = "0801122000112233";
+
+        let genuine = DistrustEntry {
+            user_pubkey_hex: target.into(),
+            reason: None,
+            at: Utc::now(),
+            admin_signature: hex::encode(admin.sign(distrust_message(target).as_bytes()).unwrap()),
+        };
+        assert!(genuine.is_authentic(&admin_hex));
+
+        // What a member could write into the map on their own.
+        let forged = DistrustEntry {
+            admin_signature: String::new(),
+            ..genuine.clone()
+        };
+        assert!(
+            !forged.is_authentic(&admin_hex),
+            "an unsigned record was taken as authority"
+        );
+
+        // Signed by somebody who is not the admin.
+        let impostor = Keypair::generate_ed25519();
+        let by_impostor = DistrustEntry {
+            admin_signature: hex::encode(
+                impostor.sign(distrust_message(target).as_bytes()).unwrap(),
+            ),
+            ..genuine.clone()
+        };
+        assert!(!by_impostor.is_authentic(&admin_hex));
+
+        // A real signature, moved onto a different identity.
+        let moved = DistrustEntry {
+            user_pubkey_hex: "0801122099887766".into(),
+            ..genuine.clone()
+        };
+        assert!(
+            !moved.is_authentic(&admin_hex),
+            "a signature was reused for another identity"
+        );
+
+        // And a circle with no admin key recorded cannot check anything, so it
+        // must refuse rather than take the record on faith.
+        assert!(!genuine.is_authentic(""));
+        assert!(!genuine.is_authentic("not hex"));
+    }
+
+    /// `trust` must not undo by accident: a signature over the undo message is
+    /// not a distrust, or one could be replayed as the other.
+    #[test]
+    fn a_trust_signature_does_not_authenticate_a_distrust() {
+        use libp2p::identity::Keypair;
+
+        let admin = Keypair::generate_ed25519();
+        let admin_hex = hex::encode(admin.public().encode_protobuf());
+        let target = "0801122000112233";
+
+        let entry = DistrustEntry {
+            user_pubkey_hex: target.into(),
+            reason: None,
+            at: Utc::now(),
+            admin_signature: hex::encode(admin.sign(trust_message(target).as_bytes()).unwrap()),
+        };
+        assert!(!entry.is_authentic(&admin_hex));
     }
 
     /// A peer that proves nothing has no identity to distrust — the record is

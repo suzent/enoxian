@@ -1659,7 +1659,12 @@ async fn remove_pending_entry(state: &AppState, peer_str: &str, reason: &str) {
 /// current posture rather than a hole — nothing yet requires a joiner to prove
 /// who it is, so distrust disowns an identity rather than screening every
 /// stranger. Requiring proof is the step after this one.
-fn distrusted_identity<T: yrs::ReadTxn>(txn: &T, circle_id: &str, peer_id: &str) -> Option<String> {
+pub(crate) fn distrusted_identity<T: yrs::ReadTxn>(
+    txn: &T,
+    circle_id: &str,
+    admin_pubkey_hex: &str,
+    peer_id: &str,
+) -> Option<String> {
     use yrs::{Any, Map, Out};
 
     let distrusted = txn.get_map(crate::control::DISTRUSTED_USERS_KEY)?;
@@ -1672,7 +1677,23 @@ fn distrusted_identity<T: yrs::ReadTxn>(txn: &T, circle_id: &str, peer_id: &str)
         })?;
 
     let user = claim.verified_user(peer_id, circle_id)?;
-    distrusted.get(txn, user.as_str()).map(|_| user)
+    let entry = distrusted.get(txn, user.as_str()).and_then(|v| match v {
+        Out::Any(Any::String(s)) => serde_json::from_str::<crate::control::DistrustEntry>(&s).ok(),
+        _ => None,
+    })?;
+
+    // The record has to carry the admin's signature, not merely exist. The
+    // control document is replicated and every member can write to it, so
+    // treating presence as authority would let any member lock anybody out of
+    // the circle by adding an entry of their own.
+    if !entry.is_authentic(admin_pubkey_hex) {
+        warn!(
+            "[member] ignoring an unsigned distrust record for {}",
+            &user[..user.len().min(16)]
+        );
+        return None;
+    }
+    Some(user)
 }
 
 fn grant_admits<T: yrs::ReadTxn>(
@@ -1789,7 +1810,12 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                 // including on a device minted after the fact — which is the
                 // whole point, since whoever holds a stolen root key can make
                 // as many devices as they like.
-                if let Some(user) = distrusted_identity(&txn, &state.circle_id, &peer_id_str) {
+                if let Some(user) = distrusted_identity(
+                    &txn,
+                    &state.circle_id,
+                    &state.admin_pubkey_hex,
+                    &peer_id_str,
+                ) {
                     warn!(
                         "[member] refused {peer_id_str}: its user identity {} is distrusted",
                         &user[..user.len().min(16)]

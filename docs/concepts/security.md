@@ -346,6 +346,20 @@ by user public key, signed by an admin over `distrust:{user_pubkey_hex}`. The
 signature covers the resolved key rather than what was typed, so a record can be
 checked later against the key it actually names.
 
+That signature is checked **wherever the record is enforced**, not where it
+arrives. The control document is replicated and every member can write to it, so
+an entry that merely exists proves nothing — without the check, any member could
+add one and lock an arbitrary identity out of the circle. An unsigned or
+wrongly-signed record is ignored, and so is any record in a circle with no admin
+key on file, because there is nothing to check it against.
+
+Both admission paths consult it: the automatic one and `enox member approve`.
+Approving is the admin's decision, but so was the distrust, and a manual
+approval that quietly skipped the check would leave the two disagreeing.
+
+It is part of the durable snapshot, so it survives every device in the circle
+being offline at once. A boundary that a restart forgets is not a boundary.
+
 ### Why the circle decides, not the root key
 
 The obvious place to revoke an identity is the user root key that issued it. In

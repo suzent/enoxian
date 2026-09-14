@@ -580,6 +580,29 @@ pub async fn approve_member(
                     }
                 };
 
+                // A circle that has disowned an identity must not readmit it by
+                // hand either. Approving is the admin's decision, but so was
+                // the distrust — and the automatic path refuses here, so an
+                // approval that quietly did not would make the two disagree.
+                // Checked before `add_member`, which advances the epoch and
+                // cannot be undone.
+                if let Some(user) = crate::lifecycle::distrusted_identity(
+                    &txn,
+                    &state.circle_id,
+                    &state.admin_pubkey_hex,
+                    &req.peer_id,
+                ) {
+                    break Err((
+                        StatusCode::FORBIDDEN,
+                        format!(
+                            "{} proves a user identity this circle has distrusted \
+                             ({}…) — run `enox member trust` first if that is intended",
+                            req.peer_id,
+                            &user[..user.len().min(16)]
+                        ),
+                    ));
+                }
+
                 let (agent_id, device_label, agents) = txn
                     .get_map(MLS_PENDING_KEY)
                     .and_then(|pending_map| pending_map.get(&txn, req.peer_id.as_str()))
