@@ -158,6 +158,43 @@ fn matches_prefix(addr: &str, host: &str, transport: &str, port: u16, suffix: &s
     addr.starts_with(&prefix)
 }
 
+/// The `host:port` to reach a rendezvous server's HTTP endpoint, read back out
+/// of the multiaddr `resolve` produced for it.
+///
+/// The UDP port in a rendezvous address is the same port the server answers
+/// HTTP on — see `resolve`, which builds the address from it — so the port has
+/// to come along. Dropping it silently sends every request to the default port,
+/// which is right only by coincidence.
+///
+/// `None` for an address with no host component.
+pub fn http_endpoint_of(addr: &str) -> Option<String> {
+    let parts: Vec<&str> = addr.split('/').filter(|p| !p.is_empty()).collect();
+    let host_at = parts
+        .iter()
+        .position(|p| matches!(*p, "dns4" | "dns6" | "dnsaddr" | "ip4" | "ip6"))?;
+    let host = parts.get(host_at + 1)?;
+
+    let port = parts
+        .iter()
+        .position(|p| matches!(*p, "udp" | "tcp"))
+        .and_then(|i| parts.get(i + 1))
+        .and_then(|p| p.parse::<u16>().ok());
+
+    Some(match port {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    })
+}
+
+/// Whether two `host[:port]` strings name the same server — host and port both.
+///
+/// Normalising rather than comparing strings, because one side usually carries
+/// an explicit port and the other leaves the default implied: `relay:36521` and
+/// `relay` are the same endpoint, `relay:45561` is not.
+pub fn same_endpoint(a: &str, b: &str) -> bool {
+    split_host_port(a, 36521) == split_host_port(b, 36521)
+}
+
 fn split_host_port(input: &str, default_port: u16) -> (String, u16) {
     // Handle host:port
     if let Some(colon) = input.rfind(':') {
@@ -173,9 +210,58 @@ fn split_host_port(input: &str, default_port: u16) -> (String, u16) {
 mod tests {
     use super::*;
 
-    /// The address the default relay resolves to must be recognised as the
-    /// default, or every invite would carry it verbatim and v2's saving would
-    /// quietly disappear.
+    /// The port must survive. A rendezvous server on a non-default port is the
+    /// normal case when self-hosting or testing, and dropping it sends every
+    /// HTTP request to the default port instead — which fails as a 404 far from
+    /// where the mistake was made.
+    #[test]
+    fn an_http_endpoint_keeps_its_port() {
+        assert_eq!(
+            http_endpoint_of("/dns4/relay.enoxian.com/udp/36521/quic-v1/p2p/12D3KooWx").as_deref(),
+            Some("relay.enoxian.com:36521")
+        );
+        assert_eq!(
+            http_endpoint_of("/dns4/localhost/udp/45561/quic-v1/p2p/12D3KooWx").as_deref(),
+            Some("localhost:45561")
+        );
+        assert_eq!(
+            http_endpoint_of("/ip4/203.0.113.17/tcp/36522/p2p/12D3KooWx").as_deref(),
+            Some("203.0.113.17:36522")
+        );
+        assert_eq!(http_endpoint_of("/p2p/12D3KooWx"), None);
+        assert_eq!(http_endpoint_of(""), None);
+    }
+
+    /// The default is recognised whether or not a port came with it, so a stock
+    /// circle's short invite does not carry a redundant hostname.
+    #[test]
+    fn the_default_endpoint_is_matched_through_an_implied_port() {
+        assert!(same_endpoint(
+            "relay.enoxian.com:36521",
+            "relay.enoxian.com"
+        ));
+        assert!(same_endpoint("relay.enoxian.com", "relay.enoxian.com"));
+        assert!(!same_endpoint(
+            "other.example.com:36521",
+            "relay.enoxian.com"
+        ));
+    }
+
+    /// A different port on the default host is somebody's own server. Folding
+    /// it into the default would upload the blob to 36521 rather than the
+    /// server `--rendezvous` picked, and leave the link unable to name it.
+    #[test]
+    fn a_different_port_on_the_default_host_is_a_different_endpoint() {
+        assert!(!same_endpoint(
+            "relay.enoxian.com:45561",
+            "relay.enoxian.com"
+        ));
+        assert!(!same_endpoint(
+            "relay.enoxian.com:45561",
+            "relay.enoxian.com:36521"
+        ));
+    }
+
     #[test]
     fn the_resolved_default_relay_is_recognised() {
         let Some(host) = crate::defaults::DEFAULT_RELAY else {

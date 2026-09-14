@@ -41,6 +41,26 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Any linked device can now link the next one. Previously only the device you
+  ran `enox identity create-user` on could, because only it stored the recovery
+  phrase. A linked device now extends the signature chain it already holds,
+  signing with its own device key — the user root key still never moves.
+  `enox identity show` says how far a device sits from the root.
+
+- A device can prove which user it belongs to inside a Circle, rather than just
+  asserting a name. `enox member list` marks an owner name that nobody can
+  check as `(unverified)`. Two devices count as the same person when they prove
+  the same user key, not when they write the same name. Nothing is refused on
+  this basis yet — peers that predate it simply show as unverified.
+
+
+- `enox invite` now prints a short link — 35 characters, against ~300 — by
+  keeping the invite's contents sealed on the same relay it already points at
+  and carrying only the key. The relay is handed an id that says nothing about
+  that key and a body it cannot read. `--long` prints the self-contained link,
+  and so does `enox invite` on its own when the relay cannot be reached.
+
+
 - `enox link` puts your identity on a second device without the 24-word
   mnemonic. Run it on the machine you already use, type the four words it prints
   on the new one, check that both screens show the same six-digit number, and
@@ -52,55 +72,6 @@ refuses to publish a version whose section is missing or empty.
 - `enox identity show` now says whether a device's attestation actually
   verifies, rather than only that one is present.
 
-### Security
-
-- Updated the bundled `rustls` TLS stack to 0.23.45, picking up the fix for
-  RUSTSEC-2026-0285.
-
-### Fixed
-
-- The daemon no longer sometimes refuses to start with "execution inbox already
-  has an active owner" right after a restart. It could lose a race against its
-  own previous instance's release of the inbox lock, because a concurrently
-  launched agent process briefly inherits that lock; the daemon now waits the
-  moment out instead of giving up.
-
-- Renaming a device with `enox identity set-label` no longer erases the stored
-  recovery phrase. Any save of the identity file used to drop it, so a rename —
-  or receiving a link — silently destroyed the only copy of the user root key.
-
-- Renaming a device no longer invalidates its attestation. The device label was
-  part of what the attestation signed, so a rename permanently broke it with no
-  way to reissue one.
-
-### Security
-
-- `enox link` and rendezvous address resolution no longer send the local
-  daemon's API token to the remote bootstrap server. Both used the CLI's shared
-  HTTP client, which carries that token as a default header, so talking to a
-  pairing or bootstrap host disclosed a privileged local credential over plain
-  HTTP.
-
-### Changed
-
-- Read-the-room agents now take turns fairly. Choose a listener count per message,
-  or cycle the count from one up to that limit. Selected requests use the shared
-  execution queue instead of favoring the first configured agent.
-- Agent activity shows device names, original messages and plain-language outcomes;
-  completed runs are collapsed in the sidebar and legacy import records are hidden.
-
-
-- Follow-ups now use explicit reply threads by default. Configurations that omit
-  `engagement_window_secs` now use `0` instead of `180`; set it to `180` in Device
-  Settings to keep the previous three-minute recency routing. Explicitly configured
-  windows are preserved.
-
-- Invite links are much shorter. A typical `enox invite` link is now around 300
-  characters where it used to run past 800, so it survives a chat message
-  without being wrapped or truncated. Links already in circulation keep working
-  until their own expiry — nothing needs to be reissued.
-
-### Added
 
 - Agents can run in parallel across Circles while keeping ordered turns and one
   conversation per agent in each Circle. Device Settings controls concurrency.
@@ -177,6 +148,24 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
+- Read-the-room agents now take turns fairly. Choose a listener count per message,
+  or cycle the count from one up to that limit. Selected requests use the shared
+  execution queue instead of favoring the first configured agent.
+- Agent activity shows device names, original messages and plain-language outcomes;
+  completed runs are collapsed in the sidebar and legacy import records are hidden.
+
+
+- Follow-ups now use explicit reply threads by default. Configurations that omit
+  `engagement_window_secs` now use `0` instead of `180`; set it to `180` in Device
+  Settings to keep the previous three-minute recency routing. Explicitly configured
+  windows are preserved.
+
+- Invite links are much shorter. A typical `enox invite` link is now around 300
+  characters where it used to run past 800, so it survives a chat message
+  without being wrapped or truncated. Links already in circulation keep working
+  until their own expiry — nothing needs to be reissued.
+
+
 - Settings now separate global defaults and Circle preferences through a sidebar scope picker, with clearer typography and a themed, keyboard-accessible dropdown.
 
 - Agents no longer need permission to be reached by other agents. An agent you
@@ -194,6 +183,21 @@ refuses to publish a version whose section is missing or empty.
 - Chat mentions use compact inline labels, agents lead their sender headers, and explicit replies show a linked source preview with a clearer reply composer.
 
 ### Fixed
+
+- The daemon no longer sometimes refuses to start with "execution inbox already
+  has an active owner" right after a restart. It could lose a race against its
+  own previous instance's release of the inbox lock, because a concurrently
+  launched agent process briefly inherits that lock; the daemon now waits the
+  moment out instead of giving up.
+
+- Renaming a device with `enox identity set-label` no longer erases the stored
+  recovery phrase. Any save of the identity file used to drop it, so a rename —
+  or receiving a link — silently destroyed the only copy of the user root key.
+
+- Renaming a device no longer invalidates its attestation. The device label was
+  part of what the attestation signed, so a rename permanently broke it with no
+  way to reissue one.
+
 
 - Imported read-the-room history no longer appears as agents named `~ambient:...`
   or offers retries for old listening observations. Agents that pass now show
@@ -277,6 +281,21 @@ refuses to publish a version whose section is missing or empty.
 - A half-written chat message, and any image staged with it, now stays with the
   circle it was written in. Switching circles used to carry the unsent message
   across and send it to whichever circle you had moved to.
+
+### Security
+
+- Files holding key material — `identity.toml`, a circle's `config.toml`, and
+  `admin.key` — are now written `0600` instead of inheriting the process umask,
+  which on a typical machine left them readable by every local account. Files
+  already written are tightened the next time they are read, so existing
+  installs are fixed rather than only new ones.
+
+
+- `enox link` and rendezvous address resolution no longer send the local
+  daemon's API token to the remote bootstrap server. Both used the CLI's shared
+  HTTP client, which carries that token as a default header, so talking to a
+  pairing or bootstrap host disclosed a privileged local credential over plain
+  HTTP.
 
 ## [0.8.0] — 2026-09-12
 

@@ -22,8 +22,58 @@ pub fn client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+/// Default HTTP port a bootstrap server answers on.
+const DEFAULT_PORT: u16 = 36521;
+
+/// `http://<host>:<port>` for a `host` or `host:port`.
+pub fn http_base(server: &str) -> String {
+    match server.rsplit_once(':') {
+        Some((h, p)) if p.parse::<u16>().is_ok() => format!("http://{h}:{p}"),
+        _ => format!("http://{server}:{DEFAULT_PORT}"),
+    }
+}
+
+/// Where short-invite blobs live on a bootstrap server.
+pub fn blob_base(server: &str) -> String {
+    format!("{}/invite", http_base(server))
+}
+
+/// Where the pairing mailbox lives on a bootstrap server.
+pub fn pair_base(server: &str) -> String {
+    format!("{}/pair", http_base(server))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_bare_host_gets_the_default_port() {
+        assert_eq!(
+            super::blob_base("relay.enoxian.com"),
+            "http://relay.enoxian.com:36521/invite"
+        );
+        assert_eq!(
+            super::pair_base("relay.enoxian.com"),
+            "http://relay.enoxian.com:36521/pair"
+        );
+    }
+
+    #[test]
+    fn an_explicit_port_is_kept() {
+        assert_eq!(
+            super::blob_base("localhost:9999"),
+            "http://localhost:9999/invite"
+        );
+    }
+
+    /// A host whose tail merely looks port-ish must not be mistaken for one.
+    #[test]
+    fn a_non_numeric_tail_is_not_a_port() {
+        assert_eq!(
+            super::http_base("relay.enoxian.com:pair"),
+            "http://relay.enoxian.com:pair:36521"
+        );
+    }
+
     /// The point of this module. If a default `Authorization` header ever gets
     /// added here, every pairing request starts leaking the daemon token to a
     /// third-party server.

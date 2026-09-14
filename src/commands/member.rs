@@ -125,7 +125,16 @@ pub async fn run(
                         let peer = m["peer_id"].as_str().unwrap_or("?");
                         let role = m["role"].as_str().unwrap_or("member");
                         let owner = m["owner"].as_str().unwrap_or("");
+                        // An owner nobody can check is a display string. Say so
+                        // rather than presenting it as the same kind of fact as
+                        // a name backed by the user key's signature.
+                        let owner_mark = if owner.is_empty() || m["verified_user"].is_string() {
+                            ""
+                        } else {
+                            " (unverified)"
+                        };
                         let agent = m["agent_id"].as_str().unwrap_or("");
+                        let owner = &format!("{owner}{owner_mark}")[..];
                         let label = match (owner, agent) {
                             ("", "") => String::new(),
                             (o, "") => format!("  owner={o}"),
@@ -304,6 +313,10 @@ pub async fn run(
 
 fn sign_admin(circle_id: &str, msg: &[u8]) -> Result<String> {
     let key_path = circle_dir(circle_id)?.join("admin.key");
+    // An admin whose first use of the key is `enox member add` reaches it here
+    // and nowhere else, so tighten-on-read has to happen here too — otherwise
+    // the promise holds everywhere except the command admins actually run.
+    crate::config::tighten_if_loose(&key_path);
     let hex = std::fs::read_to_string(&key_path)
         .with_context(|| format!("admin.key not found for this circle — only the circle creator can perform member operations\n  Expected: {}", key_path.display()))?;
     let keypair = keypair_from_hex(hex.trim()).context("failed to load admin.key")?;

@@ -42,6 +42,23 @@ pub async fn list_members(
     let Some(map) = txn.get_map(MEMBER_LIST_KEY) else {
         return Json(Vec::<MemberEntry>::new()).into_response();
     };
+    // Owner claims live in their own map. Read them in the same transaction so
+    // a member and the claim it is judged against cannot come from different
+    // moments.
+    let claims: std::collections::HashMap<String, crate::control::OwnerClaim> = txn
+        .get_map(crate::control::MLS_OWNER_CLAIMS_KEY)
+        .map(|m| {
+            m.iter(&txn)
+                .filter_map(|(peer, val)| match val {
+                    Out::Any(Any::String(s)) => serde_json::from_str(&s)
+                        .ok()
+                        .map(|claim| (peer.to_string(), claim)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut members: Vec<MemberEntry> = Vec::new();
     for (_, val) in map.iter(&txn) {
         if let Out::Any(Any::String(s)) = val {
@@ -51,7 +68,26 @@ pub async fn list_members(
         }
     }
     members.sort_by_key(|a| a.added_at);
-    Json(members).into_response()
+
+    // `owner` is a name the peer wrote about itself. `verified_user` is the
+    // user identity it can actually prove, and is absent when it cannot — which
+    // is the case for every peer that has not been linked to a user, and for
+    // any peer claiming a name it has no signatures for.
+    let enriched: Vec<serde_json::Value> = members
+        .into_iter()
+        .map(|m| {
+            let verified = claims
+                .get(&m.peer_id)
+                .and_then(|c| c.verified_user(&m.peer_id, &circle_id));
+            let mut val = serde_json::to_value(&m).unwrap_or_else(|_| json!({}));
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert("verified_user".into(), json!(verified));
+            }
+            val
+        })
+        .collect();
+
+    Json(enriched).into_response()
 }
 
 #[derive(Deserialize)]
@@ -704,6 +740,9 @@ fn verify_admin_sig(admin_pubkey_hex: &str, msg: &[u8], sig_hex: &str) -> anyhow
 fn local_admin_sign(circle_id: &str, msg: &[u8]) -> anyhow::Result<String> {
     use crate::{config::circle_dir, crypto::keypair_from_hex};
     let key_path = circle_dir(circle_id)?.join("admin.key");
+    // Admin keys written before secrets had a restrictive mode are tightened
+    // here, which is the one place this file is certainly being looked at.
+    crate::config::tighten_if_loose(&key_path);
     let hex_str = std::fs::read_to_string(&key_path)
         .map_err(|_| anyhow::anyhow!("not admin: admin.key not found for this circle"))?;
     let kp = keypair_from_hex(hex_str.trim())?;

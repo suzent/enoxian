@@ -301,3 +301,46 @@ The `--ttl` flag accepts:
 | `90d` | 90 days |
 
 Any integer followed by `d` (days) or `h` (hours) is valid.
+
+---
+
+## Short invites
+
+By default `enox invite` prints a short link:
+
+```
+enoxian://s1/G9Qg1TN8zxAV2hHofrH0vA
+```
+
+35 characters, against ~300 for the self-contained form. The contents are sealed and left on the same relay the invite already points at; the link carries only the key.
+
+```bash
+enox invite MyCircle          # short, when the relay is reachable
+enox invite MyCircle --long   # the self-contained link
+```
+
+If the relay cannot be reached, the self-contained link is printed instead with a note saying why — an invite that exists beats a short one that does not.
+
+### What the relay sees
+
+Nothing it can use. The blob id is an HKDF output of the key, so the id it is asked for says nothing about the key; the body is sealed under a second output of the same key, with the id bound in as associated data so a blob cannot be moved to another id. An operator learns that an invite exists, its size, and when it is fetched — not the circle, not the PSK, not who it is for.
+
+The key is in the link. Anyone holding the link holds the invite, exactly as with the long form, so share it the same way.
+
+### Which relay
+
+The link names a relay only when it is not the build's default — that is what keeps it to 35 characters. A circle on a self-hosted rendezvous server gets `…@host:port` appended, which is still a fraction of the long form:
+
+```
+enoxian://s1/G9Qg1TN8zxAV2hHofrH0vA@pair.example.com:36521
+```
+
+`--rendezvous` aims both at once: the server the invite embeds for connectivity is the server its contents are left on.
+
+### Limits
+
+- **Blobs are kept 30 days**, longer than any TTL the CLI will mint, so an invite expires by its own timestamp rather than by the store. A blob whose invite has expired is swept on the next write.
+- **Write-once.** A link cannot be repointed at different contents once shared.
+- **Fetching does not consume.** One-use is enforced where it means something: the grant nonce, burned when the circle admits the joiner.
+- **A short invite needs the relay at redemption time.** Use `--long` when the recipient may not be able to reach it, or when the link has to work with no third party involved.
+- **A TTL longer than 30 days is not shortened.** The relay only keeps a blob that long, and a link printed as valid for 90 days that stops resolving on day 31 would be worse than a long one. `enox invite --ttl 90d` prints the self-contained form and says why.
