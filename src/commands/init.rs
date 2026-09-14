@@ -111,7 +111,8 @@ pub async fn run(args: InitArgs) -> Result<()> {
 
     // Save admin private key separately — only the creator holds this.
     let admin_key_path = circle_dir(&circle_id)?.join("admin.key");
-    std::fs::write(&admin_key_path, &admin_privkey_hex)
+    // The admin signing key: whoever reads it can mutate membership.
+    config::write_secret(&admin_key_path, &admin_privkey_hex)
         .map_err(|e| anyhow::anyhow!("failed to write admin.key: {e}"))?;
 
     // ── Bootstrap MLS group (M11) ─────────────────────────────────────────────

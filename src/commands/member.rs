@@ -313,6 +313,10 @@ pub async fn run(
 
 fn sign_admin(circle_id: &str, msg: &[u8]) -> Result<String> {
     let key_path = circle_dir(circle_id)?.join("admin.key");
+    // An admin whose first use of the key is `enox member add` reaches it here
+    // and nowhere else, so tighten-on-read has to happen here too — otherwise
+    // the promise holds everywhere except the command admins actually run.
+    crate::config::tighten_if_loose(&key_path);
     let hex = std::fs::read_to_string(&key_path)
         .with_context(|| format!("admin.key not found for this circle — only the circle creator can perform member operations\n  Expected: {}", key_path.display()))?;
     let keypair = keypair_from_hex(hex.trim()).context("failed to load admin.key")?;
