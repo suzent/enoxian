@@ -39,6 +39,19 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- `enox link` puts your identity on a second device without the 24-word
+  mnemonic. Run it on the machine you already use, type the short code it prints
+  on the new one, check that both screens show the same six-digit number, and
+  the new device is linked with every circle already joined. The user root key
+  never leaves the device that holds it — the new machine generates its own
+  device key and receives a signature over it — so a linked device can later be
+  removed on its own.
+
+- `enox identity show` now says whether a device's attestation actually
+  verifies, rather than only that one is present.
+
 ### Changed
 
 - Invite links are much shorter. A typical `enox invite` link is now around 300

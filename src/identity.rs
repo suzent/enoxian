@@ -164,6 +164,39 @@ impl DeviceIdentity {
         self.derive_circle_keypair("__device__")
     }
 
+    /// The user identity this device holds the root key for, if any.
+    ///
+    /// Only the device the user identity was created on stores the mnemonic, so
+    /// this is `None` on a device that was itself linked. That device can still
+    /// pass on its circles; it just cannot sign an attestation for a third one.
+    pub fn user_identity(&self) -> Result<Option<UserIdentity>> {
+        let path = identity_path()?;
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            return Ok(None);
+        };
+        let file: IdentityFile = toml::from_str(&raw).context("parse identity.toml")?;
+        let (Some(mnemonic), Some(handle)) = (file.user_mnemonic, file.user_handle) else {
+            return Ok(None);
+        };
+        Ok(Some(UserIdentity::from_mnemonic(&mnemonic, handle)?))
+    }
+
+    /// Adopt a user identity that another device attested for this one.
+    ///
+    /// Deliberately takes the attestation rather than the root key: the device
+    /// that signed keeps the only copy, and this device gets an identity of its
+    /// own that can be revoked without touching the others.
+    pub fn adopt_attestation(
+        &mut self,
+        handle: String,
+        user_pubkey_hex: String,
+        attestation_hex: String,
+    ) {
+        self.user_handle = Some(handle);
+        self.user_pubkey_hex = Some(user_pubkey_hex);
+        self.user_attestation_hex = Some(attestation_hex);
+    }
+
     // ── Display helpers ───────────────────────────────────────────────────────
 
     /// The name shown in presence: user_handle if set, otherwise device_label.
@@ -237,6 +270,28 @@ impl UserIdentity {
         let ed = kp.try_into_ed25519().map_err(|e| anyhow::anyhow!("{e}"))?;
         let sig = ed.sign(&msg);
         Ok(hex::encode(sig))
+    }
+
+    /// Check an attestation against the user key that supposedly signed it.
+    ///
+    /// Nothing in the membership layer calls this yet — `MemberEntry.owner` is
+    /// still a self-asserted string, and binding it to a verified attestation is
+    /// its own change. It exists now because `enox link` ships an attestation to
+    /// another device, and an attestation nobody can check is not worth sending.
+    pub fn verify_attestation(
+        user_pubkey_hex: &str,
+        device_pubkey_hex: &str,
+        device_label: &str,
+        attestation_hex: &str,
+    ) -> Result<bool> {
+        let user_bytes = hex::decode(user_pubkey_hex.trim()).context("decode user pubkey")?;
+        let user_key = libp2p::identity::PublicKey::try_decode_protobuf(&user_bytes)
+            .map_err(|e| anyhow::anyhow!("invalid user public key: {e}"))?;
+        let sig = hex::decode(attestation_hex.trim()).context("decode attestation")?;
+
+        let mut msg = hex::decode(device_pubkey_hex.trim()).context("decode device pubkey")?;
+        msg.extend_from_slice(device_label.as_bytes());
+        Ok(user_key.verify(&msg, &sig))
     }
 
     /// Link this user to a device identity (mutates device; saves both).
@@ -386,6 +441,93 @@ mod tests {
             "runtime_download"
         );
         assert!(advertisable(&cmd(&["npx", "some-acp-agent"])));
+    }
+
+    /// An attestation must verify against the user key that signed it, and
+    /// against nothing else. `enox link` sends one to another device, so a
+    /// signature over the wrong bytes would be discovered only much later.
+    #[test]
+    fn an_attestation_verifies_against_the_user_key_that_signed_it() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let device = DeviceIdentity::generate("suzy-laptop".into());
+        let device_pubkey =
+            hex::encode(device.device_keypair().unwrap().public().encode_protobuf());
+
+        let attestation = user
+            .attest_device(&device_pubkey, &device.device_label)
+            .unwrap();
+        let user_pubkey = user.pubkey_hex().unwrap();
+
+        assert!(UserIdentity::verify_attestation(
+            &user_pubkey,
+            &device_pubkey,
+            &device.device_label,
+            &attestation
+        )
+        .unwrap());
+    }
+
+    /// The label is signed too, so neither half can be swapped for another
+    /// device's — otherwise an attestation would transfer between machines.
+    #[test]
+    fn an_attestation_does_not_transfer_to_another_device_or_label() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let device = DeviceIdentity::generate("suzy-laptop".into());
+        let other = DeviceIdentity::generate("someone-else".into());
+        let device_pubkey =
+            hex::encode(device.device_keypair().unwrap().public().encode_protobuf());
+        let other_pubkey = hex::encode(other.device_keypair().unwrap().public().encode_protobuf());
+        let attestation = user.attest_device(&device_pubkey, "suzy-laptop").unwrap();
+        let user_pubkey = user.pubkey_hex().unwrap();
+
+        let check = |pk: &str, label: &str| {
+            UserIdentity::verify_attestation(&user_pubkey, pk, label, &attestation).unwrap()
+        };
+        assert!(!check(&other_pubkey, "suzy-laptop"), "device key swapped");
+        assert!(!check(&device_pubkey, "someone-else"), "label swapped");
+
+        // Nor against a different user's key.
+        let (other_user, _) = UserIdentity::generate("mallory".into()).unwrap();
+        assert!(!UserIdentity::verify_attestation(
+            &other_user.pubkey_hex().unwrap(),
+            &device_pubkey,
+            "suzy-laptop",
+            &attestation
+        )
+        .unwrap());
+    }
+
+    /// `adopt_attestation` is what a linked device runs. It must take on the
+    /// user identity without acquiring the root key — that is the whole point
+    /// of sending an attestation rather than the mnemonic.
+    #[test]
+    fn adopting_an_attestation_does_not_bring_the_root_key_with_it() {
+        let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
+        let mut device = DeviceIdentity::generate("new-machine".into());
+        let device_pubkey =
+            hex::encode(device.device_keypair().unwrap().public().encode_protobuf());
+        let attestation = user
+            .attest_device(&device_pubkey, &device.device_label)
+            .unwrap();
+
+        device.adopt_attestation(
+            "suzy".into(),
+            user.pubkey_hex().unwrap(),
+            attestation.clone(),
+        );
+
+        assert_eq!(device.user_handle.as_deref(), Some("suzy"));
+        assert!(UserIdentity::verify_attestation(
+            device.user_pubkey_hex.as_ref().unwrap(),
+            &device_pubkey,
+            &device.device_label,
+            &attestation
+        )
+        .unwrap());
+        // The root key is not among what it took on: adopting sets the handle,
+        // the user public key and the signature, and nothing else. That the
+        // mnemonic is never written is `save`'s job, covered separately.
+        assert!(device.user_attestation_hex.is_some());
     }
 
     // TOML round-trip — needs `IdentityFile` (private) and `seed` (private).

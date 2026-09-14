@@ -33,6 +33,8 @@ pub enum AgentCommands {
     Enter(EnterArgs),
     /// Generate a new invite link for an existing Circle
     Invite(InviteArgs),
+    /// Put this identity on another device, or take it onto this one
+    Link(LinkArgs),
     /// List all known Circles (local) or active ones (daemon)
     Circles,
     /// Show Circle overview
@@ -352,6 +354,21 @@ pub struct InitArgs {
 
     #[arg(long, default_value = "auto")]
     pub join_policy: String,
+}
+
+#[derive(Parser)]
+pub struct LinkArgs {
+    /// The code shown by `enox link` on your other device.
+    ///
+    /// Omit it to start a link from this device and print a code instead.
+    pub code: Option<String>,
+
+    /// Pairing server to meet on, as `host` or `host:port`.
+    ///
+    /// Defaults to the build's rendezvous server. Both devices must name the
+    /// same one; it only relays sealed bytes and cannot read them.
+    #[arg(long)]
+    pub server: Option<String>,
 }
 
 #[derive(Parser)]

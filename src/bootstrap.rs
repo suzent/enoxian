@@ -30,6 +30,7 @@ use crate::{
     config::enoxian_dir,
     crypto::{generate_keypair, keypair_from_hex, keypair_to_hex},
     network::bootstrap_behaviour::{BootstrapBehaviour, BootstrapEvent},
+    pair_mailbox::MailboxState,
 };
 
 pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Result<()> {
@@ -113,9 +114,14 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
     // ── HTTP server: GET /peer-id — allows `enox` CLI to auto-resolve the ──────
     // full multiaddr without the operator having to copy-paste the peer ID.
     // Runs on TCP:<port> alongside QUIC on UDP:<port> — no conflict.
+    // `/pair` is the dead drop two devices meet in during `enox link`. It is
+    // mounted here because the bootstrap server is the one address both
+    // machines already know how to reach; it is trusted with nothing — see
+    // `crate::pair_mailbox`.
     let app = Router::new()
         .route("/peer-id", get(peer_id_handler))
-        .with_state(peer_id_str.clone());
+        .with_state(peer_id_str.clone())
+        .nest("/pair", crate::pair_mailbox::router(MailboxState::new()));
     let http_addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(http_addr)

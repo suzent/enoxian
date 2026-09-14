@@ -11,6 +11,7 @@ pub mod identity;
 pub mod init;
 pub mod invite;
 pub mod leave;
+pub mod link;
 pub mod member;
 pub mod open;
 pub mod proposals;
