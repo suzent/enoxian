@@ -69,14 +69,23 @@ use x25519_dalek::{PublicKey, StaticSecret};
 /// than a decryption failure.
 pub const VERSION: u8 = 1;
 
-/// Bytes of entropy in a pairing code.
+/// Words in a pairing code.
 ///
-/// Ten bytes is sixteen typed characters, which is about the limit of what
-/// someone will read off one screen and into another without resenting it. The
-/// code lives for [`SESSION_TIMEOUT`] and admits one offer, and the
-/// confirmation number — not this — is what stops a man in the middle, so the
-/// work this has to do is make the mailbox unguessable within two minutes.
-const CODE_BYTES: usize = 10;
+/// Four words from a 1296-word list is ~41 bits. What that has to withstand is
+/// *online* guessing inside the session window: every guess costs the attacker
+/// one request to the mailbox, and the mailbox only exists for two minutes.
+/// Reaching a 1% chance inside one pairing would take on the order of 10^10
+/// requests in those two minutes — far past what a single server will answer.
+///
+/// Three words (~31 bits) would not clear that bar; eight words would clear it
+/// with room to spare and nobody would retype them. A PAKE would get this down
+/// to two words, because it gives an attacker exactly one guess per session
+/// however fast they ask — that is the upgrade path, not a smaller list here.
+///
+/// Note what the code is *not*: the confirmation number is what stops a man in
+/// the middle. Guessing the code only reaches a mailbox; the payload still sits
+/// behind two people comparing six digits.
+const WORDS: usize = 4;
 
 /// How long a code is good for. Matches NIP-AB's window.
 pub const SESSION_TIMEOUT_SECS: u64 = 120;
@@ -102,92 +111,137 @@ const INFO_TRANSCRIPT: &[u8] = b"enoxian-pair-v1/transcript";
 
 // ── The code ──────────────────────────────────────────────────────────────────
 
-/// Crockford base32, minus the letters that read as digits. A code is typed by
-/// hand off another screen, so `0`/`O` and `1`/`I`/`L` must not both exist.
-const ALPHABET: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
+/// The EFF "short" wordlist: 1296 words of three to five letters, chosen so no
+/// two share a prefix and none is easily misheard.
+///
+/// Deliberately *not* the BIP-39 list, though that one is already in the build.
+/// BIP-39 words are what the recovery mnemonic is made of, and the point of
+/// `enox link` is that the mnemonic never has to be typed into a prompt again.
+/// Showing four recovery-shaped words at a pairing prompt would teach exactly
+/// the habit that makes the real phrase phishable.
+///
+/// Kept byte-for-byte as EFF publishes it (CC BY 3.0 US), so each index matches
+/// their line number and the file can be diffed against the original. One word
+/// contains a hyphen — `yo-yo` — which is why codes are separated by spaces
+/// rather than hyphens; normalising it instead would have collided with `yoyo`,
+/// already on the list at another index.
+const WORDLIST_RAW: &str = include_str!("eff_short_wordlist.txt");
+
+fn wordlist() -> &'static [&'static str] {
+    static LIST: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    LIST.get_or_init(|| {
+        let words: Vec<&'static str> = WORDLIST_RAW
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        debug_assert_eq!(
+            words.len() as u64,
+            LIST_LEN,
+            "wordlist length is baked into the maths"
+        );
+        words
+    })
+}
+
+/// Words on the list. The code is a base-1296 number, so this is the radix.
+const LIST_LEN: u64 = 1296;
+
+/// How many distinct codes exist: `1296^4`, a little under 2^42.
+fn code_space() -> u64 {
+    LIST_LEN.pow(WORDS as u32)
+}
 
 /// The secret behind a pairing session — the only thing the user carries between
 /// machines. Everything else is derived from it.
+///
+/// Held as the number the words spell, so the bytes fed to HKDF are exactly
+/// what the user typed and nothing else.
 #[derive(Clone)]
-pub struct Code([u8; CODE_BYTES]);
+pub struct Code(u64);
+
+/// Redacted on purpose. A code is a secret for two minutes, and the single
+/// place it should ever be rendered is [`Code::display`] — not a log line, not
+/// a panic message, not an error someone pastes into an issue.
+impl std::fmt::Debug for Code {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Code(redacted)")
+    }
+}
 
 impl Code {
     /// Draw a fresh code from the OS.
     pub fn generate() -> Result<Self> {
-        let mut bytes = [0u8; CODE_BYTES];
-        rand::rngs::SysRng
-            .try_fill_bytes(&mut bytes)
-            .map_err(|e| anyhow::anyhow!("reading OS entropy for a pairing code failed: {e}"))?;
-        Ok(Code(bytes))
-    }
-
-    /// The code as the user sees it: sixteen characters in groups of four.
-    pub fn display(&self) -> String {
-        let raw = self.encode();
-        raw.as_bytes()
-            .chunks(4)
-            .map(|c| std::str::from_utf8(c).expect("alphabet is ASCII"))
-            .collect::<Vec<_>>()
-            .join("-")
-    }
-
-    fn encode(&self) -> String {
-        // 10 bytes = 80 bits = exactly 16 base32 characters, no padding.
-        let mut out = String::with_capacity(16);
-        let mut acc: u16 = 0;
-        let mut bits = 0u32;
-        for byte in self.0 {
-            acc = (acc << 8) | u16::from(byte);
-            bits += 8;
-            while bits >= 5 {
-                bits -= 5;
-                let idx = ((acc >> bits) & 0x1f) as usize;
-                out.push(ALPHABET[idx] as char);
+        let space = code_space();
+        // Rejection sampling. Taking a u64 modulo 1296^4 would favour the low
+        // end of the range; the bias is tiny but there is no reason to carry it.
+        let ceiling = u64::MAX - (u64::MAX % space);
+        loop {
+            let mut bytes = [0u8; 8];
+            rand::rngs::SysRng.try_fill_bytes(&mut bytes).map_err(|e| {
+                anyhow::anyhow!("reading OS entropy for a pairing code failed: {e}")
+            })?;
+            let drawn = u64::from_be_bytes(bytes);
+            if drawn < ceiling {
+                return Ok(Code(drawn % space));
             }
         }
-        out
     }
 
-    /// Parse what the user typed. Groups, case and the spacing are all forgiven;
-    /// a character that is not in the alphabet is not, because silently mapping
-    /// it would turn a typo into a failure much later in the handshake.
+    /// The code as the user sees it, e.g. `atom cargo salsa civic`.
+    pub fn display(&self) -> String {
+        let list = wordlist();
+        let mut value = self.0;
+        let mut words = [""; WORDS];
+        // Least significant word last, so the spoken order is stable.
+        for slot in words.iter_mut().rev() {
+            *slot = list[(value % LIST_LEN) as usize];
+            value /= LIST_LEN;
+        }
+        words.join(" ")
+    }
+
+    /// The bytes everything else is derived from.
+    fn bytes(&self) -> [u8; 8] {
+        self.0.to_be_bytes()
+    }
+
+    /// Parse what the user typed.
+    ///
+    /// Separators are forgiving — spaces, tabs, dots, commas all split words —
+    /// but a hyphen does not, because `yo-yo` is a word on the list. Case is
+    /// ignored. A word that is not on the list is named rather than silently
+    /// mapped to something near it, so a typo fails here instead of as a
+    /// confusing handshake error a minute later.
     pub fn parse(input: &str) -> Result<Self> {
-        let cleaned: String = input
-            .chars()
-            .filter(|c| !c.is_whitespace() && *c != '-')
-            .map(|c| c.to_ascii_lowercase())
+        let lower = input.to_ascii_lowercase();
+        let words: Vec<&str> = lower
+            .split(|c: char| c.is_whitespace() || c == '.' || c == ',')
+            .filter(|w| !w.is_empty())
             .collect();
-        if cleaned.len() != 16 {
+
+        if words.len() != WORDS {
             bail!(
-                "a pairing code is 16 characters (you gave {}) — it looks like '{}'",
-                cleaned.len(),
-                Code([0x1f; CODE_BYTES]).display()
+                "a pairing code is {WORDS} words (you gave {}) — \
+                 it looks like 'atom cargo salsa civic'",
+                words.len()
             );
         }
 
-        let mut bytes = [0u8; CODE_BYTES];
-        let mut acc: u16 = 0;
-        let mut bits = 0u32;
-        let mut out = 0usize;
-        for c in cleaned.chars() {
-            let idx = ALPHABET
+        let list = wordlist();
+        let mut value: u64 = 0;
+        for word in words {
+            let index = list
                 .iter()
-                .position(|a| *a as char == c)
-                .with_context(|| format!("'{c}' is not a character a pairing code can contain"))?;
-            acc = (acc << 5) | idx as u16;
-            bits += 5;
-            if bits >= 8 {
-                bits -= 8;
-                bytes[out] = ((acc >> bits) & 0xff) as u8;
-                out += 1;
-            }
+                .position(|w| *w == word)
+                .with_context(|| format!("'{word}' is not a word a pairing code can contain"))?;
+            value = value * LIST_LEN + index as u64;
         }
-        debug_assert_eq!(out, CODE_BYTES);
-        Ok(Code(bytes))
+        Ok(Code(value))
     }
 
     fn derive(&self, info: &[u8], out: &mut [u8]) {
-        Hkdf::<Sha256>::new(None, &self.0)
+        Hkdf::<Sha256>::new(None, &self.bytes())
             .expand(info, out)
             .expect("HKDF output length is within bounds");
     }
@@ -403,7 +457,7 @@ impl Agreed {
     fn derive(&self, info: &[u8], out: &mut [u8]) {
         // The code is the salt, so an attacker who somehow learned the X25519
         // secret still could not derive these without having seen the code.
-        Hkdf::<Sha256>::new(Some(&self.code.0), &self.shared)
+        Hkdf::<Sha256>::new(Some(&self.code.bytes()), &self.shared)
             .expand(info, out)
             .expect("HKDF output length is within bounds");
     }
@@ -436,7 +490,7 @@ impl Agreed {
         transcript.extend_from_slice(&self.sas_input());
 
         let mut out = [0u8; 32];
-        Hkdf::<Sha256>::new(Some(&self.code.0), &transcript)
+        Hkdf::<Sha256>::new(Some(&self.code.bytes()), &transcript)
             .expand(INFO_TRANSCRIPT, &mut out)
             .expect("HKDF output length is within bounds");
         hex::encode(out)
@@ -545,24 +599,25 @@ mod tests {
 
     #[test]
     fn a_code_round_trips_through_what_the_user_types() {
-        for _ in 0..100 {
+        for _ in 0..200 {
             let code = Code::generate().unwrap();
             let shown = code.display();
-            assert_eq!(shown.len(), 19, "16 characters in four groups: {shown}");
+            assert_eq!(shown.split(' ').count(), WORDS, "four words: {shown}");
             assert_eq!(Code::parse(&shown).unwrap().0, code.0);
         }
     }
 
-    /// People retype codes by hand. Case, spacing and the grouping dashes are
-    /// all noise; none of them should be the reason a link fails.
+    /// People retype codes by hand. Case and the choice of separator are noise;
+    /// neither should be the reason a link fails.
     #[test]
     fn typing_a_code_back_is_forgiving_about_shape() {
         let code = Code::generate().unwrap();
         let shown = code.display();
         for variant in [
             shown.to_uppercase(),
-            shown.replace('-', ""),
-            shown.replace('-', " "),
+            shown.replace(' ', "."),
+            shown.replace(' ', ", "),
+            shown.replace(' ', "\t"),
             format!("  {shown}  "),
         ] {
             assert_eq!(
@@ -573,25 +628,105 @@ mod tests {
         }
     }
 
-    /// A character outside the alphabet is a typo, and saying so beats failing
-    /// later with "the code did not work".
+    /// A hyphen must NOT split words, because `yo-yo` is on the list. If it
+    /// did, that word would decode as two unknown ones.
     #[test]
-    fn a_code_with_an_impossible_character_is_refused() {
-        let code = Code::generate().unwrap();
-        let bad = format!("{}u", &code.display()[..18]); // 'u' is not in the alphabet
-        assert!(Code::parse(&bad).is_err());
-        assert!(Code::parse("too-short").is_err());
+    fn a_hyphen_does_not_separate_words() {
+        assert!(
+            wordlist().contains(&"yo-yo"),
+            "the list still has the hyphenated word"
+        );
+
+        let code = Code::parse("yo-yo yo-yo yo-yo yo-yo").unwrap();
+        assert_eq!(code.display(), "yo-yo yo-yo yo-yo yo-yo");
+
+        // And the separator the old character-based format used is now a plain
+        // mistake rather than something half-interpreted: hyphens join, they do
+        // not split, so this is one unknown word rather than four known ones.
+        assert!(Code::parse("atom-cargo-salsa-civic").is_err());
     }
 
-    /// The alphabet must not contain a pair that looks the same on a terminal,
-    /// or every ambiguous code becomes a support question.
+    /// `yoyo` and `yo-yo` are both on the list, at different indices. Treating
+    /// them as one word would quietly collapse part of the code space — which
+    /// is what normalising the hyphen away would have done.
     #[test]
-    fn the_alphabet_has_no_confusable_characters() {
-        let s = std::str::from_utf8(ALPHABET).unwrap();
-        for c in ['o', 'i', 'l', 'u'] {
-            assert!(!s.contains(c), "'{c}' reads as another character");
+    fn the_two_yoyo_spellings_are_distinct_codes() {
+        let hyphenated = Code::parse("yo-yo acid acid acid").unwrap();
+        let plain = Code::parse("yoyo acid acid acid").unwrap();
+        assert_ne!(hyphenated.0, plain.0);
+        assert_ne!(hyphenated.mailbox_id(), plain.mailbox_id());
+    }
+
+    /// A word off the list is a typo, and naming it beats failing a minute
+    /// later with "the code did not work".
+    #[test]
+    fn a_code_with_a_word_that_is_not_on_the_list_is_refused() {
+        let err = Code::parse("atom cargo salsa zzzzz").unwrap_err();
+        assert!(err.to_string().contains("zzzzz"), "got: {err}");
+
+        assert!(Code::parse("atom cargo salsa").is_err(), "too few");
+        assert!(
+            Code::parse("atom cargo salsa civic acid").is_err(),
+            "too many"
+        );
+        assert!(Code::parse("").is_err(), "empty");
+        // The message names the shape, so a short code is self-correcting.
+        let short = Code::parse("atom cargo").unwrap_err().to_string();
+        assert!(short.contains("4 words"), "got: {short}");
+    }
+
+    /// The list is what the maths is built on: 1296 unique, typeable words. A
+    /// repeated word would make two different codes collide.
+    #[test]
+    fn the_wordlist_is_the_shape_the_encoding_assumes() {
+        let list = wordlist();
+        assert_eq!(list.len() as u64, LIST_LEN);
+
+        let unique: std::collections::HashSet<_> = list.iter().collect();
+        assert_eq!(
+            unique.len(),
+            list.len(),
+            "a repeated word collapses two codes"
+        );
+
+        for w in list {
+            assert!(!w.is_empty());
+            assert!(w.len() <= 5, "'{w}' is longer than the short list promises");
+            assert!(
+                !w.contains(' ') && !w.contains('.') && !w.contains(','),
+                "'{w}' contains a separator and could not be parsed back"
+            );
         }
-        assert_eq!(s.len(), 32, "base32 needs exactly 32 symbols");
+    }
+
+    /// Codes must cover the range the word count implies, or the entropy the
+    /// module documents is not the entropy it has.
+    #[test]
+    fn generated_codes_span_the_whole_range() {
+        assert_eq!(code_space(), 1296u64.pow(4));
+
+        let mut seen_low = false;
+        let mut seen_high = false;
+        for _ in 0..2000 {
+            let v = Code::generate().unwrap().0;
+            assert!(v < code_space());
+            seen_low |= v < code_space() / 4;
+            seen_high |= v > code_space() / 4 * 3;
+        }
+        assert!(
+            seen_low && seen_high,
+            "generation looks stuck in part of the range"
+        );
+    }
+
+    /// Distinct codes must reach distinct mailboxes — the property the whole
+    /// rendezvous rests on.
+    #[test]
+    fn distinct_codes_reach_distinct_mailboxes() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..500 {
+            assert!(seen.insert(Code::generate().unwrap().mailbox_id()));
+        }
     }
 
     #[test]
@@ -742,8 +877,9 @@ mod tests {
         // 32 bytes of HKDF, hex-encoded — the shape `pair_mailbox` validates.
         assert_eq!(id.len(), 64);
         assert!(id.bytes().all(|b| b.is_ascii_hexdigit()));
-        assert!(!id.contains(&code.encode()));
-        assert_ne!(id, hex::encode(code.0));
+        // The id must not be the code, nor anything else derived from it.
+        assert!(!id.contains(&code.display().replace(' ', "")));
+        assert_ne!(id, hex::encode(code.bytes()));
         assert_ne!(id, code.session_id_hex());
     }
 

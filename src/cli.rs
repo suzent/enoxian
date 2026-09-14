@@ -358,10 +358,13 @@ pub struct InitArgs {
 
 #[derive(Parser)]
 pub struct LinkArgs {
-    /// The code shown by `enox link` on your other device.
+    /// The four-word code shown by `enox link` on your other device.
     ///
-    /// Omit it to start a link from this device and print a code instead.
-    pub code: Option<String>,
+    /// Taken as separate words (`enox link atom cargo salsa civic`) or as one
+    /// quoted string — both are the same thing to type. Omit it to start a link
+    /// from this device and print a code instead.
+    #[arg(num_args = 0.., value_name = "WORD")]
+    pub code: Vec<String>,
 
     /// Pairing server to meet on, as `host` or `host:port`.
     ///

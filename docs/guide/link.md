@@ -13,15 +13,15 @@ enox link
 
   On the other machine, run:
 
-      enox link 0reb-tz04-kemt-8490
+      enox link atom cargo salsa civic
 
   Waiting for it to connect (the code is good for 2 minutes)…
 ```
 
-On the new machine:
+On the new machine — as separate words, or quoted, whichever you prefer:
 
 ```bash
-enox link 0reb-tz04-kemt-8490
+enox link atom cargo salsa civic
 ```
 
 Both devices then show the same six-digit number. Compare them, answer `y` on each, and the new device is linked — with every circle already joined.
@@ -78,7 +78,7 @@ The two devices meet in a mailbox on the bootstrap server — the one address bo
 
 ```bash
 enox link --server pair.example.com
-enox link 0reb-tz04-kemt-8490 --server pair.example.com
+enox link atom cargo salsa civic --server pair.example.com
 ```
 
 Both sides must name the same server. Any `enox bootstrap serve` provides the mailbox.
@@ -90,7 +90,21 @@ The server is trusted with nothing:
 - The payload is sealed under the X25519 secret, which the server never has.
 - A substituted message fails the confirmation number.
 
-An operator learns that two devices paired, and roughly when. Mailboxes are write-once per slot, capped in size and number, and expire after two minutes.
+An operator learns that two devices paired, and roughly when. Mailboxes are write-once per slot, capped in size and number, and expire after two minutes. Each source gets 60 requests per 10 seconds — about four times what a real pairing needs — counted per IPv4 address and per IPv6 `/64`.
+
+Behind a reverse proxy that limit does nothing, because every client arrives as the proxy. `X-Forwarded-For` is deliberately not consulted: trusting it by default would let anyone set it to whatever they liked.
+
+---
+
+## About the code
+
+Four words from the [EFF short wordlist](https://www.eff.org/dice) — 1296 words of three to five letters, no two sharing a prefix. That is about 41 bits.
+
+Deliberately **not** BIP-39 words, even though those are already in the build. BIP-39 is what your recovery phrase is made of, and the whole point of `enox link` is that the phrase never has to be typed into a prompt again. Four recovery-shaped words at a pairing prompt would teach exactly the habit that makes the real phrase phishable.
+
+41 bits is sized against *online* guessing: every guess costs an attacker one request to the mailbox, and the mailbox exists for two minutes. Reaching even a 1% chance inside one pairing would take on the order of 10¹⁰ requests in that window — far past what one server answers. The confirmation number, not the code, is what stops a man in the middle.
+
+Words are separated by spaces. One word on the list — `yo-yo` — contains a hyphen, so hyphens join rather than split; spaces, dots and commas all separate, and case is ignored.
 
 ---
 

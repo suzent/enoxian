@@ -127,7 +127,18 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
         let listener = tokio::net::TcpListener::bind(http_addr)
             .await
             .expect("failed to bind HTTP listener");
-        axum::serve(listener, app).await.expect("HTTP server error");
+        // `into_make_service_with_connect_info` is what puts the peer address
+        // within reach of the pairing mailbox's rate limit. Note it is the
+        // address of whoever opened the socket: behind a reverse proxy every
+        // client looks like the proxy, and `X-Forwarded-For` is deliberately
+        // not consulted, because trusting it by default would let an attacker
+        // set it to whatever they liked.
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .expect("HTTP server error");
     });
 
     loop {

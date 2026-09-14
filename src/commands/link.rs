@@ -4,8 +4,8 @@
 //! prints on the new one:
 //!
 //! ```text
-//!   $ enox link                      $ enox link 4k9f-x8qp-2mn7-rt4v
-//!   Code: 4k9f-x8qp-2mn7-rt4v        Confirm on your other device: 731-508
+//!   $ enox link                      $ enox link atom cargo salsa civic
+//!   Code: atom cargo salsa civic        Confirm on your other device: 731-508
 //!   Confirm on the other device:     Does it show the same number? [y/N]
 //!     731-508
 //!   Does it match? [y/N]
@@ -59,9 +59,12 @@ pub async fn run(args: LinkArgs, client: &reqwest::Client) -> Result<()> {
     };
     let base = mailbox_base(&server);
 
-    match args.code {
-        Some(ref code) => join(code, &base, client).await,
-        None => offer(&base, client).await,
+    // Words arrive as separate arguments or as one quoted string; `Code::parse`
+    // treats a space the same either way, so joining is all that is needed.
+    if args.code.is_empty() {
+        offer(&base, client).await
+    } else {
+        join(&args.code.join(" "), &base, client).await
     }
 }
 

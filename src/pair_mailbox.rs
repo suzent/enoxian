@@ -18,12 +18,13 @@
 //! one of them fails closed.
 
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{
     body::Bytes,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::StatusCode,
     routing::post,
     Router,
@@ -46,6 +47,21 @@ const MAX_MAILBOXES: usize = 1024;
 
 /// A mailbox id is the hex of a 32-byte HKDF output. Anything else is not one.
 const ID_LEN: usize = 32;
+
+/// Requests one source may make per [`RATE_WINDOW`].
+///
+/// A device pairing polls at roughly 1.4 requests a second, so 60 per ten
+/// seconds leaves about four times the headroom a legitimate client needs —
+/// enough that two colleagues behind one office NAT pairing at the same moment
+/// do not throttle each other.
+///
+/// This is not what makes a four-word code safe: the code space and the
+/// two-minute window already put an online guesser far past what one server
+/// will answer. It is here so the mailbox cannot be used to hammer the
+/// bootstrap host, and to take some of the margin back from an attacker
+/// spreading guesses over many addresses.
+const RATE_MAX: u32 = 60;
+const RATE_WINDOW: Duration = Duration::from_secs(10);
 
 /// The three slots, each written once by one side and read by the other.
 ///
@@ -82,6 +98,30 @@ impl Mailbox {
 
 struct Inner {
     boxes: HashMap<String, (Mailbox, Instant)>,
+    /// Requests seen from each source in the current window.
+    seen: HashMap<RateKey, (u32, Instant)>,
+}
+
+/// What a rate budget is counted against.
+///
+/// A single IPv6 address means nothing — an attacker usually holds a whole /64
+/// — so v6 is bucketed by that prefix. v4 is counted per address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum RateKey {
+    V4([u8; 4]),
+    V6Prefix([u8; 8]),
+}
+
+impl From<IpAddr> for RateKey {
+    fn from(ip: IpAddr) -> Self {
+        match ip {
+            IpAddr::V4(v4) => RateKey::V4(v4.octets()),
+            IpAddr::V6(v6) => {
+                let o = v6.octets();
+                RateKey::V6Prefix(o[..8].try_into().expect("an IPv6 address has 16 octets"))
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -91,6 +131,7 @@ impl MailboxState {
     pub fn new() -> Self {
         MailboxState(Arc::new(Mutex::new(Inner {
             boxes: HashMap::new(),
+            seen: HashMap::new(),
         })))
     }
 
@@ -101,6 +142,20 @@ impl MailboxState {
         inner
             .boxes
             .retain(|_, (_, created)| now.duration_since(*created) < TTL);
+        inner
+            .seen
+            .retain(|_, (_, started)| now.duration_since(*started) < RATE_WINDOW);
+    }
+
+    /// Charge one request against a source's budget. `false` means refuse.
+    fn allow(inner: &mut Inner, key: RateKey) -> bool {
+        let now = Instant::now();
+        let entry = inner.seen.entry(key).or_insert((0, now));
+        if now.duration_since(entry.1) >= RATE_WINDOW {
+            *entry = (0, now);
+        }
+        entry.0 += 1;
+        entry.0 <= RATE_MAX
     }
 }
 
@@ -137,6 +192,7 @@ fn slot_index(slot: &str) -> Option<Slot> {
 /// replace a message the other side may already have read.
 async fn put_slot(
     State(state): State<MailboxState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((id, slot)): Path<(String, String)>,
     body: Bytes,
 ) -> StatusCode {
@@ -152,6 +208,9 @@ async fn put_slot(
 
     let mut inner = state.0.lock().await;
     MailboxState::expire(&mut inner);
+    if !MailboxState::allow(&mut inner, peer.ip().into()) {
+        return StatusCode::TOO_MANY_REQUESTS;
+    }
 
     // Only a brand-new mailbox counts against the cap: refusing a reply to a
     // pairing already under way would strand it half-done.
@@ -179,6 +238,7 @@ async fn put_slot(
 /// poll happened to land first.
 async fn get_slot(
     State(state): State<MailboxState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((id, slot)): Path<(String, String)>,
 ) -> (StatusCode, Vec<u8>) {
     if !valid_id(&id) {
@@ -190,6 +250,9 @@ async fn get_slot(
 
     let mut inner = state.0.lock().await;
     MailboxState::expire(&mut inner);
+    if !MailboxState::allow(&mut inner, peer.ip().into()) {
+        return (StatusCode::TOO_MANY_REQUESTS, Vec::new());
+    }
 
     match inner.boxes.get_mut(&id) {
         Some((mailbox, _)) => match mailbox.slot(which) {
@@ -208,9 +271,32 @@ mod tests {
         "a".repeat(64)
     }
 
+    fn peer(n: u8) -> ConnectInfo<SocketAddr> {
+        ConnectInfo(SocketAddr::from(([10, 0, 0, n], 40000)))
+    }
+
+    /// A distinct source per index — for the tests about how many *mailboxes*
+    /// the server holds, which in life come from that many different devices
+    /// and must not be throttled as though one host made them all.
+    fn peer_seq(i: usize) -> ConnectInfo<SocketAddr> {
+        let [_, b, c, d] = (i as u32).to_be_bytes();
+        ConnectInfo(SocketAddr::from(([10, b, c, d], 40000)))
+    }
+
     async fn put(state: &MailboxState, id: &str, slot: &str, body: &[u8]) -> StatusCode {
+        put_from(state, peer(1), id, slot, body).await
+    }
+
+    async fn put_from(
+        state: &MailboxState,
+        from: ConnectInfo<SocketAddr>,
+        id: &str,
+        slot: &str,
+        body: &[u8],
+    ) -> StatusCode {
         put_slot(
             State(state.clone()),
+            from,
             Path((id.to_string(), slot.to_string())),
             Bytes::copy_from_slice(body),
         )
@@ -220,6 +306,7 @@ mod tests {
     async fn get(state: &MailboxState, id: &str, slot: &str) -> (StatusCode, Vec<u8>) {
         get_slot(
             State(state.clone()),
+            peer(1),
             Path((id.to_string(), slot.to_string())),
         )
         .await
@@ -366,17 +453,102 @@ mod tests {
         let state = MailboxState::new();
         for i in 0..MAX_MAILBOXES {
             let id = format!("{i:064x}");
-            assert_eq!(put(&state, &id, "offer", b"x").await, StatusCode::CREATED);
+            assert_eq!(
+                put_from(&state, peer_seq(i), &id, "offer", b"x").await,
+                StatusCode::CREATED
+            );
         }
         let fresh = "f".repeat(64);
         assert_eq!(
-            put(&state, &fresh, "offer", b"x").await,
+            put_from(&state, peer_seq(9_000), &fresh, "offer", b"x").await,
             StatusCode::SERVICE_UNAVAILABLE
         );
 
         // A session that already has a mailbox still completes.
         let live = format!("{:064x}", 0);
-        assert_eq!(put(&state, &live, "reply", b"x").await, StatusCode::CREATED);
+        assert_eq!(
+            put_from(&state, peer_seq(9_001), &live, "reply", b"x").await,
+            StatusCode::CREATED
+        );
+    }
+
+    /// The budget must refuse a source that keeps asking, or the mailbox is a
+    /// free way to hammer the bootstrap host.
+    #[tokio::test]
+    async fn one_source_cannot_ask_without_limit() {
+        let state = MailboxState::new();
+        for i in 0..RATE_MAX {
+            let status = get(&state, &id(), "offer").await.0;
+            assert_ne!(status, StatusCode::TOO_MANY_REQUESTS, "refused at {i}");
+        }
+        assert_eq!(
+            get(&state, &id(), "offer").await.0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    /// One noisy source must not take the budget of an unrelated one, or a
+    /// single bad actor would stop everyone else pairing.
+    #[tokio::test]
+    async fn the_budget_is_per_source() {
+        let state = MailboxState::new();
+        for _ in 0..RATE_MAX + 5 {
+            let _ = put_from(&state, peer(1), &id(), "offer", b"x").await;
+        }
+        assert_eq!(
+            put_from(&state, peer(2), &"b".repeat(64), "offer", b"x").await,
+            StatusCode::CREATED
+        );
+    }
+
+    /// A real pairing polls for the whole window. The budget has to be loose
+    /// enough that an honest client never trips it.
+    #[tokio::test]
+    async fn an_honest_client_stays_inside_the_budget() {
+        // Two sides, polling at ~1.4 req/s, over one window.
+        let polls_per_window = (RATE_WINDOW.as_secs_f64() * 1.4).ceil() as u32;
+        assert!(
+            polls_per_window * 2 < RATE_MAX,
+            "a pairing makes ~{polls_per_window} polls per side per window, \
+             against a budget of {RATE_MAX}"
+        );
+    }
+
+    /// The window must roll, or a source is locked out for as long as the
+    /// server is up.
+    #[tokio::test]
+    async fn the_budget_refills_after_the_window() {
+        let state = MailboxState::new();
+        for _ in 0..RATE_MAX + 1 {
+            let _ = get(&state, &id(), "offer").await;
+        }
+        assert_eq!(
+            get(&state, &id(), "offer").await.0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+
+        {
+            let mut inner = state.0.lock().await;
+            for (_, entry) in inner.seen.iter_mut() {
+                entry.1 = Instant::now() - RATE_WINDOW - Duration::from_secs(1);
+            }
+        }
+        assert_ne!(
+            get(&state, &id(), "offer").await.0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    /// A whole IPv6 /64 is usually one attacker, so it shares one budget —
+    /// otherwise the limit is free to walk around.
+    #[tokio::test]
+    async fn an_ipv6_prefix_shares_one_budget() {
+        let a: IpAddr = "2001:db8::1".parse().unwrap();
+        let b: IpAddr = "2001:db8::dead:beef".parse().unwrap();
+        let elsewhere: IpAddr = "2001:db9::1".parse().unwrap();
+
+        assert_eq!(RateKey::from(a), RateKey::from(b), "same /64");
+        assert_ne!(RateKey::from(a), RateKey::from(elsewhere), "different /64");
     }
 
     /// Nothing may outlive the pairing window, or the server becomes storage.
@@ -401,7 +573,7 @@ mod tests {
     async fn expiry_releases_capacity() {
         let state = MailboxState::new();
         for i in 0..MAX_MAILBOXES {
-            put(&state, &format!("{i:064x}"), "offer", b"x").await;
+            put_from(&state, peer_seq(i), &format!("{i:064x}"), "offer", b"x").await;
         }
         {
             let mut inner = state.0.lock().await;
@@ -410,7 +582,7 @@ mod tests {
             }
         }
         assert_eq!(
-            put(&state, &"f".repeat(64), "offer", b"x").await,
+            put_from(&state, peer_seq(9_002), &"f".repeat(64), "offer", b"x").await,
             StatusCode::CREATED
         );
     }
