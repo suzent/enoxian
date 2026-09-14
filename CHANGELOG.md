@@ -39,6 +39,37 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- `enox link` puts your identity on a second device without the 24-word
+  mnemonic. Run it on the machine you already use, type the four words it prints
+  on the new one, check that both screens show the same six-digit number, and
+  the new device is linked with every circle already joined. The user root key
+  never leaves the device that holds it — the new machine generates its own
+  device key and receives a signature over it — so a linked device can later be
+  removed on its own.
+
+- `enox identity show` now says whether a device's attestation actually
+  verifies, rather than only that one is present.
+
+### Fixed
+
+- Renaming a device with `enox identity set-label` no longer erases the stored
+  recovery phrase. Any save of the identity file used to drop it, so a rename —
+  or receiving a link — silently destroyed the only copy of the user root key.
+
+- Renaming a device no longer invalidates its attestation. The device label was
+  part of what the attestation signed, so a rename permanently broke it with no
+  way to reissue one.
+
+### Security
+
+- `enox link` and rendezvous address resolution no longer send the local
+  daemon's API token to the remote bootstrap server. Both used the CLI's shared
+  HTTP client, which carries that token as a default header, so talking to a
+  pairing or bootstrap host disclosed a privileged local credential over plain
+  HTTP.
+
 ### Changed
 
 - Read-the-room agents now take turns fairly. Choose a listener count per message,

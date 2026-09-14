@@ -1147,6 +1147,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "x25519-dalek 2.0.1",
  "yrs",
 ]
 

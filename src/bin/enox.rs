@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         AgentCommands::Init(args) => enoxian::commands::init::run(args).await,
         AgentCommands::Enter(args) => enoxian::commands::enter::run(args, &client).await,
+        AgentCommands::Link(args) => enoxian::commands::link::run(args, &client).await,
         AgentCommands::Invite(args) => {
             let configs = enoxian::config::load_all()?;
             let cfg = enoxian::resolve::resolve(&args.circle, &configs).map_err(|_| {
@@ -294,6 +295,7 @@ async fn main() -> anyhow::Result<()> {
                 // Already handled above
                 AgentCommands::Init(_)
                 | AgentCommands::Enter(_)
+                | AgentCommands::Link(_)
                 | AgentCommands::Invite(_)
                 | AgentCommands::Circles
                 | AgentCommands::Open
