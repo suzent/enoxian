@@ -39,6 +39,15 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Security
+
+- The recovery phrase is no longer written to disk. It is shown once when you
+  run `enox identity create-user` and never saved, so a lost or stolen machine
+  is a lost device rather than a lost identity. Adding devices does not need it
+  — `enox link` uses the device's own attestation. An older install that still
+  has one is told so by `enox identity show`, and `enox identity forget-phrase`
+  removes it after showing the words one last time.
+
 ### Added
 
 - Relay operators and clients can query `GET /version` for the running package
