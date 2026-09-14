@@ -962,9 +962,22 @@ button[role="tab"][aria-selected="true"] {
 
 .chat-activity__item {
   min-width: 0;
+  overflow: hidden;
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  white-space: nowrap;
+}
+
+.chat-activity__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-activity__more {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
