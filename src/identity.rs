@@ -101,15 +101,24 @@ impl DeviceIdentity {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        // Carry the recovery phrase forward. It lives only in the file —
-        // `DeviceIdentity` has nowhere to hold it — so rewriting without
-        // reading first destroys the single copy of the user root key. This
-        // used to happen on every `enox identity set-label` and on receiving a
-        // link, silently and with no way back.
-        let user_mnemonic = std::fs::read_to_string(&path)
+        // Carry forward a recovery phrase an older install left here, but only
+        // while it still belongs to the identity being written.
+        //
+        // It lives only in the file — `DeviceIdentity` has nowhere to hold it —
+        // so rewriting without reading first destroys the single copy of the
+        // user root key, which used to happen on every `enox identity
+        // set-label`. Carrying it *unconditionally* is the opposite mistake:
+        // switching this device to another identity would keep the old words,
+        // and `identity show` and `forget-phrase` would then present a stale
+        // root secret as the current one.
+        let existing = std::fs::read_to_string(&path)
             .ok()
-            .and_then(|raw| toml::from_str::<IdentityFile>(&raw).ok())
-            .and_then(|existing| existing.user_mnemonic);
+            .and_then(|raw| toml::from_str::<IdentityFile>(&raw).ok());
+        let user_mnemonic = existing.and_then(|existing| {
+            let same_identity = existing.user_pubkey_hex.is_some()
+                && existing.user_pubkey_hex == self.user_pubkey_hex;
+            same_identity.then_some(existing.user_mnemonic).flatten()
+        });
 
         let file = IdentityFile {
             device_key_hex: hex::encode(self.seed),
@@ -849,6 +858,64 @@ mod tests {
         });
     }
 
+    /// A phrase belongs to one identity. Switching this device to another must
+    /// not keep the old words: `identity show` and `forget-phrase` would then
+    /// present a stale root secret as the current one, and it would sit on disk
+    /// for an identity this device no longer has anything to do with.
+    #[test]
+    fn a_phrase_does_not_follow_the_device_to_another_identity() {
+        with_home(|home| {
+            let path = home.join("identity.toml");
+
+            // An older install: linked to suzy, with her phrase on disk.
+            let (suzy, suzy_phrase) = UserIdentity::generate("suzy".into()).unwrap();
+            let mut device = DeviceIdentity::generate("shared-laptop".into());
+            device.save().unwrap();
+            suzy.link_device(&mut device).unwrap();
+
+            let mut file: IdentityFile =
+                toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            file.user_mnemonic = Some(suzy_phrase.clone());
+            std::fs::write(&path, toml::to_string_pretty(&file).unwrap()).unwrap();
+            assert_eq!(
+                DeviceIdentity::load().unwrap().stored_phrase().as_deref(),
+                Some(suzy_phrase.as_str())
+            );
+
+            // A save for the *same* identity keeps it — that guarantee stands.
+            let mut same = DeviceIdentity::load().unwrap();
+            same.device_label = "renamed".into();
+            same.save().unwrap();
+            assert_eq!(
+                DeviceIdentity::load().unwrap().stored_phrase().as_deref(),
+                Some(suzy_phrase.as_str()),
+                "a rename must not destroy the phrase"
+            );
+
+            // Switching the device to a different identity drops it.
+            let (mallory, _) = UserIdentity::generate("mallory".into()).unwrap();
+            let mut switched = DeviceIdentity::load().unwrap();
+            mallory.link_device(&mut switched).unwrap();
+
+            let after = DeviceIdentity::load().unwrap();
+            assert!(
+                after.stored_phrase().is_none(),
+                "the previous identity's recovery phrase was left on disk"
+            );
+            assert_eq!(
+                after.user_pubkey_hex,
+                Some(mallory.pubkey_hex().unwrap()),
+                "the device should now belong to the new identity"
+            );
+            assert!(
+                !std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains(&suzy_phrase),
+                "the old words are still in the file"
+            );
+        });
+    }
+
     /// The label is a display name the user can change. Binding it into the
     /// signature meant renaming a device permanently invalidated its
     /// attestation, with no way to reissue one.
@@ -1039,11 +1106,13 @@ mod tests {
         let (user, _) = UserIdentity::generate("suzy".into()).unwrap();
         let laptop = linked(&user, "laptop");
         assert!(laptop.attestation_is_valid());
-        assert!(
-            laptop.stored_phrase().is_none(),
-            "a linked device must not hold the recovery phrase"
-        );
 
+        // Deliberately no `stored_phrase` check here. It reads the real
+        // identity.toml through the process-wide `ENOXIAN_HOME`, so asserting on
+        // it outside `with_home` would race the test that deliberately stores a
+        // phrase — and, with no override set, would read the developer's own
+        // identity file. That property is covered where the home is controlled,
+        // in `creating_a_user_does_not_write_the_phrase_to_disk`.
         let mut phone = DeviceIdentity::generate("phone".into());
         let chain = laptop.attest(&phone.device_pubkey_hex().unwrap()).unwrap();
         assert_eq!(chain.len(), 2, "root -> laptop -> phone");

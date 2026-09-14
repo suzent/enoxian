@@ -135,9 +135,11 @@ export default function LandingPage({ onEntered }: Props) {
       if (!identity.has_user_key && userName.trim()) {
         const result = await createUserIdentity(userName.trim())
         setMnemonic(result.mnemonic)
-        // Proceed to init circle after showing backup screen
-        const created = await initCircle(circleName.trim() || 'DEFAULT', userName.trim() || undefined, joinPolicy)
-        setPendingCircleId(created.circle_id ?? null)
+        // Show the phrase before anything else that can fail. The daemon no
+        // longer stores it, so this response is the only time it exists — and
+        // a failure here used to skip the backup screen, leaving an identity
+        // whose phrase was never displayed and could never be shown again
+        // (the retry sees has_user_key and takes the other branch).
         setUIState('mnemonic-backup')
         return
       }
@@ -179,9 +181,30 @@ export default function LandingPage({ onEntered }: Props) {
     }
   }, [linkHandle, linkMnemonic])
 
-  const handleMnemonicConfirmed = useCallback(() => {
-    triggerEruptionAndComplete(pendingCircleId)
-  }, [pendingCircleId])
+  const handleMnemonicConfirmed = useCallback(async () => {
+    // The Circle is created here, not before the phrase was shown, so a failure
+    // leaves the user on this screen with the words still in front of them
+    // rather than past the only chance to read them.
+    if (pendingCircleId) {
+      triggerEruptionAndComplete(pendingCircleId)
+      return
+    }
+    setError('')
+    setLoading(true)
+    try {
+      const created = await initCircle(
+        circleName.trim() || 'DEFAULT',
+        userName.trim() || undefined,
+        joinPolicy,
+      )
+      setPendingCircleId(created.circle_id ?? null)
+      triggerEruptionAndComplete(created.circle_id)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [pendingCircleId, circleName, userName, joinPolicy])
 
   // ── Shared input style ────────────────────────────────────────────────────
 
@@ -516,8 +539,22 @@ export default function LandingPage({ onEntered }: Props) {
           }}>
             {mnemonic || '(GENERATING...)'}
           </div>
-          <button style={btnPrimary} onClick={handleMnemonicConfirmed}>
-            I HAVE SAVED IT
+          {error && (
+            <div style={{
+              border: '1px solid #000',
+              padding: '8px 10px',
+              marginBottom: 10,
+              fontFamily: 'var(--font-mono)',
+              fontSize: 10,
+              lineHeight: 1.6,
+            }}>
+              {error}
+              <br />
+              Your words are still above — save them, then try again.
+            </div>
+          )}
+          <button style={btnPrimary} onClick={handleMnemonicConfirmed} disabled={loading}>
+            {loading ? 'CREATING…' : 'I HAVE SAVED IT'}
           </button>
         </div>
       </>
