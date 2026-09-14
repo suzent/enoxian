@@ -110,12 +110,17 @@ impl DeviceIdentity {
             agents: self.agents.clone(),
         };
         let toml = toml::to_string_pretty(&file).context("serialize identity")?;
-        std::fs::write(&path, toml)?;
+        // Holds the device seed: anyone who can read it can be this device.
+        crate::config::write_secret(&path, toml)?;
         Ok(())
     }
 
     pub fn load() -> Result<Self> {
         let path = identity_path()?;
+        // Installs made before secrets were written with a restrictive mode
+        // still have a world-readable device seed sitting there; this is the
+        // one moment we are certain to be looking at the file.
+        crate::config::tighten_if_loose(&path);
         let raw =
             std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let file: IdentityFile = toml::from_str(&raw).context("parse identity.toml")?;

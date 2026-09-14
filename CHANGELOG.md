@@ -39,6 +39,14 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Security
+
+- Files holding key material — `identity.toml`, a circle's `config.toml`, and
+  `admin.key` — are now written `0600` instead of inheriting the process umask,
+  which on a typical machine left them readable by every local account. Files
+  already written are tightened the next time they are read, so existing
+  installs are fixed rather than only new ones.
+
 ### Added
 
 - `enox link` puts your identity on a second device without the 24-word

@@ -704,6 +704,9 @@ fn verify_admin_sig(admin_pubkey_hex: &str, msg: &[u8], sig_hex: &str) -> anyhow
 fn local_admin_sign(circle_id: &str, msg: &[u8]) -> anyhow::Result<String> {
     use crate::{config::circle_dir, crypto::keypair_from_hex};
     let key_path = circle_dir(circle_id)?.join("admin.key");
+    // Admin keys written before secrets had a restrictive mode are tightened
+    // here, which is the one place this file is certainly being looked at.
+    crate::config::tighten_if_loose(&key_path);
     let hex_str = std::fs::read_to_string(&key_path)
         .map_err(|_| anyhow::anyhow!("not admin: admin.key not found for this circle"))?;
     let kp = keypair_from_hex(hex_str.trim())?;

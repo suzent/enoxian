@@ -274,13 +274,16 @@ pub fn save(config: &CircleConfig) -> Result<()> {
         .with_context(|| format!("failed to create circle dir {}", dir.display()))?;
     let path = dir.join("config.toml");
     let contents = toml::to_string_pretty(config).context("failed to serialize config")?;
-    std::fs::write(&path, contents)
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    // Holds this circle's PSK and per-circle private key.
+    write_secret(&path, contents)?;
     Ok(())
 }
 
 pub fn load(circle_id: &str) -> Result<CircleConfig> {
     let path = circle_dir(circle_id)?.join("config.toml");
+    // Carries the circle PSK and this device's per-circle private key. Configs
+    // written before secrets had a restrictive mode are tightened here.
+    tighten_if_loose(&path);
     let contents = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let mut config: CircleConfig =
@@ -307,6 +310,8 @@ pub fn load_all() -> Result<Vec<CircleConfig>> {
         let entry = entry?;
         let config_path = entry.path().join("config.toml");
         if config_path.exists() {
+            // As in `load`: PSK and per-circle key, tightened where they are read.
+            tighten_if_loose(&config_path);
             match std::fs::read_to_string(&config_path).and_then(|s| {
                 toml::from_str(&s)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
@@ -402,5 +407,154 @@ keypair_proto_hex = ""
             &PathBuf::from(workspace.to_string_lossy().to_lowercase())
         )
         .unwrap());
+    }
+}
+
+// ── Secrets on disk ───────────────────────────────────────────────────────────
+
+/// Write a file that holds key material, readable only by its owner.
+///
+/// Several files under `~/.enoxian` are secrets in the plain sense that anyone
+/// who reads them can be you: `identity.toml` holds the device seed, a circle's
+/// `config.toml` holds that circle's PSK and per-circle private key, and
+/// `admin.key` holds the admin signing key. All of them were written with the
+/// process umask, which on a typical machine leaves them readable by every
+/// local account.
+///
+/// This does not defend against someone who has taken the disk — for that the
+/// material would have to be encrypted or held by the OS keychain. It defends
+/// against the ordinary case of a shared or multi-account machine, and it is
+/// the difference between "a secret" and "a secret in a world-readable file".
+///
+/// The mode is set before the bytes are written, so there is no window in which
+/// the contents exist under the old permissions.
+pub fn write_secret(path: &std::path::Path, contents: impl AsRef<[u8]>) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        // An existing file keeps its old mode through `open`, so set it too.
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        file.write_all(contents.as_ref())
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        // On Windows the file inherits the user profile ACL, which already
+        // restricts it to the owner; there is no portable chmod equivalent.
+        std::fs::write(path, contents)
+            .with_context(|| format!("failed to write {}", path.display()))
+    }
+}
+
+/// Tighten a secret file that was written before [`write_secret`] existed.
+///
+/// A fix that only applies to new writes leaves every install made until now
+/// exactly as exposed as it was — and these files are rewritten rarely, so
+/// "it will be fixed next time it is saved" can mean never. Called on the read
+/// paths, where the cost is one `stat` and, once, one `chmod`.
+///
+/// Best effort: a file on a filesystem with no modes, or owned by someone else,
+/// is left alone rather than failing the read.
+pub fn tighten_if_loose(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(meta) = std::fs::metadata(path) else {
+            return;
+        };
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
+#[cfg(all(test, unix))]
+mod secret_file_tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    /// The point of the helper. A file holding a device seed, a circle PSK or
+    /// an admin key must not be readable by other accounts on the machine.
+    #[test]
+    fn a_secret_file_is_readable_only_by_its_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.toml");
+
+        super::write_secret(&path, "device_key_hex = \"deadbeef\"").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "device_key_hex = \"deadbeef\""
+        );
+    }
+
+    /// Every identity file written before this existed is group- and
+    /// world-readable. Tightening only on write would leave them that way,
+    /// possibly forever, since these files are rewritten rarely.
+    #[test]
+    fn an_existing_loose_file_is_tightened_on_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.toml");
+        std::fs::write(&path, "device_key_hex = \"deadbeef\"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        super::tighten_if_loose(&path);
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+    }
+
+    /// A file that is already private is left exactly as it is, including modes
+    /// an operator chose deliberately.
+    #[test]
+    fn an_already_private_file_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("admin.key");
+        std::fs::write(&path, "key").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+
+        super::tighten_if_loose(&path);
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o400, "a read-only key was changed");
+    }
+
+    /// A missing file must not panic — the read paths call this before knowing
+    /// whether there is anything there.
+    #[test]
+    fn a_missing_file_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        super::tighten_if_loose(&dir.path().join("nothing-here"));
+    }
+
+    /// Rewriting must not silently leave a file that was already permissive —
+    /// which is every identity file written before this existed.
+    #[test]
+    fn rewriting_tightens_a_file_that_was_already_loose() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "psk_hex = \"old\"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        super::write_secret(&path, "psk_hex = \"new\"").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "psk_hex = \"new\"");
     }
 }
