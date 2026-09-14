@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use libp2p::{
     core::muxing::StreamMuxerBox,
     dcutr,
@@ -22,6 +22,66 @@ use crate::{
     network::behaviour::{EnochBehaviour, EnochEvent},
 };
 
+/// Most a relay may hand back for one invite, mirroring its own cap with slack.
+/// A short link can name any host, so the client does not take that host's word
+/// for how much it is about to be sent.
+const MAX_SEALED_INVITE: u64 = 16 * 1024;
+
+/// Fetch and open a short invite, yielding the self-contained link it stands for.
+async fn resolve_short(uri: &str, _daemon_client: &reqwest::Client) -> Result<String> {
+    let short = invite::ShortInvite::decode(uri)?;
+    let host = short
+        .host
+        .clone()
+        .or_else(|| crate::defaults::DEFAULT_RENDEZVOUS.map(str::to_string))
+        .context(
+            "this short invite names no relay and this build has no default — \
+             ask for the long form of the link",
+        )?;
+
+    // Not the caller's client: it carries the local daemon's bearer token, and
+    // this request goes to a relay named by whoever wrote the link.
+    let base = crate::outbound::blob_base(&host);
+    let resp = crate::outbound::client()
+        .get(format!("{base}/{}", short.key.blob_id()))
+        .send()
+        .await
+        .with_context(|| format!("could not reach the relay at {host}"))?;
+
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        bail!(
+            "the relay at {host} has nothing for this invite — it may have expired, \
+             or been minted against a different relay"
+        );
+    }
+    if !resp.status().is_success() {
+        bail!(
+            "the relay at {host} refused this invite ({})",
+            resp.status()
+        );
+    }
+    if resp.content_length().is_some_and(|n| n > MAX_SEALED_INVITE) {
+        bail!("the relay at {host} returned an implausibly large invite");
+    }
+
+    // Bounded while consuming, not after. `bytes()` buffers the whole response
+    // first, so a relay that omits Content-Length and uses chunked encoding
+    // would be allocated for until it finished or the timeout struck — the
+    // header check above never getting a look in. Stopping mid-stream is what
+    // makes the cap real; the header check just fails faster when it is honest.
+    let mut sealed: Vec<u8> = Vec::new();
+    let mut resp = resp;
+    while let Some(chunk) = resp.chunk().await.context("reading the invite")? {
+        if sealed.len() as u64 + chunk.len() as u64 > MAX_SEALED_INVITE {
+            bail!("the relay at {host} returned an implausibly large invite");
+        }
+        sealed.extend_from_slice(&chunk);
+    }
+
+    let plain = short.key.open(&sealed)?;
+    String::from_utf8(plain).context("the invite behind this link is not valid text")
+}
+
 pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
     // ── Step 1: Resolve credentials from invite URI or legacy flags ───────────
     let (
@@ -34,7 +94,15 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         admin_pubkey_hex,
         join_grant,
     ) = if args.target.starts_with("enoxian://") {
-        let mut payload = invite::decode(&args.target)?;
+        // A short invite carries only a key; its contents are sealed on a
+        // relay. Fetch and open before anything else, so everything downstream
+        // sees an ordinary invite.
+        let target = if invite::is_short(&args.target) {
+            resolve_short(&args.target, client).await?
+        } else {
+            args.target.clone()
+        };
+        let mut payload = invite::decode(&target)?;
         invite::check_expiry(&payload)?;
         // An invite that named the default relay or rendezvous server carried a
         // flag instead of an address, to keep the link short. Turning that back
@@ -361,5 +429,63 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
                 return Ok(());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod short_invite_tests {
+    /// A relay named in a link can omit Content-Length and stream chunks
+    /// forever. The cap has to bite while the body is being consumed: checking
+    /// it afterwards means the allocation has already happened, and a server
+    /// that never finishes is only stopped by the request timeout.
+    #[tokio::test]
+    async fn redemption_stops_reading_an_endless_relay_response() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Chunked, no Content-Length, and it never sends a terminating chunk.
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 2048];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                    .await;
+                let chunk = vec![b'A'; 16 * 1024];
+                loop {
+                    if stream
+                        .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                        .await
+                        .is_err()
+                        || stream.write_all(&chunk).await.is_err()
+                        || stream.write_all(b"\r\n").await.is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+        });
+
+        let uri = format!(
+            "enoxian://s1/AAAAAAAAAAAAAAAAAAAAAA@127.0.0.1:{}",
+            addr.port()
+        );
+
+        // Well inside the 15s client timeout: if this only stopped on timeout,
+        // it would not finish here.
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            super::resolve_short(&uri, &reqwest::Client::new()),
+        )
+        .await;
+
+        let result = outcome.expect("redemption hung instead of enforcing the cap");
+        let err = result.expect_err("an endless response must not be accepted");
+        assert!(
+            err.to_string().contains("implausibly large"),
+            "stopped for the wrong reason: {err}"
+        );
     }
 }

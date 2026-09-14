@@ -53,8 +53,13 @@
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use chacha20poly1305::aead::{Aead, Payload};
+use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce};
 use chrono::{DateTime, Duration, Utc};
+use hkdf::Hkdf;
 use libp2p::Multiaddr;
+use rand::TryRng;
+use sha2::Sha256;
 use uuid::Uuid;
 
 const SCHEME_V1: &str = "enoxian://v1/";
@@ -198,6 +203,159 @@ pub fn verify_grant(circle_id: &str, grant: &InviteGrant, expires_at: DateTime<U
 /// which is what makes a TTL mean anything.
 pub fn grant_message(circle_id: &str, nonce: &str, expires_at: DateTime<Utc>) -> Vec<u8> {
     format!("invite:{circle_id}:{nonce}:{}", expires_at.timestamp()).into_bytes()
+}
+
+// ── Short invites ─────────────────────────────────────────────────────────────
+
+/// Prefix of a short invite — one that keeps its contents on a relay.
+pub const SCHEME_SHORT: &str = "enoxian://s1/";
+
+/// Bytes of key material in a short invite.
+///
+/// 128 bits, and it is the whole secret: it names the blob and unseals it. A
+/// short link is pasted, not retyped, so there is no reason to shave this the
+/// way a pairing code is shaved — and unlike a pairing code, nothing else
+/// stands behind it. Anyone holding the link holds the invite, exactly as with
+/// a long one.
+const SHORT_KEY_BYTES: usize = 16;
+
+const INFO_BLOB_ID: &[u8] = b"enoxian-invite-blob/id";
+const INFO_BLOB_KEY: &[u8] = b"enoxian-invite-blob/key";
+
+/// The key a short invite carries, and the two values derived from it.
+#[derive(Clone)]
+pub struct ShortKey([u8; SHORT_KEY_BYTES]);
+
+/// Redacted: this is the whole invite. It should be rendered by `link`, and
+/// nowhere else.
+impl std::fmt::Debug for ShortKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ShortKey(redacted)")
+    }
+}
+
+impl ShortKey {
+    pub fn generate() -> Result<Self> {
+        let mut bytes = [0u8; SHORT_KEY_BYTES];
+        rand::rngs::SysRng
+            .try_fill_bytes(&mut bytes)
+            .map_err(|e| anyhow::anyhow!("reading OS entropy for an invite key failed: {e}"))?;
+        Ok(ShortKey(bytes))
+    }
+
+    fn derive(&self, info: &[u8]) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        Hkdf::<Sha256>::new(None, &self.0)
+            .expand(info, &mut out)
+            .expect("HKDF output length is within bounds");
+        out
+    }
+
+    /// Where the sealed payload sits. Derived rather than carried, so the
+    /// server is told an id that reveals nothing about the key behind it.
+    pub fn blob_id(&self) -> String {
+        hex::encode(self.derive(INFO_BLOB_ID))
+    }
+
+    fn seal_key(&self) -> [u8; 32] {
+        self.derive(INFO_BLOB_KEY)
+    }
+
+    /// Seal an encoded invite for the relay to hold.
+    pub fn seal(&self, invite_bytes: &[u8]) -> Result<Vec<u8>> {
+        let mut nonce = [0u8; 12];
+        rand::rngs::SysRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|e| anyhow::anyhow!("reading OS entropy for an invite nonce failed: {e}"))?;
+
+        let cipher = ChaCha20Poly1305::new(&Key::from(self.seal_key()));
+        let ciphertext = cipher
+            .encrypt(
+                &Nonce::from(nonce),
+                Payload {
+                    msg: invite_bytes,
+                    // The id is bound in, so a blob cannot be moved to another.
+                    aad: self.blob_id().as_bytes(),
+                },
+            )
+            .map_err(|_| anyhow::anyhow!("sealing the invite failed"))?;
+
+        let mut out = Vec::with_capacity(12 + ciphertext.len());
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ciphertext);
+        Ok(out)
+    }
+
+    /// Open what the relay handed back.
+    pub fn open(&self, sealed: &[u8]) -> Result<Vec<u8>> {
+        if sealed.len() < 12 + 16 {
+            bail!("the invite this link points at is too short to be valid");
+        }
+        let (nonce_bytes, ciphertext) = sealed.split_at(12);
+        let nonce: [u8; 12] = nonce_bytes
+            .try_into()
+            .expect("split_at(12) yields 12 bytes");
+        ChaCha20Poly1305::new(&Key::from(self.seal_key()))
+            .decrypt(
+                &Nonce::from(nonce),
+                Payload {
+                    msg: ciphertext,
+                    aad: self.blob_id().as_bytes(),
+                },
+            )
+            .map_err(|_| {
+                anyhow::anyhow!("this invite link did not open — it may have been altered")
+            })
+    }
+}
+
+/// A short invite: the key, and where to fetch from when that is not the
+/// build's own relay.
+pub struct ShortInvite {
+    pub key: ShortKey,
+    /// `None` means the compiled-in default. A self-hosted relay is named, at
+    /// the cost of a longer link — still far shorter than carrying the payload.
+    pub host: Option<String>,
+}
+
+impl ShortInvite {
+    /// `enoxian://s1/<key>` — plus `@host` when it is not the default relay.
+    pub fn encode(&self) -> String {
+        let key = URL_SAFE_NO_PAD.encode(self.key.0);
+        match self.host {
+            Some(ref host) => format!("{SCHEME_SHORT}{key}@{host}"),
+            None => format!("{SCHEME_SHORT}{key}"),
+        }
+    }
+
+    pub fn decode(uri: &str) -> Result<Self> {
+        let body = uri
+            .trim()
+            .strip_prefix(SCHEME_SHORT)
+            .with_context(|| format!("not a short enoxian:// invite: {uri}"))?;
+
+        let (key_part, host) = match body.split_once('@') {
+            Some((k, h)) if !h.is_empty() => (k, Some(h.to_string())),
+            _ => (body, None),
+        };
+
+        let bytes = URL_SAFE_NO_PAD
+            .decode(key_part)
+            .context("invite key is not valid base64url")?;
+        let bytes: [u8; SHORT_KEY_BYTES] = bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("invite key is the wrong length"))?;
+
+        Ok(ShortInvite {
+            key: ShortKey(bytes),
+            host,
+        })
+    }
+}
+
+/// Whether this looks like a short invite rather than a self-contained one.
+pub fn is_short(uri: &str) -> bool {
+    uri.trim().starts_with(SCHEME_SHORT)
 }
 
 // ── Encoding ──────────────────────────────────────────────────────────────────
@@ -1187,6 +1345,135 @@ mod tests {
     fn an_unknown_scheme_version_is_rejected() {
         assert!(decode("enoxian://v9/AAAA").is_err());
         assert!(decode("https://example.com/AAAA").is_err());
+    }
+
+    // ── Short invites ────────────────────────────────────────────────────────
+
+    /// The point: a link short enough to paste anywhere. The long form of the
+    /// same invite is ~300 characters.
+    #[test]
+    fn a_short_invite_is_a_fraction_of_the_long_one() {
+        let long = encode(&realistic(Some(a_grant()))).unwrap();
+        let short = ShortInvite {
+            key: ShortKey::generate().unwrap(),
+            host: None,
+        }
+        .encode();
+
+        assert_eq!(short.len(), 35, "got {short}");
+        assert!(
+            short.len() * 8 < long.len(),
+            "short {} vs long {}",
+            short.len(),
+            long.len()
+        );
+    }
+
+    #[test]
+    fn a_short_invite_round_trips() {
+        let key = ShortKey::generate().unwrap();
+        let id = key.blob_id();
+        let uri = ShortInvite { key, host: None }.encode();
+
+        let back = ShortInvite::decode(&uri).unwrap();
+        assert_eq!(back.key.blob_id(), id);
+        assert!(back.host.is_none());
+        assert!(is_short(&uri));
+        assert!(!is_short(&encode(&realistic(None)).unwrap()));
+    }
+
+    /// A self-hosted relay is named in the link, at the cost of some length.
+    #[test]
+    fn a_named_relay_survives_the_round_trip() {
+        let uri = ShortInvite {
+            key: ShortKey::generate().unwrap(),
+            host: Some("pair.example.com".into()),
+        }
+        .encode();
+
+        let back = ShortInvite::decode(&uri).unwrap();
+        assert_eq!(back.host.as_deref(), Some("pair.example.com"));
+    }
+
+    /// The whole invite travels sealed; the relay holds bytes it cannot read.
+    #[test]
+    fn the_payload_seals_and_opens() {
+        let long = encode(&realistic(Some(a_grant()))).unwrap();
+        let key = ShortKey::generate().unwrap();
+
+        let sealed = key.seal(long.as_bytes()).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&sealed).contains("enoxian://"),
+            "the relay must not be handed anything legible"
+        );
+        assert_eq!(String::from_utf8(key.open(&sealed).unwrap()).unwrap(), long);
+    }
+
+    /// Another key must not open it, and tampering must fail the tag rather
+    /// than yield rubbish that later parses as something.
+    #[test]
+    fn a_sealed_invite_resists_the_wrong_key_and_tampering() {
+        let long = encode(&realistic(None)).unwrap();
+        let key = ShortKey::generate().unwrap();
+        let sealed = key.seal(long.as_bytes()).unwrap();
+
+        assert!(ShortKey::generate().unwrap().open(&sealed).is_err());
+        for i in [0usize, 12, sealed.len() - 1] {
+            let mut bad = sealed.clone();
+            bad[i] ^= 0x01;
+            assert!(key.open(&bad).is_err(), "byte {i} went unnoticed");
+        }
+        assert!(key.open(&sealed[..8]).is_err());
+    }
+
+    /// The id is what the relay is told. It must not be the key, nor let the
+    /// key be worked back out, nor be the value that unseals the blob.
+    #[test]
+    fn the_blob_id_reveals_nothing() {
+        let key = ShortKey::generate().unwrap();
+        let id = key.blob_id();
+        assert_eq!(id.len(), 64);
+        assert!(id.bytes().all(|b| b.is_ascii_hexdigit()));
+
+        let uri = ShortInvite {
+            key: key.clone(),
+            host: None,
+        }
+        .encode();
+        let encoded_key = uri.strip_prefix(SCHEME_SHORT).unwrap();
+        assert!(!id.contains(encoded_key));
+
+        // Distinct keys reach distinct blobs.
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            assert!(seen.insert(ShortKey::generate().unwrap().blob_id()));
+        }
+    }
+
+    #[test]
+    fn a_malformed_short_invite_is_refused() {
+        assert!(ShortInvite::decode("enoxian://s1/").is_err());
+        assert!(ShortInvite::decode("enoxian://s1/not-base64!!").is_err());
+        assert!(
+            ShortInvite::decode("enoxian://s1/AAAA").is_err(),
+            "too short"
+        );
+        assert!(
+            ShortInvite::decode("enoxian://v2/AAAA").is_err(),
+            "wrong scheme"
+        );
+    }
+
+    /// A short link must never be mistaken for a self-contained one, or
+    /// `decode` would try to read a key as a payload.
+    #[test]
+    fn a_short_invite_is_not_decoded_as_a_long_one() {
+        let uri = ShortInvite {
+            key: ShortKey::generate().unwrap(),
+            host: None,
+        }
+        .encode();
+        assert!(decode(&uri).is_err());
     }
 
     #[test]

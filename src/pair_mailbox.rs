@@ -18,7 +18,7 @@
 //! one of them fails closed.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -30,6 +30,8 @@ use axum::{
     Router,
 };
 use tokio::sync::Mutex;
+
+use crate::rate_limit::Limiter;
 
 /// How long a mailbox lives. Matches the pairing session window — a code is
 /// dead by then anyway, so anything still here is litter.
@@ -45,15 +47,6 @@ const MAX_SLOT: usize = 64 * 1024;
 /// flight is confusing.
 const MAX_MAILBOXES: usize = 1024;
 
-/// Sources tracked for rate limiting at once.
-///
-/// The limiter needs a bound of its own, or it becomes the thing it was added
-/// to prevent: one entry per distinct source, and over IPv6 a single host
-/// commonly controls enough /64s to add them faster than the window retires
-/// them. Past this, a source with no entry yet is refused — fail closed, the
-/// same as the mailbox cap.
-const MAX_TRACKED_SOURCES: usize = 8192;
-
 /// A mailbox id is the hex of a 32-byte HKDF output. Anything else is not one.
 const ID_LEN: usize = 32;
 
@@ -62,15 +55,13 @@ const ID_LEN: usize = 32;
 /// A device pairing polls at roughly 1.4 requests a second, so 60 per ten
 /// seconds leaves about four times the headroom a legitimate client needs —
 /// enough that two colleagues behind one office NAT pairing at the same moment
-/// do not throttle each other.
-///
-/// This is not what makes a four-word code safe: the code space and the
-/// two-minute window already put an online guesser far past what one server
-/// will answer. It is here so the mailbox cannot be used to hammer the
-/// bootstrap host, and to take some of the margin back from an attacker
-/// spreading guesses over many addresses.
+/// do not throttle each other. See [`crate::rate_limit`] for what this is and
+/// is not for.
 const RATE_MAX: u32 = 60;
 const RATE_WINDOW: Duration = Duration::from_secs(10);
+
+/// Sources tracked for rate limiting at once.
+const MAX_TRACKED_SOURCES: usize = 8192;
 
 /// The three slots, each written once by one side and read by the other.
 ///
@@ -107,30 +98,7 @@ impl Mailbox {
 
 struct Inner {
     boxes: HashMap<String, (Mailbox, Instant)>,
-    /// Requests seen from each source in the current window.
-    seen: HashMap<RateKey, (u32, Instant)>,
-}
-
-/// What a rate budget is counted against.
-///
-/// A single IPv6 address means nothing — an attacker usually holds a whole /64
-/// — so v6 is bucketed by that prefix. v4 is counted per address.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum RateKey {
-    V4([u8; 4]),
-    V6Prefix([u8; 8]),
-}
-
-impl From<IpAddr> for RateKey {
-    fn from(ip: IpAddr) -> Self {
-        match ip {
-            IpAddr::V4(v4) => RateKey::V4(v4.octets()),
-            IpAddr::V6(v6) => {
-                let o = v6.octets();
-                RateKey::V6Prefix(o[..8].try_into().expect("an IPv6 address has 16 octets"))
-            }
-        }
-    }
+    limiter: Limiter,
 }
 
 #[derive(Clone)]
@@ -140,7 +108,7 @@ impl MailboxState {
     pub fn new() -> Self {
         MailboxState(Arc::new(Mutex::new(Inner {
             boxes: HashMap::new(),
-            seen: HashMap::new(),
+            limiter: Limiter::new(RATE_MAX, RATE_WINDOW, MAX_TRACKED_SOURCES),
         })))
     }
 
@@ -151,26 +119,7 @@ impl MailboxState {
         inner
             .boxes
             .retain(|_, (_, created)| now.duration_since(*created) < TTL);
-        inner
-            .seen
-            .retain(|_, (_, started)| now.duration_since(*started) < RATE_WINDOW);
-    }
-
-    /// Charge one request against a source's budget. `false` means refuse.
-    fn allow(inner: &mut Inner, key: RateKey) -> bool {
-        let now = Instant::now();
-        // A source already being tracked is always charged; only a new one can
-        // be turned away for want of room, so the table cannot be grown without
-        // limit by arriving from ever more addresses.
-        if !inner.seen.contains_key(&key) && inner.seen.len() >= MAX_TRACKED_SOURCES {
-            return false;
-        }
-        let entry = inner.seen.entry(key).or_insert((0, now));
-        if now.duration_since(entry.1) >= RATE_WINDOW {
-            *entry = (0, now);
-        }
-        entry.0 += 1;
-        entry.0 <= RATE_MAX
+        inner.limiter.expire();
     }
 }
 
@@ -223,7 +172,7 @@ async fn put_slot(
 
     let mut inner = state.0.lock().await;
     MailboxState::expire(&mut inner);
-    if !MailboxState::allow(&mut inner, peer.ip().into()) {
+    if !inner.limiter.allow(peer.ip().into()) {
         return StatusCode::TOO_MANY_REQUESTS;
     }
 
@@ -265,7 +214,7 @@ async fn get_slot(
 
     let mut inner = state.0.lock().await;
     MailboxState::expire(&mut inner);
-    if !MailboxState::allow(&mut inner, peer.ip().into()) {
+    if !inner.limiter.allow(peer.ip().into()) {
         return (StatusCode::TOO_MANY_REQUESTS, Vec::new());
     }
 
@@ -530,7 +479,8 @@ mod tests {
     }
 
     /// The window must roll, or a source is locked out for as long as the
-    /// server is up.
+    /// server is up. The limiter's own behaviour is covered in
+    /// `crate::rate_limit`; this checks the mailbox actually consults it.
     #[tokio::test]
     async fn the_budget_refills_after_the_window() {
         let state = MailboxState::new();
@@ -542,91 +492,10 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS
         );
 
-        {
-            let mut inner = state.0.lock().await;
-            for (_, entry) in inner.seen.iter_mut() {
-                entry.1 = Instant::now() - RATE_WINDOW - Duration::from_secs(1);
-            }
-        }
+        state.0.lock().await.limiter.force_expire_all();
         assert_ne!(
             get(&state, &id(), "offer").await.0,
             StatusCode::TOO_MANY_REQUESTS
-        );
-    }
-
-    /// A whole IPv6 /64 is usually one attacker, so it shares one budget —
-    /// otherwise the limit is free to walk around.
-    #[tokio::test]
-    async fn an_ipv6_prefix_shares_one_budget() {
-        let a: IpAddr = "2001:db8::1".parse().unwrap();
-        let b: IpAddr = "2001:db8::dead:beef".parse().unwrap();
-        let elsewhere: IpAddr = "2001:db9::1".parse().unwrap();
-
-        assert_eq!(RateKey::from(a), RateKey::from(b), "same /64");
-        assert_ne!(RateKey::from(a), RateKey::from(elsewhere), "different /64");
-    }
-
-    /// The limiter needs a bound of its own, or it becomes the thing it was
-    /// added to prevent — one entry per source, grown from ever more addresses.
-    #[tokio::test]
-    async fn the_tracking_table_cannot_be_grown_without_limit() {
-        let state = MailboxState::new();
-        for i in 0..MAX_TRACKED_SOURCES {
-            let _ = get_slot(
-                State(state.clone()),
-                peer_seq(i),
-                Path((id(), "offer".to_string())),
-            )
-            .await;
-        }
-        assert_eq!(state.0.lock().await.seen.len(), MAX_TRACKED_SOURCES);
-
-        // A source with no entry yet is turned away rather than admitted.
-        assert_eq!(
-            get_slot(
-                State(state.clone()),
-                peer_seq(MAX_TRACKED_SOURCES + 1),
-                Path((id(), "offer".to_string())),
-            )
-            .await
-            .0,
-            StatusCode::TOO_MANY_REQUESTS
-        );
-        assert_eq!(state.0.lock().await.seen.len(), MAX_TRACKED_SOURCES);
-    }
-
-    /// A source already being tracked keeps its budget when the table is full,
-    /// so a flood of new addresses cannot push a live pairing out.
-    #[tokio::test]
-    async fn a_tracked_source_still_works_when_the_table_is_full() {
-        let state = MailboxState::new();
-        let mine = peer_seq(0);
-        let _ = get_slot(
-            State(state.clone()),
-            mine,
-            Path((id(), "offer".to_string())),
-        )
-        .await;
-
-        for i in 1..MAX_TRACKED_SOURCES + 50 {
-            let _ = get_slot(
-                State(state.clone()),
-                peer_seq(i),
-                Path((id(), "offer".to_string())),
-            )
-            .await;
-        }
-
-        assert_ne!(
-            get_slot(
-                State(state.clone()),
-                mine,
-                Path((id(), "offer".to_string())),
-            )
-            .await
-            .0,
-            StatusCode::TOO_MANY_REQUESTS,
-            "a live pairing was pushed out by a flood of new sources"
         );
     }
 
