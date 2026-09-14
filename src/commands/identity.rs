@@ -30,22 +30,19 @@ fn show() -> Result<()> {
     if let Some(ref pk) = device.user_pubkey_hex {
         println!("  user pubkey: {pk}");
     }
-    if let Some(ref attestation) = device.user_attestation_hex {
-        // "Present" says nothing worth knowing. A device that was linked should
-        // be able to show that the signature it was given actually covers the
-        // key it made for itself.
-        let verdict = match device.user_pubkey_hex.as_ref() {
-            Some(pk) => {
-                let device_pubkey = hex::encode(kp.public().encode_protobuf());
-                match UserIdentity::verify_attestation(pk, &device_pubkey, attestation) {
-                    Ok(true) => "valid",
-                    Ok(false) => "DOES NOT VERIFY — re-link this device",
-                    Err(_) => "unreadable",
-                }
-            }
-            None => "present, but no user key to check it against",
-        };
-        println!("  attestation: {verdict}");
+    if !device.attestation_chain.is_empty() {
+        // "Present" says nothing worth knowing. A linked device should be able
+        // to show that the signatures it holds actually reach its own key.
+        let hops = device.attestation_chain.len();
+        if device.attestation_is_valid() {
+            let via = match hops {
+                1 => "signed by your user key".to_string(),
+                n => format!("{n} hops from your user key"),
+            };
+            println!("  attestation: valid ({via})");
+        } else {
+            println!("  attestation: DOES NOT VERIFY — re-link this device");
+        }
     }
     Ok(())
 }

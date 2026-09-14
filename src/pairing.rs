@@ -352,9 +352,12 @@ pub struct LinkPayload {
     pub user_handle: Option<String>,
     /// hex of the user root public key, when the source holds a user identity.
     pub user_pubkey_hex: Option<String>,
-    /// hex of the root key's signature over the target's device key and label.
-    /// The root key itself is never sent.
-    pub user_attestation_hex: Option<String>,
+    /// The signatures carrying the user root's authority down to the new
+    /// device's key. One link when the root key signed directly, two when a
+    /// device that was itself linked did — which is what lets any linked device
+    /// link the next one. The root key itself is never sent.
+    #[serde(default)]
+    pub attestation_chain: Vec<crate::identity::ChainLink>,
     /// One ordinary `enoxian://` invite per circle the source belongs to. The
     /// new device redeems them through the same path as a pasted invite, so
     /// admission stays the flow that already exists and is already tested.
@@ -786,7 +789,11 @@ mod tests {
             transcript_hash: source.transcript_hash(),
             user_handle: Some("suzy".into()),
             user_pubkey_hex: Some(hex::encode([1u8; 36])),
-            user_attestation_hex: Some(hex::encode([2u8; 64])),
+            attestation_chain: vec![crate::identity::ChainLink {
+                signer_pubkey_hex: hex::encode([1u8; 36]),
+                subject_pubkey_hex: hex::encode([9u8; 36]),
+                sig: hex::encode([2u8; 64]),
+            }],
             invites: vec!["enoxian://v2/abc".into(), "enoxian://v2/def".into()],
         };
 
@@ -805,7 +812,7 @@ mod tests {
             transcript_hash: source.transcript_hash(),
             user_handle: None,
             user_pubkey_hex: None,
-            user_attestation_hex: None,
+            attestation_chain: Vec::new(),
             invites: vec![],
         };
         let sealed = source.seal_payload(&payload).unwrap();
@@ -822,7 +829,7 @@ mod tests {
             transcript_hash: "00".repeat(32),
             user_handle: None,
             user_pubkey_hex: None,
-            user_attestation_hex: None,
+            attestation_chain: Vec::new(),
             invites: vec![],
         };
         let sealed = source.seal_payload(&payload).unwrap();
@@ -922,7 +929,7 @@ mod tests {
             transcript_hash: source.transcript_hash(),
             user_handle: None,
             user_pubkey_hex: None,
-            user_attestation_hex: None,
+            attestation_chain: Vec::new(),
             invites: vec!["enoxian://v2/abc".into()],
         };
         let sealed = source.seal_payload(&payload).unwrap();

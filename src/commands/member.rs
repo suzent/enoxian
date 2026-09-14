@@ -125,7 +125,16 @@ pub async fn run(
                         let peer = m["peer_id"].as_str().unwrap_or("?");
                         let role = m["role"].as_str().unwrap_or("member");
                         let owner = m["owner"].as_str().unwrap_or("");
+                        // An owner nobody can check is a display string. Say so
+                        // rather than presenting it as the same kind of fact as
+                        // a name backed by the user key's signature.
+                        let owner_mark = if owner.is_empty() || m["verified_user"].is_string() {
+                            ""
+                        } else {
+                            " (unverified)"
+                        };
                         let agent = m["agent_id"].as_str().unwrap_or("");
+                        let owner = &format!("{owner}{owner_mark}")[..];
                         let label = match (owner, agent) {
                             ("", "") => String::new(),
                             (o, "") => format!("  owner={o}"),
