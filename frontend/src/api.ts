@@ -7,6 +7,8 @@ const api = (circleId: string) => `/circles/${circleId}/api`
 // (which cannot set headers) append it as ?token=.
 const TOKEN: string = (window as unknown as { __ENOX_TOKEN__?: string }).__ENOX_TOKEN__ ?? ''
 const REQUEST_TIMEOUT_MS = 10_000
+// Invite operations can resolve bootstrap addresses (2 × 5s) and contact a relay (15s).
+const INVITE_TIMEOUT_MS = 45_000
 
 function authHeaders(extra?: Record<string, string>): Record<string, string> {
   return TOKEN ? { Authorization: `Bearer ${TOKEN}`, ...extra } : { ...extra }
@@ -35,9 +37,9 @@ const BUSY_RETRIES = 3
 
 const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
 
-async function request<T>(url: string, init: RequestInit, attempt = 0): Promise<T> {
+async function request<T>(url: string, init: RequestInit, attempt = 0, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
   let res: Response
   try {
     res = await fetch(url, { ...init, signal: controller.signal })
@@ -67,7 +69,7 @@ async function request<T>(url: string, init: RequestInit, attempt = 0): Promise<
     if (code === 'circle_busy' && attempt < BUSY_RETRIES) {
       const after = Number(res.headers.get('Retry-After')) || 1
       await sleep(Math.min(after * 1000, 2000) * (attempt + 1))
-      return request<T>(url, init, attempt + 1)
+      return request<T>(url, init, attempt + 1, timeoutMs)
     }
     throw new ApiError(msg, res.status, code)
   }
@@ -78,12 +80,12 @@ async function get<T>(url: string): Promise<T> {
   return request<T>(url, { headers: authHeaders() })
 }
 
-async function post<T>(url: string, body: unknown): Promise<T> {
+async function post<T>(url: string, body: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   return request<T>(url, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
-  })
+  }, 0, timeoutMs)
 }
 
 
@@ -262,9 +264,9 @@ export const removeMember = (id: string, peerId: string, adminSig: string) =>
 export const initCircle = (name: string, owner?: string, joinPolicy?: string, dir?: string) =>
   post<{status: string, circle_id?: string}>('/api/init', { name, owner, join_policy: joinPolicy, dir })
 export const enterCircle = (target: string, owner?: string, secret?: string, peer?: string, dir?: string) =>
-  post<{status: string, circle_id?: string}>('/api/enter', { target, owner, secret, peer, dir })
+  post<{status: string, circle_id?: string}>('/api/enter', { target, owner, secret, peer, dir }, INVITE_TIMEOUT_MS)
 export const inviteCircle = (id: string) =>
-  post<{invite_uri: string, connectivity: {peer_addr: string|null, relay_addr: string|null, rendezvous_addr: string|null}}>(`${api(id)}/invite`, {})
+  post<{invite_uri: string, long_invite_uri?: string, short_note?: string | null, connectivity: {peer_addr: string|null, relay_addr: string|null, rendezvous_addr: string|null}}>(`${api(id)}/invite`, {}, INVITE_TIMEOUT_MS)
 export const enableCircle = (id: string) =>
   post<{status: string}>(`${api(id)}/enable`, {})
 export const disableCircle = (id: string) =>
