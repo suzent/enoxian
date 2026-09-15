@@ -37,7 +37,11 @@ jobs:
   verify:
     name: Verify release
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # This job runs both quality and test builds, unlike the separate CI jobs.
+    timeout-minutes: 45
+    env:
+      # Bound concurrent compiler/linker memory on the hosted Linux runner.
+      CARGO_BUILD_JOBS: "2"
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
@@ -116,12 +120,19 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
-      - name: Rust release gate
-        run: |
-          cargo fmt --all -- --check
-          cargo clippy --locked --all-targets -- -D warnings
-          cargo test --locked --all-targets
-          cargo test --locked --doc
+      # Separate steps identify the stalled check even if a timed-out runner
+      # fails to upload its logs. Keep every command from the combined gate.
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Rust Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --locked --all-targets
+
+      - name: Rust doctests
+        run: cargo test --locked --doc
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
