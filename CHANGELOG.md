@@ -39,292 +39,98 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-15
+
 ### Added
 
-- `enox member distrust` disowns a user identity in a Circle, refusing every
-  device that proves it — including devices made afterwards, which is what
-  `enox member remove` cannot do when someone else holds the user root key.
-  `enox member trust` takes it back, and `enox member list` marks a distrusted
-  identity. Scoped to the Circle deliberately: in the case that motivates
-  revocation the root key is on the lost device, so an admin of the Circle is
-  the one who can still speak.
-
-- Relay operators and clients can query `GET /version` for the running package
-  version and support for short invites and device linking, without SSH access.
-
-- The web interface now creates short invites, with a full-invite option and
-  automatic fallback when the relay is unavailable or has not been updated.
-  Joining through a short invite now starts the Circle immediately.
-
-- Any linked device can now link the next one. Previously only the device you
-  ran `enox identity create-user` on could, because only it stored the recovery
-  phrase. A linked device now extends the signature chain it already holds,
-  signing with its own device key — the user root key still never moves.
-  `enox identity show` says how far a device sits from the root.
-
-- A device can prove which user it belongs to inside a Circle, rather than just
-  asserting a name. `enox member list` marks an owner name that nobody can
-  check as `(unverified)`. Two devices count as the same person when they prove
-  the same user key, not when they write the same name. Nothing is refused on
-  this basis yet — peers that predate it simply show as unverified.
-
-
-- `enox invite` now prints a short link — 35 characters, against ~300 — by
-  keeping the invite's contents sealed on the same relay it already points at
-  and carrying only the key. The relay is handed an id that says nothing about
-  that key and a body it cannot read. `--long` prints the self-contained link,
-  and so does `enox invite` on its own when the relay cannot be reached.
-
-
-- `enox link` puts your identity on a second device without the 24-word
-  mnemonic. Run it on the machine you already use, type the four words it prints
-  on the new one, check that both screens show the same six-digit number, and
-  the new device is linked with every circle already joined. The user root key
-  never leaves the device that holds it — the new machine generates its own
-  device key and receives a signature over it — so a linked device can later be
-  removed on its own.
-
-- `enox identity show` now says whether a device's attestation actually
-  verifies, rather than only that one is present.
-
-
-- Agents can run in parallel across Circles while keeping ordered turns and one
-  conversation per agent in each Circle. Device Settings controls concurrency.
-- Durable delivery queues recover mentions after reconnects and restarts, with
-  delivery status, explicit reply threads, and retry or cancel controls in chat.
-- Managed native writes carry per-run change evidence and locks, preserving
-  attribution when agents work concurrently. Stopped reply chains remain stopped
-  after restarting the daemon.
-
-- `enox update` now updates stable installs itself: it downloads the release
-  archive published for your platform, verifies it against the release
-  `SHA256SUMS`, installs it, restarts Enoxian, and rolls back to the previous
-  binary if the new one fails its health check. Previously a stable install
-  could only be updated by rerunning the installer script. `enox update
-  --check` reports whether a newer release exists without installing it, and
-  `enox update --release <TAG>` installs a specific version.
-
-- Settings has a **Device** tab: rename this device or change your handle
-  without starting over, see the handle your agents are addressed by, and see
-  which update channel this install follows. Previously the only place to set
-  either was the first-run screen, which is unreachable once you have joined a
-  Circle.
-
-- Device Settings now has switches for how each agent engages, instead of
-  requiring a hand-edit of `agents.toml`: **reads the room** (answer messages
-  that name no agent) and **accepts hand-offs** (let another agent pass it
-  work), plus the follow-up window for this device. Both per-agent switches are
-  off until you turn them on, and turning on "reads the room" says plainly what
-  it will send to that agent's provider before it does.
-
-- Agents can be asked to read the room. An agent set `engagement = "ambient"` in
-  `agents.toml` is offered every human message and may answer or stay quiet.
-  Off by default and per device, because it sends every human line to that
-  agent's model provider — the roster marks ambient agents so everyone in the
-  Circle can see who is listening. Short messages, agents that just spoke, and
-  anything already addressed are skipped without asking a model, and at most one
-  ambient reply is offered per message. Files written by an unaddressed turn are
-  held for review instead of accepted.
-- Agent messages now have a **reply** action. Replying routes to that agent with
-  no mention and no timer, which is the only thing that works when two agents are
-  mid-conversation with you.
-- Replying to an agent no longer needs a mention. For a few minutes after an
-  agent answers you, your next message goes back to it — on the same machine
-  that ran it — and the composer says so before you press Enter, with Esc to
-  leave the conversation. Windows are per person, so two people can hold
-  separate conversations with separate agents in one Circle. Configurable with
-  `engagement_window_secs` in `agents.toml`; `0` restores mention-only routing.
-- Messaging an agent that is already working now queues the message instead of
-  failing it into the transcript. Up to four wait per agent, delivered in order
-  as separate turns; beyond that the oldest is dropped and said so.
-- Agents can now delegate to each other. An agent's reply that mentions another
-  agent can wake it, so `@claude` can hand a job to `@codex` without a person
-  relaying messages. Off by default and enabled on the receiving side:
-  `accept_from = "agents"` under that agent in `agents.toml`. The device that
-  spends the tokens decides — there is no setting that lets a remote peer opt
-  your agent in.
-- A delegation cascade is bounded, so it cannot run away: at most one mention
-  per agent reply is honoured, an agent never wakes itself, and the whole
-  cascade is capped at `max_relay_turns` agent turns (default 20, hard limit
-  50) counted from the human message that started it. Each device enforces its
-  own cap, so a peer cannot talk yours into spending more.
-- A **stop chain** button halts a running cascade, and anyone in the Circle can
-  press it. It stops every further turn on every device rather than
-  interrupting the one in flight. A chain that was stopped, or that ran out of
-  budget, says so in the activity strip instead of posting to chat.
-- Agent replies that were delegated show `via @claude` next to the sender, so a
-  reply nobody typed a request for is not mistaken for one that was asked for.
-- Proposals record the delegation chain, so a file written by an agent another
-  agent asked is distinguishable from one a person asked for directly.
-- Chat messages render markdown — lists, tables, headings, quotes, links and
-  fenced code blocks, so an agent's structured output is readable instead of
-  arriving as raw syntax. Recognised @mentions are still highlighted, except
-  inside code, where an `@name` is part of the snippet rather than a ping.
+- Agents can delegate work to other agents in a Circle, with attributed replies,
+  a configurable turn budget, and a **stop chain** action available to everyone.
+  Stopped chains remain stopped after daemon restarts.
+- Agents can read the room and answer unaddressed human messages. This is off by
+  default because it sends those messages to the agent's model provider. Choose
+  how many agents listen per message, with fair rotation between agents; files
+  written by an unaddressed turn are held for review.
+- Agents can run in parallel across Circles, with configurable concurrency,
+  ordered turns, and one conversation per agent in each Circle. Durable delivery
+  queues recover mentions after reconnects and restarts, and chat exposes
+  delivery status and retry or cancel controls.
+- Chat renders Markdown, including tables, lists, links, and fenced code blocks.
+  Explicit replies link to their source message and route back to the agent
+  without requiring a mention.
+- Device Settings lets you rename the device, change your handle, view the update
+  channel, and configure agent engagement. A scope picker separates global
+  defaults from this device's per-Circle overrides.
+- `enox link` pairs another device using a four-word code and a matching six-digit
+  confirmation number, carrying over joined Circles. Any linked device can link
+  another device without transferring the user root key or recovery phrase.
+- The CLI and web interface create short invites backed by sealed contents on
+  the relay, with automatic fallback to self-contained invites. Use
+  `enox invite --long` for a self-contained link. Existing invite links keep
+  working until they expire, and joining a short invite starts the Circle.
+- Relay operators and clients can query `GET /version` for the running version
+  and support for short invites and device linking.
+- `enox update` supports stable releases, verifies archive checksums, restarts
+  Enoxian, and rolls back if the new binary fails its health check. Use
+  `--check` to check for updates or `--release <TAG>` to select a release.
 
 ### Changed
 
-- Read-the-room agents now take turns fairly. Choose a listener count per message,
-  or cycle the count from one up to that limit. Selected requests use the shared
-  execution queue instead of favoring the first configured agent.
-- Agent activity shows device names, original messages and plain-language outcomes;
-  completed runs are collapsed in the sidebar and legacy import records are hidden.
-
-
-- Follow-ups now use explicit reply threads by default. Configurations that omit
-  `engagement_window_secs` now use `0` instead of `180`; set it to `180` in Device
-  Settings to keep the previous three-minute recency routing. Explicitly configured
-  windows are preserved.
-
-- Invite links are much shorter. A typical `enox invite` link is now around 300
-  characters where it used to run past 800, so it survives a chat message
-  without being wrapped or truncated. Links already in circulation keep working
-  until their own expiry — nothing needs to be reissued.
-
-
-- Settings now separate global defaults and Circle preferences through a sidebar scope picker, with clearer typography and a themed, keyboard-accessible dropdown.
-
-- Agents no longer need permission to be reached by other agents. An agent you
-  have allowed into a Circle can be handed work by the other agents in it, and
-  the per-agent "accepts hand-offs" switch is gone. Your device already decided
-  twice — the agent is in your config, and your reaction policy is `push` — and
-  a third switch only meant hand-offs failed silently until someone found it.
-  How far a chain may run is still yours to set.
-- Engagement settings are now global with per-Circle overrides, instead of being
-  attached to each agent. Whether an agent reads the room, how long the
-  follow-up window lasts, whether mentions run anything, and how far a hand-off
-  chain goes can each be set once for everything and overridden in one Circle —
-  so the same agent can follow a working Circle closely and stay out of a social
-  one. Existing configs are migrated on load; nothing to edit by hand.
-- Chat mentions use compact inline labels, agents lead their sender headers, and explicit replies show a linked source preview with a clearer reply composer.
+- Agent engagement settings now use global defaults with per-Circle overrides,
+  with existing configurations migrated automatically. Agent hand-offs no
+  longer require a separate per-agent opt-in; configured agents in Circles with
+  the device's `push` reaction policy can receive them.
+- Follow-ups use explicit reply threads by default. An omitted
+  `engagement_window_secs` now defaults to `0`; set it to `180` to enable
+  three-minute follow-up routing. Explicitly configured windows are preserved.
+- Chat mentions use compact inline labels. Agent activity shows device names,
+  source messages, and plain-language outcomes; completed runs are collapsed
+  and legacy listening observations are hidden.
 
 ### Fixed
 
-- Discovery and reconnect attempts now share per-peer backoff, and short-lived connections no longer reset it, reducing relay request bursts when peers repeatedly disconnect.
-
-- Automatic-admission circles retry pending requests after restarts and delayed key packages, clear stale requests for existing encrypted-group members, and show admission errors in the member panel.
-
-- Long chat activity messages now truncate with an ellipsis instead of overlapping neighboring statuses; hover to see the full message.
-
-- The daemon no longer sometimes refuses to start with "execution inbox already
-  has an active owner" right after a restart. It could lose a race against its
-  own previous instance's release of the inbox lock, because a concurrently
-  launched agent process briefly inherits that lock; the daemon now waits the
-  moment out instead of giving up.
-
-- Renaming a device with `enox identity set-label` no longer erases the stored
-  recovery phrase. Any save of the identity file used to drop it, so a rename —
-  or receiving a link — silently destroyed the only copy of the user root key.
-
-- Renaming a device no longer invalidates its attestation. The device label was
-  part of what the attestation signed, so a rename permanently broke it with no
-  way to reissue one.
-
-
-- Imported read-the-room history no longer appears as agents named `~ambient:...`
-  or offers retries for old listening observations. Agents that pass now show
-  “No reply needed” in their activity history.
-
-
-- Expanding completed tasks no longer shifts task-list content when the scrollbar appears.
-
-- Settings shows the handle a Circle actually addresses your agents by, rather
-  than one assembled from local fields. Your name inside a Circle is fixed when
-  you create or join it, so a device whose local handle had since changed was
-  shown an address that would silently fail if anyone used it. Settings now
-  reads the handle from the Circle, and says that changing your handle applies
-  to Circles you join later, not ones you are already in.
-
-- Renaming this device now takes effect immediately instead of at the next
-  restart. The name is the middle part of every handle that addresses an agent
-  here (`@you/device/agent`) and what this device checks an incoming mention
-  against, so a rename used to leave the Circle addressing a name the device no
-  longer answered to — with nothing to say why.
-
-
-- Per-Circle agent settings are easier to find and harder to misread. The
-  settings entry said "LOCAL DEVICE" while the panel behind it also held
-  per-Circle behaviour, the scope tab named the Circle only in passing, and
-  nothing said who can see these settings — they are this device's own answers
-  about a Circle, never shared with its members. All three now say so.
-
-- Agent reply status now stays above the chat editor instead of squeezing it beside oversized buttons, including in narrow panels.
-- Agents are given the exact handle for every agent in the Circle, instead of a
-  display label they had to reconstruct a mention from. The roster read
-  `suzy (jessair) [agents: claude]`, leaving an agent to guess that addressing
-  it meant `@suzy/jessair/claude` — a guess it could not check. The addressing
-  rules are also stated now even on a device that cannot yet place itself in
-  the roster, since they do not depend on knowing that.
-
-- An agent can hand work to an agent of the same name on another device. Two
-  machines each running a `claude` could not pass anything between them: the
-  hand-off was read as the agent mentioning itself and dropped, with nothing
-  posted to say why. "Itself" now means the same agent on the same machine.
-
-- A killed or restarted daemon no longer leaves a Circle unable to run any
-  agent. A run interrupted mid-flight left a lock behind that nothing expired,
-  so every later mention failed with "managed agent '…' is already running in
-  this Circle" — naming an agent that was not running. Such a lock is now
-  cleared when the daemon starts, since the agent it refers to died with the
-  previous one.
-- A mention addressed to one device is no longer answered by another. Targeting
-  compared the mention against this machine's local identity file, while the
-  mention itself is composed from the Circle roster; when the two disagreed —
-  after a device rename, or an `~/.enoxian` copied between machines — the
-  addressed device ignored the mention and a different one replied in its
-  place. Both sides now come from the roster. A device that cannot establish
-  what the Circle calls it stays quiet rather than answering for another.
-- Agents are now told which device they are running on and how to address a
-  specific one. An agent knew its own name but not its machine, so in a Circle
-  where two devices run an agent of the same name it could not say which one it
-  was, or hand work to a particular sibling — leaving the user to route by hand.
-  The brief also now explains that work can be handed to another agent, which
-  agents had no way to discover.
-- A chat message is no longer lost when sending fails. The composer used to
-  clear itself and keep only the staged images, so a long message typed during
-  a moment of sync contention was simply gone. The text comes back, and if you
-  have since switched circles it waits in that circle's draft.
-- A send refused because the Circle was busy syncing now retries by itself
-  instead of failing. The daemon asks for a retry in that case and always
-  refuses before writing anything, so nothing can be posted twice. Failures
-  that are not transient still surface immediately, now with the daemon's own
-  explanation rather than a generic "failed to send".
-- The service log no longer grows without limit. Routine peer-to-peer churn —
-  dial attempts to addresses that were never reachable, and connections closing
-  while others to the same peer stay open — was being logged as warnings tens
-  of thousands of times a day, which buried the events that do mean something
-  and grew the log to gigabytes. Those are now debug-level. A dial that fails
-  in the way a mismatched circle key looks still warns, and every failure is
-  still listed in `enox status` as before.
-- Service logs are rotated when the service starts, keeping three previous
-  runs and discarding the oldest, so the log directory stays bounded.
-- Rendered markdown shows its list bullets, its list numbering and its links
-  again, in both chat and the file preview.
-- A half-written chat message, and any image staged with it, now stays with the
-  circle it was written in. Switching circles used to carry the unsent message
-  across and send it to whichever circle you had moved to.
+- Agent targeting now uses the Circle roster, preventing replies from the wrong
+  device after a rename or copied identity. Agents receive exact handles and
+  their own device context, and can hand work to an agent with the same name on
+  another device.
+- Daemon restarts clear abandoned managed-agent locks and wait out briefly
+  inherited execution inbox locks, avoiding stuck agents and startup failures.
+- Device renames take effect immediately and no longer invalidate attestations.
+  Settings shows the handle the Circle actually uses and explains that handle
+  changes apply to Circles joined later.
+- Failed chat sends restore the draft, transient sync contention retries
+  automatically, and unsent text and images stay with their original Circle.
+- Long agent activity text truncates without overlapping nearby statuses, reply
+  status stays above the editor in narrow panels, and expanding completed tasks
+  no longer shifts the task list when a scrollbar appears.
+- Markdown list markers and links display correctly in chat and file previews.
+- Automatic-admission Circles retry pending requests after restarts and delayed
+  key packages, clear stale requests for existing encrypted-group members, and
+  show admission errors in the member panel.
+- Discovery and reconnect attempts share per-peer backoff, including across
+  short-lived connections, reducing relay request bursts during repeated
+  disconnects.
+- Routine peer connection churn no longer floods service logs with warnings.
+  Logs rotate at service startup, retaining three previous runs.
 
 ### Security
 
-- The recovery phrase is no longer written to disk. It is shown once when you
-  run `enox identity create-user` and never saved, so a lost or stolen machine
-  is a lost device rather than a lost identity. Adding devices does not need it
-  — `enox link` uses the device's own attestation. An older install that still
-  has one is told so by `enox identity show`, and `enox identity forget-phrase`
-  removes it after showing the words one last time.
-
-
-- Files holding key material — `identity.toml`, a circle's `config.toml`, and
-  `admin.key` — are now written `0600` instead of inheriting the process umask,
-  which on a typical machine left them readable by every local account. Files
-  already written are tightened the next time they are read, so existing
-  installs are fixed rather than only new ones.
-
-
-- `enox link` and rendezvous address resolution no longer send the local
-  daemon's API token to the remote bootstrap server. Both used the CLI's shared
-  HTTP client, which carries that token as a default header, so talking to a
-  pairing or bootstrap host disclosed a privileged local credential over plain
-  HTTP.
+- Devices prove their user identity through verifiable attestation chains.
+  `enox member list` marks unverified owners, and `enox identity show` reports
+  attestation validity and chain depth. Older peers remain supported as
+  unverified members.
+- `enox member distrust` blocks a user identity within a Circle, including future
+  devices proving that identity. `enox member trust` reverses the decision, and
+  the member list marks distrusted identities.
+- Recovery phrases are shown once at identity creation and no longer written to
+  disk. `enox identity show` flags phrases retained by older installs;
+  `enox identity forget-phrase` removes them after showing them one last time.
+- Files containing key material (`identity.toml`, Circle `config.toml`, and
+  `admin.key`) are written with owner-only permissions (`0600`). Existing files
+  have their permissions tightened when read.
+- `enox link` and rendezvous address resolution no longer send the local daemon's
+  API token to remote bootstrap servers.
+- Managed native writes carry per-run change evidence and locks, preserving
+  attribution when agents work concurrently.
 
 ## [0.8.0] — 2026-09-12
 
@@ -876,7 +682,8 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/suzent/enoxian/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/suzent/enoxian/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/suzent/enoxian/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/suzent/enoxian/compare/v0.6.1...v0.6.2
