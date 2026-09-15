@@ -319,6 +319,67 @@ the recovery phrase is beside it. Encrypting that material, or handing it to the
 OS keychain, is a separate change; note that the daemon also runs headless,
 where no keychain is available to prompt, so it cannot simply be required.
 
-Nor does it revoke anything. There is no way today to mark a lost device's
-attestation as no longer trusted: per-circle removal (`mls_removed`) works on a
-peer ID, and a device holding the user root key can mint a fresh one.
+For revocation, see below.
+
+
+## Distrusting An Identity
+
+`enox member remove` evicts a peer. That is the right tool for a device you no
+longer use, and the wrong one for a device someone else now has: whoever holds
+the user root key can mint fresh devices, and removing them one peer ID at a
+time never finishes.
+
+`enox member distrust` disowns the *identity*:
+
+```bash
+enox member distrust 12D3KooWAbc... --reason "laptop stolen"
+enox member trust 12D3KooWAbc...      # take it back
+```
+
+It takes a peer ID or a user public key; a peer ID is resolved to the identity
+its owner claim proves. Every device proving that identity is refused admission
+from then on, **including devices created afterwards** — which is the part
+removal cannot do.
+
+The record lives in the circle's control document as `distrusted_users`, keyed
+by user public key, signed by an admin over `distrust:{user_pubkey_hex}`. The
+signature covers the resolved key rather than what was typed, so a record can be
+checked later against the key it actually names.
+
+That signature is checked **wherever the record is enforced**, not where it
+arrives. The control document is replicated and every member can write to it, so
+an entry that merely exists proves nothing — without the check, any member could
+add one and lock an arbitrary identity out of the circle. An unsigned or
+wrongly-signed record is ignored, and so is any record in a circle with no admin
+key on file, because there is nothing to check it against.
+
+Both admission paths consult it: the automatic one and `enox member approve`.
+Approving is the admin's decision, but so was the distrust, and a manual
+approval that quietly skipped the check would leave the two disagreeing.
+
+It is part of the durable snapshot, so it survives every device in the circle
+being offline at once. A boundary that a restart forgets is not a boundary.
+
+### Why the circle decides, not the root key
+
+The obvious place to revoke an identity is the user root key that issued it. In
+the case that motivates revocation — a lost or stolen device — the root key is
+*on that device*, so whoever took it could revoke the rightful owner just as
+easily. An admin of a circle can always speak for that circle, and a circle is
+where the damage lands.
+
+The cost is that distrust is per circle. An identity disowned in one circle is
+untouched in another, and each has to act for itself.
+
+### What it does not do yet
+
+- **Devices already admitted stay** until removed. Distrust stops readmission;
+  `enox member remove` evicts what is already inside, and the MLS epoch change
+  is what actually cuts off content.
+- **A peer that proves nothing cannot be caught.** Distrust matches on a proven
+  identity, and nothing yet *requires* a joiner to prove one — so an attacker who
+  simply publishes no owner claim is refused by the invite grant, not by this.
+  Requiring proof to join is the step after this one.
+- **It disowns the honest devices too.** That is inherent: if the identity is
+  compromised, the circle is disowning the identity. Make a new one and be
+  re-invited.

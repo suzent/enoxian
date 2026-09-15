@@ -261,7 +261,7 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
     }
 }
 
-fn relay_server_config() -> relay::Config {
+pub(crate) fn relay_server_config() -> relay::Config {
     // Enoxian keeps sync and presence streams alive; libp2p's generic defaults
     // (16 circuits, 2 minutes, 128 KiB) cause reconnect churn under normal use.
     let mut config = relay::Config {

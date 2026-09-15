@@ -461,31 +461,24 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         }
     }
 
-    // If admin and auto join policy, observe pending map
+    // Sweep immediately (including restored requests) and periodically. Pending
+    // entries and key packages can arrive separately or be updated in place.
     let is_admin = cdir.join("admin.key").exists();
     if is_admin && config.join_policy == JoinPolicy::Auto {
-        let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
-        let state_for_pending = state.clone();
-        let mls_for_pending = mls.clone();
-        let pending_sub = pending_map.observe(
-            move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
-                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
-                if !is_p2p {
-                    return;
-                }
-                for (key, change) in event.keys(txn) {
-                    if let yrs::types::EntryChange::Inserted(_) = change {
-                        let peer_id_str = key.to_string();
-                        let s = state_for_pending.clone();
-                        let m = mls_for_pending.clone();
-                        tokio::spawn(async move {
-                            auto_approve(peer_id_str, s, m).await;
-                        });
+        let approval_state = state.clone();
+        let approval_token = token.clone();
+        tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(std::time::Duration::from_secs(5));
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = approval_token.cancelled() => break,
+                    _ = ticks.tick() => {
+                        retry_pending_approvals(&approval_state).await;
                     }
                 }
-            },
-        );
-        std::mem::forget(pending_sub);
+            }
+        });
     }
 
     // ── Welcome consumer ─────────────────────────────────────────────────────
@@ -1016,10 +1009,8 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         let mut reregister = tokio::time::interval(std::time::Duration::from_secs(3600));
         reregister.tick().await; // skip the immediate first tick
 
-        // Reconnect sweep. Nothing else redials a peer once its connection
-        // closes: `ConnectionClosed` only records the drop, and `discover` was
-        // previously issued only when we first connected to a rendezvous
-        // server. Relayed circuits are capped (30 min / 64 MB in
+        // Rediscover and redial lost peers. Discovery and this sweep share
+        // one retry budget below. Relayed circuits are capped (30 min / 64 MB in
         // `relay_server_config`), so every relayed peer connection is torn down
         // periodically by design — without this sweep, two devices on different
         // networks stop syncing within half an hour and stay stopped until the
@@ -1028,10 +1019,9 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         reconnect.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         reconnect.tick().await; // skip the immediate first tick
 
-        // Consecutive failed sweeps per peer, so a peer that is simply offline
-        // is retried with a widening gap instead of every tick forever.
-        let mut redial_misses: HashMap<PeerId, u32> = HashMap::new();
-        let mut sweep: u64 = 0;
+        // Discovery and the periodic sweep share deadlines. A transport that
+        // connects then immediately fails its protocol handshake is still a failure.
+        let mut redials = PeerRedials::default();
 
         // The background resolver tasks feeding these channels drop their senders
         // once they finish (resolve or fail). A closed `mpsc::Receiver` returns
@@ -1096,8 +1086,6 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     }
                 }
                 _ = reconnect.tick() => {
-                    sweep = sweep.wrapping_add(1);
-
                     // Rendezvous servers: rediscover over live links, redial dead
                     // ones. Re-running discovery is what surfaces peers whose
                     // reachable address changed (a new relay circuit, say) while
@@ -1113,7 +1101,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         }
                         let addr = rendezvous_addrs.read().unwrap().get(&rdvz_peer).cloned();
                         let Some(addr) = addr else { continue };
-                        if !should_retry(&mut redial_misses, rdvz_peer, sweep) {
+                        if !redials.allow(rdvz_peer, std::time::Instant::now()) {
                             continue;
                         }
                         info!("[{}] rendezvous {rdvz_peer} disconnected; redialing", circle_id);
@@ -1129,13 +1117,12 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     let local = *swarm.local_peer_id();
                     for member in member_peer_ids(&state_for_swarm) {
                         if member == local || swarm.is_connected(&member) {
-                            redial_misses.remove(&member);
                             continue;
                         }
                         if state_for_swarm.is_foreign_peer(member.to_string().as_str()) {
                             continue;
                         }
-                        if !should_retry(&mut redial_misses, member, sweep) {
+                        if !redials.allow(member, std::time::Instant::now()) {
                             continue;
                         }
                         tracing::debug!("[{}] redialing lost peer {member}", circle_id);
@@ -1214,8 +1201,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             connection_id,
                             route_addr,
                         );
-                        // Back off from scratch next time this peer drops.
-                        redial_misses.remove(&peer_id);
+                        redials.connected(peer_id, std::time::Instant::now());
                         // If this is a rendezvous server, register + discover immediately.
                         if rendezvous_peers.read().unwrap().contains(&peer_id) {
                             if let Err(e) = swarm.behaviour_mut().rendezvous.register(
@@ -1274,6 +1260,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         // goes offline — so that keeps INFO, logged below where
                         // num_established is known to be zero.
                         if num_established == 0 {
+                            redials.disconnected(peer_id, std::time::Instant::now());
                             info!("[{}] P2P disconnected: {peer_id}: {cause:?}", circle_id);
                         } else {
                             tracing::debug!(
@@ -1310,6 +1297,10 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             }
                             info!("[{}] mDNS discovered: {peer_id} @ {addr}", circle_id);
                             swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
+                            if swarm.is_connected(&peer_id)
+                                || !redials.allow(peer_id, std::time::Instant::now()) {
+                                continue;
+                            }
                             if let Err(e) = swarm.dial(
                                 DialOpts::peer_id(peer_id)
                                     .addresses(vec![addr])
@@ -1359,24 +1350,26 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                                         );
                                         continue;
                                     }
-                                    for addr in reg.record.addresses() {
-                                        if force_relay
-                                            && !crate::network::public_relay_transport::is_relayed_addr(addr)
-                                        {
-                                            tracing::debug!(
-                                                "[{}] force-relay mode: ignoring direct rendezvous address {addr}",
-                                                circle_id
-                                            );
-                                            continue;
-                                        }
+                                    let addresses: Vec<_> = reg.record.addresses().iter()
+                                        .filter(|addr| !force_relay
+                                            || crate::network::public_relay_transport::is_relayed_addr(addr))
+                                        .cloned().collect();
+                                    // Refresh routing even while backed off, and give one
+                                    // dial all candidates so a bad first address cannot
+                                    // starve the working relay address.
+                                    for addr in &addresses {
                                         swarm.behaviour_mut().kad.add_address(&pid, addr.clone());
-                                        let _ = swarm.dial(
-                                            DialOpts::peer_id(pid)
-                                                .addresses(vec![addr.clone()])
-                                                .condition(PeerCondition::DisconnectedAndNotDialing)
-                                                .build(),
-                                        );
                                     }
+                                    if addresses.is_empty() || swarm.is_connected(&pid)
+                                        || !redials.allow(pid, std::time::Instant::now()) {
+                                        continue;
+                                    }
+                                    let _ = swarm.dial(
+                                        DialOpts::peer_id(pid)
+                                            .addresses(addresses)
+                                            .condition(PeerCondition::DisconnectedAndNotDialing)
+                                            .build(),
+                                    );
                                 }
                             }
                             RE::DiscoverFailed { rendezvous_node, error, .. } => {
@@ -1652,6 +1645,50 @@ async fn remove_pending_entry(state: &AppState, peer_str: &str, reason: &str) {
 ///
 /// Reads from the caller's transaction so the whole admission decision sees one
 /// consistent view of membership.
+/// The distrusted user identity this peer proves, if it proves one.
+///
+/// Only a peer that *proves* an identity can be caught here: a device that
+/// publishes no owner claim has no identity to match against. That is the
+/// current posture rather than a hole — nothing yet requires a joiner to prove
+/// who it is, so distrust disowns an identity rather than screening every
+/// stranger. Requiring proof is the step after this one.
+pub(crate) fn distrusted_identity<T: yrs::ReadTxn>(
+    txn: &T,
+    circle_id: &str,
+    admin_pubkey_hex: &str,
+    peer_id: &str,
+) -> Option<String> {
+    use yrs::{Any, Map, Out};
+
+    let distrusted = txn.get_map(crate::control::DISTRUSTED_USERS_KEY)?;
+    let claim = txn
+        .get_map(MLS_OWNER_CLAIMS_KEY)
+        .and_then(|m| m.get(txn, peer_id))
+        .and_then(|v| match v {
+            Out::Any(Any::String(s)) => serde_json::from_str::<OwnerClaim>(&s).ok(),
+            _ => None,
+        })?;
+
+    let user = claim.verified_user(peer_id, circle_id)?;
+    let entry = distrusted.get(txn, user.as_str()).and_then(|v| match v {
+        Out::Any(Any::String(s)) => serde_json::from_str::<crate::control::DistrustEntry>(&s).ok(),
+        _ => None,
+    })?;
+
+    // The record has to carry the admin's signature, not merely exist. The
+    // control document is replicated and every member can write to it, so
+    // treating presence as authority would let any member lock anybody out of
+    // the circle by adding an entry of their own.
+    if !entry.is_authentic(admin_pubkey_hex) {
+        warn!(
+            "[member] ignoring an unsigned distrust record for {}",
+            &user[..user.len().min(16)]
+        );
+        return None;
+    }
+    Some(user)
+}
+
 fn grant_admits<T: yrs::ReadTxn>(
     txn: &T,
     circle_id: &str,
@@ -1719,6 +1756,34 @@ fn grant_admits<T: yrs::ReadTxn>(
 const APPROVAL_RETRIES: u32 = 10;
 const APPROVAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
+async fn retry_pending_approvals(state: &AppState) {
+    use yrs::{Map, ReadTxn, Transact};
+    let peers: Vec<String> = {
+        let Ok(txn) = state.control.try_transact() else {
+            return;
+        };
+        txn.get_map(MLS_PENDING_KEY)
+            .map(|pending| {
+                pending
+                    .iter(&txn)
+                    .map(|(peer, _)| peer.to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    state.approval_errors.retain(|peer, _| peers.contains(peer));
+    for peer in peers {
+        auto_approve(peer, state.clone(), state.mls.clone()).await;
+    }
+}
+
+fn record_approval_error(state: &AppState, peer: &str, reason: String) {
+    if state.approval_errors.get(peer).as_deref() != Some(&reason) {
+        warn!("[member] automatic approval of {peer} failed: {reason}");
+        state.approval_errors.insert(peer.to_owned(), reason);
+    }
+}
+
 async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::SharedMlsState) {
     use yrs::{Any, Map, Out, ReadTxn, Transact, WriteTxn};
 
@@ -1737,6 +1802,24 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
         {
             let mut mls_locked = mls.lock().await;
             if let Ok(mut txn) = state.control.try_transact_mut() {
+                // Another attempt or a manual decision may already have finished.
+                let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
+                if pending.get(&txn, peer_id_str.as_str()).is_none() {
+                    state.approval_errors.remove(&peer_id_str);
+                    return;
+                }
+                // The coordination member list includes provisional self-entries;
+                // only the actual encrypted group proves completed admission.
+                if mls_locked
+                    .group
+                    .as_ref()
+                    .and_then(|group| group.leaf_index_for_peer(&peer_id_str))
+                    .is_some()
+                {
+                    pending.remove(&mut txn, peer_id_str.as_str());
+                    state.approval_errors.remove(&peer_id_str);
+                    return;
+                }
                 let Some(kp_hex) = txn
                     .get_map(MLS_KEY_PACKAGES_KEY)
                     .and_then(|kp_map| kp_map.get(&txn, peer_id_str.as_str()))
@@ -1745,9 +1828,19 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                         _ => None,
                     })
                 else {
+                    record_approval_error(
+                        &state,
+                        &peer_id_str,
+                        "Waiting for device key package".into(),
+                    );
                     return;
                 };
                 let Ok(kp_bytes) = hex::decode(&kp_hex) else {
+                    record_approval_error(
+                        &state,
+                        &peer_id_str,
+                        "Invalid device key package encoding".into(),
+                    );
                     return;
                 };
 
@@ -1762,39 +1855,49 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                         _ => None,
                     })
                     .and_then(|entry| entry.join_grant);
+                // A circle that has disowned an identity must not readmit it,
+                // including on a device minted after the fact — which is the
+                // whole point, since whoever holds a stolen root key can make
+                // as many devices as they like.
+                if let Some(user) = distrusted_identity(
+                    &txn,
+                    &state.circle_id,
+                    &state.admin_pubkey_hex,
+                    &peer_id_str,
+                ) {
+                    record_approval_error(
+                        &state,
+                        &peer_id_str,
+                        format!(
+                            "User identity {} is distrusted in this circle",
+                            &user[..user.len().min(16)]
+                        ),
+                    );
+                    return;
+                }
+
                 if let Err(reason) =
                     grant_admits(&txn, &state.circle_id, &peer_id_str, presented.as_ref())
                 {
-                    warn!("[member] refused automatic approval of {peer_id_str}: {reason}");
+                    record_approval_error(&state, &peer_id_str, reason);
                     // Leave the request pending rather than discarding it: an
                     // admin can still approve deliberately, which is the right
                     // escape hatch for a legitimate joiner whose invite lapsed.
                     return;
                 }
 
-                let (commit_bytes, welcome_bytes, ratchet_tree_bytes) = match mls_locked
-                    .add_member(&kp_bytes)
-                {
-                    Ok(t) => t,
-                    Err(_) => {
-                        // Most likely already in the MLS group — e.g. the daemon
-                        // restarted and re-wrote a pending entry before sync caught
-                        // up. Retire the stale request so the UI stops showing it.
-                        let already_member = matches!(
-                            txn.get_map(MEMBER_LIST_KEY)
-                                .and_then(|m| m.get(&txn, peer_id_str.as_str())),
-                            Some(Out::Any(Any::String(_)))
-                        );
-                        if already_member {
-                            let pending_map = txn.get_or_insert_map(MLS_PENDING_KEY);
-                            pending_map.remove(&mut txn, peer_id_str.as_str());
-                            info!(
-                                    "[member] removed stale pending entry for {peer_id_str} (already a member)"
-                                );
+                let (commit_bytes, welcome_bytes, ratchet_tree_bytes) =
+                    match mls_locked.add_member(&kp_bytes) {
+                        Ok(t) => t,
+                        Err(error) => {
+                            record_approval_error(
+                                &state,
+                                &peer_id_str,
+                                format!("MLS admission failed: {error}"),
+                            );
+                            return;
                         }
-                        return;
-                    }
-                };
+                    };
                 let epoch = mls_locked.current_epoch().unwrap_or(0);
 
                 let (owner, agent_id, device_label, agents) = txn
@@ -1849,6 +1952,7 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                 member_map.insert(&mut txn, peer_id_str.as_str(), member_json.as_str());
                 let pending_map = txn.get_or_insert_map(MLS_PENDING_KEY);
                 pending_map.remove(&mut txn, peer_id_str.as_str());
+                state.approval_errors.remove(&peer_id_str);
                 // Burn the nonce in the same transaction that admits, so an
                 // invite cannot admit twice even under a concurrent redemption.
                 if let Some(grant) = presented.as_ref() {
@@ -2119,18 +2223,39 @@ fn member_peer_ids(state: &AppState) -> Vec<PeerId> {
         .collect()
 }
 
-/// Exponential backoff for reconnect attempts, keyed on the sweep counter.
-///
-/// Returns true when `peer` is due for another dial, and records the attempt.
-/// A peer is retried on sweeps 1, 2, 4, 8, 16, then every 16th sweep.
-fn should_retry(misses: &mut HashMap<PeerId, u32>, peer: PeerId, sweep: u64) -> bool {
-    let failures = misses.entry(peer).or_insert(0);
-    let stride = 1u64 << (*failures).min(RECONNECT_MAX_BACKOFF_EXP);
-    if !sweep.is_multiple_of(stride) {
-        return false;
+/// One retry budget per peer across explicit discovery and reconnect paths.
+/// Use elapsed time rather than sweep numbers: repeated discovery events must
+/// not create extra attempts between ticks or reset the retry schedule.
+#[derive(Default)]
+struct PeerRedials {
+    attempts: HashMap<PeerId, (u32, std::time::Instant)>,
+    connected_since: HashMap<PeerId, std::time::Instant>,
+}
+
+impl PeerRedials {
+    fn allow(&mut self, peer: PeerId, now: std::time::Instant) -> bool {
+        let (failures, deadline) = self.attempts.entry(peer).or_insert((0, now));
+        if now < *deadline {
+            return false;
+        }
+        *deadline = now + RECONNECT_INTERVAL * (1 << (*failures).min(RECONNECT_MAX_BACKOFF_EXP));
+        *failures = failures.saturating_add(1);
+        true
     }
-    *failures = failures.saturating_add(1);
-    true
+
+    fn connected(&mut self, peer: PeerId, now: std::time::Instant) {
+        self.connected_since.entry(peer).or_insert(now);
+    }
+
+    fn disconnected(&mut self, peer: PeerId, now: std::time::Instant) {
+        // Brief successes include rejected circle handshakes and duplicate
+        // relay circuits. Only a sustained connection earns a fresh budget.
+        if let Some(since) = self.connected_since.remove(&peer) {
+            if now.duration_since(since) >= RECONNECT_INTERVAL * 2 {
+                self.attempts.remove(&peer);
+            }
+        }
+    }
 }
 
 /// Returns true for listen addresses worth tracking for invite embedding:
@@ -2167,49 +2292,110 @@ mod tests {
     use crate::state::AppState;
     use yrs::{Map, ReadTxn, Transact, WriteTxn};
 
-    /// Sweeps on which `should_retry` lets `peer` through, over `sweeps` ticks.
-    fn retry_sweeps(sweeps: u64) -> Vec<u64> {
+    #[test]
+    fn discovery_and_sweeps_share_backoff_despite_brief_transport_success() {
         let peer = PeerId::random();
-        let mut misses = HashMap::new();
-        (1..=sweeps)
-            .filter(|&sweep| should_retry(&mut misses, peer, sweep))
-            .collect()
+        let start = std::time::Instant::now();
+        let mut retries = PeerRedials::default();
+        let mut attempts = Vec::new();
+        // A discovery arrives every second, with a periodic sweep too. Each
+        // transport opens successfully then fails its handshake immediately.
+        for second in 0..=1200 {
+            let now = start + std::time::Duration::from_secs(second);
+            if retries.allow(peer, now) {
+                attempts.push(second);
+                retries.connected(peer, now);
+                retries.disconnected(peer, now + std::time::Duration::from_millis(100));
+            }
+            if second % 30 == 0 {
+                assert!(
+                    !retries.allow(peer, now),
+                    "sweep must not bypass discovery's deadline"
+                );
+            }
+        }
+        assert_eq!(attempts, vec![0, 30, 90, 210, 450, 930]);
     }
 
     #[test]
-    fn reconnect_backoff_widens_then_settles() {
-        // 1, 2, 4, 8, 16 then every 16th sweep: a peer that is simply offline
-        // stops being dialed every tick, but is never abandoned.
+    fn shared_ip_relay_budget_survives_discovery_churn_with_backoff() {
+        // Exercise libp2p's actual token buckets with the production relay
+        // config. Five circle identities share one IP, each discovering three
+        // unreachable/briefly-connected peers once a second for five minutes.
+        fn simulate(backoff: bool) -> (usize, usize) {
+            let mut relay = crate::bootstrap::relay_server_config();
+            let sources: Vec<_> = (0..5).map(|_| PeerId::random()).collect();
+            let destinations: Vec<_> = (0..3).map(|_| PeerId::random()).collect();
+            let mut retries: Vec<_> = (0..5).map(|_| PeerRedials::default()).collect();
+            let addr: Multiaddr = "/ip4/203.0.113.1/tcp/1234".parse().unwrap();
+            let start = std::time::Instant::now();
+            let (mut admitted, mut denied) = (0, 0);
+            for second in 0..300 {
+                let now = start + std::time::Duration::from_secs(second);
+                for (i, source) in sources.iter().enumerate() {
+                    for destination in &destinations {
+                        if backoff && !retries[i].allow(*destination, now) {
+                            continue;
+                        }
+                        if relay
+                            .circuit_src_rate_limiters
+                            .iter_mut()
+                            .all(|limiter| limiter.try_next(*source, &addr, now))
+                        {
+                            admitted += 1;
+                            retries[i].connected(*destination, now);
+                            retries[i].disconnected(
+                                *destination,
+                                now + std::time::Duration::from_millis(100),
+                            );
+                        } else {
+                            denied += 1;
+                        }
+                    }
+                }
+            }
+            (admitted, denied)
+        }
+        let before = simulate(false); // discovery previously dialed without a budget
+        let after = simulate(true);
+        eprintln!("relay token-bucket simulation: before={before:?}, after={after:?}");
+        assert!(
+            before.1 > 0,
+            "the old discovery path must reproduce resource denials"
+        );
         assert_eq!(
-            retry_sweeps(80),
-            vec![1, 2, 4, 8, 16, 32, 48, 64, 80],
-            "backoff should double up to the cap, then hold at every 16th sweep"
+            after,
+            (60, 0),
+            "backoff must retain retries without exhausting the relay"
         );
     }
 
     #[test]
-    fn reconnect_backoff_is_per_peer() {
-        let mut misses = HashMap::new();
+    fn retry_deadlines_are_per_peer_and_relative_to_the_last_attempt() {
+        let mut retries = PeerRedials::default();
+        let start = std::time::Instant::now();
         let a = PeerId::random();
         let b = PeerId::random();
-        // Burning `a`'s budget must not delay `b`'s first attempt.
-        assert!(should_retry(&mut misses, a, 1));
-        assert!(should_retry(&mut misses, a, 2));
-        assert!(should_retry(&mut misses, b, 2));
+        assert!(retries.allow(a, start));
+        assert!(!retries.allow(a, start + std::time::Duration::from_secs(29)));
+        assert!(retries.allow(b, start + std::time::Duration::from_secs(29)));
+        assert!(retries.allow(a, start + std::time::Duration::from_secs(30)));
+        assert!(!retries.allow(a, start + std::time::Duration::from_secs(60)));
     }
 
     #[test]
-    fn reconnect_backoff_resets_when_peer_returns() {
-        let mut misses = HashMap::new();
+    fn sustained_connection_resets_backoff_only_after_last_connection_closes() {
+        let mut retries = PeerRedials::default();
         let peer = PeerId::random();
-        for sweep in [1, 2, 4, 8] {
-            assert!(should_retry(&mut misses, peer, sweep));
-        }
-        assert!(!should_retry(&mut misses, peer, 9), "should be backed off");
-
-        // ConnectionEstablished clears the entry; the next drop retries at once.
-        misses.remove(&peer);
-        assert!(should_retry(&mut misses, peer, 9));
+        let start = std::time::Instant::now();
+        assert!(retries.allow(peer, start));
+        assert!(retries.allow(peer, start + std::time::Duration::from_secs(30)));
+        retries.connected(peer, start + std::time::Duration::from_secs(31));
+        // An additional connection must not reset the original uptime.
+        retries.connected(peer, start + std::time::Duration::from_secs(80));
+        retries.disconnected(peer, start + std::time::Duration::from_secs(91));
+        assert!(retries.allow(peer, start + std::time::Duration::from_secs(91)));
+        assert!(retries.allow(peer, start + std::time::Duration::from_secs(121)));
     }
 
     fn test_state() -> AppState {
@@ -2242,6 +2428,124 @@ mod tests {
         txn.get_map(MLS_PENDING_KEY)
             .and_then(|pending| pending.get(&txn, peer))
             .is_some()
+    }
+
+    async fn automatic_state() -> (AppState, tempfile::TempDir) {
+        let mut state = test_state();
+        let dir = tempfile::tempdir().unwrap();
+        state.circle_dir = dir.path().to_path_buf();
+        state.join_policy = JoinPolicy::Auto;
+        let identity = crate::mls::MlsIdentity::generate("peer-local").unwrap();
+        let group = crate::mls::MlsGroupManager::create(&identity).unwrap();
+        state.mls = crate::mls::new_mls_state(identity, Some(group));
+        (state, dir)
+    }
+
+    fn seed_valid_request(state: &AppState, peer: &str) {
+        let issuer = libp2p::identity::Keypair::generate_ed25519();
+        let expires_at = chrono::Utc::now() + chrono::Duration::hours(1);
+        let grant = crate::invite::sign_grant(
+            &state.circle_id,
+            &hex::encode(issuer.to_protobuf_encoding().unwrap()),
+            expires_at,
+        )
+        .unwrap();
+        let entry = PendingEntry {
+            peer_id: peer.into(),
+            owner: "owner".into(),
+            agent_id: peer.into(),
+            device_label: String::new(),
+            agents: vec![],
+            owner_sig: String::new(),
+            requested_at: chrono::Utc::now(),
+            join_grant: Some(crate::control::JoinGrant {
+                inviter_pubkey_hex: grant.inviter_pubkey_hex,
+                nonce: grant.nonce,
+                sig: grant.sig,
+                expires_at,
+            }),
+        };
+        let mut txn = state.control.transact_mut();
+        let members = txn.get_or_insert_map(MEMBER_LIST_KEY);
+        members.insert(&mut txn, issuer.public().to_peer_id().to_string(), "{}");
+        let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
+        pending.insert(&mut txn, peer, serde_json::to_string(&entry).unwrap());
+    }
+
+    #[tokio::test]
+    async fn automatic_sweep_retries_restored_request_when_key_package_arrives() {
+        let (state, _dir) = automatic_state().await;
+        let peer = "peer-joiner";
+        seed_valid_request(&state, peer);
+        retry_pending_approvals(&state).await;
+        assert!(is_pending(&state, peer));
+        assert!(state.approval_errors.contains_key(peer));
+        let identity = crate::mls::MlsIdentity::generate(peer).unwrap();
+        {
+            let mut txn = state.control.transact_mut();
+            let packages = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+            packages.insert(
+                &mut txn,
+                peer,
+                hex::encode(identity.generate_key_package().unwrap()),
+            );
+        }
+        retry_pending_approvals(&state).await;
+        assert!(!is_pending(&state, peer));
+        assert!(!state.approval_errors.contains_key(peer));
+        assert_eq!(state.mls.lock().await.current_epoch(), Some(1));
+        // A stale request after admission must not consume its grant again or
+        // issue another add commit, even if the member list is incomplete.
+        seed_pending(&state, peer);
+        retry_pending_approvals(&state).await;
+        assert!(!is_pending(&state, peer));
+        assert_eq!(state.mls.lock().await.current_epoch(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn automatic_sweep_keeps_mls_failure_pending_despite_provisional_member() {
+        let (state, _dir) = automatic_state().await;
+        let peer = "peer-joiner";
+        seed_valid_request(&state, peer);
+        {
+            let mut txn = state.control.transact_mut();
+            let members = txn.get_or_insert_map(MEMBER_LIST_KEY);
+            members.insert(&mut txn, peer, "{}");
+            let packages = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+            packages.insert(&mut txn, peer, hex::encode(b"invalid MLS key package"));
+        }
+        retry_pending_approvals(&state).await;
+        assert!(is_pending(&state, peer));
+        assert!(state
+            .approval_errors
+            .get(peer)
+            .unwrap()
+            .contains("MLS admission failed"));
+        assert_eq!(state.mls.lock().await.current_epoch(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn automatic_sweep_does_not_admit_without_valid_invite() {
+        let (state, _dir) = automatic_state().await;
+        let peer = "peer-joiner";
+        seed_pending(&state, peer);
+        {
+            let identity = crate::mls::MlsIdentity::generate(peer).unwrap();
+            let mut txn = state.control.transact_mut();
+            let packages = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+            packages.insert(
+                &mut txn,
+                peer,
+                hex::encode(identity.generate_key_package().unwrap()),
+            );
+        }
+        retry_pending_approvals(&state).await;
+        assert!(is_pending(&state, peer));
+        assert_eq!(
+            state.approval_errors.get(peer).unwrap().value(),
+            "no invite grant presented"
+        );
+        assert_eq!(state.mls.lock().await.current_epoch(), Some(0));
     }
 
     /// Regression: a joining device writes a provisional self-signed member

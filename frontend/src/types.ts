@@ -31,6 +31,8 @@ export interface Member {
 }
 
 export interface PendingEntry {
+  automatic?: boolean
+  approval_error?: string | null
   peer_id: string
   owner: string
   agent_id: string

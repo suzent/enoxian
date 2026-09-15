@@ -114,6 +114,8 @@ pub struct AppState {
     /// subscribe and forward each want to their peer, so an attachment posted
     /// mid-session is fetched immediately instead of on the next reconnect.
     pub blob_wants: broadcast::Sender<String>,
+    /// Local admission failures, exposed to the UI without syncing diagnostic state.
+    pub approval_errors: Arc<DashMap<String, String>>,
     pub join_policy: crate::config::JoinPolicy,
     pub owner: String,
     pub mls: crate::mls::SharedMlsState,
@@ -555,6 +557,7 @@ impl AppState {
             ))),
             blobs: Arc::new(std::sync::OnceLock::new()),
             blob_wants: blob_wants_tx,
+            approval_errors: Arc::new(DashMap::new()),
             join_policy,
             owner,
             mls,
