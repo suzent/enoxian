@@ -1632,7 +1632,10 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         };
-        let inbox = tokio::time::timeout(std::time::Duration::from_secs(2), wait)
+        // Waiting on a freshly spawned task to publish the inbox. Two seconds
+        // loses that race on a loaded machine; the recovery wait below this
+        // already allows eight, and the test still fails if it never arrives.
+        let inbox = tokio::time::timeout(std::time::Duration::from_secs(8), wait)
             .await
             .unwrap();
         let old = std::sync::Arc::downgrade(&inbox);

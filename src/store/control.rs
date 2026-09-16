@@ -163,21 +163,26 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
                     .collect()
             })
             .unwrap_or_default();
+        let mut lock_log: Vec<String> = txn
+            .get_array(crate::control::LOCK_LOG_KEY)
+            .map(|log| {
+                log.iter(&txn)
+                    .filter_map(|v| {
+                        if let Out::Any(Any::String(s)) = v {
+                            Some(s.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // The live doc compacts as it appends; this covers a doc merged from a
+        // peer still running a build without that, so the file stays bounded.
+        crate::control::arbitration::compact_persisted_lock_log(&mut lock_log);
+
         ControlSnapshot {
-            lock_log: txn
-                .get_array(crate::control::LOCK_LOG_KEY)
-                .map(|log| {
-                    log.iter(&txn)
-                        .filter_map(|v| {
-                            if let Out::Any(Any::String(s)) = v {
-                                Some(s.to_string())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
+            lock_log,
             execution_receipts: txn
                 .get_map(crate::api::execution::RECEIPTS_KEY)
                 .map(|map| map_strings(&map, &txn))
@@ -226,6 +231,18 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
             "[control] loading the latest {} of {} persisted chat messages",
             snap.chat.len(),
             persisted_chat_count
+        );
+    }
+    // Restore replays the log entry by entry into the doc, so a log written
+    // before compaction existed can stall startup long enough that the circle
+    // never registers as active. Settle it here rather than inheriting it.
+    let persisted_lock_count = snap.lock_log.len();
+    crate::control::arbitration::compact_persisted_lock_log(&mut snap.lock_log);
+    if persisted_lock_count > snap.lock_log.len() {
+        tracing::warn!(
+            "[control] compacted persisted lock log from {} to {} entries",
+            persisted_lock_count,
+            snap.lock_log.len()
         );
     }
 

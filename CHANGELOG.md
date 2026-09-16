@@ -39,6 +39,23 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- Agents that read the room now answer questions written in Chinese, Japanese,
+  and Korean. The "is this worth a turn" floor counted characters, so a CJK
+  message was judged too short to be worth answering however much it said, and
+  only explicit mentions worked in those Circles.
+- The lock log no longer grows without bound. Agents cycling file locks could
+  add hundreds of thousands of entries, which slowed every later lock, stalled
+  saves, and could grow a Circle's stored state past the point where it would
+  load at all. Settled entries are now discarded; existing oversized Circles are
+  repaired on next start.
+- A Circle that is slow to load no longer prevents other Circles from starting.
+  Circles now start independently, so one stuck Circle cannot strand the rest or
+  stop newly added Circles from being picked up.
+- `enox enable` and `enox disable` now report whether the running daemon
+  actually started or stopped the Circle, instead of always reporting success.
+
 ## [0.9.0] — 2026-09-15
 
 ### Added
