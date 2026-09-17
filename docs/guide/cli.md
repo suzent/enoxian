@@ -663,6 +663,9 @@ enox agent plugins
 enox agent install codex-acp
 enox agent install claude
 enox agent install suzent
+enox agent install pi-acp
+enox agent install hermes
+enox agent install openclaw
 ```
 
 `enox agent install claude` checks for the official Claude Code CLI and a valid
@@ -674,6 +677,15 @@ pinned ACP bridge. It does not install or manage Node.js. It accepts
 downloaded or pinned — installing only writes the chat handle, and the `suzent`
 binary is resolved on `PATH`. A Suzent backend must be running
 (`suzent serve` or `suzent start`).
+
+`hermes` and `openclaw` are native in the same way: they are installed and
+authenticated by you, and `enox agent install` only writes the handle after
+checking the CLI resolves. Hermes needs its ACP extra installed and a provider
+configured; OpenClaw's bridge needs a reachable OpenClaw Gateway.
+
+`enox agent install pi-acp` installs the pinned pi ACP adapter and checks that
+the `pi` CLI is on `PATH`; pi's own credentials (`pi`, then `/login`) are used
+at run time, passed through `PI_ACP_PI_COMMAND`.
 
 ### `agent add`
 

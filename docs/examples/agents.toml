@@ -76,6 +76,28 @@ command = ["npx", "@agentclientprotocol/codex-acp"]
 driver = "acp"
 command = ["suzent", "acp"]
 
+# ── Pi over ACP ───────────────────────────────────────────────────────────────
+# Same shape as claude above: `enox agent install pi-acp` pins the adapter and
+# enoxian hands it your resolved `pi` executable through PI_ACP_PI_COMMAND, so
+# pi's providers, models, prompts, and skills stay authoritative. Authenticate
+# pi first (run `pi`, then `/login`, or export a provider API key).
+[agents.pi]
+driver = "acp"
+command = ["<enoxian-home>/adapters/pi-acp/0.0.33/node_modules/.bin/pi-acp"]
+
+# ── Hermes and OpenClaw over ACP (more built-in "native" plugins) ─────────────
+# Both CLIs speak ACP themselves, so nothing is downloaded or pinned and the
+# handle stays by-name. Hermes needs its ACP extra installed and a provider
+# configured (`hermes model`); OpenClaw's bridge forwards every turn to an
+# OpenClaw Gateway, which must be reachable.
+[agents.hermes]
+driver = "acp"
+command = ["hermes", "acp"]
+
+[agents.openclaw]
+driver = "acp"
+command = ["openclaw", "acp"]
+
 # ── A plain argv agent (fallback driver) ──────────────────────────────────────
 # The "argv" driver is the universal fallback for any tool that does NOT speak
 # ACP: enoxian spawns the command with {{task}} substituted and captures

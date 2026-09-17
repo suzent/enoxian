@@ -145,6 +145,7 @@ pub struct CatalogEntry {
 }
 
 const CODEX_VERSION: &str = "1.1.14";
+const PI_VERSION: &str = "0.0.33";
 const CLAUDE_VERSION: &str = "0.69.0";
 const CLAUDE_PLUGIN_ID: &str = "claude-agent-acp";
 
@@ -194,6 +195,59 @@ fn builtins() -> Vec<CatalogEntry> {
                 install_url: "https://github.com/cyzus/suzent".into(),
                 about: "Your local Suzent, speaking ACP itself — no adapter, no Node.js. \
                         Needs its backend running (`suzent serve`)."
+                    .into(),
+            },
+            source: "builtin".into(),
+        },
+        CatalogEntry {
+            manifest: PluginManifest {
+                id: "pi-acp".into(),
+                agent: "pi".into(),
+                version: PI_VERSION.into(),
+                driver: Driver::Acp,
+                package: "pi-acp".into(),
+                binary: "pi-acp".into(),
+                kind: Kind::Npm,
+                args: Vec::new(),
+                install_url: String::new(),
+                about: "Pi coding agent through a pinned ACP adapter. Authenticate pi first \
+                        (run `pi`, then `/login`, or export a provider API key)."
+                    .into(),
+            },
+            source: "builtin".into(),
+        },
+        CatalogEntry {
+            manifest: PluginManifest {
+                id: "hermes".into(),
+                agent: "hermes".into(),
+                version: String::new(),
+                driver: Driver::Acp,
+                package: String::new(),
+                binary: "hermes".into(),
+                kind: Kind::Native,
+                args: vec!["acp".into()],
+                install_url: "https://hermes-agent.nousresearch.com/docs/user-guide/features/acp"
+                    .into(),
+                about: "Hermes Agent speaking ACP itself — no adapter, no Node.js. Needs the \
+                        ACP extra installed (`uv pip install -e '.[acp]'`) and providers \
+                        configured with `hermes model`."
+                    .into(),
+            },
+            source: "builtin".into(),
+        },
+        CatalogEntry {
+            manifest: PluginManifest {
+                id: "openclaw".into(),
+                agent: "openclaw".into(),
+                version: String::new(),
+                driver: Driver::Acp,
+                package: String::new(),
+                binary: "openclaw".into(),
+                kind: Kind::Native,
+                args: vec!["acp".into()],
+                install_url: "https://docs.openclaw.ai/cli/acp".into(),
+                about: "OpenClaw's own ACP bridge — no adapter, no Node.js. Needs an OpenClaw \
+                        Gateway reachable, since the bridge forwards every turn to it."
                     .into(),
             },
             source: "builtin".into(),
@@ -726,6 +780,30 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    // The chat handles the built-in catalog offers, and how each one is
+    // reached. These are the strings a user types as `@name`, so a rename is a
+    // user-visible change rather than an internal one.
+    #[test]
+    fn built_in_handles_and_kinds_are_stable() {
+        let kinds: Vec<(String, String, Kind)> = builtins()
+            .into_iter()
+            .map(|e| (e.manifest.id, e.manifest.agent, e.manifest.kind))
+            .collect();
+        for (id, agent, kind) in [
+            ("codex-acp", "codex", Kind::Npm),
+            ("claude-agent-acp", "claude", Kind::Npm),
+            ("pi-acp", "pi", Kind::Npm),
+            ("suzent", "suzent", Kind::Native),
+            ("hermes", "hermes", Kind::Native),
+            ("openclaw", "openclaw", Kind::Native),
+        ] {
+            assert!(
+                kinds.contains(&(id.to_string(), agent.to_string(), kind)),
+                "{id} should be a built-in @{agent} of kind {kind:?}"
+            );
         }
     }
 
