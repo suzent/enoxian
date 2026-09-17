@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "enox",
     about = "enoxian agent CLI — collaborate inside a Circle",
-    version = env!("CARGO_PKG_VERSION")
+    version = crate::version::LONG_VERSION
 )]
 pub struct AgentCli {
     /// Output raw JSON (machine-readable)

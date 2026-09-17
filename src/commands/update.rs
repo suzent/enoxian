@@ -270,11 +270,16 @@ fn make_executable(_path: &Path) -> Result<()> {
 
 /// `enox --version` prints `enox <semver>`; the bare version is what the
 /// release tag carries.
+/// The bare semver a binary reports, for comparison against a release tag.
+///
+/// clap prints `enox <semver> (<channel>, <commit>)`, so the version is the
+/// second token — not the last one, which is the commit. Binaries built before
+/// the build stamp existed print `enox <semver>` and still parse.
 fn version_of(path: &Path) -> Option<String> {
     let output = command_output(path, &["--version"])?;
     output
         .split_whitespace()
-        .next_back()
+        .nth(1)
         .map(|value| value.to_string())
 }
 

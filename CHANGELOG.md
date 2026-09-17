@@ -39,6 +39,12 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- `enox --version` now names the build channel and the commit it was built from
+  (`enox 0.9.0 (dev, 1a2b3c4d5e6f)`), so a binary built with `enox update --dev`
+  is distinguishable from a published release in a bug report.
+
 ### Fixed
 
 - Agents that read the room now answer questions written in Chinese, Japanese,
