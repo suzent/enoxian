@@ -253,6 +253,9 @@ pub struct LaunchRequest<'a> {
     pub relay_path: Vec<String>,
     /// Prior ACP session id to resume, if one is remembered for this agent.
     pub resume: Option<&'a str>,
+    /// Chat lines the prompt left out because `resume` was expected to carry
+    /// them. Used only when the resume fails; see `context::recovery_context`.
+    pub withheld: &'a [String],
 }
 
 #[derive(Clone, Copy)]
@@ -344,6 +347,7 @@ pub async fn launch_cancellable(
             req.task,
             &run_dir,
             resume,
+            req.withheld,
             actor,
             &mut lease,
             req.workspace,
@@ -417,6 +421,7 @@ async fn run_acp(
     task: &str,
     run_dir: &Path,
     resume: Option<&str>,
+    withheld: &[String],
     actor: ManagedActor<'_>,
     lease: &mut crate::proposal::runs::RunLease,
     workspace: &Path,
@@ -459,7 +464,7 @@ async fn run_acp(
     // Now capture only the reply to *this* prompt.
     capturing.store(true, Ordering::Relaxed);
     let prompt = if resume.is_some() && !acp.was_resumed() {
-        let context = coordination.as_ref().map(|state| super::context::recovery_context(state, actor.agent_id))
+        let context = coordination.as_ref().map(|state| super::context::recovery_context(state, actor.agent_id, withheld))
             .unwrap_or_else(|| "Previous ACP session could not be restored; private conversation memory is unavailable. Retrieve Circle chat if needed.\n\n".into());
         format!("{context}{task}")
     } else {
@@ -533,7 +538,7 @@ mod tests {
     #[test]
     fn seen_only_memory_does_not_attempt_an_empty_resume() {
         let dir = tempfile::tempdir().unwrap();
-        super::super::memory::save_seen(dir.path(), "a", "message").unwrap();
+        super::super::memory::save_seen(dir.path(), "a", "message", Vec::new()).unwrap();
         let memory = super::super::memory::load(dir.path(), "a").unwrap();
         assert_eq!(resumable_session(Some(&memory), Some("")), None);
         assert_eq!(
