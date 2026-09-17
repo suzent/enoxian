@@ -21,7 +21,46 @@ use crate::control::{Author, ChatMessage};
 /// "ok", "thanks", "lol" and "👍" are the bulk of a casual room and the least
 /// likely to need an agent. Crude on purpose: it costs nothing and removes the
 /// traffic that dominates the volume.
+///
+/// Measured in [`weighted_len`] units, not characters — see why there.
 const MIN_AMBIENT_CHARS: usize = 24;
+
+/// What a Han ideograph or Hangul syllable is worth against the threshold.
+///
+/// [`MIN_AMBIENT_CHARS`] was calibrated on English, where a word runs about
+/// four characters plus its space. A Han character is a whole morpheme, so
+/// counting it as one made the gate scale with the writing system rather than
+/// the content: 今天天气怎样 — "how's the weather today", 23 characters in
+/// English — counts 6 and never cleared the bar. The effect was that ambient
+/// agents were silent in a Chinese-language room while addressed mentions kept
+/// working, which reads exactly like a broken feature.
+const MORPHEME_WEIGHT: usize = 4;
+
+/// What a kana is worth. Kana are syllables rather than morphemes, and
+/// Japanese interleaves them with kanji that carry the weight already.
+const SYLLABLE_WEIGHT: usize = 2;
+
+fn char_weight(c: char) -> usize {
+    match c as u32 {
+        // Han: CJK Unified Ideographs, Extension A, and compatibility forms.
+        0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF => MORPHEME_WEIGHT,
+        // Han beyond the BMP (Extensions B onward).
+        0x20000..=0x3FFFF => MORPHEME_WEIGHT,
+        // Hangul syllables.
+        0xAC00..=0xD7AF => MORPHEME_WEIGHT,
+        // Hiragana and katakana.
+        0x3040..=0x30FF => SYLLABLE_WEIGHT,
+        _ => 1,
+    }
+}
+
+/// Length of `text` in units comparable to English characters.
+///
+/// Only the threshold comparison uses this; nothing else about a message is
+/// weighted.
+fn weighted_len(text: &str) -> usize {
+    text.chars().map(char_weight).sum()
+}
 
 /// An agent that spoke within this many seconds is left alone.
 ///
@@ -54,7 +93,7 @@ pub fn skip_reason(msg: &ChatMessage, mentions_an_agent: bool) -> Option<&'stati
         // Someone was addressed; that is a turn, not idle chat.
         return Some("addressed to an agent");
     }
-    if msg.text.trim().chars().count() < MIN_AMBIENT_CHARS && msg.attachments.is_empty() {
+    if weighted_len(msg.text.trim()) < MIN_AMBIENT_CHARS && msg.attachments.is_empty() {
         return Some("too short to be worth a turn");
     }
     None
@@ -135,6 +174,44 @@ mod tests {
         );
         assert_eq!(skip_reason(&m, true), Some("addressed to an agent"));
         assert_eq!(skip_reason(&m, false), None);
+    }
+
+    #[test]
+    fn a_chinese_question_is_not_mistaken_for_chatter() {
+        // Regression: these are real questions a human asked in a Circle and
+        // got no ambient answer to, because the floor counted characters.
+        for question in [
+            "今天天气怎样",           // "how's the weather today"
+            "没有人回答我吗",         // "is no one going to answer me"
+            "明天天气怎样？？？？？", // with trailing punctuation
+        ] {
+            let m = msg(question, Author::Human, 0, "suzy");
+            assert_eq!(
+                skip_reason(&m, false),
+                None,
+                "{question:?} should be offered an ambient turn"
+            );
+        }
+    }
+
+    #[test]
+    fn short_cjk_chatter_is_still_filtered() {
+        // The floor still has to do its job: a greeting is not a question.
+        for chatter in ["好的", "谢谢", "有人在吗", "はい"] {
+            let m = msg(chatter, Author::Human, 0, "suzy");
+            assert!(
+                skip_reason(&m, false).is_some(),
+                "{chatter:?} should not spend a model turn"
+            );
+        }
+    }
+
+    #[test]
+    fn weighting_leaves_latin_text_measured_by_characters() {
+        // English behaviour must be unchanged: the weights only apply to CJK.
+        assert_eq!(weighted_len("but how to setup the env"), 24);
+        assert_eq!(weighted_len("anyone?"), 7);
+        assert_eq!(weighted_len("thanks 👍"), 8);
     }
 
     #[test]

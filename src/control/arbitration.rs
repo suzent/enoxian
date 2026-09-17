@@ -2,6 +2,14 @@ use crate::control::{LockAction, LockEntry};
 use std::collections::HashMap;
 use yrs::{Any, Array, ArrayRef, Out, ReadTxn};
 
+/// Compact the lock log once it grows past this many entries.
+///
+/// Every lock operation replays the whole log (see [`compute_lock_holders`]),
+/// and the log is persisted verbatim, so an unbounded log is quadratic work and
+/// an unbounded file. A run of agents cycling locks can append hundreds of
+/// thousands of entries in hours.
+const COMPACT_THRESHOLD: u32 = 2_000;
+
 /// Replay the lock_log and return the current holder per path.
 /// Deterministic: first unmatched acquire = holder.
 pub fn compute_lock_state<T: ReadTxn>(lock_log: &ArrayRef, txn: &T) -> HashMap<String, String> {
@@ -95,6 +103,117 @@ fn same_actor(holder: &LockHolder, entry: &LockEntry) -> bool {
             || holder.peer_id == entry.peer_id)
 }
 
+/// Indices of the acquires that no matching release has cancelled.
+///
+/// Mirrors [`compute_lock_holders`] exactly: dropping every other entry must
+/// leave the derived holder set identical, or compaction would silently hand a
+/// held path to someone else.
+fn held_indices(entries: &[Option<LockEntry>]) -> Vec<usize> {
+    let mut holders: HashMap<&str, (usize, LockHolder)> = HashMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let Some(entry) = entry else { continue };
+        match entry.action {
+            LockAction::Acquire => {
+                holders.entry(&entry.path).or_insert((
+                    index,
+                    LockHolder {
+                        run_id: entry.run_id.clone(),
+                        agent_id: entry.agent_id.clone(),
+                        peer_id: entry.peer_id.clone(),
+                    },
+                ));
+            }
+            LockAction::Release => {
+                if holders
+                    .get(entry.path.as_str())
+                    .map(|(_, holder)| same_actor(holder, entry))
+                    .unwrap_or(false)
+                {
+                    holders.remove(entry.path.as_str());
+                }
+            }
+        }
+    }
+    holders.into_values().map(|(index, _)| index).collect()
+}
+
+/// Which entries a compaction keeps: the unmatched acquires, plus anything that
+/// failed to parse — unreadable entries are kept rather than lost, the same way
+/// the chat snapshot keeps unparseable messages, and replay skips them anyway.
+///
+/// Deliberately no "recent history" tail. An entry's meaning depends on the
+/// entries before it, so keeping a raw suffix can change what the log replays
+/// to. Given `A acquire p`, `B acquire p`, `A release p`, the full log leaves
+/// `p` free: B's acquire is ignored while A holds it, and A's release then
+/// clears it. Keep only the last two and replay makes B the holder — a lock
+/// nobody took and nobody can release. Retaining just the unmatched acquires
+/// has no such dependency: one entry per path, no releases to interact.
+fn retained(entries: &[Option<LockEntry>]) -> Vec<bool> {
+    let mut keep: Vec<bool> = entries.iter().map(Option::is_none).collect();
+    for index in held_indices(entries) {
+        keep[index] = true;
+    }
+    keep
+}
+
+fn parse_all(raw: impl Iterator<Item = String>) -> Vec<Option<LockEntry>> {
+    raw.map(|json| serde_json::from_str(&json).ok()).collect()
+}
+
+/// Drop lock entries that no longer affect the derived state.
+///
+/// A matched acquire/release pair leaves `compute_lock_holders` in exactly the
+/// place it started, so removing the pair changes nothing a caller can observe.
+/// Runs inside the caller's transaction, so the log is never briefly wrong.
+/// Returns the number of entries removed.
+pub fn compact_lock_log(lock_log: &ArrayRef, txn: &mut yrs::TransactionMut) -> u32 {
+    if lock_log.len(txn) <= COMPACT_THRESHOLD {
+        return 0;
+    }
+    let entries = parse_all(lock_log.iter(&*txn).filter_map(|item| match item {
+        Out::Any(Any::String(s)) => Some(s.to_string()),
+        _ => None,
+    }));
+    if entries.len() != lock_log.len(txn) as usize {
+        // A non-string item means this array is not shaped the way we think.
+        return 0;
+    }
+    let keep = retained(&entries);
+
+    // Remove from the end so earlier indices stay valid, in contiguous runs so
+    // one CRDT delete covers each stretch of dead entries.
+    let mut removed = 0;
+    let mut end = keep.len();
+    while end > 0 {
+        if keep[end - 1] {
+            end -= 1;
+            continue;
+        }
+        let mut start = end;
+        while start > 0 && !keep[start - 1] {
+            start -= 1;
+        }
+        lock_log.remove_range(txn, start as u32, (end - start) as u32);
+        removed += (end - start) as u32;
+        end = start;
+    }
+    removed
+}
+
+/// The persisted-snapshot form of [`compact_lock_log`], for a log loaded from
+/// disk that was written before compaction existed.
+pub fn compact_persisted_lock_log(entries: &mut Vec<String>) {
+    if entries.len() <= COMPACT_THRESHOLD as usize {
+        return;
+    }
+    let keep = retained(&parse_all(entries.iter().cloned()));
+    let mut index = 0;
+    entries.retain(|_| {
+        index += 1;
+        keep[index - 1]
+    });
+}
+
 /// Append an acquire or release entry.
 pub fn append_lock_entry(
     lock_log: &ArrayRef,
@@ -103,6 +222,12 @@ pub fn append_lock_entry(
 ) -> anyhow::Result<()> {
     let json = serde_json::to_string(entry)?;
     lock_log.push_back(txn, Any::String(json.as_str().into()));
+    // Bound the log at its only two append sites (bind and release), so neither
+    // the replay cost nor the snapshot can run away.
+    let removed = compact_lock_log(lock_log, txn);
+    if removed > 0 {
+        tracing::debug!("[locks] compacted lock log, dropped {removed} settled entries");
+    }
     Ok(())
 }
 
@@ -123,6 +248,156 @@ mod tests {
             action,
             ts: Utc::now(),
         }
+    }
+
+    fn entry_for(path: &str, agent: &str, action: LockAction) -> LockEntry {
+        // A counter rather than a uuid: these helpers build thousands of
+        // entries, and the id only has to be distinct.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        LockEntry {
+            run_id: None,
+            entry_id: NEXT.fetch_add(1, Ordering::Relaxed).to_string(),
+            agent_id: agent.to_string(),
+            peer_id: "peer".to_string(),
+            path: path.to_string(),
+            action,
+            ts: Utc::now(),
+        }
+    }
+
+    /// Churn well past the compaction threshold, holding one lock throughout.
+    fn churned_log() -> (Doc, ArrayRef) {
+        let doc = Doc::new();
+        let log = doc.get_or_insert_array("locks");
+        let mut txn = doc.transact_mut();
+        append_lock_entry(
+            &log,
+            &mut txn,
+            &entry_for("held.rs", "a", LockAction::Acquire),
+        )
+        .unwrap();
+        // Just past the threshold: enough to trigger compaction once, and no
+        // more work than that, so the suite stays cheap.
+        for i in 0..COMPACT_THRESHOLD / 2 + 50 {
+            let path = format!("churn-{}.rs", i % 40);
+            append_lock_entry(&log, &mut txn, &entry_for(&path, "b", LockAction::Acquire)).unwrap();
+            append_lock_entry(&log, &mut txn, &entry_for(&path, "b", LockAction::Release)).unwrap();
+        }
+        drop(txn);
+        (doc, log)
+    }
+
+    #[test]
+    fn compaction_cannot_invent_a_holder_from_a_contended_path() {
+        // Two peers' acquires can merge into one log. Replayed whole, B's
+        // acquire is ignored while A holds the path and A's release frees it,
+        // so the path ends free.
+        //
+        // The entries are laid out to straddle where a "keep the recent tail"
+        // rule would cut: A's acquire early, B's acquire and A's release at the
+        // end. Such a rule drops A's acquire, keeps the other two, and replay
+        // then reports B as holding a path nobody took and nobody can release.
+        let json = |e: &LockEntry| serde_json::to_string(e).unwrap();
+        let mut log = vec![json(&entry_for("contended.rs", "a", LockAction::Acquire))];
+        for i in 0..COMPACT_THRESHOLD + 500 {
+            let path = format!("churn-{}.rs", i % 40);
+            log.push(json(&entry_for(&path, "c", LockAction::Acquire)));
+            log.push(json(&entry_for(&path, "c", LockAction::Release)));
+        }
+        log.push(json(&entry_for("contended.rs", "b", LockAction::Acquire)));
+        log.push(json(&entry_for("contended.rs", "a", LockAction::Release)));
+
+        let holders_of = |entries: &[String]| {
+            let doc = Doc::new();
+            let array = doc.get_or_insert_array("locks");
+            let mut txn = doc.transact_mut();
+            for raw in entries {
+                array.push_back(&mut txn, Any::String(raw.as_str().into()));
+            }
+            compute_lock_state(&array, &txn)
+        };
+        assert!(
+            holders_of(&log).is_empty(),
+            "precondition: the full log leaves the path free"
+        );
+
+        compact_persisted_lock_log(&mut log);
+        assert_eq!(
+            holders_of(&log).get("contended.rs"),
+            None,
+            "compaction invented a holder for a path that was free"
+        );
+    }
+
+    #[test]
+    fn compaction_bounds_a_log_that_only_ever_grew() {
+        let (doc, log) = churned_log();
+        let txn = doc.transact();
+        assert!(
+            log.len(&txn) <= COMPACT_THRESHOLD,
+            "log stayed at {} entries",
+            log.len(&txn)
+        );
+    }
+
+    #[test]
+    fn compaction_never_drops_a_lock_someone_still_holds() {
+        // The property that makes discarding settled entries safe: the derived
+        // holder set is what callers see, and it must survive untouched.
+        let (doc, log) = churned_log();
+        let txn = doc.transact();
+        let holders = compute_lock_state(&log, &txn);
+        assert_eq!(holders.get("held.rs"), Some(&"a".to_string()));
+        assert_eq!(holders.len(), 1, "settled churn left a phantom holder");
+    }
+
+    #[test]
+    fn a_release_after_compaction_still_frees_the_path() {
+        let (doc, log) = churned_log();
+        let mut txn = doc.transact_mut();
+        append_lock_entry(
+            &log,
+            &mut txn,
+            &entry_for("held.rs", "a", LockAction::Release),
+        )
+        .unwrap();
+        assert!(compute_lock_state(&log, &txn).is_empty());
+    }
+
+    #[test]
+    fn a_persisted_log_compacts_to_the_same_holders() {
+        let (doc, log) = churned_log();
+        let txn = doc.transact();
+        let mut persisted: Vec<String> = log
+            .iter(&txn)
+            .filter_map(|v| match v {
+                Out::Any(Any::String(s)) => Some(s.to_string()),
+                _ => None,
+            })
+            .collect();
+        // Pad past the threshold so the snapshot path actually engages.
+        let settled = entry_for("gone.rs", "c", LockAction::Acquire);
+        let mut released = settled.clone();
+        released.action = LockAction::Release;
+        for _ in 0..COMPACT_THRESHOLD / 2 + 50 {
+            persisted.push(serde_json::to_string(&settled).unwrap());
+            persisted.push(serde_json::to_string(&released).unwrap());
+        }
+        let before = persisted.len();
+        compact_persisted_lock_log(&mut persisted);
+        assert!(persisted.len() < before);
+
+        let replay = Doc::new();
+        let replayed = replay.get_or_insert_array("locks");
+        let mut txn = replay.transact_mut();
+        for raw in &persisted {
+            replayed.push_back(&mut txn, Any::String(raw.as_str().into()));
+        }
+        assert_eq!(
+            compute_lock_state(&replayed, &txn).get("held.rs"),
+            Some(&"a".to_string())
+        );
     }
 
     #[test]

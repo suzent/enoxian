@@ -15,6 +15,24 @@ use crate::{
 
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(5);
 
+/// Start one circle in its own task, at most one start at a time.
+///
+/// The reservation is what makes concurrent startup safe: a circle stays out of
+/// the active set for as long as it takes to load, so without it the initial
+/// pass and the hot-reload sweep would each start their own copy.
+fn start_circle_detached(cfg: config::CircleConfig, daemon: DaemonState) {
+    let Some(guard) = daemon.begin_start(&cfg.circle_id) else {
+        return;
+    };
+    let name = cfg.circle_name.clone();
+    tokio::spawn(async move {
+        let _guard = guard;
+        if let Err(e) = lifecycle::spawn_circle(cfg, daemon).await {
+            warn!("Failed to start circle '{name}': {e}");
+        }
+    });
+}
+
 pub async fn run(args: ServeArgs) -> Result<()> {
     // Managed services (launchd, systemd --user) start with a bare PATH, so
     // pull in what the user's login shell resolves before any agent-adapter
@@ -169,18 +187,17 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     {
         let d = daemon.clone();
         tokio::spawn(async move {
+            // Each circle starts in its own task. Serially awaiting them let a
+            // single circle that stalls in startup (a large workspace, an
+            // oversized control snapshot) strand every circle after it and
+            // keep the hot-reload sweep below from ever running.
             for circle_config in active {
-                if let Err(e) = lifecycle::spawn_circle(circle_config.clone(), d.clone()).await {
-                    warn!(
-                        "Failed to start circle '{}': {e}",
-                        circle_config.circle_name
-                    );
-                }
+                start_circle_detached(circle_config, d.clone());
             }
 
             // Hot-reload: periodically check for new circles added while the
-            // daemon is running. Starting it after the initial pass avoids
-            // racing that pass and creating a circle twice.
+            // daemon is running. The start reservation, not ordering, is what
+            // keeps this from starting a circle the initial pass already has.
             let mut interval = tokio::time::interval(Duration::from_secs(10));
             loop {
                 tokio::select! {
@@ -191,10 +208,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                         };
                         for cfg in cfgs {
                             if !cfg.disabled && !d.is_active(&cfg.circle_id) {
-                                info!("[hot-reload] starting circle '{}'", cfg.circle_name);
-                                if let Err(e) = lifecycle::spawn_circle(cfg, d.clone()).await {
-                                    warn!("[hot-reload] failed: {e}");
-                                }
+                                start_circle_detached(cfg, d.clone());
                             }
                         }
                     }
