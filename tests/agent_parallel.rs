@@ -25,6 +25,7 @@ async fn configured_acp_retains_one_conversation_across_runs() {
             agent_name: "claude", cmd: &cmd, task, workspace: workspace.path(),
             base_snapshot: "", circle_id: "isolated-smoke", circle_dir: records.path(),
             actor_token: None, initiator: Initiator::Local, relay_path: vec![], resume: None,
+            withheld: &[],
         })).await.expect("provider timeout").unwrap();
         assert!(outcome.acp_session_id.is_some());
         if task.starts_with("What") {

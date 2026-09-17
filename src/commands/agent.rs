@@ -233,6 +233,8 @@ pub async fn run(
         run_id: None,
         trigger_id: None,
         coordination: None,
+        // A one-off CLI run builds no room context, so it withholds none.
+        withheld: &[],
         agent_name: &agent,
         cmd: &cmd,
         task: &task,

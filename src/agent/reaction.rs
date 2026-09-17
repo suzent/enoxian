@@ -851,6 +851,7 @@ async fn react(
             relay_path: relay.as_ref().map(|r| r.path.clone()).unwrap_or_default(),
             initiator,
             resume: resume.as_ref().map(|r| r.session_id.as_str()),
+            withheld: &delivery.withheld,
         },
         cancel,
     );
@@ -1619,6 +1620,65 @@ mod tests {
         let fresh =
             super::super::context::build_delivery(&state, "claude", "suzy", "do it", None, "m3");
         assert!(fresh.prompt.contains("my own earlier reply"));
+    }
+
+    /// Withholding the agent's own posts bets on the resumed session holding
+    /// them. When `session/load` fails that bet is lost, so the recovery
+    /// context has to put back what the prompt left out — the cursor advances
+    /// past those lines either way.
+    #[test]
+    fn a_failed_resume_restores_what_the_prompt_withheld() {
+        let (state, _) = test_state("local", "suzy");
+        say(&state, "m0", "human", "sender", "start here");
+        say(
+            &state,
+            "m1",
+            "claude",
+            "local",
+            "a decision only I recorded",
+        );
+        for i in 2..20 {
+            say(
+                &state,
+                &format!("m{i}"),
+                "human",
+                "sender",
+                &format!("filler {i}"),
+            );
+        }
+        let delivered = super::super::context::build_delivery(
+            &state,
+            "claude",
+            "suzy",
+            "do it",
+            Some(&super::super::memory::Record {
+                session_id: "session".into(),
+                last_seen_message: "m0".into(),
+                ..Default::default()
+            }),
+            "m19",
+        );
+        assert!(!delivered.prompt.contains("a decision only I recorded"));
+        assert_eq!(delivered.withheld, vec!["m1".to_string()]);
+
+        // m1 has long fallen out of the room-history window, so without the
+        // withheld list the restarted session would never see it again.
+        let recovery =
+            super::super::context::recovery_context(&state, "claude", &delivered.withheld);
+        assert!(
+            recovery.contains("a decision only I recorded"),
+            "recovery must put back what the resume assumption withheld: {recovery}"
+        );
+        // Lines the room history already shows are not printed twice.
+        assert_eq!(recovery.matches("filler 19").count(), 1);
+        // A fresh session withholds nothing, so recovery adds no extra block.
+        let fresh =
+            super::super::context::build_delivery(&state, "claude", "suzy", "do it", None, "m19");
+        assert!(fresh.withheld.is_empty());
+        assert!(
+            !super::super::context::recovery_context(&state, "claude", &fresh.withheld)
+                .contains("Earlier lines you were assumed to remember")
+        );
     }
 
     /// The extra blocks reach past the contiguous cursor. Whatever they showed

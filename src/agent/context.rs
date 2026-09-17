@@ -5,7 +5,8 @@
 //! cursor advances through supplied input only, never to an outgoing reply.
 //! Nothing is put in front of the agent twice: blocks that reach ahead of the
 //! cursor are remembered in the record and subtracted from the next turn, and a
-//! resumed session is not shown the agent's own posts, which it already holds.
+//! resumed session is not shown the agent's own posts, which it already holds —
+//! and whatever that assumption held back is restored if the resume then fails.
 //! Omitted history is named as omitted and can be retrieved through the paginated
 //! chat API. The driver identifies failed ACP resume and adds recovery context.
 //! Background stays in <context>; the user's request is the final instruction.
@@ -55,6 +56,11 @@ pub struct Delivery {
     /// the ones it was still carrying. Persisted with the cursor so the next
     /// turn does not repeat them.
     pub delivered: Vec<String>,
+    /// Ids this prompt left out *only* because a resumed session is assumed to
+    /// hold them already. That assumption is not tested until `session/load`
+    /// runs, so the driver hands these to [`recovery_context`] when the resume
+    /// turns out to have failed. Empty on a fresh session.
+    pub withheld: Vec<String>,
 }
 
 pub fn build_delivery(
@@ -96,15 +102,24 @@ pub fn build_delivery(
 
     let mut supplied: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut shown: Vec<String> = Vec::new();
+    let mut withheld: Vec<String> = Vec::new();
     let mut recent = String::new();
     // Keep a contiguous catch-up cursor, but also show the room as it is now
     // and the original trigger's neighborhood after an offline backlog.
     let mut section = |range: std::ops::Range<usize>, heading: Option<&str>| {
-        let lines: Vec<ChatMessage> = range
-            .filter(|i| supplied.insert(*i))
-            .filter(|i| fresh(&all[*i]))
-            .map(|i| all[i].clone())
-            .collect();
+        let mut lines: Vec<ChatMessage> = Vec::new();
+        for i in range.filter(|i| supplied.insert(*i)) {
+            let message = &all[i];
+            if message.id == trigger_id {
+                continue;
+            }
+            // Anything held back rests on the resumed session remembering it.
+            // Note it so the recovery path can put it back if it did not.
+            match fresh(message) {
+                true => lines.push(message.clone()),
+                false => withheld.push(message.id.clone()),
+            }
+        }
         if lines.is_empty() {
             return;
         }
@@ -154,12 +169,16 @@ pub fn build_delivery(
             break;
         };
         let message = &all[index];
-        if supplied.insert(index) && fresh(message) {
-            shown.push(message.id.clone());
-            recent.push_str(&format!(
-                "\nThread ancestor {} ({} on {}): {}",
-                message.id, message.agent_id, message.peer_id, message.text
-            ));
+        if supplied.insert(index) && message.id != trigger_id {
+            if fresh(message) {
+                shown.push(message.id.clone());
+                recent.push_str(&format!(
+                    "\nThread ancestor {} ({} on {}): {}",
+                    message.id, message.agent_id, message.peer_id, message.text
+                ));
+            } else {
+                withheld.push(message.id.clone());
+            }
         }
         parent = message.reply_to.clone();
     }
@@ -179,6 +198,7 @@ pub fn build_delivery(
             },
         ),
         delivered: carry_forward(&all, start, carried, shown, trigger_id),
+        withheld,
         cursor,
     }
 }
@@ -226,9 +246,41 @@ fn carry_forward(
     memo
 }
 
-pub fn recovery_context(state: &AppState, agent: &str) -> String {
-    format!("<context>\nThe previous ACP conversation could not be restored. Its private memory is unavailable.\n{}\nRecent room history:\n{}\nFor older history, retrieve GET /circles/{}/api/chat?limit=100, then continue with after_id equal to the last returned message ID.\n</context>\n\n",
-        standing_brief(state, agent), window(&state.transcript(), None, ""), state.circle_id)
+/// Context prepended when `session/load` failed and the agent starts fresh.
+///
+/// `withheld` is what the prompt left out on the assumption that the resumed
+/// session still held it (see [`Delivery::withheld`]). That assumption has just
+/// proved wrong, so those lines are restored here — otherwise they would be
+/// skipped for good, the cursor having advanced past them. Lines the room
+/// history below already shows are not repeated.
+pub fn recovery_context(state: &AppState, agent: &str, withheld: &[String]) -> String {
+    let all = state.transcript();
+    let history = window(&all, None, "");
+    // The history block below is the room's last few lines; anything inside it
+    // is already on screen.
+    let tail: std::collections::HashSet<&str> = all[all.len().saturating_sub(RECENT_CHAT_LINES)..]
+        .iter()
+        .map(|m| m.id.as_str())
+        .collect();
+    let restored: Vec<&ChatMessage> = withheld
+        .iter()
+        .filter(|id| !tail.contains(id.as_str()))
+        .filter_map(|id| all.iter().find(|m| &m.id == id))
+        .collect();
+    let restored = if restored.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Earlier lines you were assumed to remember:\n{}\n",
+            restored
+                .iter()
+                .map(|m| format!("  {}: {}", m.agent_id, m.text.replace('\n', " ")))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    format!("<context>\nThe previous ACP conversation could not be restored. Its private memory is unavailable.\n{}\n{restored}Recent room history:\n{history}\nFor older history, retrieve GET /circles/{}/api/chat?limit=100, then continue with after_id equal to the last returned message ID.\n</context>\n\n",
+        standing_brief(state, agent), state.circle_id)
 }
 
 /// Pure prompt composition. `brief` is `Some` only for a fresh session; `recent`
