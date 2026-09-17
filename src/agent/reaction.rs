@@ -1124,6 +1124,20 @@ mod tests {
     use crate::control::{MemberEntry, MemberRole, MEMBER_LIST_KEY};
     use yrs::{Any, Map, Transact, WriteTxn};
 
+    /// How long a test waits on a real process or a background task before it
+    /// calls the thing hung.
+    ///
+    /// Every use below is a *liveness* bound, not a speed one: the work it
+    /// guards either completes or blocks forever — a serialized barrier never
+    /// resolves, an inbox that is never republished never arrives — so raising
+    /// the value weakens no assertion. All it costs is how long a genuinely
+    /// broken run takes to fail. It is therefore set well past what a heavily
+    /// loaded machine needs (a parallel test suite, a shared CI runner);
+    /// tightening it buys nothing and brings the flakes back. Timeouts that
+    /// assert something must *not* finish are the opposite case and must stay
+    /// short — there are none in this module.
+    const LIVENESS: std::time::Duration = std::time::Duration::from_secs(60);
+
     fn test_state(peer: &str, owner: &str) -> (AppState, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let state = AppState::new(
@@ -1524,7 +1538,7 @@ mod tests {
             "touch b.ready; while [ ! -f a.ready ]; do sleep 0.01; done; echo b > b.done".into();
         cfg.agents.insert("claude".into(), a);
         cfg.agents.insert("codex".into(), b);
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::time::timeout(LIVENESS, async {
             let (a, b) = tokio::join!(
                 run_next_for_agent(&state, &inbox, &cfg, Some("claude")),
                 run_next_for_agent(&state, &inbox, &cfg, Some("codex"))
@@ -1818,13 +1832,11 @@ mod tests {
             std::sync::Arc::new(tokio::sync::Notify::new()),
             CancellationToken::new(),
         );
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(2), worker)
-                .await
-                .unwrap()
-                .unwrap()
-                .is_err()
-        );
+        assert!(tokio::time::timeout(LIVENESS, worker)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err());
     }
 
     #[tokio::test]
@@ -1847,12 +1859,8 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         };
-        // Waiting on a freshly spawned task to publish the inbox. Two seconds
-        // loses that race on a loaded machine; the recovery wait below this
-        // already allows eight, and the test still fails if it never arrives.
-        let inbox = tokio::time::timeout(std::time::Duration::from_secs(8), wait)
-            .await
-            .unwrap();
+        // Waiting on a freshly spawned task to publish the inbox.
+        let inbox = tokio::time::timeout(LIVENESS, wait).await.unwrap();
         let old = std::sync::Arc::downgrade(&inbox);
         let path = Inbox::path(dir.path());
         let original = std::fs::read(&path).unwrap();
@@ -1885,9 +1893,7 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
         };
-        tokio::time::timeout(std::time::Duration::from_secs(8), recovered)
-            .await
-            .unwrap();
+        tokio::time::timeout(LIVENESS, recovered).await.unwrap();
         cancel.cancel();
     }
     #[test]
