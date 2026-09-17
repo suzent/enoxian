@@ -25,7 +25,16 @@ def fetch(url):
 
 
 def version(text):
-    match = re.fullmatch(r"(?:enox |v)?(\d+)\.(\d+)\.(\d+)", text.strip())
+    """Parse a release tag or an `enox --version` line into a version tuple.
+
+    `enox --version` carries a build stamp — `enox 0.9.0 (release, 1a2b3c4d)` —
+    so the trailing parenthesis is accepted and ignored. Only the three numbers
+    decide whether an update is an upgrade; a prerelease suffix is still
+    rejected, since the relay installs stable releases only.
+    """
+    match = re.fullmatch(
+        r"(?:enox )?v?(\d+)\.(\d+)\.(\d+)(?: \([^()]*\))?", text.strip()
+    )
     if not match:
         raise ValueError("Expected a stable semantic version: " + text)
     return tuple(map(int, match.groups()))

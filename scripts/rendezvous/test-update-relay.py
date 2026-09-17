@@ -57,6 +57,21 @@ class UpdaterTests(unittest.TestCase):
             updater.install(self.staged, self.binary, "relay", 36521)
         self.assertEqual(self.binary.read_bytes(), b"old")
 
+    def test_version_accepts_the_build_stamp_and_still_rejects_prereleases(self):
+        # `enox --version` names the channel and commit it was built from, and
+        # both call sites feed that whole line to version().
+        self.assertEqual(updater.version("enox 0.9.0 (release, 1a2b3c4d5e6f)"), (0, 9, 0))
+        self.assertEqual(updater.version("enox 0.9.0 (dev, 1a2b3c4d5e6f-dirty)"), (0, 9, 0))
+        self.assertEqual(updater.version("enox 0.9.0 (dev, unknown)"), (0, 9, 0))
+        # The forms that predate the stamp still parse.
+        self.assertEqual(updater.version("enox 0.9.0"), (0, 9, 0))
+        self.assertEqual(updater.version("v0.9.0"), (0, 9, 0))
+        self.assertEqual(updater.version("0.9.0"), (0, 9, 0))
+        # The relay installs stable releases only.
+        for rejected in ("enox 0.9.0-rc1", "enox 0.9.0 (dev", "enox 0.9 (dev, abc)"):
+            with self.assertRaisesRegex(ValueError, "stable semantic version"):
+                updater.version(rejected)
+
     def test_same_version_and_downgrades_do_not_restart(self):
         for tag in ("v0.6.1", "v0.5.0"):
             with patch.object(updater, "fetch", return_value=io.BytesIO(json.dumps({"tag_name": tag}).encode())), \

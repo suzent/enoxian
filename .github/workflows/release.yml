@@ -270,12 +270,18 @@ jobs:
           pip install ziglang
           command -v cargo-zigbuild >/dev/null || cargo install cargo-zigbuild --locked
 
+      # ENOXIAN_RELEASE_BUILD is what makes `enox --version` say "release"
+      # rather than "dev"; see build.rs. Only this workflow may set it.
       - name: Build Linux ARM64
         if: matrix.target == 'aarch64-unknown-linux-musl'
+        env:
+          ENOXIAN_RELEASE_BUILD: "1"
         run: cargo zigbuild --release --locked --bins --target ${{ matrix.target }}
 
       - name: Build
         if: matrix.target != 'aarch64-unknown-linux-musl'
+        env:
+          ENOXIAN_RELEASE_BUILD: "1"
         run: cargo build --release --locked --bins --target ${{ matrix.target }}
 
       - name: Smoke test native Unix binary

@@ -27,4 +27,5 @@ pub mod resolve;
 pub mod state;
 pub mod store;
 pub mod sync_yjs;
+pub mod version;
 pub mod workspace_event;
