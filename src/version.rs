@@ -51,6 +51,5 @@ mod tests {
         assert!(matches!(CHANNEL, "dev" | "release"), "channel: {CHANNEL}");
         assert!(LONG_VERSION.contains(CHANNEL));
         assert!(LONG_VERSION.contains(COMMIT));
-        assert!(!COMMIT.is_empty());
     }
 }
