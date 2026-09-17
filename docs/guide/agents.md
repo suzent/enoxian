@@ -173,6 +173,17 @@ Built-in managed adapter plugins:
 - **Codex** — `codex-acp` (needs OpenAI/ChatGPT
   auth: `codex login`, or `CODEX_API_KEY`/`OPENAI_API_KEY` in the daemon's
   environment)
+- **Pi** — `pi-acp`. Same shape as the two above: the adapter is transport,
+  the `pi` CLI you installed is the agent. Enoxian requires `pi` on `PATH` and
+  hands the resolved executable to the adapter through `PI_ACP_PI_COMMAND`, so
+  pi's own providers, models, prompts, and skills stay authoritative.
+  Authenticate pi first (run `pi`, then `/login`, or export a provider API key);
+  pi has no non-interactive auth check, so Enoxian verifies presence only. Needs
+  system Node.js 22 or newer with npm, like the other adapters.
+
+  ```bash
+  enox agent install pi-acp
+  ```
 
 Built-in **native** plugins — a product CLI that speaks ACP itself, so there is
 no adapter to install, nothing to pin, and no Node.js:
@@ -186,6 +197,27 @@ no adapter to install, nothing to pin, and no Node.js:
 
   ```bash
   enox agent install suzent
+  ```
+
+- **Hermes Agent** — `hermes acp`. Runs Hermes' editor-facing toolset with the
+  install's own providers, memory, skills, and tools. Install Hermes with its
+  ACP extra (`uv pip install -e '.[acp]'` in the install checkout) and configure
+  a provider with `hermes model` first; `hermes acp --check` confirms it is
+  ready.
+
+  ```bash
+  enox agent install hermes
+  ```
+
+- **OpenClaw** — `openclaw acp`. The CLI is a bridge onto an OpenClaw Gateway,
+  so a Gateway must be reachable: every turn is forwarded there and runs with
+  that Gateway's session state. It does not use ACP client filesystem methods —
+  it writes through the Gateway — which the ambient proposal engine captures the
+  same way as any other on-disk change. Exec approvals it needs during a turn
+  arrive here as `session/request_permission`.
+
+  ```bash
+  enox agent install openclaw
   ```
 
 Plugin manifests are TOML files in `~/.enoxian/plugins/`. A manifest declares

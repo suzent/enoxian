@@ -41,6 +41,11 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Three more ACP agents can be installed from the built-in catalog: `pi`
+  (through the pinned `pi-acp` adapter, driving the `pi` CLI you installed),
+  `hermes`, and `openclaw` (both speak ACP from their own CLI, so nothing is
+  downloaded or pinned). `enox agent plugins` lists them and Device Settings
+  offers them once their CLI is on `PATH`.
 - `enox --version` now names the build channel and the commit it was built from
   (`enox 0.9.0 (dev, 1a2b3c4d5e6f)`), so a binary built with `enox update --dev`
   is distinguishable from a published release in a bug report.

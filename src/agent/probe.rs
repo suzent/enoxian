@@ -53,6 +53,27 @@ pub const CATALOG: &[Candidate] = &[
         command: &["suzent", "acp"],
         about: "Your local Suzent, speaking ACP directly — no adapter bridge, no Node.js.",
     },
+    Candidate {
+        name: "pi",
+        driver: "acp",
+        command: &["pi-acp"],
+        about: "Pi coding agent through a local ACP adapter (your pi install, models, and skills).",
+    },
+    // Hermes and OpenClaw both speak ACP from their own CLI, so — like suzent —
+    // `command[0]` is the product itself and presence on PATH is the whole
+    // prerequisite.
+    Candidate {
+        name: "hermes",
+        driver: "acp",
+        command: &["hermes", "acp"],
+        about: "Hermes Agent speaking ACP directly, with its own providers, memory, and skills.",
+    },
+    Candidate {
+        name: "openclaw",
+        driver: "acp",
+        command: &["openclaw", "acp"],
+        about: "OpenClaw's ACP bridge onto a running OpenClaw Gateway — no adapter, no Node.js.",
+    },
 ];
 
 /// The program (`command[0]`) a candidate is detected by.
@@ -108,9 +129,22 @@ pub fn bridged_cli(adapter: &str) -> Option<&'static BridgedCli> {
         auth_status_args: None,
     };
 
+    const PI: BridgedCli = BridgedCli {
+        program: "pi",
+        install_url: "https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent",
+        // pi authenticates from inside its own TUI (`/login`, or an API key in
+        // the environment), so the honest instruction is to launch it.
+        login_command: "pi",
+        executable_env: "PI_ACP_PI_COMMAND",
+        // pi has no non-interactive auth check: credentials live in its config
+        // and are only reported inside the TUI, so presence is what we can test.
+        auth_status_args: None,
+    };
+
     match adapter_stem(adapter).as_str() {
         "claude-agent-acp" | "claude-code-acp" => Some(&CLAUDE),
         "codex-acp" => Some(&CODEX),
+        "pi-acp" => Some(&PI),
         _ => None,
     }
 }
@@ -317,18 +351,38 @@ mod tests {
         }
     }
 
-    // Suzent is detected by its own CLI, not by an adapter executable, so the
-    // program probed must be `suzent` itself and it must bridge to nothing.
+    // An agent that speaks ACP itself is detected by its own CLI, not by an
+    // adapter executable, so the program probed must be that CLI and it must
+    // bridge to nothing.
     #[test]
-    fn suzent_is_discovered_by_its_own_cli() {
-        let suzent = CATALOG
+    fn native_candidates_are_discovered_by_their_own_cli() {
+        for name in ["suzent", "hermes", "openclaw"] {
+            let candidate = CATALOG
+                .iter()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("{name} is a catalog candidate"));
+            assert_eq!(candidate.program(), name);
+            assert_eq!(candidate.driver, "acp");
+            assert_eq!(
+                candidate.command.get(1).copied(),
+                Some("acp"),
+                "{name} must name the subcommand that speaks ACP"
+            );
+            assert!(bridged_cli(candidate.program()).is_none());
+            assert!(bridge_ready(candidate.program()));
+        }
+    }
+
+    // pi is reached through an adapter, so the picker must probe the adapter
+    // executable while readiness follows the pi CLI underneath it.
+    #[test]
+    fn pi_is_discovered_by_its_adapter() {
+        let pi = CATALOG
             .iter()
-            .find(|c| c.name == "suzent")
-            .expect("suzent is a catalog candidate");
-        assert_eq!(suzent.program(), "suzent");
-        assert_eq!(suzent.driver, "acp");
-        assert!(bridged_cli(suzent.program()).is_none());
-        assert!(bridge_ready(suzent.program()));
+            .find(|c| c.name == "pi")
+            .expect("pi is a catalog candidate");
+        assert_eq!(pi.program(), "pi-acp");
+        assert_eq!(bridged_cli(pi.program()).map(|b| b.program), Some("pi"));
     }
 
     // A bridge is exactly as usable as the CLI underneath it. Asserting the
@@ -336,7 +390,7 @@ mod tests {
     // has the CLI and one that does not.
     #[test]
     fn bridge_readiness_tracks_the_bridged_cli() {
-        for adapter in ["claude-agent-acp", "claude-code-acp", "codex-acp"] {
+        for adapter in ["claude-agent-acp", "claude-code-acp", "codex-acp", "pi-acp"] {
             let bridge = bridged_cli(adapter).expect("built-in adapter bridges to a CLI");
             assert_eq!(
                 bridge_ready(adapter),
