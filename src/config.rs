@@ -175,7 +175,7 @@ pub fn normalize_workspace_dir(path: &std::path::Path) -> Result<PathBuf> {
     }
 }
 
-fn workspace_key(path: &std::path::Path) -> Result<String> {
+pub(crate) fn workspace_key(path: &std::path::Path) -> Result<String> {
     let normalized = normalize_workspace_dir(path)?;
     let key = normalized.to_string_lossy().replace('\\', "/");
     #[cfg(windows)]

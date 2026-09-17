@@ -10,12 +10,6 @@ use yrs::{Any, Array, ArrayRef, Out, ReadTxn};
 /// thousands of entries in hours.
 const COMPACT_THRESHOLD: u32 = 2_000;
 
-/// Entries kept beyond the ones needed to reconstruct the current holders.
-///
-/// The derived state needs only unmatched acquires; this tail is for humans
-/// reading recent lock history.
-const RETAINED_TAIL: usize = 500;
-
 /// Replay the lock_log and return the current holder per path.
 /// Deterministic: first unmatched acquire = holder.
 pub fn compute_lock_state<T: ReadTxn>(lock_log: &ArrayRef, txn: &T) -> HashMap<String, String> {
@@ -143,15 +137,19 @@ fn held_indices(entries: &[Option<LockEntry>]) -> Vec<usize> {
     holders.into_values().map(|(index, _)| index).collect()
 }
 
-/// Which entries a compaction keeps: current holders, a recent tail, and
-/// anything that failed to parse — unreadable entries are kept rather than
-/// lost, the same way the chat snapshot keeps unparseable messages.
+/// Which entries a compaction keeps: the unmatched acquires, plus anything that
+/// failed to parse — unreadable entries are kept rather than lost, the same way
+/// the chat snapshot keeps unparseable messages, and replay skips them anyway.
+///
+/// Deliberately no "recent history" tail. An entry's meaning depends on the
+/// entries before it, so keeping a raw suffix can change what the log replays
+/// to. Given `A acquire p`, `B acquire p`, `A release p`, the full log leaves
+/// `p` free: B's acquire is ignored while A holds it, and A's release then
+/// clears it. Keep only the last two and replay makes B the holder — a lock
+/// nobody took and nobody can release. Retaining just the unmatched acquires
+/// has no such dependency: one entry per path, no releases to interact.
 fn retained(entries: &[Option<LockEntry>]) -> Vec<bool> {
-    let mut keep = vec![false; entries.len()];
-    let tail_from = entries.len().saturating_sub(RETAINED_TAIL);
-    for (index, slot) in keep.iter_mut().enumerate() {
-        *slot = index >= tail_from || entries[index].is_none();
-    }
+    let mut keep: Vec<bool> = entries.iter().map(Option::is_none).collect();
     for index in held_indices(entries) {
         keep[index] = true;
     }
@@ -288,6 +286,48 @@ mod tests {
         }
         drop(txn);
         (doc, log)
+    }
+
+    #[test]
+    fn compaction_cannot_invent_a_holder_from_a_contended_path() {
+        // Two peers' acquires can merge into one log. Replayed whole, B's
+        // acquire is ignored while A holds the path and A's release frees it,
+        // so the path ends free.
+        //
+        // The entries are laid out to straddle where a "keep the recent tail"
+        // rule would cut: A's acquire early, B's acquire and A's release at the
+        // end. Such a rule drops A's acquire, keeps the other two, and replay
+        // then reports B as holding a path nobody took and nobody can release.
+        let json = |e: &LockEntry| serde_json::to_string(e).unwrap();
+        let mut log = vec![json(&entry_for("contended.rs", "a", LockAction::Acquire))];
+        for i in 0..COMPACT_THRESHOLD + 500 {
+            let path = format!("churn-{}.rs", i % 40);
+            log.push(json(&entry_for(&path, "c", LockAction::Acquire)));
+            log.push(json(&entry_for(&path, "c", LockAction::Release)));
+        }
+        log.push(json(&entry_for("contended.rs", "b", LockAction::Acquire)));
+        log.push(json(&entry_for("contended.rs", "a", LockAction::Release)));
+
+        let holders_of = |entries: &[String]| {
+            let doc = Doc::new();
+            let array = doc.get_or_insert_array("locks");
+            let mut txn = doc.transact_mut();
+            for raw in entries {
+                array.push_back(&mut txn, Any::String(raw.as_str().into()));
+            }
+            compute_lock_state(&array, &txn)
+        };
+        assert!(
+            holders_of(&log).is_empty(),
+            "precondition: the full log leaves the path free"
+        );
+
+        compact_persisted_lock_log(&mut log);
+        assert_eq!(
+            holders_of(&log).get("contended.rs"),
+            None,
+            "compaction invented a holder for a path that was free"
+        );
     }
 
     #[test]

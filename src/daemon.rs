@@ -17,8 +17,35 @@ pub struct DaemonState {
     /// while it loads, so without this every caller that checks `is_active`
     /// would start a second copy of one that is merely slow.
     starting: Arc<DashMap<String, ()>>,
+    /// workspace key → the circle_id that owns that directory. Claimed before a
+    /// circle loads rather than checked against `circles`, which is only
+    /// populated once it has finished.
+    workspaces: Arc<DashMap<String, String>>,
     /// Cancelled when `POST /shutdown` is called — triggers graceful server exit.
     pub shutdown_token: CancellationToken,
+}
+
+/// Holds a workspace for one circle. Released when startup fails or the guard
+/// is dropped, unless [`WorkspaceClaim::retain`] hands it to the running circle.
+pub struct WorkspaceClaim {
+    workspaces: Arc<DashMap<String, String>>,
+    key: String,
+    retain: bool,
+}
+
+impl WorkspaceClaim {
+    /// Keep the claim for as long as the circle runs; `stop_circle` releases it.
+    pub fn retain(mut self) {
+        self.retain = true;
+    }
+}
+
+impl Drop for WorkspaceClaim {
+    fn drop(&mut self) {
+        if !self.retain {
+            self.workspaces.remove(&self.key);
+        }
+    }
 }
 
 /// Releases a circle's start reservation when startup finishes or panics.
@@ -45,6 +72,7 @@ impl DaemonState {
             circles: Arc::new(DashMap::new()),
             tokens: Arc::new(DashMap::new()),
             starting: Arc::new(DashMap::new()),
+            workspaces: Arc::new(DashMap::new()),
             shutdown_token: CancellationToken::new(),
         }
     }
@@ -75,12 +103,39 @@ impl DaemonState {
         self.tokens.insert(circle_id, token);
     }
 
+    /// Claim a workspace directory for a circle, or return the circle_id that
+    /// already owns it.
+    ///
+    /// Checking the active set cannot do this job: circles register only once
+    /// they have finished loading, so two circles configured against the same
+    /// directory would both look unopposed and both start watching it.
+    pub fn claim_workspace(&self, key: String, circle_id: &str) -> Result<WorkspaceClaim, String> {
+        use dashmap::mapref::entry::Entry;
+        match self.workspaces.entry(key.clone()) {
+            Entry::Occupied(held) if held.get() != circle_id => Err(held.get().clone()),
+            Entry::Occupied(_) => Ok(WorkspaceClaim {
+                workspaces: self.workspaces.clone(),
+                key,
+                retain: false,
+            }),
+            Entry::Vacant(slot) => {
+                slot.insert(circle_id.to_string());
+                Ok(WorkspaceClaim {
+                    workspaces: self.workspaces.clone(),
+                    key,
+                    retain: false,
+                })
+            }
+        }
+    }
+
     /// Cancel all tasks for a circle and remove it from the active set.
     /// Returns true if the circle was active.
     pub fn stop_circle(&self, circle_id: &str) -> bool {
         if let Some((_, token)) = self.tokens.remove(circle_id) {
             token.cancel();
         }
+        self.workspaces.retain(|_, owner| owner != circle_id);
         self.circles.remove(circle_id).is_some()
     }
 
@@ -108,6 +163,52 @@ impl DaemonState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_circles_cannot_start_against_one_workspace() {
+        // The case serial startup used to cover: neither circle is active yet,
+        // so an "is anyone else using this?" scan sees nothing either way.
+        let daemon = DaemonState::new();
+        let claim = daemon
+            .claim_workspace("/w".to_string(), "circle-a")
+            .expect("first claim");
+        assert_eq!(
+            daemon
+                .claim_workspace("/w".to_string(), "circle-b")
+                .err()
+                .as_deref(),
+            Some("circle-a")
+        );
+        // A failed start releases, so the directory is not stranded.
+        drop(claim);
+        assert!(daemon.claim_workspace("/w".to_string(), "circle-b").is_ok());
+    }
+
+    #[test]
+    fn stopping_a_circle_frees_its_workspace_for_another() {
+        let daemon = DaemonState::new();
+        daemon
+            .claim_workspace("/w".to_string(), "circle-a")
+            .expect("claim")
+            .retain();
+        assert!(daemon
+            .claim_workspace("/w".to_string(), "circle-b")
+            .is_err());
+        daemon.stop_circle("circle-a");
+        assert!(daemon.claim_workspace("/w".to_string(), "circle-b").is_ok());
+    }
+
+    #[test]
+    fn a_circle_is_only_reserved_for_one_start_at_a_time() {
+        let daemon = DaemonState::new();
+        let guard = daemon.begin_start("circle").expect("first reservation");
+        assert!(
+            daemon.begin_start("circle").is_none(),
+            "a slow start must not be started again"
+        );
+        drop(guard);
+        assert!(daemon.begin_start("circle").is_some(), "released on drop");
+    }
 
     #[test]
     fn shutdown_cancels_daemon_and_circle_tokens() {

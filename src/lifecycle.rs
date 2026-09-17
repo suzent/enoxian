@@ -73,18 +73,25 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         std::path::PathBuf::from(&config.workspace_dir)
     };
     let workspace = crate::config::normalize_workspace_dir(&workspace)?;
-    for active in daemon.list() {
-        if active.circle_id != config.circle_id
-            && crate::config::workspace_paths_equal(&active.workspace, &workspace)?
-        {
-            anyhow::bail!(
+    // Claim the directory before doing any loading. Scanning the active set
+    // instead only worked while circles started one at a time: a circle is
+    // absent from that set until it has finished, so two circles sharing a
+    // workspace could both find it unclaimed and both start watching and
+    // syncing the same files.
+    let workspace_claim = daemon
+        .claim_workspace(crate::config::workspace_key(&workspace)?, &config.circle_id)
+        .map_err(|owner| {
+            let name = daemon
+                .get(&owner)
+                .map(|active| active.circle_name.clone())
+                .unwrap_or_else(|| owner.clone());
+            anyhow::anyhow!(
                 "workspace {} is already active in circle '{}' ({})",
                 workspace.display(),
-                active.circle_name,
-                active.circle_id
-            );
-        }
-    }
+                name,
+                owner
+            )
+        })?;
     tokio::fs::create_dir_all(&workspace).await?;
 
     info!(
@@ -1450,6 +1457,8 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     });
 
     daemon.insert_circle(config.circle_id.clone(), state, token);
+    // The circle is live; the claim now belongs to it until `stop_circle`.
+    workspace_claim.retain();
     Ok(())
 }
 
