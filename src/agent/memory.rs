@@ -33,6 +33,12 @@ pub struct Record {
     /// Empty for a record written before this field existed.
     #[serde(default)]
     pub last_seen_message: String,
+    /// Ids delivered *ahead* of `last_seen_message` — the lines the last prompt
+    /// showed out of contiguous order. [`super::context`] subtracts them from
+    /// the next prompt so nothing is shown twice, and prunes them as the cursor
+    /// catches up. Empty for a record written before this field existed.
+    #[serde(default)]
+    pub delivered: Vec<String>,
 }
 
 /// Directory holding per-agent records under a circle dir.
@@ -69,7 +75,7 @@ pub fn load(circle_dir: &Path, agent: &str) -> Option<Record> {
     }
     let record = serde_json::from_str::<Record>(raw).unwrap_or_else(|_| Record {
         session_id: raw.to_string(),
-        last_seen_message: String::new(),
+        ..Record::default()
     });
     // Useful when *either* field is set. Requiring a session id discarded the
     // record of an agent that has only ever passed (§2.3) — it has a seen-mark
@@ -92,10 +98,16 @@ pub fn save_session(circle_dir: &Path, agent: &str, session_id: &str) -> std::io
 /// replies gets a session id, and the record exists from then on. An agent that
 /// *passes* on its very first turn (engagement spec §2.3) never writes one, so
 /// the mark never advanced and it re-read the same history on every later turn.
-pub fn save_seen(circle_dir: &Path, agent: &str, message_id: &str) -> std::io::Result<()> {
+pub fn save_seen(
+    circle_dir: &Path,
+    agent: &str,
+    message_id: &str,
+    delivered: Vec<String>,
+) -> std::io::Result<()> {
     let _guard = mutation_lock(circle_dir, agent)?;
     let mut record = load(circle_dir, agent).unwrap_or_default();
     record.last_seen_message = message_id.to_string();
+    record.delivered = delivered;
     write(circle_dir, agent, &record)
 }
 
@@ -165,7 +177,7 @@ mod tests {
         let tmp = tmpdir();
 
         save_session(&tmp, "claude", "sess-1").unwrap();
-        save_seen(&tmp, "claude", "msg-7").unwrap();
+        save_seen(&tmp, "claude", "msg-7", Vec::new()).unwrap();
         let record = load(&tmp, "claude").unwrap();
         assert_eq!(record.session_id, "sess-1");
         assert_eq!(record.last_seen_message, "msg-7");
@@ -191,7 +203,7 @@ mod tests {
         assert!(record.last_seen_message.is_empty());
 
         // Writing a seen-mark upgrades the file in place.
-        save_seen(&tmp, "claude", "msg-1").unwrap();
+        save_seen(&tmp, "claude", "msg-1", Vec::new()).unwrap();
         let record = load(&tmp, "claude").unwrap();
         assert_eq!(record.session_id, "sess-legacy");
         assert_eq!(record.last_seen_message, "msg-1");
@@ -205,7 +217,7 @@ mod tests {
         // session. Dropping the record made the mark unreadable, so it re-read
         // the same history on every later turn.
         let tmp = tmpdir();
-        save_seen(&tmp, "claude", "msg-1").unwrap();
+        save_seen(&tmp, "claude", "msg-1", Vec::new()).unwrap();
         let record = load(&tmp, "claude").expect("a mark alone is worth keeping");
         assert_eq!(record.last_seen_message, "msg-1");
         assert!(record.session_id.is_empty());

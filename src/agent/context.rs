@@ -3,6 +3,9 @@
 //! A turn receives a bounded, chronological page after its delivered-input
 //! cursor, plus explicit thread ancestors and a standing Circle brief. The
 //! cursor advances through supplied input only, never to an outgoing reply.
+//! Nothing is put in front of the agent twice: blocks that reach ahead of the
+//! cursor are remembered in the record and subtracted from the next turn, and a
+//! resumed session is not shown the agent's own posts, which it already holds.
 //! Omitted history is named as omitted and can be retrieved through the paginated
 //! chat API. The driver identifies failed ACP resume and adds recovery context.
 //! Background stays in <context>; the user's request is the final instruction.
@@ -36,9 +39,22 @@ pub fn build_prompt(
     build_delivery(state, agent_id, sender, task, resume, trigger_id).prompt
 }
 
+/// The most delivered-but-not-yet-passed ids we carry between turns.
+///
+/// Only ids *ahead* of the contiguous cursor need remembering — anything at or
+/// behind it is already excluded by the cursor — and each turn adds at most the
+/// two extra blocks below. The cursor then walks forward over them, so the list
+/// stays short on its own; this cap only bounds the pathological case of a very
+/// long backlog.
+const DELIVERED_MEMO: usize = 200;
+
 pub struct Delivery {
     pub prompt: String,
     pub cursor: Option<String>,
+    /// Ids ahead of `cursor` that this prompt has already shown the agent, plus
+    /// the ones it was still carrying. Persisted with the cursor so the next
+    /// turn does not repeat them.
+    pub delivered: Vec<String>,
 }
 
 pub fn build_delivery(
@@ -57,36 +73,74 @@ pub fn build_delivery(
     let start = after.unwrap_or_else(|| all.len().saturating_sub(RECENT_CHAT_LINES));
     let end = (start + RECENT_CHAT_LINES).min(all.len());
     let cursor = all[start..end].last().map(|m| m.id.clone());
-    let mut recent = window(&all[start..end], None, trigger_id);
+
+    // Nothing goes in front of the agent twice. Two ways it otherwise would:
+    //
+    //  - The extra blocks below reach past the contiguous cursor, so the next
+    //    turn's page walks back over lines they already showed. `carried` is
+    //    the memo of exactly those lines.
+    //  - A resumed ACP session still holds everything the agent itself said, so
+    //    replaying its own posts into the prompt shows it its own words twice —
+    //    once as its turn, once quoted back as "the room". Only on a resume: a
+    //    fresh session has no such memory, and the recovery path after a failed
+    //    resume rebuilds the full window deliberately.
+    let carried: std::collections::HashSet<&str> = resume
+        .map(|r| r.delivered.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+    let resumed = resume.is_some();
+    let is_own_post = |m: &ChatMessage| m.agent_id == agent_id && m.peer_id == state.peer_id;
+    let fresh = |m: &ChatMessage| {
+        // The trigger is the REQUEST; it is never also background.
+        m.id != trigger_id && !carried.contains(m.id.as_str()) && !(resumed && is_own_post(m))
+    };
+
+    let mut supplied: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut shown: Vec<String> = Vec::new();
+    let mut recent = String::new();
     // Keep a contiguous catch-up cursor, but also show the room as it is now
     // and the original trigger's neighborhood after an offline backlog.
-    let mut supplied: std::collections::HashSet<_> = (start..end).collect();
-    let mut extra = |range: std::ops::Range<usize>, heading: &str| {
-        let lines: Vec<_> = range
+    let mut section = |range: std::ops::Range<usize>, heading: Option<&str>| {
+        let lines: Vec<ChatMessage> = range
             .filter(|i| supplied.insert(*i))
+            .filter(|i| fresh(&all[*i]))
             .map(|i| all[i].clone())
             .collect();
-        if !lines.is_empty() {
-            recent.push_str(&format!(
-                "\n{heading}\n{}",
-                window(&lines, None, trigger_id)
-            ));
+        if lines.is_empty() {
+            return;
+        }
+        // `window` keeps only the last few lines, so record what it rendered
+        // rather than what was offered to it.
+        let rendered = window(&lines, None, trigger_id);
+        shown.extend(
+            lines
+                .iter()
+                .rev()
+                .take(RECENT_CHAT_LINES)
+                .map(|m| m.id.clone()),
+        );
+        match heading {
+            Some(heading) => recent.push_str(&format!("\n{heading}\n{rendered}")),
+            None => recent.push_str(&rendered),
         }
     };
-    extra(
+    section(start..end, None);
+    section(
         all.len().saturating_sub(RECENT_CHAT_LINES)..all.len(),
-        "Latest room context:",
+        Some("Latest room context:"),
     );
     if let Some(trigger) = all.iter().position(|m| m.id == trigger_id) {
-        extra(
+        section(
             trigger.saturating_sub(6)..(trigger + 6).min(all.len()),
-            "Context around the original request:",
+            Some("Context around the original request:"),
         );
     }
     if end < all.len() || (after.is_none() && start > 0) {
         recent.push_str(&format!("\nHistory omitted from this prompt. Retrieve pages from GET /circles/{}/api/chat?after_id={}&limit=100. Omitted lines have NOT been delivered.", state.circle_id, if after.is_some() { cursor.as_deref().unwrap_or("") } else { "" }));
     }
     // Include ancestors of the explicit request even if outside the room page.
+    // `supplied` covers every block above, not just the contiguous page, so an
+    // ancestor that the latest-room or trigger-neighborhood block already
+    // printed is not printed a second time under its own heading.
     let mut parent = all
         .iter()
         .find(|m| m.id == trigger_id)
@@ -96,10 +150,12 @@ pub fn build_delivery(
         if !visited.insert(id.clone()) || visited.len() > 32 {
             break;
         }
-        let Some(message) = all.iter().find(|m| m.id == id) else {
+        let Some(index) = all.iter().position(|m| m.id == id) else {
             break;
         };
-        if !all[start..end].iter().any(|m| m.id == id) {
+        let message = &all[index];
+        if supplied.insert(index) && fresh(message) {
+            shown.push(message.id.clone());
             recent.push_str(&format!(
                 "\nThread ancestor {} ({} on {}): {}",
                 message.id, message.agent_id, message.peer_id, message.text
@@ -115,15 +171,59 @@ pub fn build_delivery(
             sender,
             task,
             Some(&brief),
-            Some(&recent),
-            if resume.is_some() {
+            (!recent.trim().is_empty()).then_some(recent.as_str()),
+            if resumed {
                 DELTA_CHAT_HEADING
             } else {
                 FRESH_CHAT_HEADING
             },
         ),
+        delivered: carry_forward(&all, start, carried, shown, trigger_id),
         cursor,
     }
+}
+
+/// The memo to store with the new cursor.
+///
+/// Drops everything the cursor now covers (`start` is the first line the next
+/// turn will page in, so anything before it can never come back) and everything
+/// that has left the transcript, then keeps the most recent ids within the cap.
+fn carry_forward(
+    all: &[ChatMessage],
+    start: usize,
+    carried: std::collections::HashSet<&str>,
+    shown: Vec<String>,
+    trigger_id: &str,
+) -> Vec<String> {
+    let ahead: std::collections::HashSet<&str> = all[start.min(all.len())..]
+        .iter()
+        .map(|m| m.id.as_str())
+        .collect();
+    let mut memo: Vec<String> = carried
+        .into_iter()
+        .filter(|id| ahead.contains(id))
+        .map(str::to_string)
+        .collect();
+    memo.extend(
+        shown
+            .into_iter()
+            .chain(std::iter::once(trigger_id.to_string()))
+            .filter(|id| ahead.contains(id.as_str())),
+    );
+    memo.sort_unstable();
+    memo.dedup();
+    if memo.len() > DELIVERED_MEMO {
+        // Keep the newest: transcript order, not the sort order above.
+        let keep: std::collections::HashSet<&str> = memo.iter().map(String::as_str).collect();
+        memo = all
+            .iter()
+            .rev()
+            .filter(|m| keep.contains(m.id.as_str()))
+            .take(DELIVERED_MEMO)
+            .map(|m| m.id.clone())
+            .collect();
+    }
+    memo
 }
 
 pub fn recovery_context(state: &AppState, agent: &str) -> String {

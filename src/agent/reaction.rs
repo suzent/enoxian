@@ -895,7 +895,7 @@ async fn react(
     {
         tracing::info!("[agent] `{agent_id}` passed on {message_id}");
         if let Some(cursor) = &delivery.cursor {
-            mark_seen(state, agent_id, cursor);
+            mark_seen(state, agent_id, cursor, &delivery.delivered);
         }
         publish_agent_activity_detailed(
             state,
@@ -929,12 +929,12 @@ async fn react(
         );
         posted?;
         if let Some(cursor) = &delivery.cursor {
-            mark_seen(state, agent_id, cursor);
+            mark_seen(state, agent_id, cursor, &delivery.delivered);
         }
     } else {
         tracing::debug!("[agent] `{agent_id}` produced no text reply to post");
         if let Some(cursor) = &delivery.cursor {
-            mark_seen(state, agent_id, cursor);
+            mark_seen(state, agent_id, cursor, &delivery.delivered);
         }
     }
     publish_agent_activity(
@@ -949,10 +949,13 @@ async fn react(
 
 /// Remember the last chat line this agent has seen — its own reply, or the
 /// mention it just handled when it said nothing — so the next turn carries only
-/// what the room said in between. Best-effort: a failure here costs the next
-/// prompt a few already-seen lines, not correctness.
-fn mark_seen(state: &AppState, agent_id: &str, message_id: &str) {
-    if let Err(e) = super::memory::save_seen(&state.circle_dir, agent_id, message_id) {
+/// what the room said in between. `delivered` records the lines this prompt
+/// showed *ahead* of that cursor, which the next turn subtracts. Best-effort: a
+/// failure here costs the next prompt a few already-seen lines, not correctness.
+fn mark_seen(state: &AppState, agent_id: &str, message_id: &str, delivered: &[String]) {
+    if let Err(e) =
+        super::memory::save_seen(&state.circle_dir, agent_id, message_id, delivered.to_vec())
+    {
         tracing::debug!("[agent] failed to persist seen-mark for `{agent_id}`: {e}");
     }
 }
@@ -1548,6 +1551,7 @@ mod tests {
         let resume = super::super::memory::Record {
             session_id: "session".into(),
             last_seen_message: "m0".into(),
+            ..Default::default()
         };
         let delivered = super::super::context::build_delivery(
             &state,
@@ -1564,6 +1568,157 @@ mod tests {
         assert!(delivered
             .prompt
             .contains("Omitted lines have NOT been delivered"));
+    }
+
+    /// Chat helper that lets a test choose the author and the device it came
+    /// from — the two things that decide whether a line is the agent's own.
+    fn say(state: &AppState, id: &str, author: &str, peer: &str, text: &str) {
+        let mut m = super::super::inbox::tests::request(id, "claude").message;
+        m.agent_id = author.into();
+        m.peer_id = peer.into();
+        m.text = text.into();
+        m.mentions = Vec::new();
+        add_chat(state, &m);
+    }
+
+    /// A resumed ACP session already holds the agent's own turns, so quoting
+    /// them back as "the room" shows the agent its own words twice.
+    #[test]
+    fn a_resumed_prompt_omits_this_agents_own_posts_but_keeps_its_namesakes() {
+        let (state, _) = test_state("local", "suzy");
+        say(&state, "m0", "human", "sender", "start here");
+        say(&state, "m1", "claude", "local", "my own earlier reply");
+        say(
+            &state,
+            "m2",
+            "claude",
+            "other-device",
+            "a namesake on another box",
+        );
+        say(&state, "m3", "human", "sender", "and the room moved on");
+        let resume = super::super::memory::Record {
+            session_id: "session".into(),
+            last_seen_message: "m0".into(),
+            ..Default::default()
+        };
+        let delivered = super::super::context::build_delivery(
+            &state,
+            "claude",
+            "suzy",
+            "do it",
+            Some(&resume),
+            "m3",
+        );
+        assert!(
+            !delivered.prompt.contains("my own earlier reply"),
+            "the resumed session already holds this: {}",
+            delivered.prompt
+        );
+        assert!(delivered.prompt.contains("a namesake on another box"));
+        // A fresh session has no such memory, so nothing is withheld from it.
+        let fresh =
+            super::super::context::build_delivery(&state, "claude", "suzy", "do it", None, "m3");
+        assert!(fresh.prompt.contains("my own earlier reply"));
+    }
+
+    /// The extra blocks reach past the contiguous cursor. Whatever they showed
+    /// is carried forward so the next turn's page does not walk back over it.
+    #[test]
+    fn lines_shown_ahead_of_the_cursor_are_not_delivered_a_second_time() {
+        let (state, _) = test_state("local", "suzy");
+        for i in 0..30 {
+            say(
+                &state,
+                &format!("m{i}"),
+                "human",
+                "sender",
+                &format!("message {i}"),
+            );
+        }
+        let first = super::super::context::build_delivery(
+            &state,
+            "claude",
+            "suzy",
+            "do it",
+            Some(&super::super::memory::Record {
+                session_id: "session".into(),
+                last_seen_message: "m0".into(),
+                ..Default::default()
+            }),
+            "m29",
+        );
+        assert_eq!(first.cursor.as_deref(), Some("m12"));
+        // The tail block ran ahead of the cursor and showed these already.
+        assert!(first.prompt.contains("message 20"));
+        assert!(first.delivered.iter().any(|id| id == "m20"));
+
+        let second = super::super::context::build_delivery(
+            &state,
+            "claude",
+            "suzy",
+            "do it again",
+            Some(&super::super::memory::Record {
+                session_id: "session".into(),
+                last_seen_message: first.cursor.clone().unwrap(),
+                delivered: first.delivered.clone(),
+            }),
+            "m29",
+        );
+        assert!(
+            !second.prompt.contains("message 20"),
+            "already shown on the previous turn: {}",
+            second.prompt
+        );
+        // Lines in the gap the tail block never reached are still delivered.
+        assert!(second.prompt.contains("message 13"));
+        // The memo only tracks what is still ahead of the cursor.
+        assert!(!second.delivered.iter().any(|id| id == "m5"));
+    }
+
+    /// A thread ancestor that one of the room blocks already printed must not
+    /// be printed again under its own heading.
+    #[test]
+    fn a_thread_ancestor_already_in_the_room_block_is_not_repeated() {
+        let (state, _) = test_state("local", "suzy");
+        for i in 0..30 {
+            say(
+                &state,
+                &format!("m{i}"),
+                "human",
+                "sender",
+                &format!("message {i}"),
+            );
+        }
+        let mut trigger = super::super::inbox::tests::request("m29", "claude").message;
+        trigger.reply_to = Some("m25".into());
+        {
+            use yrs::Array;
+            let mut txn = state.control.transact_mut();
+            let chat = txn.get_or_insert_array(crate::control::CHAT_KEY);
+            chat.remove(&mut txn, 29);
+            chat.push_back(
+                &mut txn,
+                Any::String(serde_json::to_string(&trigger).unwrap().into()),
+            );
+        }
+        let delivered = super::super::context::build_delivery(
+            &state,
+            "claude",
+            "suzy",
+            "do it",
+            Some(&super::super::memory::Record {
+                session_id: "session".into(),
+                last_seen_message: "m0".into(),
+                ..Default::default()
+            }),
+            "m29",
+        );
+        assert_eq!(
+            delivered.prompt.matches("message 25").count(),
+            1,
+            "m25 is both a tail line and the thread ancestor: {}",
+            delivered.prompt
+        );
     }
     #[cfg(unix)]
     #[tokio::test]

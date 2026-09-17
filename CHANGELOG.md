@@ -41,6 +41,11 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- An agent's prompt no longer repeats chat lines it has already been shown:
+  catch-up context that ran ahead of the agent's cursor is remembered between
+  turns, a thread ancestor already quoted in the room context is not quoted
+  again, and a resumed conversation is no longer fed the agent's own earlier
+  posts, which it already remembers.
 - Agents that read the room now answer questions written in Chinese, Japanese,
   and Korean. The "is this worth a turn" floor counted characters, so a CJK
   message was judged too short to be worth answering however much it said, and

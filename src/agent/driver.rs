@@ -533,7 +533,7 @@ mod tests {
     #[test]
     fn seen_only_memory_does_not_attempt_an_empty_resume() {
         let dir = tempfile::tempdir().unwrap();
-        super::super::memory::save_seen(dir.path(), "a", "message").unwrap();
+        super::super::memory::save_seen(dir.path(), "a", "message", Vec::new()).unwrap();
         let memory = super::super::memory::load(dir.path(), "a").unwrap();
         assert_eq!(resumable_session(Some(&memory), Some("")), None);
         assert_eq!(
