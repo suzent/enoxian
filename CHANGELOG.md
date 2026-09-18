@@ -39,6 +39,12 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Changed
+
+- Sidebar controls now blend into panel headers without a separate app header.
+  Larger labels and clearer text improve readability, and conversations keep
+  a centered reading width when sidebars are collapsed.
+
 ### Added
 
 - Three more ACP agents can be installed from the built-in catalog: `pi`

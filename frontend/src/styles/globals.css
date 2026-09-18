@@ -19,12 +19,10 @@
   --font-title: 'Cinzel', serif;
   --font-mono: 'JetBrains Mono', Monaco, Geneva, "Courier New", monospace;
   --ui-font: 16px;
-  --ui-small: 13px;
+  --ui-small: 14px;
   --ui-tiny: 12px;
   --shell-padding: 12px;
   --shell-gap: 8px;
-  --header-height: 44px; /* inner min-height; outer ≈ 44 + 8px padding + 3px border = 55px */
-  --header-outer: 55px;
   --surface-panel: #fff;
   --surface-control: var(--bg-alabaster);
   --control-motion: 180ms ease;
@@ -48,9 +46,9 @@ html, body, #root {
   font-size: var(--ui-font);
   overflow: hidden;
   text-shadow: none;
-  /* Pixel-crisp rendering ties UI to the dithered 3D elements */
+  /* Keep artwork crisp while allowing readable, smoothly rendered text. */
   image-rendering: pixelated;
-  -webkit-font-smoothing: none;
+  -webkit-font-smoothing: auto;
 }
 
 button,
@@ -78,11 +76,9 @@ button[role="tab"][aria-selected="true"] {
 .app-shell {
   height: 100dvh;
   min-height: 0;
-  grid-template-areas:
-    "header header header"
-    "circles chat right";
+  grid-template-areas: "circles chat right";
   grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) var(--right-panel-width, 340px);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px;
   padding: 18px;
   overflow: hidden;
@@ -92,13 +88,9 @@ button[role="tab"][aria-selected="true"] {
   transition: grid-template-columns 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.app-header {
-  grid-area: header;
-}
-
 .circle-removed-notice {
   grid-column: 2 / -1;
-  grid-row: 2;
+  grid-row: 1;
   z-index: 80;
   min-width: 0;
   display: flex;
@@ -304,7 +296,7 @@ button[role="tab"][aria-selected="true"] {
   gap: 4px;
   padding: 7px 4px;
   background: var(--surface-control);
-  color: rgba(10,10,10,0.58);
+  color: var(--fg-slate);
 }
 
 .right-panel-tab:hover {
@@ -331,7 +323,7 @@ button[role="tab"][aria-selected="true"] {
   padding: 2px 4px;
   border: 1px solid rgba(10,10,10,0.4);
   color: var(--fg-slate);
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 800;
   line-height: 1;
 }
@@ -345,8 +337,8 @@ button[role="tab"][aria-selected="true"] {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 9px;
-  line-height: 1;
+  font-size: 11px;
+  line-height: 1.3;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -431,11 +423,6 @@ button[role="tab"][aria-selected="true"] {
   background-image: repeating-linear-gradient(135deg, rgba(0,0,0,0.14) 0 1px, transparent 1px 5px);
 }
 
-.app-shell--void .app-header {
-  background-image: repeating-linear-gradient(135deg, rgba(0,0,0,0.09) 0 1px, transparent 1px 6px);
-  box-shadow: inset 5px 0 0 var(--fg-obsidian);
-}
-
 .sys-control {
   border: 1px solid var(--fg-obsidian);
   background-color: var(--bg-alabaster);
@@ -477,63 +464,6 @@ button[role="tab"][aria-selected="true"] {
   object-fit: contain;
 }
 
-.app-header {
-  background-color: var(--bg-alabaster);
-  min-height: var(--header-height);
-  padding: 4px 10px !important;
-  font-size: var(--ui-small);
-  gap: 10px !important;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.app-header .circle-state {
-  background-image: none;
-  min-height: 31px;
-}
-
-.app-header > div:first-child,
-.header-status {
-  gap: 12px !important;
-}
-
-.header-circle-identity {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.header-circle-identity > span:first-child {
-  font-family: var(--font-title);
-  font-size: 13px;
-  letter-spacing: 0.12em;
-}
-
-.header-circle-state {
-  flex: 0 0 auto;
-  min-width: 36px;
-  padding: 2px 5px;
-  border: 1px solid var(--fg-obsidian);
-  font-size: 8px;
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: 0.08em;
-  text-align: center;
-}
-
-.header-circle-state--live {
-  background: var(--fg-obsidian);
-  color: var(--bg-alabaster);
-}
-
-.header-circle-state--void {
-  background:
-    repeating-linear-gradient(135deg, rgba(0,0,0,0.12) 0 1px, transparent 1px 4px),
-    #fff;
-  color: var(--fg-obsidian);
-}
-
 .circle-controls {
   box-shadow: none !important;
 }
@@ -560,7 +490,8 @@ button[role="tab"][aria-selected="true"] {
   align-items: center;
   justify-content: center;
   column-gap: clamp(16px, 3vw, 48px);
-  padding: 10px clamp(16px, 3vw, 36px);
+  /* The inline padding also keeps the dock clear of the corner sidebar controls. */
+  padding: 10px max(46px, clamp(16px, 3vw, 36px));
   overflow: hidden;
   transition: min-height 220ms ease, padding 220ms ease;
 }
@@ -686,6 +617,25 @@ button[role="tab"][aria-selected="true"] {
 .active-circle-dock__meta strong.inactive,
 .circle-row__state.inactive {
   visibility: hidden;
+}
+
+/* Keep the conversation, identity dock and composer on one reading column.
+   Padding preserves full-width panel borders and the scrollbar at the edge. */
+.chat-main {
+  --chat-reading-width: 840px;
+  --chat-reading-gutter: clamp(16px, 2.2vw, 30px);
+}
+
+.chat-main .active-circle-dock {
+  padding-inline: max(46px, calc((100% - var(--chat-reading-width)) / 2 + var(--chat-reading-gutter)));
+}
+
+.chat-main .chat-message-list {
+  padding-inline: max(0px, calc((100% - var(--chat-reading-width)) / 2));
+}
+
+.chat-main .chat-composer {
+  padding-inline: max(var(--chat-reading-gutter), calc((100% - var(--chat-reading-width)) / 2 + var(--chat-reading-gutter)));
 }
 
 /* ── Chat hierarchy ------------------------------------------------------- */
@@ -865,9 +815,9 @@ button[role="tab"][aria-selected="true"] {
 .chat-message__time {
   margin-left: 2px;
   color: var(--fg-slate);
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1;
-  opacity: 0.5;
+  opacity: 0.85;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1685,7 +1635,7 @@ button[role="tab"][aria-selected="true"] {
   border: 1px solid rgba(0,0,0,0.45);
   background: var(--bg-alabaster);
   color: var(--fg-slate);
-  font-size: 9px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.06em;
 }
@@ -1831,7 +1781,7 @@ button[role="tab"][aria-selected="true"] {
 
 .circle-row__state {
   color: var(--fg-slate);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 800;
   line-height: 1;
   letter-spacing: 0.075em;
@@ -1904,17 +1854,17 @@ button[role="tab"][aria-selected="true"] {
 
 .circle-actions__copy small {
   color: inherit;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 700;
   line-height: 1;
   letter-spacing: 0.08em;
-  opacity: 0.58;
+  opacity: 0.85;
 }
 
 .circle-actions__copy strong {
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1;
   letter-spacing: 0.1em;
 }
@@ -1922,9 +1872,9 @@ button[role="tab"][aria-selected="true"] {
 .circle-actions__next {
   padding-left: 7px;
   border-left: 1px solid currentColor;
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: 0.06em;
-  opacity: 0.66;
+  opacity: 0.85;
   white-space: nowrap;
 }
 
@@ -2250,6 +2200,16 @@ button[role="tab"][aria-selected="true"] {
   align-items: center;
   border-bottom: 1px solid rgba(10,10,10,0.28);
   background: var(--surface-panel);
+}
+
+/* In the conversation column the corner sidebar controls overlay this row,
+   so hold the file name and the close button clear of both corners. */
+.workspace-view--file .file-surface-header {
+  padding-right: 40px;
+}
+
+.workspace-view--file .file-surface-header__meta {
+  padding-left: 48px;
 }
 
 .file-surface-header__back {
@@ -2596,71 +2556,104 @@ button[role="tab"][aria-selected="true"] {
   overflow: hidden;
 }
 
-.mobile-header-btn {
+/* ── Sidebar toggles ────────────────────────────────────────────────────
+   Controls sit on the visual centerline of the header they belong to.
+   The zero-height rail keeps them anchored without adding a header row. */
+.sidebar-toggle-rail {
+  grid-column: 1 / -1;
+  grid-row: 1;
   position: relative;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 32px;
+  z-index: 60;
+  align-self: start;
+  justify-self: stretch;
+  height: 0;
+  pointer-events: none;
+}
+
+.sidebar-toggle {
+  position: absolute;
+  top: calc(var(--window-border-top, 2px) + 24px);
+  width: 28px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid transparent;
+  padding: 0;
+  border: 0;
   background: transparent;
-  color: var(--fg-obsidian);
+  color: var(--fg-slate);
   cursor: pointer;
-  transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+  pointer-events: auto;
+  transition: color 140ms ease, top 180ms ease;
 }
 
-.mobile-header-btn:hover {
-  border-color: rgba(10,10,10,0.16);
-  background:
-    var(--control-hover-dither) 0 0 / 4px 4px,
-    transparent;
+.sidebar-toggle--left { left: 8px; }
+.sidebar-toggle--right { right: 6px; }
+
+.sidebar-toggle--left.is-open {
+  top: calc(var(--window-border-top, 2px) + 1px);
 }
 
-.mobile-header-btn:active {
-  background: rgba(10,10,10,0.08);
+.sidebar-toggle--right.is-open {
+  top: calc(var(--window-border-top, 2px) + 19px);
 }
 
-.mobile-header-btn.active {
-  background:
-    var(--control-selected-dither) 0 0 / 4px 4px,
-    var(--surface-control);
+.sidebar-toggle.is-open {
   color: var(--fg-obsidian);
-  box-shadow: none;
 }
 
-.sidebar-toggle-glyph {
-  position: relative;
-  display: block;
-  width: 17px;
-  height: 14px;
-  border: 1.5px solid currentColor;
-  border-radius: 2px !important;
-  transition: width 180ms cubic-bezier(0.22, 1, 0.36, 1), opacity 140ms ease;
+.sidebar-toggle:hover {
+  color: var(--fg-obsidian);
 }
 
-.sidebar-toggle-glyph.is-open {
-  width: 20px;
+.sidebar-toggle:active {
+  color: var(--fg-obsidian);
+  opacity: 0.65;
 }
 
-.sidebar-toggle-glyph__divider {
-  position: absolute;
-  top: 2px;
-  bottom: 2px;
-  width: 1.5px;
-  background: currentColor;
-  opacity: 0.58;
-  transition: inset 180ms cubic-bezier(0.22, 1, 0.36, 1), opacity 140ms ease;
-}
-
-.sidebar-toggle-glyph--left .sidebar-toggle-glyph__divider { left: 4px; }
-.sidebar-toggle-glyph--right .sidebar-toggle-glyph__divider { right: 4px; }
-.sidebar-toggle-glyph.is-open .sidebar-toggle-glyph__divider { opacity: 1; }
-
-.mobile-header-btn:focus-visible {
-  outline: 1px dashed var(--fg-obsidian);
+.sidebar-toggle:focus-visible {
+  outline: 2px solid var(--fg-obsidian);
   outline-offset: 2px;
+}
+
+.sidebar-toggle__glyph {
+  display: block;
+  width: 16px;
+  height: 16px;
+  fill: var(--bg-alabaster);
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sidebar-toggle__pane {
+  fill: currentColor;
+  stroke: none;
+  opacity: 0.12;
+  transition: opacity 140ms ease;
+}
+
+.sidebar-toggle.is-open .sidebar-toggle__pane { opacity: 0.75; }
+
+.sidebar-toggle:hover .sidebar-toggle__glyph {
+  background: var(--bg-alabaster);
+  box-shadow: 0 0 0 3px rgba(10, 10, 10, 0.1);
+}
+
+/* File headers are shorter than the conversation's identity dock. */
+:where(.app-shell:has(.workspace-view--file.is-active)) .sidebar-toggle:not(.is-open) {
+  top: calc(var(--window-border-top, 2px) + 6px);
+}
+
+/* Replace only the circles title's ornamental corner with its control. */
+.app-circles-sidebar > .section-header::before {
+  visibility: hidden;
+}
+
+.app-right-panel > .right-panel-tabs:not(.section-header) {
+  padding-right: 36px;
+  background: var(--surface-control);
 }
 
 .html-preview-notice {
@@ -2978,7 +2971,7 @@ body {
   background: rgba(0,0,0,0.018);
   color: var(--fg-slate);
   font-family: var(--font-mono);
-  font-size: 8px;
+  font-size: 11px;
   letter-spacing: 0.045em;
 }
 
@@ -2995,7 +2988,7 @@ body {
 
 .task-summary strong {
   color: var(--fg-obsidian);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .task-list {
@@ -3018,7 +3011,7 @@ body {
   display: -webkit-box;
   overflow: hidden;
   color: var(--fg-slate);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.35;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -3042,7 +3035,7 @@ body {
   color: var(--fg-obsidian);
   padding: 5px 8px;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 800;
   text-align: left;
   cursor: pointer;
@@ -3074,7 +3067,7 @@ body {
   border-style: dashed;
   color: var(--fg-slate);
   padding-block: 7px;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .task-card--completed > span:nth-child(2) {
@@ -3084,7 +3077,7 @@ body {
 }
 
 .task-card--completed time {
-  font-size: 8px;
+  font-size: 10px;
   white-space: nowrap;
 }
 
@@ -3726,9 +3719,7 @@ select option {
   .app-shell {
     --left-track: 0px;
     --right-track: 0px;
-    grid-template-areas:
-      "header header header"
-      "circles chat right";
+    grid-template-areas: "circles chat right";
     grid-template-columns: var(--left-track) minmax(0, 1fr) var(--right-track);
     column-gap: 0;
     row-gap: 12px;
@@ -3815,11 +3806,9 @@ select option {
 @media (max-width: 960px) {
   .app-shell {
     height: 100dvh;
-    grid-template-areas:
-      "header"
-      "main";
+    grid-template-areas: "main";
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: 1fr;
     gap: 0;
     padding: 0;
     position: relative;
@@ -3828,7 +3817,7 @@ select option {
 
   .circle-removed-notice {
     grid-column: 1;
-    grid-row: 2;
+    grid-row: 1;
     border-width: 1px 0 0;
   }
 
@@ -3950,15 +3939,27 @@ select option {
     display: none;
   }
 
-  .mobile-header-btn {
-    display: inline-flex;
-    width: 30px;
-    height: 30px;
-    flex-basis: 30px;
+  /* Edge-to-edge panels on mobile carry a 1px top border. */
+  .sidebar-toggle {
+    --window-border-top: 1px;
   }
 
-  .header-docs-count {
-    display: none;
+  /* Both controls follow the header of the foreground drawer. */
+  .app-shell.drawer-circles .app-circles-sidebar > .section-header::after {
+    visibility: hidden;
+  }
+
+  .app-shell.drawer-circles .sidebar-toggle {
+    top: 2px;
+  }
+
+  .app-shell.drawer-info .sidebar-toggle {
+    top: 20px;
+  }
+
+  /* Keep the dock's name and glyph clear of the corner controls. */
+  .active-circle-dock {
+    padding-inline: 48px;
   }
 }
 
@@ -3968,23 +3969,11 @@ select option {
     width: 100%;
   }
 
-  .app-header {
-    padding-inline: 8px !important;
-  }
-
-  .header-circle-identity > span:first-child {
-    max-width: 42vw;
-  }
-
-  .header-agent-id {
-    max-width: 32vw;
-  }
-
   .active-circle-dock {
     grid-template-columns: minmax(0, 1fr) auto;
     column-gap: 12px;
     min-height: 78px;
-    padding-inline: 12px;
+    padding-inline: 46px;
   }
 
   .active-circle-dock__meta {
@@ -4299,12 +4288,6 @@ select option {
   font-size: var(--ui-small);
 }
 
-@media (max-width: 420px) {
-  .header-status {
-    display: none !important;
-  }
-}
-
 @media (max-width: 480px) {
   .section-header {
     padding-left: 12px;
@@ -4422,8 +4405,8 @@ select option {
   .left-panel-resizer span,
   .right-panel-resizer::before,
   .right-panel-resizer span,
-  .mobile-header-btn,
-  .mobile-header-btn svg,
+  .sidebar-toggle,
+  .sidebar-toggle__pane,
   .mobile-drawer,
   .right-panel-tab,
   .active-circle-dock,
