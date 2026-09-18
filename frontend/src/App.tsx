@@ -5,7 +5,7 @@ import ChatPanel from './components/ChatPanel'
 import EditorPanel from './components/EditorPanel'
 import RightPanel, { type RightPanelTab } from './components/RightPanel'
 import CircleSidebar from './components/CircleSidebar'
-import Header from './components/Header'
+import SidebarToggles from './components/SidebarToggles'
 import LandingPage from './components/LandingPage'
 import RitualTransition, { type RitualMode } from './components/RitualTransition'
 import { useApp } from './context/AppContext'
@@ -247,8 +247,7 @@ function Layout() {
             '--right-panel-width': `${layoutPreferences.rightPanelWidth}px`,
           } as CSSProperties}
         >
-          <Header
-            mobileDrawer={mobileDrawer}
+          <SidebarToggles
             circlesOpen={compactLayout ? mobileDrawer === 'circles' : layoutPreferences.leftPanelOpen}
             infoOpen={compactLayout ? mobileDrawer === 'info' : layoutPreferences.rightPanelOpen}
             onToggleCircles={toggleCircles}
