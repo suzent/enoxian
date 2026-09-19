@@ -1,6 +1,6 @@
 /**
  * Universal Bayer 4×4 ordered dither for the app's 3D elements.
- * Used by: VoidOverlay, CircleSidebar icons, circle-switch transition.
+ * Used by the landing page angel scene. Circle identities use Canvas 2D.
  *
  * Render pipeline:
  *   THREE.Scene → RenderPass → DitherPass → canvas

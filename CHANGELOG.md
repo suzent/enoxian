@@ -41,6 +41,16 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
+- Circle identities now use four dithered visual families assigned from Circle
+  IDs. Working marks animate, unread messages use a halo, and hovering a mark
+  enlarges it with pointer movement. A skippable, reduced-motion-aware identity
+  assembly replaces the old 3D Circle entry effects.
+- The conversation shares a quieter workspace with contextual Activity, Members,
+  Tasks, and Workspace panels. Circle settings live in Members; named actions,
+  compact invitations, and clearer empty states replace ambiguous sidebar controls.
+  Sidebar edges remain resizable without visible drag handles. Agent messages
+  now use deterministic geometric avatars.
+
 - Sidebar controls now blend into panel headers without a separate app header.
   Larger labels and clearer text improve readability, and conversations keep
   a centered reading width when sidebars are collapsed.

@@ -1,3 +1,4 @@
+import { X, UserPlus, FilePlus, ListPlus, ChevronDown } from 'lucide-react'
 import InviteLink from './InviteLink'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Presence, Task, Member, PendingEntry, Proposal } from '../types'
@@ -13,39 +14,11 @@ interface Props {
   onFileSelect: (path: string | null) => void
   selectedFile: string | null
   activeTab: RightPanelTab
-  onActiveTabChange: (tab: RightPanelTab) => void
+  onClose: () => void
 }
 
-export type RightPanelTab = 'members' | 'tasks' | 'workspace'
+export type RightPanelTab = 'members' | 'activity' | 'tasks' | 'workspace'
 type WorkspaceView = 'files' | 'history'
-
-const TAB_ICONS = {
-  members: (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square">
-      <circle cx="9" cy="8" r="3.5" />
-      <path d="M2.5 19.5c0-3.6 2.9-5.8 6.5-5.8s6.5 2.2 6.5 5.8" />
-      <circle cx="17.5" cy="9.5" r="2.5" />
-      <path d="M16.5 14.2c2.9.4 5 2.4 5 5.3" />
-    </svg>
-  ),
-  tasks: (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square">
-      <path d="M3.5 5.5l2 2 3.5-4" />
-      <line x1="12" y1="6" x2="21" y2="6" />
-      <path d="M3.5 13.5l2 2 3.5-4" />
-      <line x1="12" y1="14" x2="21" y2="14" />
-      <line x1="12" y1="20" x2="21" y2="20" />
-    </svg>
-  ),
-  workspace: (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square">
-      <path d="M6 2.5h8l4.5 4.5v14.5H6z" />
-      <path d="M14 2.5V7h4.5" />
-      <line x1="9" y1="12" x2="15.5" y2="12" />
-      <line x1="9" y1="16" x2="15.5" y2="16" />
-    </svg>
-  ),
-} as const
 
 function age(isoStr: string) {
   const secs = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000)
@@ -62,7 +35,7 @@ const CONNECTION_BADGE: Record<NonNullable<Presence['connections']>[number]['kin
 }
 
 
-export default function RightPanel({ activityRef, onFileSelect, selectedFile, activeTab, onActiveTabChange }: Props) {
+export default function RightPanel({ activityRef, onFileSelect, selectedFile, activeTab, onClose }: Props) {
   const { activeCircleId, circles, reloadCircles, status } = useApp()
   const [presence, setPresence] = useState<Presence[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
@@ -369,12 +342,14 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
 
   const claim = (taskId: string) => {
     if (!activeCircleId || !status) return
-    claimTask(activeCircleId, taskId, status.agent_id).then(refreshTasks).catch(() => {})
+    setTaskActionError(null)
+    claimTask(activeCircleId, taskId, status.agent_id).then(refreshTasks).catch(err => setTaskActionError(err.message || 'Unable to claim task'))
   }
 
   const done = (taskId: string) => {
     if (!activeCircleId || !status) return
-    doneTask(activeCircleId, taskId, status.agent_id).then(refreshTasks).catch(() => {})
+    setTaskActionError(null)
+    doneTask(activeCircleId, taskId, status.agent_id).then(refreshTasks).catch(err => setTaskActionError(err.message || 'Unable to complete task'))
   }
 
   const submitFile = async () => {
@@ -492,32 +467,6 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
     })
   }
 
-  const detailTabs: SegmentedTabOption<RightPanelTab>[] = (['members', 'tasks', 'workspace'] as const).map((tab, index) => {
-    const count = tab === 'members'
-      ? pending.length
-      : tab === 'tasks'
-        ? activeTasks.length
-        : actionableChanges.length
-
-    return {
-      value: tab,
-      className: `right-panel-tab relative flex-1 font-bold font-mono min-w-0 flex flex-col items-center justify-center${index < 2 ? ' border-r border-obsidian/35' : ''}`,
-      title: `${tab.toUpperCase()}${count > 0 ? ` — ${count} pending` : ''}`,
-      ariaLabel: `${tab}${count > 0 ? ` (${count} pending)` : ''}`,
-      content: (
-        <>
-          <span className="flex items-center" aria-hidden="true">{TAB_ICONS[tab]}</span>
-          <span className="right-panel-tab__label" aria-hidden="true">{tab}</span>
-          {count > 0 && (
-            <span className="right-panel-tab__count" aria-hidden="true">
-              {count > 99 ? '99+' : count}
-            </span>
-          )}
-        </>
-      ),
-    }
-  })
-
   const workspaceTabs: SegmentedTabOption<WorkspaceView>[] = [
     { value: 'files', content: 'FILES' },
     {
@@ -530,26 +479,24 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
     <>
     <aside className="app-right-panel sys-window flex min-h-0 flex-col z-10 overflow-hidden">
 
-      {/* ── Tab bar ─────────────────────────────────────────────────────── */}
-      <SegmentedTabs
-        className="right-panel-tabs flex shrink-0 border-b-2 border-obsidian"
-        ariaLabel="Circle details"
-        value={activeTab}
-        onChange={onActiveTabChange}
-        options={detailTabs}
-      />
+      <div className="section-header right-panel-title">
+        <span>{activeTab}</span>
+        <button type="button" className="context-close" onClick={onClose} aria-label="Close circle details"><X size={16} /></button>
+      </div>
+      <div className="right-panel-body">
+        <div className="right-panel-content">
 
       {/* ── MEMBERS tab ─────────────────────────────────────────────────── */}
       {activeTab === 'members' && (
         <div className="sidebar-members flex flex-col min-h-0 overflow-hidden">
-          {/* Invite row */}
-          <div className="section-header">
-            <span>MEMBERS</span>
-            <button onClick={handleInvite} disabled={inviteLoading} aria-busy={inviteLoading} aria-expanded={!!inviteUri} aria-label={inviteUri ? 'Close invite details' : 'Create invite'}>{inviteLoading ? '…' : inviteUri ? '×' : '+'}</button>
+          <div className="context-intro">
+            <p>People, devices and agents in this Circle.</p>
+            <button className="context-action" onClick={handleInvite} disabled={inviteLoading} aria-busy={inviteLoading} aria-expanded={!!inviteUri}>
+              <UserPlus size={15} />{inviteLoading ? 'Creating invite…' : inviteUri ? 'Hide invite link' : 'Invite to Circle'}
+            </button>
           </div>
-
           {inviteUri && (
-            <div className="panel-action-form">
+            <div className="member-invitation">
               <InviteLink key={inviteUri} uri={inviteUri} longUri={longInviteUri} note={inviteNote} />
               {inviteConnectivity && (() => {
                 const wan = inviteConnectivity.peer_addr || inviteConnectivity.relay_addr || inviteConnectivity.rendezvous_addr
@@ -558,8 +505,8 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
                 if (inviteConnectivity.relay_addr) tags.push('RELAY')
                 if (inviteConnectivity.rendezvous_addr) tags.push('RDVZ')
                 return (
-                  <div className="panel-action-form__meta">
-                    <span className={wan ? '' : 'is-muted'}>{wan ? '● REACHABLE' : '○ LAN ONLY'}</span>
+                  <div className="invite-connection-status">
+                    <span className={wan ? '' : 'is-muted'}>{wan ? '● Reachable' : '○ Local network only'}</span>
                     {tags.map(t => <span key={t} className="panel-action-form__tag">{t}</span>)}
                   </div>
                 )
@@ -663,17 +610,27 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
               )
             })}
           </div>
+          {activeCircle && <details className="member-circle-settings">
+            <summary>Circle settings <ChevronDown size={14} /></summary>
+            <div>
+              <strong>{activeCircle.disabled ? 'Circle disabled' : 'Circle enabled'}</strong>
+              <p>{activeCircle.disabled ? 'Enable to resume participation on this device.' : 'Disable to pause participation on this device.'}</p>
+              <button type="button" onClick={handleToggleCircleEnabled}>{activeCircle.disabled ? 'Enable circle' : 'Disable circle'}</button>
+              <p>Leaving removes the local configuration. Workspace files stay on this device.</p>
+              <button type="button" onClick={handleLeaveCircle}>Leave circle…</button>
+            </div>
+          </details>}
         </div>
       )}
 
-      <div ref={activityRef} className="sidebar-agent-activity" hidden={activeTab !== 'members'} />
+      <div ref={activityRef} className="sidebar-agent-activity" hidden={activeTab !== 'activity'} />
 
       {/* ── TASKS tab ───────────────────────────────────────────────────── */}
       {activeTab === 'tasks' && (
         <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-          <div className="section-header">
-            <span>TASK QUEUE</span>
-            <button onClick={() => setCreating(v => !v)} aria-expanded={creating} aria-label={creating ? 'Cancel new task' : 'Create task'}>{creating ? '×' : '+'}</button>
+          <div className="context-intro">
+            <p>Coordinate work and track who is handling it.</p>
+            <button className="context-action" onClick={() => setCreating(v => !v)} aria-expanded={creating}><ListPlus size={15} />{creating ? 'Cancel new task' : 'New task'}</button>
           </div>
           {creating && (
             <form className="panel-action-form" onSubmit={e => { e.preventDefault(); submitTask() }}>
@@ -704,7 +661,7 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
             <span><strong>{completedTasks.length}</strong> COMPLETED</span>
           </div>
           <div className="task-list flex-1 overflow-y-auto font-mono text-[11px]">
-            {activeTasks.length === 0 && <PanelEmpty title="NO ACTIVE TASKS" detail="Create a task to coordinate work." />}
+            {activeTasks.length === 0 && !creating && <PanelEmpty title="No active tasks" detail="Use New task to describe an outcome. Members can claim it and mark it done." />}
             {activeTasks.map(t => {
               const isMe = t.claimed_by === status?.agent_id
               return (
@@ -732,7 +689,7 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
                 >
                   <span>COMPLETED</span>
                   <span>{completedTasks.length}</span>
-                  <span aria-hidden="true">{showCompletedTasks ? '−' : '+'}</span>
+                  <span aria-hidden="true">{showCompletedTasks ? '⌃' : '⌄'}</span>
                 </button>
                 {showCompletedTasks && (
                   <div className="task-completed__list">
@@ -771,22 +728,18 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
           />
           {workspaceView === 'files' && (
         <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-          <div className="section-header">
-            <span>FILES</span>
-            <button
-              onClick={() => {
-                if (creatingFile) setNewFilePath('')
-                setCreatingFile(v => !v)
-                setFileActionError(null)
-              }}
-              title={creatingFile ? 'Cancel' : 'New file'}
-              aria-expanded={creatingFile}
-              aria-label={creatingFile ? 'Cancel new file' : 'Create file'}
-            >{creatingFile ? '×' : '+'}</button>
+          <div className="context-intro context-intro--files">
+            <p>Shared files in this Circle.</p>
+            <button className="context-action" onClick={() => {
+              if (creatingFile) setNewFilePath('')
+              setCreatingFile(v => !v)
+              setFileActionError(null)
+            }} aria-expanded={creatingFile}><FilePlus size={15} />{creatingFile ? 'Cancel new file' : 'New file'}</button>
           </div>
+          {fileActionError && !creatingFile && <div className="panel-feedback panel-feedback--error" role="alert">{fileActionError}</div>}
           <div className="workspace-files-layout">
           <div className="file-list flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px]">
-            {files.length === 0 && !creatingFile && <PanelEmpty title="NO FILES YET" detail="Use + to create the first shared file." />}
+            {files.length === 0 && !creatingFile && <PanelEmpty title="No shared files yet" detail="Create a shared file with New file above." />}
             {(files.length > 0 || creatingFile) && (
               <div className="border border-obsidian/30">
                 {creatingFile && (
@@ -812,7 +765,7 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
                         aria-describedby={fileActionError ? 'file-create-error' : undefined}
                         spellCheck={false}
                       />
-                      <span className="file-create-commit" title="Press Enter to create" aria-hidden="true">↵</span>
+                      <button type="submit" className="file-create-commit" disabled={!newFilePath.trim()}>Create</button>
                     </form>
                     {fileActionError && <div id="file-create-error" className="file-create-error" role="alert">{fileActionError}</div>}
                   </>
@@ -843,33 +796,10 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
         )
       )}
 
-      {activeCircle && (
-        <div className="circle-actions">
-          <button
-            onClick={handleToggleCircleEnabled}
-            className={`circle-actions__toggle circle-actions__toggle--${activeCircle.disabled ? 'disabled' : 'enabled'}`}
-            title={activeCircle.disabled ? 'Enable this circle' : 'Disable this circle'}
-            aria-pressed={!activeCircle.disabled}
-          >
-            <span className="circle-actions__indicator" aria-hidden="true" />
-            <span className="circle-actions__copy">
-              <small>CIRCLE STATE</small>
-              <strong>{activeCircle.disabled ? 'DISABLED' : 'ENABLED'}</strong>
-            </span>
-            <span className="circle-actions__next">
-              {activeCircle.disabled ? 'ENABLE' : 'DISABLE'} <span aria-hidden="true">→</span>
-            </span>
-          </button>
-          <button
-            onClick={handleLeaveCircle}
-            className="circle-actions__danger"
-            title="Leave this circle"
-          >
-            LEAVE
-          </button>
-        </div>
-      )}
 
+
+        </div>
+      </div>
     </aside>
 
     {/* ── Confirm modal (leave / delete) ──────────────────────────────── */}

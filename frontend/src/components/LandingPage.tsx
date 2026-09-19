@@ -20,7 +20,7 @@ import { BRAND_LOGO_SRC } from '../lib/brand'
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Props {
-  onEntered: () => void
+  onEntered: (circleId?: string, label?: string) => void
 }
 
 type UIState = 'setup' | 'init-form' | 'enter-form' | 'mnemonic-backup'
@@ -99,13 +99,11 @@ export default function LandingPage({ onEntered }: Props) {
     }
   }
 
-  async function triggerEruptionAndComplete(circleId?: string | null) {
+  async function completeEntry(circleId?: string | null) {
+    await reloadCircles()
+    if (circleId) setActiveCircleId(circleId)
     setIsErupting(true)
-    angelRef.current?.triggerEruption(async () => {
-      await reloadCircles()
-      if (circleId) setActiveCircleId(circleId)
-      onEntered()
-    })
+    onEntered(circleId || undefined, uiState === 'enter-form' ? undefined : circleName.trim() || 'DEFAULT')
   }
 
   // ── Actions ──────────────────────────────────────────────────────────────
@@ -144,7 +142,7 @@ export default function LandingPage({ onEntered }: Props) {
         return
       }
       const created = await initCircle(circleName.trim() || 'DEFAULT', userName.trim() || undefined, joinPolicy)
-      triggerEruptionAndComplete(created.circle_id)
+      await completeEntry(created.circle_id)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -158,7 +156,7 @@ export default function LandingPage({ onEntered }: Props) {
     try {
       await saveIdentityIfNeeded()
       const entered = await enterCircle(inviteUri.trim(), userName.trim() || undefined)
-      triggerEruptionAndComplete(entered.circle_id)
+      await completeEntry(entered.circle_id)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -185,20 +183,20 @@ export default function LandingPage({ onEntered }: Props) {
     // The Circle is created here, not before the phrase was shown, so a failure
     // leaves the user on this screen with the words still in front of them
     // rather than past the only chance to read them.
-    if (pendingCircleId) {
-      triggerEruptionAndComplete(pendingCircleId)
-      return
-    }
     setError('')
     setLoading(true)
     try {
+      if (pendingCircleId) {
+        await completeEntry(pendingCircleId)
+        return
+      }
       const created = await initCircle(
         circleName.trim() || 'DEFAULT',
         userName.trim() || undefined,
         joinPolicy,
       )
       setPendingCircleId(created.circle_id ?? null)
-      triggerEruptionAndComplete(created.circle_id)
+      await completeEntry(created.circle_id)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
