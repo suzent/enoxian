@@ -8,8 +8,7 @@ import DeviceSettings from './DeviceSettings'
 import type { RitualMode } from './RitualTransition'
 
 interface Props {
-  onRitual?: (mode: RitualMode, label?: string) => void
-  ritualCircleName?: string
+  onRitual?: (mode: RitualMode, label: string | undefined, circleId: string) => void
 }
 
 type Modal = 'init' | 'enter' | null
@@ -100,7 +99,8 @@ export default function CircleSidebar({ onRitual }: Props) {
       const res = await initCircle(initName, initOwner || undefined, initJoinPolicy)
       await reloadCircles()
       if (res.circle_id) setActiveCircleId(res.circle_id)
-      setModal(null); onRitual?.('init', initName)
+      setModal(null)
+      if (res.circle_id) onRitual?.('init', initName, res.circle_id)
       setInitName(''); setInitOwner(''); setInitJoinPolicy('auto')
     } catch (err: any) { setError(err.message) }
   }
@@ -112,7 +112,7 @@ export default function CircleSidebar({ onRitual }: Props) {
       await reloadCircles()
       if (res.circle_id) setActiveCircleId(res.circle_id)
       setModal(null)
-      onRitual?.('enter', await joinedCircleName(res.circle_id))
+      if (res.circle_id) onRitual?.('enter', await joinedCircleName(res.circle_id), res.circle_id)
       setEnterTarget(''); setEnterOwner('')
     } catch (err: any) { setError(err.message) }
   }
@@ -121,7 +121,7 @@ export default function CircleSidebar({ onRitual }: Props) {
     <>
       <aside className="app-circles-sidebar sys-window flex flex-col z-10 overflow-hidden font-mono">
         <div className="section-header">
-          <span>CIRCLES</span>
+          <span className="circle-sidebar-brand">enoxian<span>CIRCLES</span></span>
           <span className="circle-list-count">{String(circles.length).padStart(2, '0')}</span>
         </div>
 

@@ -15,7 +15,7 @@ import './styles/globals.css'
 
 type MobileDrawer = 'circles' | 'info' | null
 
-const LAYOUT_PREFERENCES_KEY = 'enoxian.layout.v3'
+const LAYOUT_PREFERENCES_KEY = 'enoxian.layout.v4'
 
 interface LayoutPreferences {
   leftPanelOpen: boolean
@@ -27,25 +27,25 @@ interface LayoutPreferences {
 
 const DEFAULT_LAYOUT_PREFERENCES: LayoutPreferences = {
   leftPanelOpen: true,
-  leftPanelWidth: 280,
-  rightPanelOpen: true,
+  leftPanelWidth: 220,
+  rightPanelOpen: false,
   rightPanelTab: 'members',
-  rightPanelWidth: 340,
+  rightPanelWidth: 300,
 }
 
 function loadLayoutPreferences(): LayoutPreferences {
   try {
     const saved = JSON.parse(localStorage.getItem(LAYOUT_PREFERENCES_KEY) ?? '{}')
-    const tabs: RightPanelTab[] = ['members', 'tasks', 'workspace']
+    const tabs: RightPanelTab[] = ['members', 'activity', 'tasks', 'workspace']
     const savedTab = saved.rightPanelTab === 'files' || saved.rightPanelTab === 'changes'
       ? 'workspace'
       : saved.rightPanelTab
     return {
       leftPanelOpen: saved.leftPanelOpen !== false,
-      leftPanelWidth: Math.min(360, Math.max(220, Number(saved.leftPanelWidth) || 280)),
-      rightPanelOpen: saved.rightPanelOpen !== false,
+      leftPanelWidth: Math.min(360, Math.max(220, Number(saved.leftPanelWidth) || 220)),
+      rightPanelOpen: saved.rightPanelOpen === true,
       rightPanelTab: tabs.includes(savedTab) ? savedTab : 'members',
-      rightPanelWidth: Math.min(560, Math.max(280, Number(saved.rightPanelWidth) || 340)),
+      rightPanelWidth: Math.min(560, Math.max(280, Number(saved.rightPanelWidth) || 300)),
     }
   } catch {
     return DEFAULT_LAYOUT_PREFERENCES
@@ -57,7 +57,7 @@ function Layout() {
 
   const [activityContainer, setActivityContainer] = useState<HTMLDivElement | null>(null)
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
-  const [ritual, setRitual] = useState<{ mode: RitualMode; label?: string } | null>(null)
+  const [ritual, setRitual] = useState<{ mode: RitualMode; label?: string; circleId: string } | null>(null)
   const [showLanding, setShowLanding] = useState(false)
   const [revealing, setRevealing] = useState(false)
   const [layoutPreferences, setLayoutPreferences] = useState(loadLayoutPreferences)
@@ -67,9 +67,10 @@ function Layout() {
   const [removedLeaveBusy, setRemovedLeaveBusy] = useState(false)
   const [removedLeaveError, setRemovedLeaveError] = useState<string | null>(null)
 
-  const handleEntered = useCallback(() => {
+  const handleEntered = useCallback((circleId?: string, label?: string) => {
     setShowLanding(false)
     setRevealing(true)
+    if (circleId) setRitual({mode: 'enter', circleId, label})
   }, [])
 
   useEffect(() => {
@@ -122,6 +123,11 @@ function Layout() {
 
   const toggle = (drawer: MobileDrawer) =>
     setMobileDrawer(d => d === drawer ? null : drawer)
+
+  const openCircleDetails = (tab: RightPanelTab) => {
+    setLayoutPreferences(current => ({ ...current, rightPanelOpen: current.rightPanelTab !== tab || !current.rightPanelOpen, rightPanelTab: tab }))
+    if (compactLayout) setMobileDrawer(current => current === 'info' && layoutPreferences.rightPanelTab === tab ? null : 'info')
+  }
 
   const toggleInfo = () => {
     if (window.matchMedia('(max-width: 960px)').matches) {
@@ -297,8 +303,7 @@ function Layout() {
           )}
 
           <CircleSidebar
-            onRitual={(mode, label) => setRitual({ mode, label })}
-            ritualCircleName={ritual?.label}
+            onRitual={(mode, label, circleId) => setRitual({ mode, label, circleId })}
           />
 
           <div
@@ -317,13 +322,13 @@ function Layout() {
               if (event.key === 'Home') { event.preventDefault(); resizeLeftPanel(220) }
               if (event.key === 'End') { event.preventDefault(); resizeLeftPanel(360) }
             }}
-          ><span aria-hidden="true" /></div>
+          />
 
           <div className="desktop-chat">
             {!compactLayout && (
               <>
                 <div className={`workspace-view workspace-view--chat${selectedFile ? '' : ' is-active'}`} aria-hidden={!!selectedFile}>
-                  <ChatPanel onActivityNavigate={() => { setSelectedFile(null); setMobileDrawer(null) }} activityContainer={activityContainer} variant="main" hideActiveCircleGlyph={!!ritual} />
+                  <ChatPanel activeDetail={(compactLayout ? mobileDrawer === 'info' : layoutPreferences.rightPanelOpen) ? layoutPreferences.rightPanelTab : null} onOpenCircleDetails={openCircleDetails} onActivityNavigate={() => { setSelectedFile(null); setMobileDrawer(null) }} activityContainer={activityContainer} variant="main" hideActiveCircleGlyph={!!ritual} />
                 </div>
                 {selectedFile && (
                   <div key={selectedFile} className="workspace-view workspace-view--file is-active">
@@ -350,16 +355,14 @@ function Layout() {
               if (event.key === 'Home') { event.preventDefault(); resizeRightPanel(280) }
               if (event.key === 'End') { event.preventDefault(); resizeRightPanel(560) }
             }}
-          ><span aria-hidden="true" /></div>
+          />
 
           <RightPanel
             activityRef={setActivityContainer}
             onFileSelect={onFileSelect}
             selectedFile={selectedFile}
             activeTab={layoutPreferences.rightPanelTab}
-            onActiveTabChange={rightPanelTab => {
-              setLayoutPreferences(current => ({ ...current, rightPanelTab }))
-            }}
+            onClose={toggleInfo}
           />
 
           <div className="mobile-main-area">
@@ -367,7 +370,7 @@ function Layout() {
               {compactLayout && (
                 <>
                   <div className={`workspace-view workspace-view--chat${selectedFile ? '' : ' is-active'}`} aria-hidden={!!selectedFile}>
-                    <ChatPanel onActivityNavigate={() => { setSelectedFile(null); setMobileDrawer(null) }} activityContainer={activityContainer} variant="main" hideActiveCircleGlyph={!!ritual} />
+                    <ChatPanel activeDetail={(compactLayout ? mobileDrawer === 'info' : layoutPreferences.rightPanelOpen) ? layoutPreferences.rightPanelTab : null} onOpenCircleDetails={openCircleDetails} onActivityNavigate={() => { setSelectedFile(null); setMobileDrawer(null) }} activityContainer={activityContainer} variant="main" hideActiveCircleGlyph={!!ritual} />
                   </div>
                   {selectedFile && (
                     <div key={selectedFile} className="workspace-view workspace-view--file is-active">
@@ -379,9 +382,8 @@ function Layout() {
             </div>
             <div className={`mobile-drawer mobile-drawer--left${mobileDrawer === 'circles' ? ' open' : ''}`}>
               <CircleSidebar
-                onRitual={(mode, label) => { setRitual({ mode, label }); setMobileDrawer(null) }}
-                ritualCircleName={ritual?.label}
-              />
+                onRitual={(mode, label, circleId) => { setRitual({ mode, label, circleId }); setMobileDrawer(null) }}
+                  />
             </div>
           </div>
         </div>

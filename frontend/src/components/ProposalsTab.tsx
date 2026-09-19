@@ -86,11 +86,9 @@ export default function ProposalsTab({ circleId, proposals, onChanged }: Props) 
 
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-      <div className="section-header">
-        <span>WORKSPACE CHANGES</span>
-      </div>
+      <div className="context-intro"><p>Review captured changes and their status.</p></div>
       <div className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-2 font-mono text-[11px]">
-        {proposals.length === 0 && <div className="text-slate px-1">NO CHANGES CAPTURED</div>}
+        {proposals.length === 0 && <div className="text-slate px-1">No changes captured yet. Changes will appear here for review.</div>}
         {actionError && <div className="file-error">{actionError}</div>}
         {proposals.map(p => {
           const st = STATUS_STYLE[p.status]

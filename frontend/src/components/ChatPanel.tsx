@@ -1,11 +1,14 @@
+import type { RightPanelTab } from './RightPanel'
 import { createPortal } from 'react-dom'
+import { Users } from 'lucide-react'
 import ExecutionStatus from './ExecutionStatus'
 import { Fragment, useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import type { Attachment, ChatActivity, ChatMessage, EngagementView, Member, Presence } from '../types'
 import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, getEngagement, exitEngagement, MAX_ATTACHMENT_BYTES } from '../api'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
-import CircleGlyph from './CircleGlyph'
+import CircleActivityButton from './CircleActivityButton'
+import AgentAvatar from './AgentAvatar'
 import MentionPopup, { buildMentionItems, type MentionItem } from './MentionPopup'
 import MentionInput, { draftText, type DraftNode, type MentionInputHandle } from './MentionInput'
 import Lightbox from './Lightbox'
@@ -17,6 +20,8 @@ const CATCH_UP_MAX_ATTEMPTS = 5
 const CATCH_UP_BACKOFF_MS = 500
 
 interface Props {
+  onOpenCircleDetails?: (tab: RightPanelTab) => void
+  activeDetail?: RightPanelTab | null
   onActivityNavigate?: () => void
   activityContainer?: HTMLDivElement | null
   onMessage?: () => void
@@ -217,7 +222,7 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
     >
       <div className="chat-message__gutter" aria-hidden="true">
         {showSender
-          ? <span className="chat-message__avatar">{senderInitial(label)}</span>
+          ? isAgent ? <AgentAvatar identity={label.agent!} /> : <span className="chat-message__avatar">{senderInitial(label)}</span>
           : <time className="chat-message__gutter-time" dateTime={new Date(msg.ts * 1000).toISOString()} title={fullTimestamp}>{timestamp}</time>}
       </div>
       <div className="chat-message__body">
@@ -282,9 +287,12 @@ interface Draft {
 
 const EMPTY_DRAFT: Draft = { nodes: [], attachments: [] }
 
-export default function ChatPanel({ activityContainer, onActivityNavigate, onMessage, variant = 'rail', hideActiveCircleGlyph = false }: Props) {
+export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityContainer, onActivityNavigate, onMessage, variant = 'rail', hideActiveCircleGlyph = false }: Props) {
   const { activeCircleId, circles, status } = useApp()
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
+  const [unread, setUnread] = useState(false)
+  const selfAgentRef = useRef(status?.agent_id)
+  selfAgentRef.current = status?.agent_id
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [chatLoaded, setChatLoaded] = useState(false)
   const [chatError, setChatError] = useState<string | null>(null)
@@ -390,6 +398,7 @@ export default function ChatPanel({ activityContainer, onActivityNavigate, onMes
     hydratingChatRef.current = true
     seenRef.current.clear()
     latestTsRef.current = null
+    setUnread(false)
     setMessages([])
     setChatLoaded(false)
     setChatError(null)
@@ -453,7 +462,12 @@ export default function ChatPanel({ activityContainer, onActivityNavigate, onMes
     es.addEventListener('message', e => {
       try {
         const data = JSON.parse(e.data)
-        if (data.type === 'message_posted') addMsg(data.message)
+        if (data.type === 'message_posted') {
+          const list = messageListRef.current
+          const reading = document.visibilityState === 'visible' && document.hasFocus() && list && !list.closest('[aria-hidden="true"]') && list.scrollHeight - list.scrollTop - list.clientHeight < 48
+          if (!hydratingChatRef.current && !seenRef.current.has(data.message.id) && data.message.agent_id !== selfAgentRef.current && !reading) setUnread(true)
+          addMsg(data.message)
+        }
         if (data.type === 'chat_activity_changed') ingestActivity(data.activity)
         if (data.type === 'attachment_available' && data.hash) {
           setBlobNonces(prev => ({ ...prev, [data.hash]: (prev[data.hash] ?? 0) + 1 }))
@@ -479,6 +493,19 @@ export default function ChatPanel({ activityContainer, onActivityNavigate, onMes
     return () => window.clearInterval(timer)
   }, [])
 
+  useEffect(() => {
+    const readVisibleMessages = () => {
+      const list = messageListRef.current
+      if (document.visibilityState === 'visible' && document.hasFocus() && list && !list.closest('[aria-hidden="true"]') && list.scrollHeight - list.scrollTop - list.clientHeight < 48) setUnread(false)
+    }
+    window.addEventListener('focus', readVisibleMessages)
+    document.addEventListener('visibilitychange', readVisibleMessages)
+    return () => {
+      window.removeEventListener('focus', readVisibleMessages)
+      document.removeEventListener('visibilitychange', readVisibleMessages)
+    }
+  }, [])
+
   const stopTyping = useCallback(() => {
     if (typingClearRef.current) {
       clearTimeout(typingClearRef.current)
@@ -494,9 +521,9 @@ export default function ChatPanel({ activityContainer, onActivityNavigate, onMes
   useEffect(() => () => stopTyping(), [stopTyping])
 
   useEffect(() => {
-    if (hydratingChatRef.current) return
+    if (hydratingChatRef.current || unread) return
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [messages, unread])
 
   // My owner name — used to recognise all my devices as "you"
   const myMember = members.find(m => m.agent_id === status?.agent_id)
@@ -754,10 +781,7 @@ export default function ChatPanel({ activityContainer, onActivityNavigate, onMes
     }
   }
 
-  const hasConversation = messages.length > 0
-  const compactDock = hasConversation || !chatLoaded
   const onlineCount = presence.filter(p => p.status === 'online').length
-  const glyphSize = compactDock ? 64 : 88
   const liveActivities = Object.values(activities)
     .filter(activity => activity.expires_at > activityClock && activity.actor_id !== status?.agent_id)
     .sort((a, b) => a.updated_at - b.updated_at)
@@ -851,28 +875,28 @@ export default function ChatPanel({ activityContainer, onActivityNavigate, onMes
 
       {variant === 'main' && activeCircle && (
         <div
-          className={`active-circle-dock${compactDock ? ' active-circle-dock--compact' : ' active-circle-dock--empty'}${activeCircle.disabled ? ' active-circle-dock--void' : ''}${hideActiveCircleGlyph ? ' active-circle-dock--ritual' : ''}`}
+          className={`active-circle-dock${activeCircle.disabled ? ' active-circle-dock--void' : ''}${hideActiveCircleGlyph ? ' active-circle-dock--ritual' : ''}`}
         >
-          <div className="active-circle-dock__meta">
-            <span>{activeCircle.circle_name}</span>
-            <strong>{activeCircle.disabled ? 'DISABLED' : 'ACTIVE CIRCLE'}</strong>
+          <div className="circle-mark-container">
+            <CircleActivityButton
+              circleId={activeCircle.circle_id}
+              unread={unread}
+              onRead={() => setUnread(false)}
+              name={activeCircle.circle_name}
+              size={44}
+              voided={activeCircle.disabled}
+              working={liveActivities.filter(activity => activity.kind === 'working').length}
+              typing={liveActivities.filter(activity => activity.kind === 'typing').length}
+              onOpen={() => onOpenCircleDetails?.('activity')}
+            />
           </div>
-          <div className="ripple-container" style={{ width: glyphSize, height: glyphSize }}>
-            <div className="dock-ripple" id="dock-ripple-el" />
-            <div data-circle-dock style={{ width: glyphSize, height: glyphSize }}>
-              <CircleGlyph
-                name={activeCircle.circle_name}
-                size={glyphSize}
-                className="active-circle-dock__glyph"
-                title={activeCircle.circle_name}
-                voided={activeCircle.disabled}
-              />
-            </div>
-          </div>
-          <div className="active-circle-dock__meta active-circle-dock__meta--stats">
-            <span>{onlineCount} ONLINE</span>
-            <strong>{members.length} MEMBERS</strong>
-          </div>
+          <button type="button" className="circle-members-shortcut" aria-pressed={activeDetail === 'members'} onClick={() => onOpenCircleDetails?.('members')} aria-label={`View ${members.length} members, ${onlineCount} online`}>
+            <Users size={16} aria-hidden="true" />
+            <span>{members.length}</span>
+            <span className="circle-members-shortcut__presence" title={`${onlineCount} online`} aria-hidden="true" data-online={onlineCount > 0} />
+          </button>
+          <button className="circle-tool-shortcut" type="button" aria-pressed={activeDetail === 'tasks'} onClick={() => onOpenCircleDetails?.('tasks')}>Tasks</button>
+          <button className="circle-tool-shortcut" type="button" aria-pressed={activeDetail === 'workspace'} onClick={() => onOpenCircleDetails?.('workspace')}>Workspace</button>
         </div>
       )}
 
@@ -883,7 +907,13 @@ export default function ChatPanel({ activityContainer, onActivityNavigate, onMes
         </div>
       )}
 
-      <div ref={messageListRef} className="chat-message-list">
+      <div ref={messageListRef} className="chat-message-list" onScroll={event => {
+        const list = event.currentTarget
+        if (document.visibilityState === 'visible' && list.scrollHeight - list.scrollTop - list.clientHeight < 48) setUnread(false)
+      }} onPointerDown={() => {
+        const list = messageListRef.current
+        if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 48) setUnread(false)
+      }}>
         {messages.length === 0 && chatLoaded && !chatError && (
           <div className="chat-empty-state">
             <span>NO MESSAGES YET</span>
