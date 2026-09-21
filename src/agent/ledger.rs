@@ -70,7 +70,11 @@ fn path(circle_dir: &Path) -> PathBuf {
     circle_dir.join("ambient_decisions.log")
 }
 
-/// One line per message: `<message_id> <unix_ts> <decision>`.
+/// One line per message decision: `<message_id> <unix_ts> <decision>`.
+///
+/// A message may appear more than once — [`AmbientLedger::settle`] appends
+/// rather than rewrites — and the **last** line for an id wins. Compaction on
+/// load collapses the duplicates back to one.
 ///
 /// The decision comes last because a skip carries its reason, and reasons have
 /// spaces in them. Putting it at the end makes it the rest of the line, so
@@ -155,9 +159,17 @@ impl AmbientLedger {
         if decided.contains_key(message_id) {
             return false;
         }
-        let line = format!("{message_id} {now} {}", decision.encode());
         decided.insert(message_id.to_string(), decision);
         drop(decided);
+        self.append(message_id, now);
+        true
+    }
+
+    /// Append the current decision for `message_id` to the log.
+    fn append(&self, message_id: &str, now: i64) {
+        let Some(decision) = self.decision(message_id) else {
+            return;
+        };
         if let Some(parent) = self.file.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -167,11 +179,25 @@ impl AmbientLedger {
             .open(&self.file)
         {
             Ok(mut f) => {
-                let _ = writeln!(f, "{line}");
+                let _ = writeln!(f, "{message_id} {now} {}", decision.encode());
             }
             Err(e) => tracing::warn!("[agent] could not persist an ambient decision: {e}"),
         }
-        true
+    }
+
+    /// Overwrite an existing decision.
+    ///
+    /// Used when a message that was offered turns out not to have been
+    /// answered — every attempt failed, and the ledger should say so rather
+    /// than keep claiming the room was served (§3.2).
+    pub fn settle(&self, message_id: &str, decision: Decision, now: i64) {
+        self.decided
+            .lock()
+            .unwrap()
+            .insert(message_id.to_string(), decision);
+        // The file is append-only, and `load` keeps the *last* line for an id,
+        // so appending the new decision is the overwrite.
+        self.append(message_id, now);
     }
 
     /// Flush the compacted set back to disk, so entries dropped by [`Self::load`]
@@ -261,6 +287,36 @@ mod tests {
         let text = std::fs::read_to_string(path(dir.path())).unwrap();
         assert_eq!(text.lines().count(), 2);
         assert!(!text.contains("m2"));
+    }
+
+    #[test]
+    fn settling_overwrites_the_earlier_decision_and_survives_a_restart() {
+        // A message that was offered and then failed every attempt must stop
+        // claiming the room was served.
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = AmbientLedger::load(dir.path(), &[], 100);
+        ledger.record("m1", Decision::Offered, 100);
+        ledger.settle("m1", Decision::Skipped("every listener tried".into()), 101);
+        assert_eq!(
+            ledger.decision("m1"),
+            Some(Decision::Skipped("every listener tried".into()))
+        );
+        drop(ledger);
+
+        let reloaded = AmbientLedger::load(dir.path(), &ids(&["m1"]), 200);
+        assert_eq!(
+            reloaded.decision("m1"),
+            Some(Decision::Skipped("every listener tried".into())),
+            "the last line for an id wins"
+        );
+        // And compaction collapsed the duplicate away.
+        assert_eq!(
+            std::fs::read_to_string(path(dir.path()))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
     }
 
     #[test]

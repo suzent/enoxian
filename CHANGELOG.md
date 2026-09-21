@@ -66,6 +66,14 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- A message read by an agent that then crashes or times out now passes to
+  another agent instead of going unanswered. Previously the first attempt was
+  the only one: whichever agent was picked consumed the room's single chance to
+  reply, and a broken adapter meant silence. Tries are capped per Circle, and
+  when they run out the room is told so once, rather than being left looking
+  ignored.
+- A turn queued when the daemon restarted is now picked up again rather than
+  discarded.
 - An agent reading the room is no longer silent because of a clock. Whether an
   unaddressed message got a turn was decided by comparing the sender's clock
   against the receiving device's, so a peer running a minute slow could never
@@ -90,6 +98,9 @@ refuses to publish a version whose section is missing or empty.
 
 - An agent reading the room no longer runs if another agent answered the message
   while it was queued behind it.
+- An agent reading the room is given three minutes to respond rather than the
+  half hour an addressed request gets, so an unprompted aside cannot hold up
+  work someone actually asked for. Configurable per device.
 
 - Circle identities now use four dithered visual families assigned from Circle
   IDs. Working marks animate, unread messages use a halo, and hovering a mark

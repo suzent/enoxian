@@ -215,6 +215,8 @@ export interface SettingsView {
   /** How many of the most recent messages still get a turn when this device
    *  comes back to a room that moved on. The rest are marked read without one. */
   ambient_backlog_tail?: number
+  /** Listeners a message may burn through before this device gives up on it. */
+  ambient_max_attempts?: number
   reaction: 'push' | 'pull'
   /** Seconds an agent stays in conversation with whoever it replied to, so a
    *  follow-up needs no mention. 0 disables follow-up routing. */
@@ -230,6 +232,7 @@ export interface CircleOverrides {
   ambient_responders?: number
   ambient_rotate_count?: boolean
   ambient_backlog_tail?: number
+  ambient_max_attempts?: number
   reaction?: 'push' | 'pull'
   engagement_window_secs?: number
   ambient?: string[]
@@ -293,6 +296,7 @@ export interface Readiness {
   ambient_responders: number
   engagement_window_secs: number
   ambient_backlog_tail: number
+  ambient_max_attempts: number
   /** Listed as reading the room but not configured as an agent here, so inert. */
   ambient_unconfigured: string[]
 }

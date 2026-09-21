@@ -123,9 +123,25 @@ pub struct AcpSession<H: ClientHooks> {
     workspace: PathBuf,
     hooks: H,
     next_id: u64,
+    /// How long one `session/prompt` may take.
+    ///
+    /// An addressed turn is a work order and may legitimately run for a long
+    /// time. An unaddressed one is a conversational aside nobody asked for, and
+    /// letting it hold a device permit and a conversation lease for half an
+    /// hour puts real work behind it. See ambient-reliability.md §3.4.
+    prompt_timeout: Duration,
 }
 
+/// What an addressed turn gets: long enough for real work.
+pub const DEFAULT_PROMPT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
 impl<H: ClientHooks> AcpSession<H> {
+    /// Bound how long one prompt may take. Applies from the next call on, so
+    /// `session/load` and `session/new` keep their own shorter limit.
+    pub fn set_prompt_timeout(&mut self, limit: Duration) {
+        self.prompt_timeout = limit;
+    }
+
     pub fn was_resumed(&self) -> bool {
         self.resumed
     }
@@ -224,6 +240,7 @@ impl<H: ClientHooks> AcpSession<H> {
             workspace: workspace.to_path_buf(),
             hooks,
             next_id: 1,
+            prompt_timeout: DEFAULT_PROMPT_TIMEOUT,
         };
 
         session.initialize().await?;
@@ -370,7 +387,7 @@ impl<H: ClientHooks> AcpSession<H> {
         .await?;
 
         let limit = if method == "session/prompt" {
-            Duration::from_secs(30 * 60)
+            self.prompt_timeout
         } else {
             Duration::from_secs(45)
         };

@@ -417,7 +417,7 @@ async fn run_argv(
 #[allow(clippy::too_many_arguments)] // Explicit per-run context stays scoped to this adapter.
 async fn run_acp(
     cmd: &AgentCommand,
-    _initiator: Initiator,
+    initiator: Initiator,
     task: &str,
     run_dir: &Path,
     resume: Option<&str>,
@@ -456,6 +456,15 @@ async fn run_acp(
     )
     .await
     .context("ACP handshake failed")?;
+
+    // A turn nobody asked for does not get half an hour of a device permit and
+    // a conversation lease while addressed work queues behind it (§3.4). Set
+    // after the handshake so `session/load` keeps its own shorter limit.
+    if initiator == Initiator::Ambient {
+        acp.set_prompt_timeout(std::time::Duration::from_secs(
+            super::config::AgentConfig::load().ambient_turn_timeout_secs,
+        ));
+    }
 
     if let Some(pid) = acp.process_id() {
         lease.child(pid)?;
