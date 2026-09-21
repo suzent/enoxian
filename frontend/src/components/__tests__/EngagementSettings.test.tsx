@@ -61,8 +61,8 @@ describe('circle scope', () => {
       <EngagementSettings agentNames={['claude']} global={GLOBAL} circle={circle()}
         scope="circle" busy={false} onChange={vi.fn()} />,
     )
-    // Six settings, all inherited.
-    expect(screen.getAllByText('Using default')).toHaveLength(6)
+    // Seven settings, all inherited.
+    expect(screen.getAllByText('Using default')).toHaveLength(7)
     // And the inherited value is visible, not hidden.
     expect(screen.getByLabelText('Follow-up window in seconds')).toHaveValue(180)
   })
@@ -74,7 +74,7 @@ describe('circle scope', () => {
         scope="circle" busy={false} onChange={vi.fn()} />,
     )
     expect(screen.getAllByRole('button', { name: 'Use default' })).toHaveLength(1)
-    expect(screen.getAllByText('Using default')).toHaveLength(5)
+    expect(screen.getAllByText('Using default')).toHaveLength(6)
   })
 
   it('reset clears the override rather than writing a value', async () => {

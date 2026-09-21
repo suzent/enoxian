@@ -113,6 +113,12 @@ irrelevant by construction, which is the property you asked for.
 
 ## 2. The observation ledger
 
+> **Shipped (Phase C), except §2.4.** `agent::ledger::AmbientLedger` is the
+> durable set; `reaction::drain_ambient` replaces the per-event `offer_ambient`;
+> `ambient_backlog_tail` (default 1) collapses a backlog to its tail. The
+> `ts >= now - 30` gate and the in-inbox one-shot guard are both gone. §2.4
+> (retiring `activated_at`) is still Phase E.
+
 ### 2.1 Shape
 
 A per-Circle durable set of message ids this device has already made an ambient
@@ -130,6 +136,18 @@ offer, never a lost one.
 
 Compaction: on load, drop any id no longer present in the transcript. The
 ledger is then bounded by transcript size, not by uptime.
+
+*As shipped, the line is `<message_id> <unix_ts> <decision>` — the decision last,
+because a skip carries its reason and reasons contain spaces. Putting it at the
+end makes it the rest of the line, so nothing needs escaping.*
+
+*Two cases seed the ledger rather than draining into it. On **first run** in an
+existing Circle, the whole transcript is recorded as `pre-activation`; otherwise
+upgrading to this build would collapse years of chat into a turn nobody asked
+for. When **no listener is configured**, undecided messages are recorded the
+same way rather than left to accumulate — which keeps the drain O(new messages)
+and means switching a listener on later does not retroactively answer
+everything said while none was on.*
 
 This replaces the `ts >= now - 30` gate outright and subsumes the existing
 in-inbox one-shot guard, which becomes redundant and should be deleted rather
@@ -168,6 +186,10 @@ The rule is **collapse to the tail**:
 - The last `ambient_backlog_tail` (default **1**) eligible messages get a real
   offer.
 - Every other undecided message gets a ledger entry `backlog` and no turn.
+
+*Eligibility is decided before the tail is taken, not after: a backlog whose
+newest line is "ok thanks" would otherwise spend its one turn there while a real
+question sat behind it.*
 
 The property this buys, stated as the user-visible promise:
 
@@ -426,9 +448,11 @@ and not background to it.*
 
 ## 6. Smaller defects found on the way
 
-- **Case-sensitive allowlist.** *(Phase A surfaces this in the activity panel as
-  `ambient_unconfigured`; the underlying mismatch is still there.)*
-  `offer_ambient` filters
+- ~~**Case-sensitive allowlist.**~~ **Fixed in Phase C**, which had to resolve
+  listener names against `[agents.*]` anyway: the drain now matches without
+  regard to case and carries the configured spelling forward, since
+  `cfg.resolve` and the `~ambient:` dedup key both want the exact key.
+  Previously: `offer_ambient` filtered
   `settings.ambient.iter().filter(|n| cfg.agents.contains_key(*n))` — exact
   match — while `ResolvedSettings::is_ambient` uses `eq_ignore_ascii_case`
   ([config.rs:203](../../src/agent/config.rs)). Hand-written
@@ -467,7 +491,7 @@ Each phase is independently landable and independently useful.
 |---|---|---|
 | ~~**A**~~ | ~~§4 — persist terminal outcomes, expose decisions/reasons on `/api/execution`, wire `Inbox::retry` in the UI~~ **Shipped.** | Nothing else can be diagnosed until failures are visible. Smallest diff, largest immediate payoff. |
 | ~~**B**~~ | ~~§5 — ambient prompt frame, who-else-was-offered, already-answered recheck, §5.3 attachments~~ **Shipped.** | Text and plumbing only, no state changes. Independently improves PASS quality. |
-| **C** | §2.1–2.3 — observation ledger, drain, backlog collapse; delete the `ts >= now - 30` gate and the in-inbox one-shot guard | The core fix. Needs A to be verifiable. |
+| ~~**C**~~ | ~~§2.1–2.3 — observation ledger, drain, backlog collapse; delete the `ts >= now - 30` gate and the in-inbox one-shot guard~~ **Shipped.** | The core fix. Needs A to be verifiable. |
 | **D** | §3.2, §3.4 — re-offer on failure, attempt budget, ambient turn timeout | Builds directly on C's ledger. |
 | **E** | §2.4 — retire `activated_at` for admission | Highest blast radius (touches addressed work); land last, behind the tests from C. |
 | **F** | §6 — the small defects | Any time; independent. |
