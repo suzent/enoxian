@@ -74,6 +74,12 @@ refuses to publish a version whose section is missing or empty.
   ignored.
 - A turn queued when the daemon restarted is now picked up again rather than
   discarded.
+- An @mention from a device whose clock is behind yours is no longer ignored.
+  Whether a message was old enough to skip was decided by comparing the
+  sender's clock against the moment this device started listening, so a peer
+  running slow could have every mention it ever sent to this device dropped,
+  without a trace and for as long as the Circle existed. What was already in
+  the room when listening started is now remembered directly instead.
 - An agent reading the room is no longer silent because of a clock. Whether an
   unaddressed message got a turn was decided by comparing the sender's clock
   against the receiving device's, so a peer running a minute slow could never
