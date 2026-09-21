@@ -1,17 +1,21 @@
-//! Durable record of which chat mentions have already triggered an agent.
+//! Read-only history: mentions an older build recorded as already triggered.
 //!
-//! The reaction loop must act on a given mention **at most once, ever** — not
-//! just once per daemon run. On reconnect, P2P sync replays the entire chat
+//! **Nothing writes this file any more.** The reaction loop must act on a given
+//! mention at most once ever — on reconnect, P2P sync replays the entire chat
 //! history as fresh CRDT updates, so without a durable guard every past mention
-//! re-launches its agent on every restart. An in-memory set resets on restart
-//! and cannot prevent that; this persists across restarts.
+//! re-launches its agent on every restart — but that job now belongs to
+//! [`super::inbox`], which records the same `(message, agent)` key along with
+//! what actually happened to the run. This file predates it, and a marker here
+//! proves only that some older build saw the mention, never that it finished
+//! the work; `inbox::record_suppressed` imports them on that understanding.
+//!
+//! Kept because deleting it would replay every mention it covers exactly once,
+//! on the next start, in every Circle that has one. It can go when enough
+//! installs have rolled past the builds that wrote it.
 //!
 //! Keyed by `(message_id, mention)`, stored one-per-line under the circle dir.
-//! Message ids are UUIDs, so the set grows by the number of *distinct* mentions
-//! ever acted on — small and bounded in practice.
 
 use std::collections::HashSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -19,10 +23,11 @@ fn path(circle_dir: &Path) -> PathBuf {
     circle_dir.join("handled_mentions.log")
 }
 
-/// A persistent set of handled `(message_id, mention)` keys for one circle.
-/// Load once at reaction-loop start; `mark_new` returns whether a key is newly
-/// seen (and records it, appending to disk).
+/// The persisted set of handled `(message_id, mention)` keys for one circle,
+/// as an older build left it. Loaded once at reaction-loop start and only read.
 pub struct HandledMentions {
+    /// Only the test-only writer uses this; the file is otherwise read once.
+    #[cfg_attr(not(test), allow(dead_code))]
     file: PathBuf,
     seen: Mutex<HashSet<String>>,
 }
@@ -65,10 +70,15 @@ impl HandledMentions {
             .collect()
     }
 
-    /// Record `(message_id, mention)` as handled. Returns `true` if it was newly
-    /// added (caller should act), `false` if already handled (caller must skip).
-    /// Appends to disk on first sight so the record survives a restart.
+    /// Record `(message_id, mention)` as handled, as the pre-inbox reaction loop
+    /// did. Returns `true` if it was newly added.
+    ///
+    /// Test-only: this is how a fixture stands up a legacy file to check that
+    /// importing one suppresses replay without claiming the work was done.
+    /// Production code must not add to this file — the inbox is the record.
+    #[cfg(test)]
     pub fn mark_new(&self, message_id: &str, mention: &str) -> bool {
+        use std::io::Write;
         let key = Self::key(message_id, mention);
         let mut seen = self.seen.lock().unwrap();
         if !seen.insert(key.clone()) {

@@ -99,6 +99,14 @@ refuses to publish a version whose section is missing or empty.
   context.
 - An agent named in the read-the-room list with different capitalisation than
   its configuration is no longer silently ignored.
+- Quoting a person to ask the room a question now reaches an agent. Using Reply
+  on anyone's message previously meant no agent would ever see it, because the
+  message counted as aimed at someone but resolved to nobody. Replying to an
+  agent still goes to that agent alone.
+- An agent whose configured name contains a character that cannot appear in a
+  mention is now ignored with a warning instead of loading and misbehaving.
+- With a varying number of listeners, how many a given message gets no longer
+  changes depending on when the daemon last restarted.
 
 ### Changed
 

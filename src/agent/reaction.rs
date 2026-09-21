@@ -607,27 +607,22 @@ fn drain_ambient(
         // The check used to sit on the admission path, which is where ambient
         // used to be decided; moving the decision here without it let an
         // explicit reply wake a listener *as well as* the agent it was aimed at.
-        if message.reply_to.is_some()
-            || resolve_followup_in(&history, state, message, cfg).is_some()
-        {
-            // An unresolved reply is not yet an answer either way: the message
-            // it points at may not have synced, and may turn out to be an
-            // agent's. Leave it undecided rather than guessing — the next drain
-            // reconsiders, which is the whole point of deciding from a ledger
-            // rather than from a clock.
-            if message
-                .reply_to
-                .as_ref()
-                .is_some_and(|parent| !history.iter().any(|m| &m.id == parent))
-            {
+        match addressing(&history, state, message, cfg) {
+            // Somebody is already talking to an agent; the room is not invited.
+            Addressing::ToAnAgent => {
+                ledger.record(
+                    &message.id,
+                    Decision::Skipped("part of an exchange with an agent".into()),
+                    now,
+                );
                 continue;
             }
-            ledger.record(
-                &message.id,
-                Decision::Skipped("part of an exchange with an agent".into()),
-                now,
-            );
-            continue;
+            // The message it replies to has not synced. It may turn out to be
+            // an agent's, so deciding now would be a guess. Leaving it
+            // undecided means the next drain looks again — which is the whole
+            // point of deciding from a ledger rather than from a clock.
+            Addressing::Unknown => continue,
+            Addressing::ToTheRoom => {}
         }
         match super::ambient::skip_reason(message, mentions_an_agent(message)) {
             Some(reason) => {
@@ -780,13 +775,14 @@ fn offer_to_listeners(
             .rposition(|e| e.request.ambient && e.request.agent == *agent)
     });
     let max = settings.ambient_responders.min(available.len());
-    let offered_messages: std::collections::HashSet<_> = previous
-        .iter()
-        .filter(|e| e.request.ambient)
-        .map(|e| e.request.message.id.as_str())
-        .collect();
+    // How many listeners this particular message gets, when the count is set
+    // to vary. Derived from the message id rather than from a running count of
+    // past offers: the inbox that count came from is trimmed and rebuilt across
+    // restarts, so the "cycle" the setting promises was not reproducible and
+    // the same message could be answered by a different number of agents
+    // depending on when the daemon last started (§6).
     let count = if settings.ambient_rotate_count && max > 0 {
-        1 + offered_messages.len() % max
+        1 + (fnv1a(&message.id) as usize) % max
     } else {
         max
     };
@@ -819,6 +815,20 @@ fn offer_to_listeners(
     }
 }
 
+/// FNV-1a over the message id.
+///
+/// Wanted for one thing only: a stable number per message, agreed on by any
+/// device and any daemon run. `DefaultHasher` is explicitly not stable across
+/// releases, and nothing here needs collision resistance.
+fn fnv1a(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    hash
+}
+
 /// Does this message address an agent (rather than a person or nobody)?
 fn mentions_an_agent(message: &crate::control::ChatMessage) -> bool {
     message.mentions.iter().any(|m| {
@@ -826,6 +836,42 @@ fn mentions_an_agent(message: &crate::control::ChatMessage) -> bool {
             .and_then(|parsed| parsed.agent_target().map(|_| ()))
             .is_some()
     })
+}
+
+/// Who a message that names no agent is talking to.
+enum Addressing {
+    /// Nobody in particular: the room may be offered it.
+    ToTheRoom,
+    /// An agent, by mention or by replying to one of its posts.
+    ToAnAgent,
+    /// It replies to a message this device has not received yet, so there is
+    /// no way to tell which of the above it is.
+    Unknown,
+}
+
+/// Classify a message for the drain.
+///
+/// Replying to a *person* used to land here as addressed and be dropped by both
+/// routes — no engagement resolves from a human's post, and ambient refused
+/// anything carrying a `reply_to` at all — so quoting a colleague to ask "does
+/// anyone know how this works?" guaranteed no agent would ever see it (§6). A
+/// reply to a person is still a message in a room that names no agent, and the
+/// cheap gates apply to it like any other.
+fn addressing(
+    history: &[crate::control::ChatMessage],
+    state: &AppState,
+    message: &crate::control::ChatMessage,
+    cfg: &AgentConfig,
+) -> Addressing {
+    if resolve_followup_in(history, state, message, cfg).is_some() {
+        return Addressing::ToAnAgent;
+    }
+    match &message.reply_to {
+        None => Addressing::ToTheRoom,
+        // Present, and it resolved to no agent above, so it is a person's.
+        Some(parent) if history.iter().any(|m| &m.id == parent) => Addressing::ToTheRoom,
+        Some(_) => Addressing::Unknown,
+    }
 }
 
 /// Decide ambient eligibility before device filtering: a remote target is
@@ -3394,19 +3440,52 @@ mod tests {
         }
         cfg.ambient_responders = 2;
         cfg.ambient_rotate_count = true;
-        for (i, expected) in [(4, 1), (5, 2), (6, 1)] {
+        let mut counts = Vec::new();
+        for i in 4..14 {
             let mut message = request(&format!("rotate{i}"), "claude").message;
             message.text = "Please explain how the synchronization strategy works".into();
             message.mentions.clear();
             offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
-            assert_eq!(
+            counts.push(
                 inbox
                     .entries()
                     .iter()
                     .filter(|e| e.request.message.id == message.id)
                     .count(),
-                expected
             );
         }
+        assert!(
+            counts.iter().all(|n| (1..=2).contains(n)),
+            "within the configured limit: {counts:?}"
+        );
+        assert!(
+            counts.contains(&1) && counts.contains(&2),
+            "and it actually varies: {counts:?}"
+        );
+    }
+
+    #[test]
+    fn how_many_listeners_a_message_gets_does_not_depend_on_when_you_ask() {
+        // The count used to come from a running tally of past offers, held in
+        // an inbox that is trimmed and rebuilt across restarts — so the "cycle"
+        // the setting promises was not reproducible, and the same message could
+        // draw a different number of agents depending on when the daemon last
+        // started (§6). It is derived from the message id now.
+        let sample: Vec<u64> = ["m1", "m2", "m3", "a-longer-message-id"]
+            .iter()
+            .map(|id| fnv1a(id))
+            .collect();
+        assert_eq!(
+            sample,
+            ["m1", "m2", "m3", "a-longer-message-id"]
+                .iter()
+                .map(|id| fnv1a(id))
+                .collect::<Vec<_>>(),
+            "same id, same answer, every time"
+        );
+        assert!(
+            sample.windows(2).any(|w| w[0] % 2 != w[1] % 2),
+            "and different ids do not all land on the same count"
+        );
     }
 }

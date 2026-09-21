@@ -385,7 +385,40 @@ impl AgentConfig {
     pub fn from_toml(text: &str) -> anyhow::Result<Self> {
         let mut cfg: Self = toml::from_str(text)?;
         cfg.migrate_legacy_agent_settings();
+        cfg.drop_unnameable_agents();
         Ok(cfg)
+    }
+
+    /// Remove agents whose name cannot be used as a name.
+    ///
+    /// Several keys are built by interpolating an agent's name into a string
+    /// that is later parsed back — `~ambient:<agent>` for the ambient dedup
+    /// key, `<message>::<mention>` in [`super::handled`] — and a name
+    /// containing the separator silently corrupts them. Mentions are parsed
+    /// out of chat text, so whitespace cannot survive a round trip either.
+    ///
+    /// Dropped rather than rejected: one unusable entry should not stop the
+    /// whole file from loading, and a missing agent is the safe failure — this
+    /// device simply does not offer it.
+    fn drop_unnameable_agents(&mut self) {
+        let bad: Vec<String> = self
+            .agents
+            .keys()
+            .filter(|name| {
+                name.is_empty()
+                    || name
+                        .chars()
+                        .any(|c| c == ':' || c == '@' || c == '/' || c.is_whitespace())
+            })
+            .cloned()
+            .collect();
+        for name in bad {
+            tracing::warn!(
+                "[agent] ignoring agent {name:?}: a name cannot be empty or contain ':', '@', \
+                 '/' or spaces"
+            );
+            self.agents.remove(&name);
+        }
     }
 
     /// The allowlist check: `None` means no such agent is permitted here, so a
@@ -530,6 +563,20 @@ ambient = []
         let other = cfg.resolved("anything-else");
         assert_eq!(other.engagement_window_secs, 180);
         assert_eq!(other.ambient, vec!["claude"]);
+    }
+
+    #[test]
+    fn an_agent_whose_name_breaks_a_key_is_ignored_rather_than_loaded() {
+        // `~ambient:<agent>` and `<message>::<mention>` are parsed back out of
+        // interpolated strings, and a mention is parsed out of chat text.
+        let cfg = AgentConfig::from_toml(
+            "[agents.claude]\ncommand = [\"c\"]\n\
+             [agents.\"~ambient:evil\"]\ncommand = [\"e\"]\n\
+             [agents.\"two words\"]\ncommand = [\"w\"]\n\
+             [agents.\"suzy/box/claude\"]\ncommand = [\"s\"]\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.agents.keys().collect::<Vec<_>>(), vec!["claude"]);
     }
 
     #[test]
