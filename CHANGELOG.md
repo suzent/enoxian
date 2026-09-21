@@ -39,7 +39,35 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- An agent reading the room is now told that is what it is doing. Its prompt
+  previously opened by asserting it had been @mentioned and framing the message
+  as a request to answer, then appended a paragraph at the end saying it had not
+  been addressed after all. An unaddressed turn now reads as overheard from the
+  start, is told the room is a group conversation mostly not aimed at it, and is
+  told which other agents are weighing the same message — so declining is a
+  normal outcome rather than one the prompt has just argued against.
+- An agent now sees images and files attached to the message that woke it, with
+  their names, types and a URL to fetch them. A wordless screenshot previously
+  started a turn whose entire instruction was empty.
+
+- Agent activity now explains why nothing ran. A "Not picked up" section lists
+  the messages this device saw and declined, with the reason — too short to be
+  worth a turn, every listener had just spoken, the agent isn't configured here,
+  this device is set to pull. Standing configuration problems are called out at
+  the top, including agents listed as reading the room that aren't configured
+  and so are silently ignored.
+- A turn that fails now says so in the room. Previously a run that crashed or
+  timed out only flashed an indicator for 45 seconds and left nothing in the
+  transcript, so an unanswered message was indistinguishable from one nobody
+  cared about. One system line is posted per agent, throttled, and suppressed
+  when another agent has already answered.
+
 ### Changed
+
+- An agent reading the room no longer runs if another agent answered the message
+  while it was queued behind it.
 
 - Circle identities now use four dithered visual families assigned from Circle
   IDs. Working marks animate, unread messages use a halo, and hovering a mark

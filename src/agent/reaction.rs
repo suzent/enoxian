@@ -149,6 +149,8 @@ fn reconcile_requests_with_config(
             relay: message.relay.clone(),
             implicit: false,
             ambient,
+            // A legacy marker records that a turn happened, not who else saw it.
+            co_listeners: Vec::new(),
         };
         if let Err(error) = inbox.record_suppressed(request, message.ts) {
             tracing::warn!("legacy inbox import failed: {error}");
@@ -243,6 +245,8 @@ fn admit_message(
                 relay: message.relay.clone(),
                 implicit: false,
                 ambient: false,
+                co_listeners: Vec::new(),
+                addressed_here: scope.is_some(),
             },
         );
     }
@@ -251,11 +255,31 @@ fn admit_message(
     } else {
         None
     };
-    if live
-        && message.ts >= chrono::Utc::now().timestamp() - 30
-        && ambient_route_allowed(message, engagement.as_ref())
-    {
+    let fresh = message.ts >= chrono::Utc::now().timestamp() - 30;
+    let routable = ambient_route_allowed(message, engagement.as_ref());
+    if live && fresh && routable {
         offer_ambient(state, handled, inbox, wake, cfg, message);
+    } else if message.author == crate::control::Author::Human
+        && engagement.is_none()
+        && !mentions_an_agent(message)
+        && !cfg.resolved(&state.circle_id).ambient.is_empty()
+    {
+        // Somebody in this Circle expects the room to be read, and it was not.
+        // Both timing gates below compare the *author's* clock against this
+        // device's; see ambient-reliability.md §1.2 for why that is the wrong
+        // question and §2 for what replaces it. Until then, at least say so.
+        note(
+            state,
+            &message.id,
+            None,
+            if !routable {
+                "this replies to a message no agent posted, so no agent was routed"
+            } else if !live {
+                "this was already in the transcript when the agent loop started"
+            } else {
+                "this was more than 30 seconds old when it reached this device"
+            },
+        );
     }
     if let Some(engagement) = engagement.filter(|e| e.peer_id == state.peer_id) {
         dispatch(
@@ -272,6 +296,8 @@ fn admit_message(
                 relay: Some(super::relay::mint(&message.id, &message.peer_id)),
                 implicit: true,
                 ambient: false,
+                co_listeners: Vec::new(),
+                addressed_here: true,
             },
         );
     }
@@ -293,6 +319,16 @@ struct DispatchRequest<'a> {
     /// True when nobody addressed this agent at all — it is being offered the
     /// room's conversation and may decline (§2).
     ambient: bool,
+    /// Every agent offered this same message, when `ambient` — this one
+    /// included. Passed into the prompt so a listener knows it is not alone.
+    co_listeners: Vec<String>,
+    /// Is this dispatch unambiguously meant for *this* device?
+    ///
+    /// True for a device-scoped mention, a follow-up, and an ambient offer.
+    /// False for a bare `@claude`, which fans out to every device: a machine
+    /// that does not configure `claude` is not at fault for ignoring it, and
+    /// recording a diagnostic for that would bury the real ones.
+    addressed_here: bool,
 }
 
 /// The shared gate: allowlist, delegation budget, dedup, then enqueue.
@@ -305,7 +341,28 @@ fn dispatch(
     req: DispatchRequest<'_>,
 ) {
     let settings = cfg.resolved(&state.circle_id);
-    if settings.reaction != Reaction::Push || cfg.resolve(req.agent).is_none() {
+    // Both of these are ordinary and silent, and between them they explain most
+    // reports of "the agent wasn't triggered" — so say why, locally (§4.2).
+    if settings.reaction != Reaction::Push {
+        if req.addressed_here {
+            note(
+                state,
+                &req.message.id,
+                Some(req.agent),
+                "this device is set to pull, so it launches nothing on its own",
+            );
+        }
+        return;
+    }
+    if cfg.resolve(req.agent).is_none() {
+        if req.addressed_here {
+            note(
+                state,
+                &req.message.id,
+                Some(req.agent),
+                "no agent by this name is configured on this device",
+            );
+        }
         return;
     }
     // Imported markers suppress replay but are never called completed jobs.
@@ -320,6 +377,7 @@ fn dispatch(
         relay: req.relay,
         implicit: req.implicit,
         ambient: req.ambient,
+        co_listeners: req.co_listeners,
     };
     if request.delegated()
         && request.message.peer_id == state.peer_id
@@ -342,6 +400,9 @@ fn dispatch(
             );
         }
         Ok(super::inbox::Admission::Accepted { entry, displaced }) => {
+            // It ran after all; an earlier "nobody was eligible" must not sit
+            // in the panel beside the turn that superseded it.
+            state.admission_log.clear_message(&entry.request.message.id);
             publish_agent_activity(
                 state,
                 &entry.request.agent,
@@ -393,10 +454,18 @@ fn offer_ambient(
         .cloned()
         .collect();
     if ambient.is_empty() {
+        // A standing configuration fact, not an event. Reported once by the
+        // readiness summary rather than once per message, which would be every
+        // message in most Circles and would evict everything worth keeping.
         return;
     }
     if let Some(reason) = super::ambient::skip_reason(message, mentions_an_agent(message)) {
-        tracing::trace!("[agent] no ambient turn for {}: {reason}", message.id);
+        // Only for messages a person wrote. "not human-authored" is the rule
+        // that makes ambient terminate (§2.1), it fires on every agent reply,
+        // and nobody has ever wondered why their agent did not answer itself.
+        if message.author == crate::control::Author::Human {
+            note(state, &message.id, None, reason);
+        }
         return;
     }
     let history = state.transcript();
@@ -409,10 +478,23 @@ fn offer_ambient(
     {
         return;
     }
+    let eligible = ambient.len();
     ambient.retain(|agent| {
         !super::ambient::spoke_recently(&history, agent, message.ts)
             && !handled.contains(&message.id, &format!("~ambient:{agent}"))
     });
+    if ambient.is_empty() {
+        note(
+            state,
+            &message.id,
+            None,
+            match eligible {
+                1 => "the only agent reading this room had just spoken",
+                _ => "every agent reading this room had just spoken",
+            },
+        );
+        return;
+    }
     // Least recently offered first, so slow providers and PASS count as turns.
     // Stable ties preserve the configured order only for never-offered agents.
     ambient.sort_by_key(|agent| {
@@ -431,7 +513,11 @@ fn offer_ambient(
     } else {
         max
     };
-    for agent in ambient.into_iter().take(count) {
+    // Fix the selection before dispatching any of it: each listener's prompt
+    // names the others, which cannot be known while the list is still being
+    // consumed one agent at a time.
+    let selected: Vec<String> = ambient.into_iter().take(count).collect();
+    for agent in &selected {
         dispatch(
             state,
             handled,
@@ -439,7 +525,7 @@ fn offer_ambient(
             wake,
             cfg,
             DispatchRequest {
-                agent: &agent,
+                agent,
                 mention_key: &format!("~ambient:{agent}"),
                 task: message.text.clone(),
                 message,
@@ -448,6 +534,8 @@ fn offer_ambient(
                 relay: Some(super::relay::mint(&message.id, &message.peer_id)),
                 implicit: false,
                 ambient: true,
+                co_listeners: selected.clone(),
+                addressed_here: true,
             },
         );
     }
@@ -685,6 +773,7 @@ async fn run_next_cancellable(
                 initiator,
                 relay: request.relay.clone(),
                 ambient: request.ambient,
+                co_listeners: &request.co_listeners,
             },
             cancel,
         )
@@ -706,6 +795,13 @@ async fn run_next_cancellable(
                 (Status::Failed, Some(reason))
             }
         };
+        if status == Status::Failed {
+            announce_failure(
+                state,
+                request,
+                detail.as_deref().unwrap_or("no reason was reported"),
+            );
+        }
         inbox.transition(
             &entry.run_id,
             Status::Running,
@@ -717,6 +813,63 @@ async fn run_next_cancellable(
         return Ok(status != Status::Pending);
     }
     Ok(false)
+}
+
+/// One line per agent per window, however badly it is failing. A misconfigured
+/// adapter in a busy room would otherwise narrate every message.
+const ANNOUNCE_THROTTLE_SECS: i64 = 120;
+
+/// How much of the transcript tail to search for a prior announcement.
+const ANNOUNCE_SCAN: usize = 50;
+
+/// The opening of a failure announcement, and how we recognise our own.
+fn failure_prefix(agent: &str) -> String {
+    format!("{agent} could not answer")
+}
+
+/// Say in the room that a turn failed and no reply is coming (§4.1).
+///
+/// The execution panel already records this durably, but the panel is a side
+/// surface with a 3-second poll, and the only in-chat signal — a `Skipped`
+/// [`ChatActivity`] — expires after 45 seconds. A turn that dies half an hour
+/// after it was asked for therefore blinks at nobody and leaves the transcript
+/// looking as though the message was simply ignored.
+///
+/// Deliberately narrow. Not for PASS, which is an answer; not for the cheap
+/// gates, which are policy; not for `Cancelled` or `Expired`, which are this
+/// device withdrawing rather than failing. Only "you asked, it broke, nothing
+/// is coming" — anything broader and the line becomes furniture.
+///
+/// Best-effort throughout: a failure to announce a failure is logged and
+/// dropped, never escalated.
+fn announce_failure(state: &AppState, request: &super::inbox::Request, reason: &str) {
+    let now = chrono::Utc::now().timestamp();
+    // Another agent got there first, so the room is not waiting on anyone.
+    if answered_by_an_agent(state, &request.message.id) {
+        return;
+    }
+    let transcript = state.transcript();
+    let prefix = failure_prefix(&request.agent);
+    let recent = &transcript[transcript.len().saturating_sub(ANNOUNCE_SCAN)..];
+    if recent.iter().any(|m| {
+        m.author == crate::control::Author::System
+            && now - m.ts <= ANNOUNCE_THROTTLE_SECS
+            && m.text.starts_with(&prefix)
+    }) {
+        return;
+    }
+    let text =
+        format!("{prefix} — {reason}. No reply was posted; you can try again from Agent activity.");
+    if let Err(error) = crate::api::chat::post_reply(
+        state,
+        "system".into(),
+        text,
+        Vec::new(),
+        crate::api::chat::Trigger::System,
+        Some(request.message.id.clone()),
+    ) {
+        tracing::debug!("[agent] could not announce a failed turn: {error}");
+    }
 }
 
 /// Stop markers are checked at launch, including human-rooted pending turns.
@@ -742,6 +895,14 @@ fn launch_rejection(
     if request.ambient && !cfg.resolved(&state.circle_id).is_ambient(&request.agent) {
         return Ok(Some("ambient participation disabled"));
     }
+    // An unaddressed turn can sit behind a device permit for minutes while
+    // another listener answers. Nobody asked this one for anything, so a second
+    // take on a point already made is worse than silence — and this is the last
+    // moment the queue can tell. An addressed turn is not covered: if you named
+    // this agent, someone else replying does not discharge the request.
+    if request.ambient && answered_by_an_agent(state, &request.message.id) {
+        return Ok(Some("another agent answered first"));
+    }
     if let Some((_, Some((owner, device)))) = Mention::parse(&request.mention_key)
         .as_ref()
         .and_then(|m| m.agent_target())
@@ -751,6 +912,16 @@ fn launch_rejection(
         }
     }
     Ok(None)
+}
+
+/// Has some agent already replied to this message?
+///
+/// `react` posts every agent reply with `reply_to` set to the message that woke
+/// it, so a direct child by an agent is the whole test.
+fn answered_by_an_agent(state: &AppState, message_id: &str) -> bool {
+    state.transcript().iter().any(|m| {
+        m.reply_to.as_deref() == Some(message_id) && m.author == crate::control::Author::Agent
+    })
 }
 
 fn concise_error(error: &anyhow::Error) -> String {
@@ -778,6 +949,8 @@ struct Turn<'a> {
     relay: Option<Relay>,
     /// An unaddressed turn, which may decline with PASS.
     ambient: bool,
+    /// The other agents shown the same message, on an unaddressed turn.
+    co_listeners: &'a [String],
 }
 
 struct ManagedToken {
@@ -805,6 +978,7 @@ async fn react(
         initiator,
         relay,
         ambient,
+        co_listeners,
     } = turn;
     publish_agent_activity(state, agent_id, message_id, ChatActivityKind::Working, true);
 
@@ -820,12 +994,24 @@ async fn react(
     // Give the agent enough context about where it is. On a resumed session the
     // agent already has history, so we send a lean per-turn header; on a fresh
     // session we include the standing brief about the enoxian environment.
-    let delivery =
-        super::context::build_delivery(state, agent_id, sender, task, resume.as_ref(), message_id);
+    let framing = if ambient {
+        super::context::Framing::Overheard
+    } else {
+        super::context::Framing::Addressed
+    };
+    let delivery = super::context::build_delivery(
+        state,
+        agent_id,
+        sender,
+        task,
+        resume.as_ref(),
+        message_id,
+        framing,
+    );
     let mut prompt = delivery.prompt;
     if ambient {
         prompt.push_str("\n\n");
-        prompt.push_str(super::ambient::ambient_instruction());
+        prompt.push_str(&super::ambient::ambient_instruction(co_listeners, agent_id));
     }
     let (actor_token, _) = state
         .actor_tokens
@@ -1081,6 +1267,18 @@ fn attributed_local(state: &AppState, message: &crate::control::ChatMessage) -> 
 /// is exactly the transcript noise a busy cascade would fill the room with. It
 /// shows in the activity indicator instead, where it is legible while it
 /// matters and gone afterwards.
+/// Record why this device did not act on a message (§4.2).
+///
+/// Diagnostic only, and local only. Costs a mutex and a short scan, so it is
+/// safe on any path — including the reconcile tick, which re-derives the same
+/// decision every five seconds and is collapsed by [`decisions::AdmissionLog`].
+fn note(state: &AppState, message_id: &str, agent: Option<&str>, reason: &str) {
+    tracing::debug!("[agent] no turn for {message_id} ({agent:?}): {reason}");
+    state
+        .admission_log
+        .record(message_id, agent, reason, chrono::Utc::now().timestamp());
+}
+
 fn publish_relay_skipped(state: &AppState, agent: &str, message_id: &str, reason: &str) {
     publish_agent_activity_detailed(
         state,
@@ -1575,6 +1773,7 @@ mod tests {
             "do it",
             Some(&resume),
             "m29",
+            super::super::context::Framing::Addressed,
         );
         assert_eq!(delivered.cursor.as_deref(), Some("m12"));
         assert!(delivered.prompt.contains("message 1"));
@@ -1623,6 +1822,7 @@ mod tests {
             "do it",
             Some(&resume),
             "m3",
+            super::super::context::Framing::Addressed,
         );
         assert!(
             !delivered.prompt.contains("my own earlier reply"),
@@ -1631,8 +1831,15 @@ mod tests {
         );
         assert!(delivered.prompt.contains("a namesake on another box"));
         // A fresh session has no such memory, so nothing is withheld from it.
-        let fresh =
-            super::super::context::build_delivery(&state, "claude", "suzy", "do it", None, "m3");
+        let fresh = super::super::context::build_delivery(
+            &state,
+            "claude",
+            "suzy",
+            "do it",
+            None,
+            "m3",
+            super::super::context::Framing::Addressed,
+        );
         assert!(fresh.prompt.contains("my own earlier reply"));
     }
 
@@ -1671,6 +1878,7 @@ mod tests {
                 ..Default::default()
             }),
             "m19",
+            super::super::context::Framing::Addressed,
         );
         assert!(!delivered.prompt.contains("a decision only I recorded"));
         assert_eq!(delivered.withheld, vec!["m1".to_string()]);
@@ -1686,8 +1894,15 @@ mod tests {
         // Lines the room history already shows are not printed twice.
         assert_eq!(recovery.matches("filler 19").count(), 1);
         // A fresh session withholds nothing, so recovery adds no extra block.
-        let fresh =
-            super::super::context::build_delivery(&state, "claude", "suzy", "do it", None, "m19");
+        let fresh = super::super::context::build_delivery(
+            &state,
+            "claude",
+            "suzy",
+            "do it",
+            None,
+            "m19",
+            super::super::context::Framing::Addressed,
+        );
         assert!(fresh.withheld.is_empty());
         assert!(
             !super::super::context::recovery_context(&state, "claude", &fresh.withheld)
@@ -1720,6 +1935,7 @@ mod tests {
                 ..Default::default()
             }),
             "m29",
+            super::super::context::Framing::Addressed,
         );
         assert_eq!(first.cursor.as_deref(), Some("m12"));
         // The tail block ran ahead of the cursor and showed these already.
@@ -1737,6 +1953,7 @@ mod tests {
                 delivered: first.delivered.clone(),
             }),
             "m29",
+            super::super::context::Framing::Addressed,
         );
         assert!(
             !second.prompt.contains("message 20"),
@@ -1786,6 +2003,7 @@ mod tests {
                 ..Default::default()
             }),
             "m29",
+            super::super::context::Framing::Addressed,
         );
         assert_eq!(
             delivered.prompt.matches("message 25").count(),
@@ -1896,6 +2114,302 @@ mod tests {
         tokio::time::timeout(LIVENESS, recovered).await.unwrap();
         cancel.cancel();
     }
+    /// A human message that names nobody — the population ambient exists for.
+    fn room_message(id: &str, text: &str) -> crate::control::ChatMessage {
+        use super::super::inbox::tests::request;
+        let mut message = request(id, "claude").message;
+        message.text = text.into();
+        message.mentions.clear();
+        message.author = crate::control::Author::Human;
+        message.ts = chrono::Utc::now().timestamp();
+        message
+    }
+
+    #[test]
+    fn a_message_too_short_to_answer_says_so() {
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let cfg = inbox_config();
+        offer_ambient(
+            &state,
+            &handled,
+            &inbox,
+            &wake,
+            &cfg,
+            &room_message("short", "anyone?"),
+        );
+        let skips = state.admission_log.recent(10);
+        assert_eq!(skips.len(), 1);
+        assert_eq!(skips[0].reason, "too short to be worth a turn");
+        assert_eq!(skips[0].agent, None, "nobody in particular was skipped");
+    }
+
+    #[test]
+    fn an_agents_own_reply_is_not_reported_as_a_missed_turn() {
+        // The rule that makes ambient terminate fires on every agent post. It
+        // is not a diagnostic, and reporting it would evict everything useful.
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let cfg = inbox_config();
+        let mut message = room_message("reply", "I had a thought about the retry path");
+        message.author = crate::control::Author::Agent;
+        offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+        assert!(state.admission_log.recent(10).is_empty());
+    }
+
+    #[test]
+    fn a_room_nobody_listens_to_reports_nothing_per_message() {
+        // "No ambient agents" is configuration, surfaced by `readiness`. Writing
+        // it once per message would be the only thing the buffer ever held.
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let mut cfg = inbox_config();
+        cfg.ambient.clear();
+        offer_ambient(
+            &state,
+            &handled,
+            &inbox,
+            &wake,
+            &cfg,
+            &room_message("quiet", "Could someone explain how synchronization works?"),
+        );
+        assert!(state.admission_log.recent(10).is_empty());
+    }
+
+    #[test]
+    fn a_listener_that_just_spoke_is_reported_rather_than_silently_dropped() {
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let cfg = inbox_config();
+        let message = room_message("quiet-period", "Could someone explain the retry path?");
+        let mut spoke = message.clone();
+        spoke.id = "earlier".into();
+        spoke.author = crate::control::Author::Agent;
+        spoke.agent_id = "claude".into();
+        add_chat(&state, &spoke);
+        offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+        let skips = state.admission_log.recent(10);
+        assert_eq!(skips.len(), 1);
+        assert_eq!(
+            skips[0].reason,
+            "the only agent reading this room had just spoken"
+        );
+    }
+
+    #[test]
+    fn pull_mode_and_a_missing_agent_are_reported_only_when_meant_for_this_device() {
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let message = room_message("addressed", "please take a look at the retry path");
+
+        let mut pull = inbox_config();
+        pull.reaction = Reaction::Pull;
+        let req = |addressed_here| DispatchRequest {
+            agent: "claude",
+            mention_key: "claude",
+            task: message.text.clone(),
+            message: &message,
+            relay: None,
+            implicit: false,
+            ambient: false,
+            co_listeners: Vec::new(),
+            addressed_here,
+        };
+        dispatch(&state, &handled, &inbox, &wake, &pull, req(true));
+        let skips = state.admission_log.recent(10);
+        assert_eq!(skips.len(), 1);
+        assert!(skips[0].reason.contains("pull"));
+        assert_eq!(skips[0].agent.as_deref(), Some("claude"));
+
+        // A bare @claude fans out to every device. A machine that does not
+        // configure it is not at fault, and must not fill the buffer saying so.
+        let mut unknown = inbox_config();
+        unknown.agents.remove("claude");
+        dispatch(&state, &handled, &inbox, &wake, &unknown, req(false));
+        assert_eq!(state.admission_log.recent(10).len(), 1, "unchanged");
+        dispatch(&state, &handled, &inbox, &wake, &unknown, req(true));
+        assert_eq!(
+            state.admission_log.recent(10)[0].reason,
+            "no agent by this name is configured on this device"
+        );
+    }
+
+    #[test]
+    fn a_turn_that_runs_after_all_clears_the_reason_it_did_not() {
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let cfg = inbox_config();
+        let message = room_message("second-chance", "Could someone explain the retry path?");
+        state
+            .admission_log
+            .record(&message.id, None, "too short to be worth a turn", 1);
+        offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+        assert_eq!(inbox.entries().len(), 1, "it was offered a turn");
+        assert!(
+            state.admission_log.recent(10).is_empty(),
+            "the stale reason is withdrawn"
+        );
+    }
+
+    #[test]
+    fn a_failed_turn_says_so_in_the_room_once() {
+        use super::super::inbox::tests::request;
+        let (state, _dir) = test_state("local", "suzy");
+        let asked = room_message("asked", "how does the retry path work?");
+        add_chat(&state, &asked);
+        let mut failed = request("asked", "claude");
+        failed.message = asked.clone();
+
+        announce_failure(&state, &failed, "the adapter exited before starting");
+        let posted: Vec<_> = state
+            .transcript()
+            .into_iter()
+            .filter(|m| m.author == crate::control::Author::System)
+            .collect();
+        assert_eq!(posted.len(), 1);
+        assert_eq!(posted[0].agent_id, "system", "renders as a system event");
+        assert_eq!(posted[0].reply_to.as_deref(), Some("asked"));
+        assert!(posted[0].text.starts_with("claude could not answer"));
+        assert!(posted[0]
+            .text
+            .contains("the adapter exited before starting"));
+        assert!(posted[0].relay.is_none(), "a system line roots no cascade");
+
+        // A broken adapter in a busy room must not narrate every message.
+        let mut again = failed.clone();
+        again.message = room_message("asked-again", "seriously though, the retry path?");
+        add_chat(&state, &again.message);
+        announce_failure(&state, &again, "the adapter exited before starting");
+        assert_eq!(
+            state
+                .transcript()
+                .iter()
+                .filter(|m| m.author == crate::control::Author::System)
+                .count(),
+            1,
+            "throttled to one line per agent per window"
+        );
+    }
+
+    #[test]
+    fn a_failure_nobody_is_waiting_on_stays_quiet() {
+        // Another agent already answered, so the room is not short of a reply
+        // and a system line would only be noise.
+        use super::super::inbox::tests::request;
+        let (state, _dir) = test_state("local", "suzy");
+        let asked = room_message("asked", "how does the retry path work?");
+        add_chat(&state, &asked);
+        let mut answer = room_message("answer", "it retries on the reconcile tick");
+        answer.author = crate::control::Author::Agent;
+        answer.agent_id = "codex".into();
+        answer.reply_to = Some("asked".into());
+        add_chat(&state, &answer);
+
+        let mut failed = request("asked", "claude");
+        failed.message = asked;
+        announce_failure(&state, &failed, "the adapter exited before starting");
+        assert!(!state
+            .transcript()
+            .iter()
+            .any(|m| m.author == crate::control::Author::System));
+    }
+
+    #[test]
+    fn a_listener_that_was_beaten_to_it_does_not_run() {
+        // The turn sat behind a device permit while another agent answered.
+        // Nobody asked this one for anything, so a second take is worse than
+        // silence — and launch is the last moment the queue can tell.
+        use super::super::inbox::tests::request;
+        let (state, _dir) = test_state("local", "suzy");
+        let cfg = inbox_config();
+        let asked = room_message("asked", "how does the retry path work?");
+        add_chat(&state, &asked);
+        let mut req = request("asked", "claude");
+        req.message = asked.clone();
+        req.ambient = true;
+        assert_eq!(
+            launch_rejection(&state, &req, &cfg).unwrap(),
+            None,
+            "nothing has been said yet"
+        );
+
+        let mut answer = room_message("answer", "it retries on the reconcile tick");
+        answer.author = crate::control::Author::Agent;
+        answer.agent_id = "codex".into();
+        answer.reply_to = Some("asked".into());
+        add_chat(&state, &answer);
+        assert_eq!(
+            launch_rejection(&state, &req, &cfg).unwrap(),
+            Some("another agent answered first")
+        );
+
+        // An addressed turn is not discharged by somebody else replying: you
+        // named this agent, and you are still owed its answer.
+        let mut addressed = req.clone();
+        addressed.ambient = false;
+        assert_eq!(launch_rejection(&state, &addressed, &cfg).unwrap(), None);
+    }
+
+    #[test]
+    fn every_selected_listener_learns_about_the_others() {
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let mut cfg = inbox_config();
+        cfg.ambient = vec!["claude".into(), "codex".into()];
+        cfg.ambient_responders = 2;
+        let message = room_message("both", "Could someone explain how synchronization works?");
+        offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+        let entries = inbox.entries();
+        assert_eq!(entries.len(), 2);
+        for entry in &entries {
+            // The whole selection, self included; the prompt filters self out.
+            assert_eq!(
+                entry.request.co_listeners,
+                vec!["claude".to_string(), "codex".to_string()],
+                "{} was not told who else is answering",
+                entry.request.agent
+            );
+        }
+    }
+
+    #[test]
+    fn an_addressed_turn_records_no_listeners() {
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let cfg = inbox_config();
+        let mut message = room_message("named", "@claude please look at the retry path");
+        message.mentions = vec!["claude".into()];
+        admit_message(&state, &handled, &inbox, &wake, &cfg, &message, true);
+        let entries = inbox.entries();
+        assert_eq!(entries.len(), 1);
+        assert!(!entries[0].request.ambient);
+        assert!(entries[0].request.co_listeners.is_empty());
+    }
+
     #[test]
     fn selected_listeners_get_one_queued_turn() {
         use super::super::inbox::{tests::request, Inbox};

@@ -16,6 +16,7 @@ pub mod acp;
 pub mod ambient;
 pub mod config;
 pub mod context;
+pub mod decisions;
 pub mod driver;
 pub mod engagement;
 pub mod handled;

@@ -4386,6 +4386,8 @@ select option {
 .agent-activity__group summary span { float: right; font-variant-numeric: tabular-nums; }
 .agent-activity__note { margin: 12px 0 0; color: var(--fg-slate); font-size: 10px; }
 .agent-activity__error { color: #9a6019; margin-top: 8px; }
+.agent-activity__readiness { color: #9a6019; margin: 8px 0 0; }
+.agent-activity__item--skipped .agent-activity__name { color: var(--fg-slate); font-weight: 500; }
 .chat-message:target { background: color-mix(in srgb, var(--fg-slate) 8%, transparent); }
 
 /* Keep settings typography scoped so the surrounding shell retains its style. */
