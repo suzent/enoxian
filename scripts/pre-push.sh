@@ -37,5 +37,15 @@ step "frontend typecheck"
 (cd frontend && npx tsc -b --noEmit 2>&1) || fail "TypeScript errors — run 'cd frontend && npx tsc -b --noEmit'"
 ok "typecheck"
 
+step "frontend tests"
+# Captured rather than piped to `tail` like the cargo steps above: vitest
+# prints a jsdom performance note after its summary, so a blind tail shows
+# that advice instead of the failure. Quiet when green, detailed when not.
+if ! vitest_out=$(cd frontend && npm test 2>&1); then
+    echo "$vitest_out" | grep -vE '^\s*$' | tail -25
+    fail "frontend tests failed — run 'cd frontend && npm test'"
+fi
+ok "tests"
+
 echo -e "${GREEN}pre-push checks passed ✓${NC}"
 echo -e "${YELLOW}note: CI runs on Linux + macOS; platform-specific (#[cfg(unix)]) issues may still differ. Keep clippy current with 'rustup update stable'.${NC}"
