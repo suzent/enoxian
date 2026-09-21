@@ -168,6 +168,8 @@ pub struct EngagementSettings {
     pub ambient_responders: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ambient_rotate_count: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ambient_backlog_tail: Option<usize>,
     /// How this device reacts to mentions here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reaction: Option<Reaction>,
@@ -192,6 +194,7 @@ pub struct EngagementSettings {
 pub struct ResolvedSettings {
     pub ambient_responders: usize,
     pub ambient_rotate_count: bool,
+    pub ambient_backlog_tail: usize,
     pub reaction: Reaction,
     pub engagement_window_secs: i64,
     pub ambient: Vec<String>,
@@ -211,6 +214,16 @@ pub struct AgentConfig {
     pub ambient_responders: usize,
     #[serde(default)]
     pub ambient_rotate_count: bool,
+    /// How many of a backlog's eligible messages still get a turn.
+    ///
+    /// A drain can find many undecided messages at once — a first sync, a long
+    /// offline period, a peer catching up. Spending a turn on each is the cost
+    /// blowup the spec worried about, and spending none is what the old
+    /// wall-clock gate did. The rule is to collapse to the tail: however late
+    /// a message arrives and however long the daemon was down, the most recent
+    /// thing said in the room is always read.
+    #[serde(default = "default_ambient_backlog_tail")]
+    pub ambient_backlog_tail: usize,
     /// Device-wide execution cap. Set to 1 for serial rollback; restart to resize.
     #[serde(default = "default_max_concurrent_runs")]
     pub max_concurrent_runs: usize,
@@ -253,6 +266,10 @@ impl AgentConfig {
             ambient_rotate_count: over
                 .and_then(|o| o.ambient_rotate_count)
                 .unwrap_or(self.ambient_rotate_count),
+            ambient_backlog_tail: over
+                .and_then(|o| o.ambient_backlog_tail)
+                .unwrap_or(self.ambient_backlog_tail)
+                .clamp(1, 16),
             reaction: over.and_then(|o| o.reaction).unwrap_or(self.reaction),
             engagement_window_secs: over
                 .and_then(|o| o.engagement_window_secs)
@@ -293,6 +310,12 @@ impl AgentConfig {
     }
 }
 
+/// One: the conservative choice, and the one that makes a backlog cost exactly
+/// as much as a live message.
+fn default_ambient_backlog_tail() -> usize {
+    1
+}
+
 fn default_ambient_responders() -> usize {
     1
 }
@@ -307,6 +330,7 @@ impl Default for AgentConfig {
         Self {
             ambient_responders: 1,
             ambient_rotate_count: false,
+            ambient_backlog_tail: default_ambient_backlog_tail(),
             max_concurrent_runs: default_max_concurrent_runs(),
             reaction: Reaction::default(),
             engagement_window_secs: DEFAULT_ENGAGEMENT_WINDOW_SECS,

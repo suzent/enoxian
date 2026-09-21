@@ -307,16 +307,20 @@ fn readiness(state: &crate::state::AppState) -> serde_json::Value {
     let missing: Vec<&String> = settings
         .ambient
         .iter()
-        .filter(|name| !cfg.agents.contains_key(*name))
+        .filter(|name| {
+            !cfg.agents
+                .keys()
+                .any(|configured| configured.eq_ignore_ascii_case(name))
+        })
         .collect();
     json!({
         "reaction": settings.reaction,
         "ambient": settings.ambient,
         "ambient_responders": settings.ambient_responders,
         "engagement_window_secs": settings.engagement_window_secs,
-        // Named in `ambient` but absent from `[agents.*]`, so silently inert —
-        // the exact-match filter in `offer_ambient` is case-sensitive while
-        // `is_ambient` is not, which makes this easy to hit by hand.
+        "ambient_backlog_tail": settings.ambient_backlog_tail,
+        // Named in `ambient` but absent from `[agents.*]` under any casing, so
+        // there is no agent for the drain to offer anything to.
         "ambient_unconfigured": missing,
     })
 }

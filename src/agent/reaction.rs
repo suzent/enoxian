@@ -23,6 +23,16 @@ use crate::state::AppState;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
+/// How long the drain waits for a burst to finish before deciding.
+const DRAIN_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(750);
+
+/// The longest a steady stream of messages can hold the drain off.
+const DRAIN_DEBOUNCE_CAP: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Parked far enough out that an idle Circle never wakes for it; the reconcile
+/// tick is the real heartbeat.
+const DRAIN_IDLE: std::time::Duration = std::time::Duration::from_secs(3600);
+
 pub fn spawn_reaction(state: AppState, token: CancellationToken) {
     tokio::spawn(async move {
         loop {
@@ -55,15 +65,35 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
         .await??,
     );
     *state.execution_inbox.write().unwrap() = Some(std::sync::Arc::downgrade(&inbox));
+    // Seeded from the current transcript on first run, so switching a Circle to
+    // this build decides its whole history as pre-activation rather than
+    // collapsing years of chat into a turn nobody asked for.
+    let ledger = super::ledger::AmbientLedger::load(
+        &state.circle_dir,
+        &state
+            .transcript()
+            .into_iter()
+            .map(|m| m.id)
+            .collect::<Vec<_>>(),
+        chrono::Utc::now().timestamp(),
+    );
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
     let worker_token = token.child_token();
     let _cancel_worker = worker_token.clone().drop_guard();
     let mut worker = spawn_run_worker(state.clone(), inbox.clone(), wake.clone(), worker_token);
-    // This boundary is only for ambient observations. Addressed work uses the
-    // persisted activation boundary, not a new cutoff on every daemon start.
+    // Only the follow-up window still distinguishes a live post from a replayed
+    // one. Ambient used to as well, on the author's clock; see `ledger`.
     let live_since = chrono::Utc::now().timestamp() - 2;
     let mut reconcile = tokio::time::interval(std::time::Duration::from_secs(5));
     reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // A burst of messages resolves as one set rather than as N races, so three
+    // lines typed in four seconds produce one turn on the last of them instead
+    // of two deaths on the length floor and one turn with no idea the other two
+    // were part of the same thought (§2.2). The cap bounds how long a steady
+    // stream of chatter can hold the drain off.
+    let mut dirty_since: Option<tokio::time::Instant> = None;
+    let debounce = tokio::time::sleep(DRAIN_IDLE);
+    tokio::pin!(debounce);
     loop {
         tokio::select! {
             _ = token.cancelled() => break,
@@ -74,12 +104,24 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
             _ = reconcile.tick() => {
                 if let Err(error) = crate::proposal::runs::release_finished_locks(&state) { tracing::debug!("lock cleanup deferred: {error}"); }
                 reconcile_requests(&state, &handled, &inbox, &wake);
+                // The heartbeat drain. Covers a daemon that starts holding a
+                // backlog and then hears nothing, which no event would wake.
+                dirty_since = None;
+                drain_ambient(&state, &handled, &inbox, &ledger, &wake, &AgentConfig::load());
+            }
+            _ = &mut debounce, if dirty_since.is_some() => {
+                dirty_since = None;
+                debounce.as_mut().reset(tokio::time::Instant::now() + DRAIN_IDLE);
+                drain_ambient(&state, &handled, &inbox, &ledger, &wake, &AgentConfig::load());
             }
             evt = events.recv() => match evt {
                 Ok(CircleEvent::MessagePosted { message }) => {
                     let cfg = AgentConfig::load();
                     admit_message(&state, &handled, &inbox, &wake, &cfg, &message,
                         message.ts >= live_since);
+                    let started = *dirty_since.get_or_insert_with(tokio::time::Instant::now);
+                    let now = tokio::time::Instant::now();
+                    debounce.as_mut().reset((now + DRAIN_DEBOUNCE).min(started + DRAIN_DEBOUNCE_CAP));
                 }
                 Ok(CircleEvent::RelayStopped { root }) => {
                     for entry in inbox.entries().into_iter().filter(|e| e.status == super::inbox::Status::Pending && e.request.relay.as_ref().is_some_and(|r| r.root == root)) {
@@ -255,30 +297,23 @@ fn admit_message(
     } else {
         None
     };
-    let fresh = message.ts >= chrono::Utc::now().timestamp() - 30;
-    let routable = ambient_route_allowed(message, engagement.as_ref());
-    if live && fresh && routable {
-        offer_ambient(state, handled, inbox, wake, cfg, message);
-    } else if message.author == crate::control::Author::Human
+    // Ambient no longer happens here. It is decided by `drain_ambient` over the
+    // set of messages this device has never decided about, which is why the two
+    // wall-clock gates that used to stand at this point are gone (§1.2).
+    if !ambient_route_allowed(message, engagement.as_ref())
+        && message.author == crate::control::Author::Human
         && engagement.is_none()
         && !mentions_an_agent(message)
         && !cfg.resolved(&state.circle_id).ambient.is_empty()
     {
-        // Somebody in this Circle expects the room to be read, and it was not.
-        // Both timing gates below compare the *author's* clock against this
-        // device's; see ambient-reliability.md §1.2 for why that is the wrong
-        // question and §2 for what replaces it. Until then, at least say so.
+        // The one route that still drops a message with nobody claiming it: a
+        // reply pointing at something no agent posted resolves to no engagement
+        // and is not offered to the room either (§6).
         note(
             state,
             &message.id,
             None,
-            if !routable {
-                "this replies to a message no agent posted, so no agent was routed"
-            } else if !live {
-                "this was already in the transcript when the agent loop started"
-            } else {
-                "this was more than 30 seconds old when it reached this device"
-            },
+            "this replies to a message no agent posted, so no agent was routed",
         );
     }
     if let Some(engagement) = engagement.filter(|e| e.peer_id == state.peer_id) {
@@ -435,60 +470,175 @@ fn dispatch(
     }
 }
 
-/// Offer an unaddressed message to this device's ambient agents (§2).
-fn offer_ambient(
+/// Decide every message this device has not yet decided about (§2.2).
+///
+/// Ambient admission used to run once per `MessagePosted` event, gated on the
+/// message being under thirty seconds old by the *author's* clock. Draining
+/// instead of reacting is what makes the invariant in [`super::ledger`]
+/// expressible: eligibility is "never decided here", which no clock can get
+/// wrong, and a burst of messages resolves as one set rather than as N
+/// independent races.
+///
+/// Returns the number of messages decided, for the caller's logging.
+fn drain_ambient(
     state: &AppState,
     handled: &super::handled::HandledMentions,
     inbox: &super::inbox::Inbox,
+    ledger: &super::ledger::AmbientLedger,
     wake: &tokio::sync::Notify,
     cfg: &AgentConfig,
-    message: &crate::control::ChatMessage,
-) {
+) -> usize {
+    use super::ledger::Decision;
+    let now = chrono::Utc::now().timestamp();
+    let history = state.transcript();
+    // CRDT insertion order, which every peer agrees on and which involves no
+    // clock at all. Deliberately not `ts` order: sorting a backlog by the
+    // authors' clocks is the same mistake one layer down.
+    let undecided: Vec<&crate::control::ChatMessage> = history
+        .iter()
+        .filter(|m| m.ts >= inbox.activated_at() && !ledger.decided(&m.id))
+        .collect();
+    if undecided.is_empty() {
+        return 0;
+    }
     // Which agents read the room *here*. An agent can be ambient in a working
     // Circle and silent in a social one, so the answer is per Circle.
     let settings = cfg.resolved(&state.circle_id);
-    let mut ambient: Vec<String> = settings
+    // Resolve to the spelling `[agents.*]` uses, not the one the ambient list
+    // happens to be written in. `is_ambient` has always compared without regard
+    // to case while this filter did not, so `ambient = ["Claude"]` against
+    // `[agents.claude]` was silently inert — and everything downstream, from
+    // `cfg.resolve` to the `~ambient:` dedup key, still wants the exact key (§6).
+    let listeners: Vec<String> = settings
         .ambient
         .iter()
-        .filter(|name| cfg.agents.contains_key(*name))
-        .cloned()
+        .filter_map(|name| {
+            cfg.agents
+                .keys()
+                .find(|configured| configured.eq_ignore_ascii_case(name))
+                .cloned()
+        })
         .collect();
-    if ambient.is_empty() {
-        // A standing configuration fact, not an event. Reported once by the
-        // readiness summary rather than once per message, which would be every
-        // message in most Circles and would evict everything worth keeping.
-        return;
-    }
-    if let Some(reason) = super::ambient::skip_reason(message, mentions_an_agent(message)) {
-        // Only for messages a person wrote. "not human-authored" is the rule
-        // that makes ambient terminate (§2.1), it fires on every agent reply,
-        // and nobody has ever wondered why their agent did not answer itself.
-        if message.author == crate::control::Author::Human {
-            note(state, &message.id, None, reason);
+    if listeners.is_empty() {
+        // Nobody is listening, so nothing is undecided in any meaningful sense.
+        // Recording them keeps the drain O(new messages) instead of rescanning
+        // the whole transcript forever, and turning a listener on later should
+        // not retroactively answer everything said while none was configured.
+        for message in &undecided {
+            ledger.record(&message.id, Decision::PreActivation, now);
         }
-        return;
+        return undecided.len();
     }
-    let history = state.transcript();
-    let previous = inbox.entries();
-    // One selection per message, including PASS and queued attempts. Replay must
-    // not rotate into additional listeners after a reconnect or duplicate event.
-    if previous
-        .iter()
-        .any(|e| e.request.ambient && e.request.message.id == message.id)
-    {
-        return;
+
+    // The cheap gates run before the tail is chosen, so a backlog ending in
+    // "ok thanks" does not spend its one turn there while a real question
+    // sits behind it.
+    let mut eligible: Vec<&crate::control::ChatMessage> = Vec::new();
+    for message in undecided {
+        // Is this part of an exchange somebody is already having with an agent?
+        // The check used to sit on the admission path, which is where ambient
+        // used to be decided; moving the decision here without it let an
+        // explicit reply wake a listener *as well as* the agent it was aimed at.
+        if message.reply_to.is_some()
+            || resolve_followup_in(&history, state, message, cfg).is_some()
+        {
+            // An unresolved reply is not yet an answer either way: the message
+            // it points at may not have synced, and may turn out to be an
+            // agent's. Leave it undecided rather than guessing — the next drain
+            // reconsiders, which is the whole point of deciding from a ledger
+            // rather than from a clock.
+            if message
+                .reply_to
+                .as_ref()
+                .is_some_and(|parent| !history.iter().any(|m| &m.id == parent))
+            {
+                continue;
+            }
+            ledger.record(
+                &message.id,
+                Decision::Skipped("part of an exchange with an agent".into()),
+                now,
+            );
+            continue;
+        }
+        match super::ambient::skip_reason(message, mentions_an_agent(message)) {
+            Some(reason) => {
+                ledger.record(&message.id, Decision::Skipped(reason.into()), now);
+                // Only for messages a person wrote. "not human-authored" is the
+                // rule that makes ambient terminate (§2.1), it fires on every
+                // agent reply, and nobody has ever wondered why their agent did
+                // not answer itself.
+                if message.author == crate::control::Author::Human {
+                    note(state, &message.id, None, reason);
+                }
+            }
+            None => eligible.push(message),
+        }
     }
-    let eligible = ambient.len();
-    ambient.retain(|agent| {
-        !super::ambient::spoke_recently(&history, agent, message.ts)
-            && !handled.contains(&message.id, &format!("~ambient:{agent}"))
-    });
-    if ambient.is_empty() {
+    // Collapse to the tail, never discard it. However late a message arrives,
+    // and however long the daemon was down, the most recent thing said in the
+    // room is read (§2.3).
+    let carried = settings.ambient_backlog_tail.min(eligible.len());
+    let collapsed = eligible.len() - carried;
+    for message in eligible.drain(..collapsed) {
+        ledger.record(&message.id, Decision::Backlog, now);
         note(
             state,
             &message.id,
             None,
-            match eligible {
+            "part of a backlog; only its most recent messages were read",
+        );
+    }
+    let decided = collapsed + eligible.len();
+    for message in eligible {
+        offer_to_listeners(
+            state, handled, inbox, ledger, wake, cfg, &listeners, message, now,
+        );
+    }
+    decided
+}
+
+/// Offer one eligible message to this device's listeners.
+///
+/// The ledger entry is written before any dispatch, so a panic or a crash
+/// between the two costs the room one turn rather than replaying the selection
+/// on the next drain.
+#[allow(clippy::too_many_arguments)]
+fn offer_to_listeners(
+    state: &AppState,
+    handled: &super::handled::HandledMentions,
+    inbox: &super::inbox::Inbox,
+    ledger: &super::ledger::AmbientLedger,
+    wake: &tokio::sync::Notify,
+    cfg: &AgentConfig,
+    listeners: &[String],
+    message: &crate::control::ChatMessage,
+    now: i64,
+) {
+    use super::ledger::Decision;
+    let settings = cfg.resolved(&state.circle_id);
+    let history = state.transcript();
+    let previous = inbox.entries();
+    let mut available: Vec<String> = listeners
+        .iter()
+        // `now` is this device's clock deciding about its own recent past —
+        // "did this agent just speak here" — rather than a comparison against
+        // the author's.
+        .filter(|agent| !super::ambient::spoke_recently(&history, agent, now))
+        .filter(|agent| !handled.contains(&message.id, &format!("~ambient:{agent}")))
+        .cloned()
+        .collect();
+    if available.is_empty() {
+        ledger.record(
+            &message.id,
+            Decision::Skipped("every listener had just spoken".into()),
+            now,
+        );
+        note(
+            state,
+            &message.id,
+            None,
+            match listeners.len() {
                 1 => "the only agent reading this room had just spoken",
                 _ => "every agent reading this room had just spoken",
             },
@@ -497,12 +647,12 @@ fn offer_ambient(
     }
     // Least recently offered first, so slow providers and PASS count as turns.
     // Stable ties preserve the configured order only for never-offered agents.
-    ambient.sort_by_key(|agent| {
+    available.sort_by_key(|agent| {
         previous
             .iter()
             .rposition(|e| e.request.ambient && e.request.agent == *agent)
     });
-    let max = settings.ambient_responders.min(ambient.len());
+    let max = settings.ambient_responders.min(available.len());
     let offered_messages: std::collections::HashSet<_> = previous
         .iter()
         .filter(|e| e.request.ambient)
@@ -516,7 +666,8 @@ fn offer_ambient(
     // Fix the selection before dispatching any of it: each listener's prompt
     // names the others, which cannot be known while the list is still being
     // consumed one agent at a time.
-    let selected: Vec<String> = ambient.into_iter().take(count).collect();
+    let selected: Vec<String> = available.into_iter().take(count).collect();
+    ledger.record(&message.id, Decision::Offered, now);
     for agent in &selected {
         dispatch(
             state,
@@ -568,10 +719,23 @@ fn resolve_followup(
     message: &crate::control::ChatMessage,
     cfg: &AgentConfig,
 ) -> Option<super::engagement::Engagement> {
+    resolve_followup_in(&state.transcript(), state, message, cfg)
+}
+
+/// As [`resolve_followup`], over a transcript the caller already holds.
+///
+/// The drain resolves this for every candidate message, and re-reading the
+/// control doc once per message would make a backlog quadratic.
+fn resolve_followup_in(
+    all: &[crate::control::ChatMessage],
+    state: &AppState,
+    message: &crate::control::ChatMessage,
+    cfg: &AgentConfig,
+) -> Option<super::engagement::Engagement> {
     if !super::engagement::is_followup_candidate(message, mentions_an_agent(message)) {
         return None;
     }
-    let mut history = state.transcript();
+    let mut history = all.to_vec();
     // An explicit reply-to wins outright: the user pointed at a message, which
     // is addressing, so no window and no recency guess applies (§1.4).
     if let Some(reply_to) = &message.reply_to {
@@ -2114,6 +2278,27 @@ mod tests {
         tokio::time::timeout(LIVENESS, recovered).await.unwrap();
         cancel.cancel();
     }
+    /// The daemon loads the ledger at startup, before any message a test posts
+    /// exists, so the first-run seed (which decides the whole transcript as
+    /// pre-activation) stays out of the way.
+    fn ledger_at_startup(dir: &std::path::Path) -> super::super::ledger::AmbientLedger {
+        super::super::ledger::AmbientLedger::load(dir, &[], 0)
+    }
+
+    /// Post a message to the room and let the drain decide about it.
+    fn offer_room(
+        state: &AppState,
+        handled: &super::super::handled::HandledMentions,
+        inbox: &super::super::inbox::Inbox,
+        ledger: &super::super::ledger::AmbientLedger,
+        wake: &tokio::sync::Notify,
+        cfg: &AgentConfig,
+        message: &crate::control::ChatMessage,
+    ) {
+        add_chat(state, message);
+        drain_ambient(state, handled, inbox, ledger, wake, cfg);
+    }
+
     /// A human message that names nobody — the population ambient exists for.
     fn room_message(id: &str, text: &str) -> crate::control::ChatMessage {
         use super::super::inbox::tests::request;
@@ -2132,11 +2317,13 @@ mod tests {
         let inbox = Inbox::open(dir.path(), 100).unwrap();
         let handled = super::super::handled::HandledMentions::load(dir.path());
         let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
         let cfg = inbox_config();
-        offer_ambient(
+        offer_room(
             &state,
             &handled,
             &inbox,
+            &ledger,
             &wake,
             &cfg,
             &room_message("short", "anyone?"),
@@ -2156,10 +2343,11 @@ mod tests {
         let inbox = Inbox::open(dir.path(), 100).unwrap();
         let handled = super::super::handled::HandledMentions::load(dir.path());
         let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
         let cfg = inbox_config();
         let mut message = room_message("reply", "I had a thought about the retry path");
         message.author = crate::control::Author::Agent;
-        offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
         assert!(state.admission_log.recent(10).is_empty());
     }
 
@@ -2172,12 +2360,14 @@ mod tests {
         let inbox = Inbox::open(dir.path(), 100).unwrap();
         let handled = super::super::handled::HandledMentions::load(dir.path());
         let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
         let mut cfg = inbox_config();
         cfg.ambient.clear();
-        offer_ambient(
+        offer_room(
             &state,
             &handled,
             &inbox,
+            &ledger,
             &wake,
             &cfg,
             &room_message("quiet", "Could someone explain how synchronization works?"),
@@ -2192,6 +2382,7 @@ mod tests {
         let inbox = Inbox::open(dir.path(), 100).unwrap();
         let handled = super::super::handled::HandledMentions::load(dir.path());
         let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
         let cfg = inbox_config();
         let message = room_message("quiet-period", "Could someone explain the retry path?");
         let mut spoke = message.clone();
@@ -2199,7 +2390,7 @@ mod tests {
         spoke.author = crate::control::Author::Agent;
         spoke.agent_id = "claude".into();
         add_chat(&state, &spoke);
-        offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
         let skips = state.admission_log.recent(10);
         assert_eq!(skips.len(), 1);
         assert_eq!(
@@ -2256,12 +2447,13 @@ mod tests {
         let inbox = Inbox::open(dir.path(), 100).unwrap();
         let handled = super::super::handled::HandledMentions::load(dir.path());
         let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
         let cfg = inbox_config();
         let message = room_message("second-chance", "Could someone explain the retry path?");
         state
             .admission_log
             .record(&message.id, None, "too short to be worth a turn", 1);
-        offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
         assert_eq!(inbox.entries().len(), 1, "it was offered a turn");
         assert!(
             state.admission_log.recent(10).is_empty(),
@@ -2375,11 +2567,12 @@ mod tests {
         let inbox = Inbox::open(dir.path(), 100).unwrap();
         let handled = super::super::handled::HandledMentions::load(dir.path());
         let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
         let mut cfg = inbox_config();
         cfg.ambient = vec!["claude".into(), "codex".into()];
         cfg.ambient_responders = 2;
         let message = room_message("both", "Could someone explain how synchronization works?");
-        offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
         let entries = inbox.entries();
         assert_eq!(entries.len(), 2);
         for entry in &entries {
@@ -2411,20 +2604,283 @@ mod tests {
     }
 
     #[test]
+    fn an_explicit_reply_to_an_agent_does_not_also_wake_the_room() {
+        // Deciding ambient in the drain instead of on the admission path left
+        // the addressed-routing check behind. A reply aimed at one agent would
+        // then reach it as a follow-up *and* be offered to the room, so the
+        // question got answered twice.
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let cfg = inbox_config();
+
+        let mut answer = room_message("answer", "here is how the retry path works");
+        answer.author = crate::control::Author::Agent;
+        answer.agent_id = "claude".into();
+        answer.relay = Some(super::super::relay::extend(
+            &super::super::relay::mint("root", "local"),
+            "claude",
+        ));
+        // Outside the quiet period, so nothing else can explain the silence.
+        answer.ts = chrono::Utc::now().timestamp() - 300;
+        add_chat(&state, &answer);
+
+        let mut followup = room_message("followup", "could you expand on the backoff part?");
+        followup.reply_to = Some("answer".into());
+        add_chat(&state, &followup);
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        assert!(
+            inbox.entries().is_empty(),
+            "the reply belongs to the agent it points at"
+        );
+        assert_eq!(
+            ledger.decision("followup"),
+            Some(super::super::ledger::Decision::Skipped(
+                "part of an exchange with an agent".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_reply_whose_parent_has_not_synced_yet_waits_rather_than_guessing() {
+        // It may turn out to be a reply to an agent. Deciding now would be a
+        // guess; leaving it undecided costs one rescan and self-corrects.
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let cfg = inbox_config();
+
+        let mut orphan = room_message("orphan", "could you expand on the backoff part?");
+        orphan.reply_to = Some("not-synced-yet".into());
+        add_chat(&state, &orphan);
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        assert!(inbox.entries().is_empty());
+        assert!(
+            !ledger.decided("orphan"),
+            "undecided, so a later drain can look again"
+        );
+
+        // The parent arrives, and turns out to have been a person's.
+        let mut parent = room_message("not-synced-yet", "what about the backoff?");
+        parent.ts = chrono::Utc::now().timestamp() - 300;
+        add_chat(&state, &parent);
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        assert!(ledger.decided("orphan"), "now it can be decided");
+    }
+
+    #[test]
+    fn a_message_authored_an_hour_ago_is_still_read() {
+        // The defect this phase exists to fix. `ts` is the *author's* clock, so
+        // a peer running a minute slow, or one syncing after a disconnection,
+        // posted messages that were born stale and could never be read here.
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let cfg = inbox_config();
+        let mut message = room_message("slow-clock", "how does the retry path work here?");
+        message.ts = chrono::Utc::now().timestamp() - 3600;
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
+        assert_eq!(inbox.entries().len(), 1, "an hour late is still a message");
+        assert_eq!(inbox.entries()[0].request.agent, "claude");
+    }
+
+    #[test]
+    fn a_clock_running_fast_does_not_buy_a_second_turn() {
+        // The other direction of skew: a message from the future must be read
+        // exactly once, not re-read on every drain until its timestamp passes.
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let cfg = inbox_config();
+        let mut message = room_message("fast-clock", "how does the retry path work here?");
+        message.ts = chrono::Utc::now().timestamp() + 3600;
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        assert_eq!(inbox.entries().len(), 1);
+    }
+
+    #[test]
+    fn a_backlog_collapses_to_its_tail_instead_of_being_discarded() {
+        // Both old behaviours were wrong in opposite directions: a live message
+        // 31 seconds old got nothing, and a 500-message backfill also got
+        // nothing — affordable, but by accident.
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let cfg = inbox_config();
+        for i in 0..500 {
+            add_chat(
+                &state,
+                &room_message(&format!("m{i:03}"), "how does the retry path work here?"),
+            );
+        }
+        let decided = drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        assert_eq!(decided, 500, "every message is decided, once");
+        assert_eq!(ledger.len(), 500);
+        let entries = inbox.entries();
+        assert_eq!(entries.len(), 1, "exactly the configured tail runs");
+        assert_eq!(
+            entries[0].request.message.id, "m499",
+            "the tail is the newest by CRDT order, not by anyone's clock"
+        );
+        assert_eq!(
+            ledger.decision("m499"),
+            Some(super::super::ledger::Decision::Offered)
+        );
+        assert_eq!(
+            ledger.decision("m000"),
+            Some(super::super::ledger::Decision::Backlog),
+            "everything behind the tail is decided, not left to be re-decided"
+        );
+        // And draining again decides nothing, however many times it runs.
+        assert_eq!(
+            drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg),
+            0
+        );
+        assert_eq!(inbox.entries().len(), 1);
+    }
+
+    #[test]
+    fn a_backlog_spends_its_turn_on_a_question_not_on_ok_thanks() {
+        // The cheap gates run before the tail is chosen, so the newest message
+        // being chatter does not waste the one turn a backlog gets.
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let cfg = inbox_config();
+        add_chat(
+            &state,
+            &room_message("q", "how does the retry path work here?"),
+        );
+        add_chat(&state, &room_message("chatter", "ok"));
+        add_chat(&state, &room_message("more", "thanks!"));
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        let entries = inbox.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].request.message.id, "q");
+    }
+
+    #[test]
+    fn decisions_survive_a_restart() {
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let cfg = inbox_config();
+        let message = room_message("once", "how does the retry path work here?");
+        {
+            let ledger = ledger_at_startup(dir.path());
+            offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
+            assert_eq!(inbox.entries().len(), 1);
+        }
+        // A new daemon reloads the ledger from disk, this time with the
+        // transcript already populated — which must not re-decide anything.
+        let ids: Vec<String> = state.transcript().into_iter().map(|m| m.id).collect();
+        let reloaded = super::super::ledger::AmbientLedger::load(dir.path(), &ids, 200);
+        assert_eq!(
+            drain_ambient(&state, &handled, &inbox, &reloaded, &wake, &cfg),
+            0,
+            "a reconnect replaying the transcript must not re-offer it"
+        );
+        assert_eq!(inbox.entries().len(), 1);
+    }
+
+    #[test]
+    fn a_room_with_no_listeners_decides_without_spending_anything() {
+        // Turning a listener on later must not retroactively answer everything
+        // said while none was configured.
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let mut cfg = inbox_config();
+        cfg.ambient.clear();
+        for i in 0..3 {
+            add_chat(
+                &state,
+                &room_message(&format!("quiet{i}"), "how does the retry path work here?"),
+            );
+        }
+        assert_eq!(
+            drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg),
+            3
+        );
+        assert!(inbox.entries().is_empty());
+
+        cfg.ambient = vec!["claude".into()];
+        assert_eq!(
+            drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg),
+            0
+        );
+        assert!(
+            inbox.entries().is_empty(),
+            "switching a listener on is not retroactive"
+        );
+    }
+
+    #[test]
+    fn a_listener_named_in_a_different_case_still_reads_the_room() {
+        // `is_ambient` compares case-insensitively while the configured-agent
+        // filter did not, so `ambient = ["Claude"]` against `[agents.claude]`
+        // was silently inert (§6).
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let mut cfg = inbox_config();
+        cfg.ambient = vec!["Claude".into()];
+        offer_room(
+            &state,
+            &handled,
+            &inbox,
+            &ledger,
+            &wake,
+            &cfg,
+            &room_message("cased", "how does the retry path work here?"),
+        );
+        assert_eq!(inbox.entries().len(), 1);
+    }
+
+    #[test]
     fn selected_listeners_get_one_queued_turn() {
         use super::super::inbox::{tests::request, Inbox};
         let (state, dir) = test_state("local", "suzy");
         let inbox = Inbox::open(dir.path(), 100).unwrap();
         let handled = super::super::handled::HandledMentions::load(dir.path());
         let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
         let mut cfg = inbox_config();
         cfg.ambient = vec!["claude".into(), "codex".into()];
         cfg.ambient_responders = 2;
         let mut message = request("all-listeners", "claude").message;
         message.text = "Could someone help explain how synchronization works?".into();
         message.mentions.clear();
-        offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
-        offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
         let entries = inbox.entries();
         assert_eq!(entries.len(), 2);
         assert!(entries
@@ -2469,6 +2925,7 @@ mod tests {
         let mut inbox = Inbox::open(dir.path(), 100).unwrap();
         let handled = super::super::handled::HandledMentions::load(dir.path());
         let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
         let mut cfg = inbox_config();
         cfg.ambient = vec!["claude".into(), "codex".into()];
         cfg.ambient_responders = 1;
@@ -2476,7 +2933,7 @@ mod tests {
             let mut message = request(&format!("rotate{i}"), "claude").message;
             message.text = "Please explain how the synchronization strategy works".into();
             message.mentions.clear();
-            offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+            offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
             let entries = inbox.entries();
             assert_eq!(
                 entries.last().unwrap().request.agent,
@@ -2491,7 +2948,7 @@ mod tests {
             let mut message = request(&format!("rotate{i}"), "claude").message;
             message.text = "Please explain how the synchronization strategy works".into();
             message.mentions.clear();
-            offer_ambient(&state, &handled, &inbox, &wake, &cfg, &message);
+            offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
             assert_eq!(
                 inbox
                     .entries()

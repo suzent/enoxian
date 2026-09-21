@@ -5,6 +5,7 @@ import type { CircleSettingsView, SettingsView } from '../types'
 export type Patch = {
   ambient_responders?: number | null
   ambient_rotate_count?: boolean | null
+  ambient_backlog_tail?: number | null
   reaction?: 'push' | 'pull' | null
   engagement_window_secs?: number | null
   ambient?: string[] | null
@@ -162,6 +163,11 @@ export default function EngagementSettings({
         effective.ambient_rotate_count
           ? `Cycle through 1 to ${effective.ambient_responders ?? 1} listeners across messages, limited by who is eligible.`
           : 'Keep the same listener limit while rotating which agents get a turn.')}
+      {row('ambient_backlog_tail', 'Messages read after a gap',
+        <input type="number" min={1} max={16} aria-label="Messages read after a gap" className="border px-2 py-1 w-20"
+          value={effective.ambient_backlog_tail ?? 1} disabled={busy}
+          onChange={e => onChange({ ambient_backlog_tail: Math.min(16, Math.max(1, Number(e.target.value) || 1)) })} />,
+        'When this device comes back to a room that has moved on — after a restart, a disconnection, or a peer syncing — this many of the most recent messages still get a turn. The rest are marked as read without one, so catching up costs the same as keeping up.')}
 
 
     </div>

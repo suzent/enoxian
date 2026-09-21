@@ -212,6 +212,9 @@ export interface EngagementView {
 export interface SettingsView {
   ambient_responders?: number
   ambient_rotate_count?: boolean
+  /** How many of the most recent messages still get a turn when this device
+   *  comes back to a room that moved on. The rest are marked read without one. */
+  ambient_backlog_tail?: number
   reaction: 'push' | 'pull'
   /** Seconds an agent stays in conversation with whoever it replied to, so a
    *  follow-up needs no mention. 0 disables follow-up routing. */
@@ -226,6 +229,7 @@ export interface SettingsView {
 export interface CircleOverrides {
   ambient_responders?: number
   ambient_rotate_count?: boolean
+  ambient_backlog_tail?: number
   reaction?: 'push' | 'pull'
   engagement_window_secs?: number
   ambient?: string[]
@@ -288,6 +292,7 @@ export interface Readiness {
   ambient: string[]
   ambient_responders: number
   engagement_window_secs: number
+  ambient_backlog_tail: number
   /** Listed as reading the room but not configured as an agent here, so inert. */
   ambient_unconfigured: string[]
 }

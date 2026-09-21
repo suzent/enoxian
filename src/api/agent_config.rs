@@ -69,6 +69,7 @@ struct AddressedAs {
 struct SettingsView {
     ambient_responders: usize,
     ambient_rotate_count: bool,
+    ambient_backlog_tail: usize,
     reaction: String,
     engagement_window_secs: i64,
     ambient: Vec<String>,
@@ -97,6 +98,7 @@ fn settings_view(s: &crate::agent::config::ResolvedSettings) -> SettingsView {
     SettingsView {
         ambient_responders: s.ambient_responders,
         ambient_rotate_count: s.ambient_rotate_count,
+        ambient_backlog_tail: s.ambient_backlog_tail,
         reaction: format!("{:?}", s.reaction).to_lowercase(),
         engagement_window_secs: s.engagement_window_secs,
         ambient: s.ambient.clone(),
@@ -284,6 +286,8 @@ pub struct SetEngagementRequest {
     pub ambient_responders: Option<Option<usize>>,
     #[serde(default, deserialize_with = "double_option")]
     pub ambient_rotate_count: Option<Option<bool>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ambient_backlog_tail: Option<Option<usize>>,
     pub max_concurrent_runs: Option<usize>,
     #[serde(default)]
     pub circle_id: Option<String>,
@@ -364,6 +368,13 @@ pub async fn set_engagement(
         {
             return Err("ambient_responders must be 1–32".into());
         }
+        if req
+            .ambient_backlog_tail
+            .flatten()
+            .is_some_and(|n| !(1..=16).contains(&n))
+        {
+            return Err("ambient_backlog_tail must be 1–16".into());
+        }
         if let Some(limit) = req.max_concurrent_runs {
             if scope.is_some() || !(1..=32).contains(&limit) {
                 return Err("max_concurrent_runs must be 1–32 at device scope".into());
@@ -377,6 +388,9 @@ pub async fn set_engagement(
                 }
                 if let Some(Some(value)) = req.ambient_rotate_count {
                     cfg.ambient_rotate_count = value;
+                }
+                if let Some(Some(value)) = req.ambient_backlog_tail {
+                    cfg.ambient_backlog_tail = value;
                 }
                 // Global scope answers every question, so `null` is not a
                 // meaningful value here — there is nothing above to inherit.
@@ -400,6 +414,9 @@ pub async fn set_engagement(
                 }
                 if let Some(value) = req.ambient_rotate_count {
                     over.ambient_rotate_count = value;
+                }
+                if let Some(value) = req.ambient_backlog_tail {
+                    over.ambient_backlog_tail = value;
                 }
                 if let Some(value) = &req.reaction {
                     over.reaction = match value {

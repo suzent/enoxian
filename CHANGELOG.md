@@ -64,6 +64,28 @@ refuses to publish a version whose section is missing or empty.
   cared about. One system line is posted per agent, throttled, and suppressed
   when another agent has already answered.
 
+### Fixed
+
+- An agent reading the room is no longer silent because of a clock. Whether an
+  unaddressed message got a turn was decided by comparing the sender's clock
+  against the receiving device's, so a peer running a minute slow could never
+  reach a listener — not after a delay, but never, because its messages arrived
+  already too old to consider. Messages that arrived late for any other reason,
+  such as a peer syncing after a disconnection, were dropped the same way and
+  without a trace. A message is now read the first time a device decides about
+  it, however long it took to get there.
+- Coming back to a room that moved on no longer means missing all of it. After
+  a restart, a disconnection, or a peer syncing a backlog, the most recent
+  messages still get a turn — one by default, configurable per Circle — and the
+  rest are marked as read without one, so catching up costs the same as keeping
+  up.
+- Several messages sent in quick succession are now considered together, so a
+  thought typed across three lines gets one reply informed by all of them
+  instead of dying on the length limit twice and being answered once out of
+  context.
+- An agent named in the read-the-room list with different capitalisation than
+  its configuration is no longer silently ignored.
+
 ### Changed
 
 - An agent reading the room no longer runs if another agent answered the message
