@@ -319,6 +319,7 @@ fn readiness(state: &crate::state::AppState) -> serde_json::Value {
         "ambient_responders": settings.ambient_responders,
         "engagement_window_secs": settings.engagement_window_secs,
         "ambient_backlog_tail": settings.ambient_backlog_tail,
+        "ambient_max_attempts": settings.ambient_max_attempts,
         // Named in `ambient` but absent from `[agents.*]` under any casing, so
         // there is no agent for the drain to offer anything to.
         "ambient_unconfigured": missing,

@@ -6,6 +6,7 @@ export type Patch = {
   ambient_responders?: number | null
   ambient_rotate_count?: boolean | null
   ambient_backlog_tail?: number | null
+  ambient_max_attempts?: number | null
   reaction?: 'push' | 'pull' | null
   engagement_window_secs?: number | null
   ambient?: string[] | null
@@ -168,6 +169,11 @@ export default function EngagementSettings({
           value={effective.ambient_backlog_tail ?? 1} disabled={busy}
           onChange={e => onChange({ ambient_backlog_tail: Math.min(16, Math.max(1, Number(e.target.value) || 1)) })} />,
         'When this device comes back to a room that has moved on — after a restart, a disconnection, or a peer syncing — this many of the most recent messages still get a turn. The rest are marked as read without one, so catching up costs the same as keeping up.')}
+      {row('ambient_max_attempts', 'Tries before giving up',
+        <input type="number" min={1} max={8} aria-label="Tries before giving up" className="border px-2 py-1 w-20"
+          value={effective.ambient_max_attempts ?? 2} disabled={busy}
+          onChange={e => onChange({ ambient_max_attempts: Math.min(8, Math.max(1, Number(e.target.value) || 2)) })} />,
+        'If a listener fails to answer, the message passes to another one. This limits how many tries a single message gets before the room is told nobody could answer it.')}
 
 
     </div>

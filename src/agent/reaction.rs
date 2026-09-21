@@ -494,11 +494,25 @@ fn drain_ambient(
     // CRDT insertion order, which every peer agrees on and which involves no
     // clock at all. Deliberately not `ts` order: sorting a backlog by the
     // authors' clocks is the same mistake one layer down.
-    let undecided: Vec<&crate::control::ChatMessage> = history
-        .iter()
-        .filter(|m| m.ts >= inbox.activated_at() && !ledger.decided(&m.id))
-        .collect();
-    if undecided.is_empty() {
+    let entries = inbox.entries();
+    let mut undecided: Vec<&crate::control::ChatMessage> = Vec::new();
+    // A message whose every attempt failed is not answered, and the ledger
+    // saying `offered` does not make it so. It rejoins the candidates — but
+    // separately from never-seen messages, because it has already won a tail
+    // slot once and must not have to win another (§3.2).
+    let mut reopened: Vec<&crate::control::ChatMessage> = Vec::new();
+    for message in history.iter().filter(|m| m.ts >= inbox.activated_at()) {
+        match ledger.decision(&message.id) {
+            None => undecided.push(message),
+            Some(super::ledger::Decision::Offered) => {
+                if unanswered_attempts(&entries, &message.id).is_some() {
+                    reopened.push(message);
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    if undecided.is_empty() && reopened.is_empty() {
         return 0;
     }
     // Which agents read the room *here*. An agent can be ambient in a working
@@ -528,6 +542,50 @@ fn drain_ambient(
             ledger.record(&message.id, Decision::PreActivation, now);
         }
         return undecided.len();
+    }
+    // Retry the failures before spending anything on new messages: a message
+    // the room is still waiting on outranks one nobody has looked at yet.
+    let max_attempts = settings.ambient_max_attempts.max(1);
+    for message in &reopened {
+        let Some(state_of) = unanswered_attempts(&entries, &message.id) else {
+            continue;
+        };
+        if state_of.attempts >= max_attempts {
+            let reason = "every attempt failed";
+            ledger.settle(&message.id, Decision::Skipped(reason.into()), now);
+            note(state, &message.id, None, "gave up after repeated failures");
+            announce_unanswered(state, &message.id, reason);
+            continue;
+        }
+        let untried: Vec<String> = listeners
+            .iter()
+            .filter(|name| !state_of.tried.iter().any(|t| t.eq_ignore_ascii_case(name)))
+            .cloned()
+            .collect();
+        if !untried.is_empty() {
+            offer_to_listeners(
+                state, handled, inbox, ledger, wake, cfg, &untried, message, now,
+            );
+            continue;
+        }
+        // Everyone has had a go. One case is still worth another: a turn that
+        // expired without ever starting — a daemon restart while it queued —
+        // was not an attempt by that agent at anything, so offering it again is
+        // not a retry. The inbox dedups on (message, agent), so this has to go
+        // through `retry` rather than a fresh admission.
+        if let Some(run_id) = state_of.never_started {
+            match inbox.retry(&run_id, settings.max_relay_turns, now) {
+                Ok(_) => {
+                    wake.notify_one();
+                    continue;
+                }
+                Err(error) => tracing::debug!("[agent] could not requeue {run_id}: {error}"),
+            }
+        }
+        let reason = "every agent reading this room tried and could not answer";
+        ledger.settle(&message.id, Decision::Skipped(reason.into()), now);
+        note(state, &message.id, None, reason);
+        announce_unanswered(state, &message.id, reason);
     }
 
     // The cheap gates run before the tail is chosen, so a backlog ending in
@@ -589,7 +647,7 @@ fn drain_ambient(
             "part of a backlog; only its most recent messages were read",
         );
     }
-    let decided = collapsed + eligible.len();
+    let decided = collapsed + eligible.len() + reopened.len();
     for message in eligible {
         offer_to_listeners(
             state, handled, inbox, ledger, wake, cfg, &listeners, message, now,
@@ -598,7 +656,66 @@ fn drain_ambient(
     decided
 }
 
-/// Offer one eligible message to this device's listeners.
+/// What happened to a message this device offered, when the room is still
+/// waiting on it.
+///
+/// `None` means the message is settled and must not be reopened:
+///
+/// - `Completed` — answered, including a PASS, which is a considered answer.
+/// - `Pending` / `Running` — not finished failing yet.
+/// - `Cancelled` — a deliberate withdrawal, not a failure. "Another agent
+///   answered first", "cascade stopped" and "ambient participation disabled"
+///   are all decisions, and retrying a decision would undo it.
+struct Unanswered {
+    /// Agents that have an attempt on record, in admission order. Not offered
+    /// the message again; a fresh listener is what rotation is for.
+    tried: Vec<String>,
+    /// Total attempts, including repeats of one agent. This is what the budget
+    /// counts, so a daemon that restarts in a loop cannot retry forever.
+    attempts: usize,
+    /// A run that expired without ever starting, if any.
+    ///
+    /// Distinct from one that failed: nothing was tried, so offering the same
+    /// agent again is not a retry of anything. `Interrupted` is deliberately
+    /// not included — that run was executing, may have done visible work, and
+    /// the inbox already records its retry as suppressed.
+    never_started: Option<String>,
+}
+
+fn unanswered_attempts(entries: &[super::inbox::Entry], message_id: &str) -> Option<Unanswered> {
+    use super::inbox::Status;
+    let mut out = Unanswered {
+        tried: Vec::new(),
+        attempts: 0,
+        never_started: None,
+    };
+    for entry in entries
+        .iter()
+        .filter(|e| e.request.ambient && e.request.message.id == message_id)
+    {
+        match entry.status {
+            Status::Completed | Status::Pending | Status::Running | Status::Cancelled => {
+                return None
+            }
+            status => {
+                out.attempts += 1;
+                if !out
+                    .tried
+                    .iter()
+                    .any(|a| a.eq_ignore_ascii_case(&entry.request.agent))
+                {
+                    out.tried.push(entry.request.agent.clone());
+                }
+                if status == Status::Expired && out.never_started.is_none() {
+                    out.never_started = Some(entry.run_id.clone());
+                }
+            }
+        }
+    }
+    (out.attempts > 0).then_some(out)
+}
+
+/// Offer one eligible message to this device's listeners./// Offer one eligible message to this device's listeners.
 ///
 /// The ledger entry is written before any dispatch, so a panic or a crash
 /// between the two costs the room one turn rather than replaying the selection
@@ -959,7 +1076,10 @@ async fn run_next_cancellable(
                 (Status::Failed, Some(reason))
             }
         };
-        if status == Status::Failed {
+        // An unaddressed turn's failure is not the end of the message: the
+        // next drain hands it to another listener. `drain_ambient` announces
+        // if and when it runs out of them.
+        if status == Status::Failed && !request.ambient {
             announce_failure(
                 state,
                 request,
@@ -991,7 +1111,60 @@ fn failure_prefix(agent: &str) -> String {
     format!("{agent} could not answer")
 }
 
-/// Say in the room that a turn failed and no reply is coming (§4.1).
+/// The opening used when a message the room was waiting on runs out of agents.
+const UNANSWERED_PREFIX: &str = "No agent could answer";
+
+/// Post one line in the room, unless it would be noise.
+///
+/// Suppressed when another agent has already replied to the message, and
+/// throttled so a misconfigured adapter in a busy room cannot narrate every
+/// message. `prefix` is both the opening of the line and how a prior
+/// announcement of the same kind is recognised.
+fn announce(state: &AppState, message_id: &str, prefix: &str, text: String) {
+    let now = chrono::Utc::now().timestamp();
+    if answered_by_an_agent(state, message_id) {
+        return;
+    }
+    let transcript = state.transcript();
+    let recent = &transcript[transcript.len().saturating_sub(ANNOUNCE_SCAN)..];
+    if recent.iter().any(|m| {
+        m.author == crate::control::Author::System
+            && now - m.ts <= ANNOUNCE_THROTTLE_SECS
+            && m.text.starts_with(prefix)
+    }) {
+        return;
+    }
+    if let Err(error) = crate::api::chat::post_reply(
+        state,
+        "system".into(),
+        text,
+        Vec::new(),
+        crate::api::chat::Trigger::System,
+        Some(message_id.to_string()),
+    ) {
+        tracing::debug!("[agent] could not announce a failed turn: {error}");
+    }
+}
+
+/// Say that a message nobody addressed has run out of agents to try (§3.2).
+///
+/// The counterpart to [`announce_failure`], which covers the addressed case. An
+/// individual ambient failure is *not* announced: it hands the message to the
+/// next listener, so saying "no reply is coming" at that point would be wrong.
+/// Only giving up is final.
+fn announce_unanswered(state: &AppState, message_id: &str, reason: &str) {
+    announce(
+        state,
+        message_id,
+        UNANSWERED_PREFIX,
+        format!(
+            "{UNANSWERED_PREFIX} this — {reason}. Mention an agent directly to ask one for a \
+             reply, or retry from Agent activity."
+        ),
+    );
+}
+
+/// Say in the room that an addressed turn failed and no reply is coming (§4.1).
 ///
 /// The execution panel already records this durably, but the panel is a side
 /// surface with a 3-second poll, and the only in-chat signal — a `Skipped`
@@ -1001,39 +1174,15 @@ fn failure_prefix(agent: &str) -> String {
 ///
 /// Deliberately narrow. Not for PASS, which is an answer; not for the cheap
 /// gates, which are policy; not for `Cancelled` or `Expired`, which are this
-/// device withdrawing rather than failing. Only "you asked, it broke, nothing
-/// is coming" — anything broader and the line becomes furniture.
-///
-/// Best-effort throughout: a failure to announce a failure is logged and
-/// dropped, never escalated.
+/// device withdrawing rather than failing; and not for an *unaddressed* turn,
+/// whose failure hands the message to the next listener rather than ending it —
+/// see [`announce_unanswered`] for where that case is reported instead. Only
+/// "you asked, it broke, nothing is coming".
 fn announce_failure(state: &AppState, request: &super::inbox::Request, reason: &str) {
-    let now = chrono::Utc::now().timestamp();
-    // Another agent got there first, so the room is not waiting on anyone.
-    if answered_by_an_agent(state, &request.message.id) {
-        return;
-    }
-    let transcript = state.transcript();
     let prefix = failure_prefix(&request.agent);
-    let recent = &transcript[transcript.len().saturating_sub(ANNOUNCE_SCAN)..];
-    if recent.iter().any(|m| {
-        m.author == crate::control::Author::System
-            && now - m.ts <= ANNOUNCE_THROTTLE_SECS
-            && m.text.starts_with(&prefix)
-    }) {
-        return;
-    }
     let text =
         format!("{prefix} — {reason}. No reply was posted; you can try again from Agent activity.");
-    if let Err(error) = crate::api::chat::post_reply(
-        state,
-        "system".into(),
-        text,
-        Vec::new(),
-        crate::api::chat::Trigger::System,
-        Some(request.message.id.clone()),
-    ) {
-        tracing::debug!("[agent] could not announce a failed turn: {error}");
-    }
+    announce(state, &request.message.id, &prefix, text);
 }
 
 /// Stop markers are checked at launch, including human-rooted pending turns.
@@ -2865,6 +3014,149 @@ mod tests {
         assert_eq!(inbox.entries().len(), 1);
     }
 
+    /// Drive `run_id` to a terminal state the way a real run would.
+    fn land(inbox: &super::super::inbox::Inbox, run_id: &str, end: super::super::inbox::Status) {
+        use super::super::inbox::Status;
+        inbox
+            .transition(run_id, Status::Pending, Status::Running, None, 101)
+            .unwrap();
+        inbox
+            .transition(run_id, Status::Running, end, Some("boom".into()), 102)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_failed_turn_hands_the_message_to_the_next_listener() {
+        use super::super::inbox::{Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let mut cfg = inbox_config();
+        cfg.ambient = vec!["claude".into(), "codex".into()];
+        let message = room_message("dropped", "how does the retry path work here?");
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
+        let first = inbox.entries();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].request.agent, "claude");
+
+        // Still running: the room is not waiting on anyone else yet.
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        assert_eq!(inbox.entries().len(), 1);
+
+        land(&inbox, &first[0].run_id, Status::Failed);
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        assert!(
+            !state
+                .transcript()
+                .iter()
+                .any(|m| m.author == crate::control::Author::System),
+            "one failure is not the end of the message, so the room is not told"
+        );
+        let after = inbox.entries();
+        assert_eq!(after.len(), 2, "the next listener gets a go");
+        assert_eq!(after[1].request.agent, "codex");
+        assert_eq!(after[1].request.message.id, "dropped");
+    }
+
+    #[test]
+    fn a_pass_settles_the_message_and_a_cancel_does_too() {
+        // PASS is a considered answer, and a cancellation is a decision this
+        // device made — "another agent answered first", say. Reopening either
+        // would undo it.
+        use super::super::inbox::{Inbox, Status};
+        for (end, label) in [(Status::Completed, "pass"), (Status::Cancelled, "cancel")] {
+            let (state, dir) = test_state("local", "suzy");
+            let inbox = Inbox::open(dir.path(), 100).unwrap();
+            let handled = super::super::handled::HandledMentions::load(dir.path());
+            let wake = tokio::sync::Notify::new();
+            let ledger = ledger_at_startup(dir.path());
+            let mut cfg = inbox_config();
+            cfg.ambient = vec!["claude".into(), "codex".into()];
+            let message = room_message("settled", "how does the retry path work here?");
+            offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
+            let run = inbox.entries()[0].run_id.clone();
+            match end {
+                Status::Cancelled => {
+                    inbox
+                        .transition(&run, Status::Pending, end, None, 102)
+                        .unwrap();
+                }
+                _ => land(&inbox, &run, end),
+            }
+            drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+            assert_eq!(inbox.entries().len(), 1, "{label} must settle the message");
+        }
+    }
+
+    #[test]
+    fn a_message_that_breaks_every_adapter_costs_a_bounded_number_of_turns() {
+        use super::super::inbox::{Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let mut cfg = inbox_config();
+        cfg.ambient = vec!["claude".into(), "codex".into()];
+        cfg.ambient_max_attempts = 2;
+        let message = room_message("poison", "how does the retry path work here?");
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
+        for _ in 0..5 {
+            for entry in inbox
+                .entries()
+                .into_iter()
+                .filter(|e| e.status == Status::Pending)
+            {
+                land(&inbox, &entry.run_id, Status::Failed);
+            }
+            drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        }
+        assert_eq!(inbox.entries().len(), 2, "one turn per attempt, then stop");
+        // And the room is told once, rather than left looking ignored.
+        let announced: Vec<_> = state
+            .transcript()
+            .into_iter()
+            .filter(|m| m.author == crate::control::Author::System)
+            .collect();
+        assert_eq!(announced.len(), 1);
+        assert!(announced[0].text.starts_with("No agent could answer"));
+        assert_eq!(announced[0].reply_to.as_deref(), Some("poison"));
+        assert_eq!(
+            ledger.decision("poison"),
+            Some(super::super::ledger::Decision::Skipped(
+                "every attempt failed".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_turn_that_never_started_is_requeued_rather_than_blamed() {
+        // A daemon restart expires whatever was queued. That agent did not try
+        // and fail — it never ran — so telling the room "every agent tried"
+        // would be a lie, and with one listener there is nobody to rotate to.
+        use super::super::inbox::{Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let mut inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let cfg = inbox_config();
+        assert_eq!(cfg.ambient, vec!["claude".to_string()], "one listener");
+        let message = room_message("expired", "how does the retry path work here?");
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
+
+        drop(inbox);
+        inbox = Inbox::open(dir.path(), 101).unwrap();
+        assert_eq!(inbox.entries()[0].status, Status::Expired);
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        let entries = inbox.entries();
+        assert_eq!(entries.len(), 2, "the same agent gets another go");
+        assert_eq!(entries[1].request.agent, "claude");
+        assert_eq!(entries[1].status, Status::Pending);
+    }
+
     #[test]
     fn selected_listeners_get_one_queued_turn() {
         use super::super::inbox::{tests::request, Inbox};
@@ -2935,10 +3227,31 @@ mod tests {
             message.mentions.clear();
             offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
             let entries = inbox.entries();
+            let entry = entries
+                .iter()
+                .find(|e| e.request.message.id == message.id)
+                .expect("the new message was offered");
             assert_eq!(
-                entries.last().unwrap().request.agent,
+                entry.request.agent,
                 if i % 2 == 0 { "claude" } else { "codex" }
             );
+            // Settle it before the restart. A turn left pending would expire on
+            // reload, and an expired observation is now re-offered rather than
+            // lost — correct, but not what this test is about.
+            for (from, to) in [
+                (
+                    super::super::inbox::Status::Pending,
+                    super::super::inbox::Status::Running,
+                ),
+                (
+                    super::super::inbox::Status::Running,
+                    super::super::inbox::Status::Completed,
+                ),
+            ] {
+                inbox
+                    .transition(&entry.run_id, from, to, None, 101)
+                    .unwrap();
+            }
             drop(inbox);
             inbox = Inbox::open(dir.path(), 101).unwrap();
         }

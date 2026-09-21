@@ -233,6 +233,12 @@ question about *this device's* recent past.
 
 ## 3. A failed turn is not an answer
 
+> **Shipped (Phase D).** A message whose every attempt failed rejoins the
+> drain's candidates and rotates to the next listener; `ambient_max_attempts`
+> (default 2, per Circle) bounds it. `ambient_turn_timeout_secs` (default 180,
+> device-wide) stops a conversational aside holding a device permit for half an
+> hour. §3.3 was decided as recommended — PASS settles.
+
 ### 3.1 The one-shot guard overshoots
 
 [reaction.rs:404-411](../../src/agent/reaction.rs):
@@ -268,8 +274,12 @@ Under the ledger the fix is small, because the ledger records *decisions*, not
 
 - `Completed` (including PASS — see §3.3) → settled.
 - `Running` / `Pending` → in flight, not re-offered.
-- `Failed` / `Expired` / `Cancelled` / `Interrupted` → **unsettled**; the
-  message returns to the undecided set.
+- `Failed` / `Expired` / `Interrupted` → **unsettled**; the message returns to
+  the undecided set.
+- `Cancelled` → **settled**. The spec had this wrong: a cancellation is a
+  decision, not a failure. "Another agent answered first" (§5.2), "cascade
+  stopped" and "ambient participation disabled" are all this device choosing
+  not to run, and retrying a decision undoes it.
 
 Selection already sorts least-recently-offered-first
 ([reaction.rs:418](../../src/agent/reaction.rs)), and the failed agent's entry
@@ -280,10 +290,31 @@ ledger entries, so a message that kills every adapter in the room costs two
 turns and not N. On exhaustion the ledger records `skipped:attempts-exhausted`
 and §4 surfaces it.
 
+*As shipped, attempts are counted from **inbox entries**, not ledger entries.
+The inbox is already the durable record of what was attempted — that is what it
+is for — and a parallel counter in the ledger is state that can disagree with
+it. Counting entries rather than distinct agents also bounds the restart loop
+below.*
+
+*Exhaustion is announced in the room, not only in the panel. This is the case
+§4.1 reserved the transcript for — "the room will not be answered, and here is
+why" — and it is the point at which that becomes true. Phase A announced every
+individual failure, which was right when a failure really was the end of the
+message and became wrong the moment this phase landed; `announce_failure` is now
+addressed-only, with `announce_unanswered` for this.*
+
 `Interrupted` deserves a note: a daemon restart mid-turn is the one case where
 the agent may have already done work the user can see. Re-offering to a
 *different* agent is right; re-offering to the same one is a retry and should
 stay manual (`Inbox::retry` already exists).
+
+*`Expired` turned out to need the opposite treatment, which the spec missed.
+A turn that expired on restart never started, so its agent did not try and fail
+at anything — and in a one-listener room there is nobody to rotate to, so the
+rule above would settle the message as "every agent tried" when none had. An
+expired run is therefore requeued to the same agent through `Inbox::retry`,
+which is the one same-agent retry the drain performs. `Interrupted` keeps the
+manual-only rule, because that run was executing.*
 
 ### 3.3 Is PASS an answer?
 
@@ -315,6 +346,14 @@ addressed work queues behind it.
 Add `ambient_turn_timeout_secs` (default **180**). On expiry the turn is
 `Failed` with `ambient turn timed out`, which §3.2 then treats as unsettled.
 The existing `CancellationToken` plumbing carries this; no new mechanism.
+
+*The `CancellationToken` does not in fact carry it: `launch_cancellable` only
+uses the token to bound `DeviceLease` acquisition, and nothing cancels a run in
+flight. Shipped instead as a per-session limit on the ACP client's
+`session/prompt` call, which is where the 30-minute ceiling already lived —
+`AcpSession::set_prompt_timeout`, set after the handshake so `session/load`
+keeps its own. Device-wide rather than per Circle, because it bounds a shared
+device resource; §8.4's question therefore stands only for the per-agent half.*
 
 ## 4. Silence must be legible
 
@@ -492,14 +531,14 @@ Each phase is independently landable and independently useful.
 | ~~**A**~~ | ~~§4 — persist terminal outcomes, expose decisions/reasons on `/api/execution`, wire `Inbox::retry` in the UI~~ **Shipped.** | Nothing else can be diagnosed until failures are visible. Smallest diff, largest immediate payoff. |
 | ~~**B**~~ | ~~§5 — ambient prompt frame, who-else-was-offered, already-answered recheck, §5.3 attachments~~ **Shipped.** | Text and plumbing only, no state changes. Independently improves PASS quality. |
 | ~~**C**~~ | ~~§2.1–2.3 — observation ledger, drain, backlog collapse; delete the `ts >= now - 30` gate and the in-inbox one-shot guard~~ **Shipped.** | The core fix. Needs A to be verifiable. |
-| **D** | §3.2, §3.4 — re-offer on failure, attempt budget, ambient turn timeout | Builds directly on C's ledger. |
+| ~~**D**~~ | ~~§3.2, §3.4 — re-offer on failure, attempt budget, ambient turn timeout~~ **Shipped.** | Builds directly on C's ledger. |
 | **E** | §2.4 — retire `activated_at` for admission | Highest blast radius (touches addressed work); land last, behind the tests from C. |
 | **F** | §6 — the small defects | Any time; independent. |
 
 ## 8. Open questions
 
-1. **Does PASS settle a message?** §3.3 recommends yes and explains why, but the
-   answer should come from measuring real Circles: what fraction of ambient
+1. **Does PASS settle a message?** *Shipped as yes.* §3.3 explains why, but the
+   answer should still come from measuring real Circles: what fraction of ambient
    messages end in PASS-then-silence where a human then re-asks with an
    `@mention`? That re-ask is the observable signal of under-response.
 2. **`ambient_backlog_tail` default.** 1 is the conservative choice. A Circle
