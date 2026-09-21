@@ -32,6 +32,19 @@ if [[ -n "$FRONTEND_CHANGED" ]]; then
     step "frontend typecheck"
     (cd frontend && npx tsc -b --noEmit 2>&1) || fail "TypeScript errors — run 'cd frontend && npx tsc -b --noEmit'"
     ok "typecheck"
+
+    # A typecheck is not a test. Several frontend tests assert on rendered
+    # output — how many settings rows a panel shows, for instance — which
+    # compiles fine and fails in CI. Vitest runs in a couple of seconds.
+    step "frontend tests"
+    # Captured rather than piped to `tail` like the cargo steps above: vitest
+    # prints a jsdom performance note after its summary, so a blind tail shows
+    # that advice instead of the failure. Quiet when green, detailed when not.
+    if ! vitest_out=$(cd frontend && npm test 2>&1); then
+        echo "$vitest_out" | grep -vE '^\s*$' | tail -25
+        fail "frontend tests failed — run 'cd frontend && npm test'"
+    fi
+    ok "tests"
 fi
 
 echo -e "${GREEN}pre-commit checks passed ✓${NC}"
