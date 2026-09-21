@@ -505,6 +505,10 @@ and not background to it.*
 
 ## 6. Smaller defects found on the way
 
+> **Shipped (Phase F),** except the defaults, which Phase A addressed by
+> surfacing them in the activity panel rather than by changing them — the
+> privacy posture in [engagement.md §2.6](engagement.md) is deliberate.
+
 - ~~**Case-sensitive allowlist.**~~ **Fixed in Phase C**, which had to resolve
   listener names against `[agents.*]` anyway: the drain now matches without
   regard to case and carries the configured spelling forward, since
@@ -515,30 +519,41 @@ and not background to it.*
   ([config.rs:203](../../src/agent/config.rs)). Hand-written
   `ambient = ["Claude"]` against `[agents.claude]` silently does nothing. Match
   case-insensitively in both, or normalise on load.
-- **Replying to a human drops the message entirely.** A message with `reply_to`
-  fails `ambient_route_allowed`; if the parent is not an agent reply,
-  `resolve_reply_to` returns `None`. Neither path claims it. Quoting a person
-  guarantees no agent response. Ambient should be allowed when the reply-to
-  resolves to no agent.
+- ~~**Replying to a human drops the message entirely.**~~ **Fixed.** A message
+  with `reply_to` failed `ambient_route_allowed`; if the parent was not an
+  agent reply, `resolve_reply_to` returned `None`. Neither path claimed it, so
+  quoting a person guaranteed no agent response. `reaction::addressing` now
+  separates three cases rather than two: a reply that resolves to an agent is
+  addressed, a reply to a message that is present and is *not* an agent's is
+  the room's, and a reply whose parent has not synced is `Unknown` — left
+  undecided so a later drain can look again once it arrives.
 - **Defaults make the feature invisible.** `ambient` is empty and
   `engagement_window_secs` is `0` ([config.rs:158](../../src/agent/config.rs)),
   so out of the box no unaddressed message reaches any agent. That is a
   defensible privacy posture ([engagement.md §2.6](engagement.md)) but it is the
   single most common cause of "the agent wasn't triggered", and the UI should
   say so where the user is looking rather than only in the roster.
-- **`~ambient:` is a string-prefix protocol** parsed in three places
+- ~~**`~ambient:` is a string-prefix protocol**~~ **Fixed** by validating names
+  on config load: an agent whose name is empty or contains `:`, `@`, `/` or
+  whitespace is dropped with a warning rather than loaded, since every one of
+  those breaks a key that is later parsed back. Dropped rather than rejected —
+  one unusable entry should not stop the file loading, and a missing agent is
+  the safe failure. Previously: parsed in three places
   ([reaction.rs:131](../../src/agent/reaction.rs),
   [inbox.rs:145](../../src/agent/inbox.rs),
   [reaction.rs:414](../../src/agent/reaction.rs)). Agent names are not validated
   against `:`. Validate on config load.
-- **`ambient_rotate_count` phase is unstable.** `1 + offered_messages.len() % max`
-  counts every ambient entry ever in the inbox, which is trimmed and rebuilt
-  across restarts, so the rotation phase is not reproducible. Cosmetic, but the
-  setting promises a cycle it does not deliver.
-- **`HandledMentions::mark_new` is dead in production** — only `contains` and
-  `entries` are called, for legacy import. Either the ledger in §2 absorbs this
-  file or it should be marked import-only in its module doc, which currently
-  describes it as the live dedup mechanism.
+- ~~**`ambient_rotate_count` phase is unstable.**~~ **Fixed.** The count is now
+  derived from the message id (FNV-1a), so it is the same answer on any device
+  and any daemon run. Previously `1 + offered_messages.len() % max` counted
+  every ambient entry ever in the inbox, which is trimmed and rebuilt across
+  restarts. Strictly it varies rather than cycles now, which is what the
+  setting's label promises and what the old code delivered in practice.
+- ~~**`HandledMentions::mark_new` is dead in production**~~ **Fixed** by the
+  second option: `mark_new` is `#[cfg(test)]` and the module doc says the file
+  is read-only history from a pre-inbox build. Not absorbed into §2's ledger —
+  they answer different questions, and deleting the file would replay every
+  mention it covers exactly once on the next start.
 
 ## 7. Phasing
 
@@ -551,7 +566,7 @@ Each phase is independently landable and independently useful.
 | ~~**C**~~ | ~~§2.1–2.3 — observation ledger, drain, backlog collapse; delete the `ts >= now - 30` gate and the in-inbox one-shot guard~~ **Shipped.** | The core fix. Needs A to be verifiable. |
 | ~~**D**~~ | ~~§3.2, §3.4 — re-offer on failure, attempt budget, ambient turn timeout~~ **Shipped.** | Builds directly on C's ledger. |
 | ~~**E**~~ | ~~§2.4 — retire `activated_at` for admission~~ **Shipped.** | Highest blast radius (touches addressed work); land last, behind the tests from C. |
-| **F** | §6 — the small defects | Any time; independent. |
+| ~~**F**~~ | ~~§6 — the small defects~~ **Shipped.** | Any time; independent. |
 
 ## 8. Open questions
 
