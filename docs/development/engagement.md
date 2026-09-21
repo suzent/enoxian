@@ -161,6 +161,11 @@ addressing, the window is implicit, and reply-to also re-arms the window.
 
 ## 2. Ambient engagement
 
+> **Follow-up spec:** [ambient-reliability.md](ambient-reliability.md) covers
+> what the shipped version of this section gets wrong — admission gated on the
+> author's wall clock, a failed turn consuming the room's only chance to
+> answer, and a prompt that tells an unaddressed agent it was mentioned.
+
 Goal: with several agents in a Circle, let them *see* the conversation and
 volunteer, instead of being summoned one at a time.
 

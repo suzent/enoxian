@@ -280,5 +280,43 @@ pub async fn deliveries(
             .then(b["run_id"].as_str().cmp(&a["run_id"].as_str()))
     });
     runs.truncate(100);
-    Json(json!({"peer_id": state.peer_id, "runs": runs})).into_response()
+    // `runs` is replicated and device-vouched; the two fields below are neither.
+    // They are this device's own account of what it declined to do and why, and
+    // they are here rather than on their own endpoint only so the activity
+    // panel — which already polls this one — can show a run and the reason a
+    // run is missing side by side. No peer sees them.
+    Json(json!({
+        "peer_id": state.peer_id,
+        "runs": runs,
+        "readiness": readiness(&state),
+        "skips": state.admission_log.recent(30),
+    }))
+    .into_response()
+}
+
+/// What this device would do with an unaddressed message right now.
+///
+/// A standing configuration fact rather than an event, which is why it is
+/// reported as state instead of being written into the skip log once per
+/// message. Empty `ambient` is the single most common reason nothing happens
+/// ([ambient-reliability.md](../../docs/development/ambient-reliability.md)
+/// §6), and it is invisible from the transcript.
+fn readiness(state: &crate::state::AppState) -> serde_json::Value {
+    let cfg = crate::agent::config::AgentConfig::load();
+    let settings = cfg.resolved(&state.circle_id);
+    let missing: Vec<&String> = settings
+        .ambient
+        .iter()
+        .filter(|name| !cfg.agents.contains_key(*name))
+        .collect();
+    json!({
+        "reaction": settings.reaction,
+        "ambient": settings.ambient,
+        "ambient_responders": settings.ambient_responders,
+        "engagement_window_secs": settings.engagement_window_secs,
+        // Named in `ambient` but absent from `[agents.*]`, so silently inert —
+        // the exact-match filter in `offer_ambient` is case-sensitive while
+        // `is_ambient` is not, which makes this easy to hit by hand.
+        "ambient_unconfigured": missing,
+    })
 }

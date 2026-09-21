@@ -312,5 +312,10 @@ export function wsYjsUrl(circleId: string, filePath: string): string {
   return withToken(`${proto}://${location.host}/circles/${circleId}/ws/yjs?path=${encodeURIComponent(filePath)}`)
 }
 
-export const getExecutions = (id: string) => get<{ peer_id?: string; runs: import('./types').ExecutionRun[] }>(`${api(id)}/chat/deliveries`)
+export const getExecutions = (id: string) => get<{
+  peer_id?: string
+  runs: import('./types').ExecutionRun[]
+  readiness?: import('./types').Readiness
+  skips?: import('./types').AdmissionSkip[]
+}>(`${api(id)}/chat/deliveries`)
 export const updateExecution = (id: string, run: string, action: 'retry' | 'cancel') => post(`${api(id)}/chat/executions/${encodeURIComponent(run)}`, { action })

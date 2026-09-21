@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getExecutions, updateExecution } from '../api'
-import type { ChatMessage, ExecutionRun, Member } from '../types'
+import type { AdmissionSkip, ChatMessage, ExecutionRun, Member, Readiness } from '../types'
 
 const retryable = new Set(['failed', 'interrupted', 'expired', 'cancelled'])
 const statusLabels: Record<ExecutionRun['status'], string> = {
@@ -13,12 +13,31 @@ function normalizedAgent(run: ExecutionRun) {
   return run.agent_id.replace(/^~ambient:/, '')
 }
 
+/** The standing reasons nothing can happen here, as opposed to the per-message
+ *  ones below. Configuration is invisible from the transcript, and an empty
+ *  listener list is the most common cause of "the agent wasn't triggered". */
+function readinessWarnings(readiness?: Readiness): string[] {
+  if (!readiness) return []
+  const warnings: string[] = []
+  if (readiness.reaction !== 'push')
+    warnings.push('This device is set to pull, so it never launches an agent on its own.')
+  if (readiness.ambient.length === 0 && readiness.engagement_window_secs <= 0)
+    warnings.push('No agent reads this room, and follow-ups are off — only an @mention reaches an agent here.')
+  else if (readiness.ambient.length === 0)
+    warnings.push('No agent reads this room. A message that names nobody only routes as a follow-up.')
+  if (readiness.ambient_unconfigured.length > 0)
+    warnings.push(`Listed as reading the room but not configured on this device, so ignored: ${readiness.ambient_unconfigured.join(', ')}.`)
+  return warnings
+}
+
 /** Current work is prominent; imported history should never look like a queue. */
 export default function ExecutionStatus({ onNavigate, circleId, members = [], messages = [] }: {
   onNavigate?: () => void; circleId: string; members?: Member[]; messages?: ChatMessage[]
 }) {
   const [selfPeer, setSelfPeer] = useState<string | undefined>()
   const [runs, setRuns] = useState<ExecutionRun[]>([])
+  const [skips, setSkips] = useState<AdmissionSkip[]>([])
+  const [readiness, setReadiness] = useState<Readiness | undefined>()
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const generation = useRef(0)
@@ -26,14 +45,15 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
     const current = ++generation.current
     let disposed = false
     let loading = false
-    setRuns([]); setSelfPeer(undefined); setError(null); setBusy(null)
+    setRuns([]); setSkips([]); setReadiness(undefined); setSelfPeer(undefined); setError(null); setBusy(null)
     const refresh = async () => {
       if (loading) return
       loading = true
       try {
         const page = await getExecutions(circleId)
         if (!disposed && generation.current === current) {
-          setRuns(page.runs); setSelfPeer(page.peer_id); setError(null)
+          setRuns(page.runs); setSkips(page.skips ?? []); setReadiness(page.readiness)
+          setSelfPeer(page.peer_id); setError(null)
         }
       } catch {
         if (!disposed) setError('Could not refresh agent activity. Showing the last reported status.')
@@ -50,7 +70,10 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
     try {
       await updateExecution(circleId, run.run_id, action)
       const page = await getExecutions(circleId)
-      if (generation.current === current) { setRuns(page.runs); setSelfPeer(page.peer_id); setError(null) }
+      if (generation.current === current) {
+        setRuns(page.runs); setSkips(page.skips ?? []); setReadiness(page.readiness)
+        setSelfPeer(page.peer_id); setError(null)
+      }
     } catch (e) {
       if (generation.current === current) setError(e instanceof Error ? e.message : String(e))
     } finally { if (generation.current === current) setBusy(null) }
@@ -88,18 +111,45 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
       </li>
     })}
   </ul>
+  const warnings = readinessWarnings(readiness)
+  // A run that exists is a better answer than a reason it might not have, so a
+  // message with either is only ever listed once, under its run.
+  const ran = new Set(runs.map(r => r.message_id))
+  const notPickedUp = skips.filter(s => !ran.has(s.message_id))
   return <section aria-label="Agent activity" className="agent-activity">
     <header className="agent-activity__header">
       <h3>Agent activity</h3>
       <span className="agent-activity__count" title="Requests working or waiting">{active.length}</span>
     </header>
     {error && <p role="status" className="agent-activity__error">{error}</p>}
+    {warnings.map(warning => <p key={warning} className="agent-activity__readiness">{warning}</p>)}
     {active.length > 0 ? <>
       <p className="agent-activity__summary">{active.filter(r => r.status === 'running').length} working · {active.filter(r => r.status === 'pending').length} waiting</p>
       {rows(active)}
     </> : <p className="agent-activity__empty">No active requests</p>}
     {attention.length > 0 && <details className="agent-activity__group"><summary>Needs attention <span>{attention.length}</span></summary>{rows(attention)}</details>}
     {history.length > 0 && <details className="agent-activity__group"><summary>Recent history <span>{history.length}</span></summary>{rows([...history].sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0)))}</details>}
-    <p className="agent-activity__note" title="Status is reported by each device and may be out of date while it’s disconnected. A missing entry doesn’t confirm delivery.">Last reported by each device <span aria-hidden="true">ⓘ</span></p>
+    {notPickedUp.length > 0 && <details className="agent-activity__group">
+      <summary title="Messages this device saw and chose not to act on">Not picked up <span>{notPickedUp.length}</span></summary>
+      <ul className="agent-activity__list">
+        {notPickedUp.map(skip => {
+          const source = messages.find(m => m.id === skip.message_id)
+          return <li key={`${skip.message_id}:${skip.agent ?? ''}:${skip.reason}`} className="agent-activity__item agent-activity__item--skipped">
+            <div className="agent-activity__identity">
+              <strong className="agent-activity__name">{skip.agent ? `@${skip.agent}` : 'Nobody'}</strong>
+              <span className="agent-activity__status">Didn’t run</span>
+            </div>
+            <p className="agent-activity__detail">{skip.reason}</p>
+            {source ? <a className="agent-activity__source" href={`#chat-message-${skip.message_id}`} onClick={onNavigate} title={source.text}>{source.text}</a>
+              : <span className="agent-activity__unavailable">Message unavailable</span>}
+            <div className="agent-activity__meta">
+              {skip.count > 1 ? `Still true after ${skip.count} checks` : 'Decided once'}
+              <time dateTime={new Date(skip.last_at * 1000).toISOString()} title="Last time this device re-checked">{new Date(skip.last_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+            </div>
+          </li>
+        })}
+      </ul>
+    </details>}
+    <p className="agent-activity__note" title="Status is reported by each device and may be out of date while it’s disconnected. A missing entry doesn’t confirm delivery. “Not picked up” is this device’s own reasoning and is cleared when the daemon restarts.">Last reported by each device <span aria-hidden="true">ⓘ</span></p>
   </section>
 }

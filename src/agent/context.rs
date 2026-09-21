@@ -15,6 +15,33 @@ use crate::control::{ChatMessage, MemberEntry, MEMBER_LIST_KEY};
 use crate::state::AppState;
 use yrs::{Any, Map, Out, ReadTxn, Transact};
 
+/// Why this turn is happening, which decides how the prompt addresses the agent.
+///
+/// The distinction used to be invisible here: every prompt opened with
+/// `REQUEST from <sender> (@mention)`, and an unaddressed turn then had a
+/// paragraph appended at the end denying it. A prompt that asserts the agent was
+/// mentioned, frames the text as a request to it, tells it to respond, and then
+/// says none of that was true is asking PASS of a model it has just argued out
+/// of passing. See `docs/development/ambient-reliability.md` §5.
+///
+/// Who else was offered the same message is deliberately *not* here. It belongs
+/// beside the decision it informs, which is the PASS convention in
+/// [`super::ambient::ambient_instruction`], and stating it in both places put
+/// the same name in the prompt twice a few lines apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Framing {
+    /// A mention or a follow-up: this really is a request to this agent.
+    Addressed,
+    /// Nobody named the agent; it is being shown the room (§2).
+    Overheard,
+}
+
+impl Framing {
+    fn is_overheard(&self) -> bool {
+        *self == Self::Overheard
+    }
+}
+
 /// How many recent chat lines to include as conversational context. Also caps
 /// the resumed-session delta, so a long absence cannot blow up the prompt.
 const RECENT_CHAT_LINES: usize = 12;
@@ -37,7 +64,16 @@ pub fn build_prompt(
     resume: Option<&super::memory::Record>,
     trigger_id: &str,
 ) -> String {
-    build_delivery(state, agent_id, sender, task, resume, trigger_id).prompt
+    build_delivery(
+        state,
+        agent_id,
+        sender,
+        task,
+        resume,
+        trigger_id,
+        Framing::Addressed,
+    )
+    .prompt
 }
 
 /// The most delivered-but-not-yet-passed ids we carry between turns.
@@ -70,6 +106,7 @@ pub fn build_delivery(
     task: &str,
     resume: Option<&super::memory::Record>,
     trigger_id: &str,
+    framing: Framing,
 ) -> Delivery {
     let all = state.transcript();
     let since = resume.map(|r| r.last_seen_message.as_str());
@@ -183,7 +220,12 @@ pub fn build_delivery(
         parent = message.reply_to.clone();
     }
     // Keep the brief available even when session/load falls back to session/new.
-    let brief = standing_brief(state, agent_id);
+    let brief = standing_brief(state, agent_id, framing);
+    let attachments = all
+        .iter()
+        .find(|m| m.id == trigger_id)
+        .map(|m| attachment_note(&state.circle_id, m))
+        .unwrap_or_default();
     Delivery {
         prompt: compose(
             &state.circle_name,
@@ -196,6 +238,8 @@ pub fn build_delivery(
             } else {
                 FRESH_CHAT_HEADING
             },
+            framing,
+            &attachments,
         ),
         delivered: carry_forward(&all, start, carried, shown, trigger_id),
         withheld,
@@ -280,13 +324,14 @@ pub fn recovery_context(state: &AppState, agent: &str, withheld: &[String]) -> S
         )
     };
     format!("<context>\nThe previous ACP conversation could not be restored. Its private memory is unavailable.\n{}\n{restored}Recent room history:\n{history}\nFor older history, retrieve GET /circles/{}/api/chat?limit=100, then continue with after_id equal to the last returned message ID.\n</context>\n\n",
-        standing_brief(state, agent), state.circle_id)
+        standing_brief(state, agent, Framing::Addressed), state.circle_id)
 }
 
 /// Pure prompt composition. `brief` is `Some` only for a fresh session; `recent`
 /// is the chat block (full history when fresh, the delta when resumed) and is
 /// `None` when there is nothing to show. Either one present produces the fenced
 /// background CONTEXT block. See the module docs for the shape.
+#[allow(clippy::too_many_arguments)]
 fn compose(
     circle_name: &str,
     sender: &str,
@@ -294,17 +339,27 @@ fn compose(
     brief: Option<&str>,
     recent: Option<&str>,
     recent_heading: &str,
+    framing: Framing,
+    attachments: &str,
 ) -> String {
     let mut out = String::new();
+    // What the agent is being handed. Named once here and referred to by the
+    // same word in the context fence below, so "do not reply to the background,
+    // reply to that" does not depend on the agent matching up two labels.
+    let subject = if framing.is_overheard() {
+        "MESSAGE"
+    } else {
+        "REQUEST"
+    };
 
     if brief.is_some() || recent.is_some() {
         // Background, fenced and explicitly marked "do not reply to this" so the
         // agent does not answer the brief/chat conversationally before the task.
-        out.push_str(
+        out.push_str(&format!(
             "The block between <context> tags below is background about your \
              environment. Do NOT reply to it; use it only to inform your response \
-             to the REQUEST that follows.\n<context>\n",
-        );
+             to the {subject} that follows.\n<context>\n"
+        ));
         if let Some(brief) = brief {
             out.push_str(brief);
         }
@@ -318,18 +373,61 @@ fn compose(
         out.push_str("</context>\n\n");
     }
 
-    // The single REQUEST the agent should answer — always last, always the only
-    // thing framed as something to respond to.
-    out.push_str(&format!(
-        "REQUEST from {sender} (@mention) in circle \"{circle_name}\". Respond only to this:\n"
-    ));
+    // The single thing the agent should react to — always last, always the only
+    // block framed as something to respond to.
+    match framing {
+        Framing::Addressed => out.push_str(&format!(
+            "REQUEST from {sender} (@mention) in circle \"{circle_name}\". Respond only to this:\n"
+        )),
+        Framing::Overheard => out.push_str(&format!(
+            "MESSAGE overheard in circle \"{circle_name}\". {sender} posted this to the room; it \
+             names no agent and you were not addressed. Decide whether it is worth saying \
+             anything:\n"
+        )),
+    }
     out.push_str(task);
+    out.push_str(attachments);
     out
+}
+
+/// Attachments on the triggering message, listed with how to fetch them.
+///
+/// Without this an image posted with no words produced a turn whose entire
+/// instruction was the empty string: the ambient floor deliberately lets a
+/// wordless image through, and nothing downstream had ever looked at
+/// `ChatMessage::attachments`. See ambient-reliability.md §5.3.
+fn attachment_note(circle_id: &str, message: &ChatMessage) -> String {
+    if message.attachments.is_empty() {
+        return String::new();
+    }
+    let listed: Vec<String> = message
+        .attachments
+        .iter()
+        .map(|a| {
+            let dimensions = match (a.width, a.height) {
+                (Some(w), Some(h)) => format!(", {w}x{h}"),
+                _ => String::new(),
+            };
+            format!(
+                "  {} — {}, {} KB{dimensions}. GET /circles/{circle_id}/api/blobs/{}",
+                a.name,
+                a.mime,
+                a.size.div_ceil(1024).max(1),
+                a.hash
+            )
+        })
+        .collect();
+    format!(
+        "\n\nAttached to this message ({} file{}):\n{}",
+        listed.len(),
+        if listed.len() == 1 { "" } else { "s" },
+        listed.join("\n")
+    )
 }
 
 /// The standing brief describing the enoxian environment. Sent once per fresh
 /// session; the agent carries it forward via resume after that.
-fn standing_brief(state: &AppState, agent_id: &str) -> String {
+fn standing_brief(state: &AppState, agent_id: &str, framing: Framing) -> String {
     let members = member_labels(state);
     let roster = if members.is_empty() {
         String::new()
@@ -364,11 +462,20 @@ fn standing_brief(state: &AppState, agent_id: &str) -> String {
             agent = agent_id,
         ),
     };
+    // How this agent came to be running, stated once and accurately. The brief
+    // used to assert an @mention unconditionally, including on the turns that
+    // exist precisely because nobody mentioned anyone (§5).
+    let woken = if framing.is_overheard() {
+        "This is a group room: several people and agents share it, and most of what is said here \
+         is not addressed to you. You are seeing this message because you are configured to read \
+         the room, not because anyone asked you for anything."
+    } else {
+        "You were woken by an @mention in the circle's chat."
+    };
     format!(
         "You are \"{agent}\", an agent participating in an enoxian circle named \"{circle}\".\n\
-         enoxian is a peer-to-peer workspace shared by the members below. You were woken by an \
-         @mention in the circle's chat. You are working directly in the shared workspace at the \
-         current directory.\n\
+         enoxian is a peer-to-peer workspace shared by the members below. {woken} You are working \
+         directly in the shared workspace at the current directory.\n\
          {addressing}\
          {roster}\
          Anything you write to files here is captured as a reviewable *proposal* that members can \
@@ -382,6 +489,7 @@ fn standing_brief(state: &AppState, agent_id: &str) -> String {
         circle = state.circle_name,
         addressing = addressing,
         roster = roster,
+        woken = woken,
     )
 }
 
@@ -495,6 +603,8 @@ mod tests {
             Some("You are claude, an agent…\n"),
             Some("  suzy: hi\n  claude: hello"),
             FRESH_CHAT_HEADING,
+            Framing::Addressed,
+            "",
         );
         // Background is fenced and flagged do-not-reply.
         assert!(p.contains("Do NOT reply to it"));
@@ -508,6 +618,76 @@ mod tests {
     }
 
     #[test]
+    fn an_overheard_turn_is_never_told_it_was_mentioned() {
+        // The defect this exists to prevent: the prompt used to assert an
+        // @mention, frame the text as a REQUEST to this agent, say "respond
+        // only to this", and then append a paragraph denying all three.
+        let p = compose(
+            "delta",
+            "suzy",
+            "how does the retry path work?",
+            Some("brief text\n"),
+            Some("  bob: no idea"),
+            FRESH_CHAT_HEADING,
+            Framing::Overheard,
+            "",
+        );
+        assert!(!p.contains("REQUEST from"), "it is not a request to anyone");
+        assert!(!p.contains("(@mention)"), "nobody mentioned this agent");
+        assert!(!p.contains("Respond only to this"));
+        assert!(p.contains("MESSAGE overheard in circle \"delta\""));
+        assert!(p.contains("it names no agent and you were not addressed"));
+        assert!(p.trim_end().ends_with("how does the retry path work?"));
+        // The do-not-reply fence must point at the same block by the same name.
+        assert!(p.contains("to the MESSAGE that follows"));
+    }
+
+    #[test]
+    fn an_addressed_turn_is_unchanged() {
+        // Everything above is additive: the mention path must read exactly as
+        // it did, since that is what resumed sessions have been trained on.
+        let p = compose(
+            "delta",
+            "suzy",
+            "make a test file",
+            Some("brief\n"),
+            None,
+            FRESH_CHAT_HEADING,
+            Framing::Addressed,
+            "",
+        );
+        assert!(p.starts_with("The block between <context> tags"));
+        assert!(p.contains("to the REQUEST that follows"));
+        assert!(
+            p.contains("REQUEST from suzy (@mention) in circle \"delta\". Respond only to this:")
+        );
+        assert!(!p.contains("overheard"));
+    }
+
+    #[test]
+    fn a_wordless_image_still_says_what_was_posted() {
+        // The ambient floor deliberately lets an attachment-only message
+        // through, and nothing had ever read `attachments` — so the turn ran on
+        // an empty instruction. §5.3.
+        let mut m = msg("m1", "suzy", "");
+        m.attachments = vec![crate::control::Attachment {
+            hash: "abc123".into(),
+            name: "screenshot.png".into(),
+            mime: "image/png".into(),
+            size: 4096,
+            width: Some(800),
+            height: Some(600),
+        }];
+        let note = attachment_note("c1", &m);
+        assert!(note.contains("Attached to this message (1 file)"));
+        assert!(note.contains("screenshot.png — image/png, 4 KB, 800x600"));
+        assert!(note.contains("GET /circles/c1/api/blobs/abc123"));
+
+        // A message with nothing attached gains nothing.
+        assert_eq!(attachment_note("c1", &msg("m2", "suzy", "just words")), "");
+    }
+
+    #[test]
     fn resumed_prompt_with_no_new_chat_is_request_only() {
         let p = compose(
             "delta",
@@ -516,6 +696,8 @@ mod tests {
             None,
             None,
             DELTA_CHAT_HEADING,
+            Framing::Addressed,
+            "",
         );
         // No background block when nothing happened since the last turn.
         assert!(!p.contains("<context>"));
@@ -534,6 +716,8 @@ mod tests {
             None,
             Some("  bob: actually use the backoff helper"),
             DELTA_CHAT_HEADING,
+            Framing::Addressed,
+            "",
         );
         // The delta is fenced and flagged do-not-reply, like any background.
         assert!(p.contains("<context>") && p.contains("Do NOT reply to it"));
@@ -553,6 +737,8 @@ mod tests {
             Some("brief text\n"),
             None,
             FRESH_CHAT_HEADING,
+            Framing::Addressed,
+            "",
         );
         assert!(p.contains("<context>"));
         assert!(p.contains("brief text"));

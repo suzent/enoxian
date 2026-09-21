@@ -269,6 +269,29 @@ export interface DiscoveredAgent {
   configured: boolean
 }
 
+/** Why this device did not act on a message. Local diagnostics: never synced,
+ *  never vouched for by a peer, and dropped when the daemon restarts. */
+export interface AdmissionSkip {
+  message_id: string
+  /** Absent when the decision was about the message rather than one agent. */
+  agent?: string | null
+  reason: string
+  /** Times this same decision was re-derived — "still true", not "happened again". */
+  count: number
+  first_at: number
+  last_at: number
+}
+
+/** What this device would do with an unaddressed message right now. */
+export interface Readiness {
+  reaction: 'push' | 'pull'
+  ambient: string[]
+  ambient_responders: number
+  engagement_window_secs: number
+  /** Listed as reading the room but not configured as an agent here, so inert. */
+  ambient_unconfigured: string[]
+}
+
 export interface ExecutionRun {
   admitted_at?: number
   updated_at?: number

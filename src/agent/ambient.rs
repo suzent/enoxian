@@ -114,11 +114,41 @@ pub fn spoke_recently(history: &[ChatMessage], agent: &str, now: i64) -> bool {
 ///
 /// States the PASS convention explicitly, and that the turn is conversational:
 /// an agent nobody asked to do anything should not be writing files (§2.4).
-pub fn ambient_instruction() -> &'static str {
-    "You were not addressed. You are seeing this because you are a participant in this room. \
-     If you have nothing worth adding, reply with exactly PASS and nothing else. Do not explain \
-     why you are passing. This is a conversational turn, not a work order: do not change files. \
-     If something needs doing, say so and let someone ask for it."
+///
+/// It no longer opens with "You were not addressed". That sentence existed to
+/// undo the `REQUEST from <sender> (@mention)` header the prompt had already
+/// asserted above it; now that an unaddressed turn is framed as overheard from
+/// the start, repeating the denial here would be the contradiction in the other
+/// direction. See `docs/development/ambient-reliability.md` §5.
+///
+/// `co_listeners` is every agent shown this message, `self_id` included. What it
+/// buys is a reason to pass that is not self-deprecation: an agent with nothing
+/// uniquely useful to say can leave it to someone who has, rather than weighing
+/// its own contribution in a vacuum.
+pub fn ambient_instruction(co_listeners: &[String], self_id: &str) -> String {
+    let others: Vec<&str> = co_listeners
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !name.eq_ignore_ascii_case(self_id))
+        .collect();
+    let shared = if others.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " {} {} also deciding whether to answer this, so you do not have to cover everything \
+             — pass if someone else is better placed.",
+            others.join(" and "),
+            if others.len() == 1 { "is" } else { "are" },
+        )
+    };
+    format!(
+        "If you have nothing worth adding, reply with exactly PASS and nothing else. Do not \
+         explain why you are passing. Passing is the common case and is not a failure: most of \
+         what is said in a room does not need an agent.{shared} Someone may also have answered \
+         while this turn was waiting to run — check the recent history above, and pass if the \
+         point has been made. This is a conversational turn, not a work order: do not change \
+         files. If something needs doing, say so and let someone ask for it."
+    )
 }
 
 #[cfg(test)]
@@ -251,6 +281,44 @@ mod tests {
             !spoke_recently(&history, "claude", 100 + AMBIENT_QUIET_SECS + 1),
             "the quiet period ends"
         );
+    }
+
+    #[test]
+    fn the_instruction_no_longer_argues_with_its_own_prompt() {
+        // "You were not addressed" existed only to undo a header that now says
+        // the right thing. Keeping both would contradict in the other direction.
+        let solo = ["claude".to_string()];
+        let text = ambient_instruction(&solo, "claude");
+        assert!(!text.contains("You were not addressed"));
+        assert!(text.contains("reply with exactly PASS"));
+        assert!(text.contains("do not change files"));
+        assert!(
+            !text.contains("also deciding"),
+            "a sole listener has no company to defer to"
+        );
+    }
+
+    #[test]
+    fn a_listener_is_told_who_else_could_answer() {
+        let pair = ["claude".to_string(), "codex".to_string()];
+        let text = ambient_instruction(&pair, "claude");
+        assert!(text.contains("codex is also deciding whether to answer this"));
+        assert!(!text.contains("claude is also"), "never about itself");
+
+        let trio = ["claude".to_string(), "codex".to_string(), "pi".to_string()];
+        let text = ambient_instruction(&trio, "CLAUDE");
+        assert!(
+            text.contains("codex and pi are also deciding"),
+            "self-match ignores case, and the verb agrees"
+        );
+    }
+
+    #[test]
+    fn every_listener_is_told_the_point_may_already_be_made() {
+        // A turn can wait behind a device permit while someone else answers.
+        // The queue cancels what it can see; this covers the rest of the race.
+        let text = ambient_instruction(&["claude".to_string()], "claude");
+        assert!(text.contains("Someone may also have answered"));
     }
 
     #[test]

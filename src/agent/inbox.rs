@@ -37,6 +37,12 @@ pub struct Request {
     pub relay: Option<Relay>,
     pub implicit: bool,
     pub ambient: bool,
+    /// Every agent offered this same message, when `ambient`. Recorded at
+    /// selection rather than recomputed at launch: it is a fact about what this
+    /// device decided, and config can change while the turn sits in the queue.
+    /// Empty on an addressed turn and on entries written before this existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub co_listeners: Vec<String>,
 }
 
 impl Request {
@@ -585,6 +591,7 @@ pub(crate) mod tests {
 
     pub(crate) fn request(id: &str, agent: &str) -> Request {
         Request {
+            co_listeners: Vec::new(),
             agent: agent.into(),
             mention_key: agent.into(),
             task: "do this".into(),
