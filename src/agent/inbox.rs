@@ -85,6 +85,14 @@ pub struct Entry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     version: u32,
+    /// When this device first took ownership of the inbox here.
+    ///
+    /// Reported to the UI and used to explain what the execution panel is
+    /// showing. **Not** an admission gate any more: comparing it against a
+    /// message's `ts` compared this device's clock with the author's, which
+    /// dropped a slow peer's mentions here for good. The boundary is now the
+    /// set of messages present at activation — see
+    /// [`crate::agent::ledger::AmbientLedger::predates_activation`].
     pub activated_at: i64,
     // In admission order; terminal entries retain dedup evidence.
     pub entries: Vec<Entry>,

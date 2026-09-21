@@ -103,7 +103,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
             },
             _ = reconcile.tick() => {
                 if let Err(error) = crate::proposal::runs::release_finished_locks(&state) { tracing::debug!("lock cleanup deferred: {error}"); }
-                reconcile_requests(&state, &handled, &inbox, &wake);
+                reconcile_requests(&state, &handled, &inbox, &ledger, &wake);
                 // The heartbeat drain. Covers a daemon that starts holding a
                 // backlog and then hears nothing, which no event would wake.
                 dirty_since = None;
@@ -117,7 +117,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
             evt = events.recv() => match evt {
                 Ok(CircleEvent::MessagePosted { message }) => {
                     let cfg = AgentConfig::load();
-                    admit_message(&state, &handled, &inbox, &wake, &cfg, &message,
+                    admit_message(&state, &handled, &inbox, &ledger, &wake, &cfg, &message,
                         message.ts >= live_since);
                     let started = *dirty_since.get_or_insert_with(tokio::time::Instant::now);
                     let now = tokio::time::Instant::now();
@@ -136,7 +136,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 Ok(_) => {}
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!("[agent] reaction stream lagged by {n}; reconciling inbox");
-                    reconcile_requests(&state, &handled, &inbox, &wake);
+                    reconcile_requests(&state, &handled, &inbox, &ledger, &wake);
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
@@ -153,15 +153,17 @@ fn reconcile_requests(
     state: &AppState,
     handled: &super::handled::HandledMentions,
     inbox: &super::inbox::Inbox,
+    ledger: &super::ledger::AmbientLedger,
     wake: &tokio::sync::Notify,
 ) {
-    reconcile_requests_with_config(state, handled, inbox, wake, &AgentConfig::load());
+    reconcile_requests_with_config(state, handled, inbox, ledger, wake, &AgentConfig::load());
 }
 
 fn reconcile_requests_with_config(
     state: &AppState,
     handled: &super::handled::HandledMentions,
     inbox: &super::inbox::Inbox,
+    ledger: &super::ledger::AmbientLedger,
     wake: &tokio::sync::Notify,
     cfg: &AgentConfig,
 ) {
@@ -203,7 +205,7 @@ fn reconcile_requests_with_config(
         // Reconciliation delivers explicit work, never stale room observations
         // or recency guesses newly invented by later transcript changes.
         if !message.mentions.is_empty() || message.reply_to.is_some() {
-            admit_message(state, handled, inbox, wake, cfg, &message, false);
+            admit_message(state, handled, inbox, ledger, wake, cfg, &message, false);
         }
     }
     let _ = crate::api::execution::publish(state, inbox);
@@ -223,16 +225,24 @@ fn message_author_scope(state: &AppState, peer: &str) -> Option<(String, String)
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn admit_message(
     state: &AppState,
     handled: &super::handled::HandledMentions,
     inbox: &super::inbox::Inbox,
+    ledger: &super::ledger::AmbientLedger,
     wake: &tokio::sync::Notify,
     cfg: &AgentConfig,
     message: &crate::control::ChatMessage,
     live: bool,
 ) {
-    if message.ts < inbox.activated_at() || message.author == crate::control::Author::System {
+    // Was this already in the room when this device started listening? Asked of
+    // the ledger rather than by comparing the author's clock against ours
+    // (§2.4). The old `message.ts < inbox.activated_at()` did not just lose
+    // ambient turns: a peer whose clock sat behind this device's activation
+    // had its *addressed mentions* dropped here, silently, for as long as the
+    // Circle existed.
+    if ledger.predates_activation(&message.id) || message.author == crate::control::Author::System {
         return;
     }
     let agent_reply = message.author == crate::control::Author::Agent
@@ -501,7 +511,7 @@ fn drain_ambient(
     // separately from never-seen messages, because it has already won a tail
     // slot once and must not have to win another (§3.2).
     let mut reopened: Vec<&crate::control::ChatMessage> = Vec::new();
-    for message in history.iter().filter(|m| m.ts >= inbox.activated_at()) {
+    for message in history.iter() {
         match ledger.decision(&message.id) {
             None => undecided.push(message),
             Some(super::ledger::Decision::Offered) => {
@@ -539,7 +549,7 @@ fn drain_ambient(
         // the whole transcript forever, and turning a listener on later should
         // not retroactively answer everything said while none was configured.
         for message in &undecided {
-            ledger.record(&message.id, Decision::PreActivation, now);
+            ledger.record(&message.id, Decision::NoListener, now);
         }
         return undecided.len();
     }
@@ -1777,22 +1787,39 @@ mod tests {
         use super::super::inbox::{tests::request, Inbox, Status};
         let (state, dir) = test_state("local", "suzy");
         let inbox = Inbox::open(dir.path(), 100).unwrap();
-        drop(inbox); // Target shuts down; the activation boundary remains.
         let mut old = request("historic", "claude").message;
         old.ts = 90;
+        add_chat(&state, &old);
+        // The device activates with `historic` already in the room. That, and
+        // not a timestamp, is what the boundary records.
+        let ledger =
+            super::super::ledger::AmbientLedger::load(dir.path(), &["historic".to_string()], 100);
+        drop(ledger);
+        drop(inbox); // Target shuts down; the activation boundary remains.
+
         let missed = request("offline", "claude").message;
         let mut newer = request("newer-chatter", "claude").message;
         newer.ts = 110;
         newer.mentions.clear();
-        add_chat(&state, &old);
         add_chat(&state, &missed);
         add_chat(&state, &newer);
         let inbox = Inbox::open(dir.path(), 200).unwrap();
         let handled = super::super::handled::HandledMentions::load(dir.path());
+        // A restart reloads the boundary from disk rather than deriving a new
+        // one, so everything that arrived while the device was down is new.
+        let ledger = super::super::ledger::AmbientLedger::load(
+            dir.path(),
+            &state
+                .transcript()
+                .into_iter()
+                .map(|m| m.id)
+                .collect::<Vec<_>>(),
+            200,
+        );
         let wake = tokio::sync::Notify::new();
         let cfg = inbox_config();
         for _ in 0..3 {
-            reconcile_requests_with_config(&state, &handled, &inbox, &wake, &cfg);
+            reconcile_requests_with_config(&state, &handled, &inbox, &ledger, &wake, &cfg);
         }
         let entries = inbox.entries();
         assert_eq!(entries.len(), 1);
@@ -1806,6 +1833,7 @@ mod tests {
         let (state, dir) = test_state("local", "suzy");
         let inbox = Inbox::open(dir.path(), 100).unwrap();
         let handled = super::super::handled::HandledMentions::load(dir.path());
+        let ledger = ledger_at_startup(dir.path());
         let wake = tokio::sync::Notify::new();
         let cfg = inbox_config();
         let legacy = request("old-queue", "claude").message;
@@ -1815,7 +1843,7 @@ mod tests {
         reply.mentions.clear();
         reply.reply_to = Some("parent".into());
         add_chat(&state, &reply);
-        reconcile_requests_with_config(&state, &handled, &inbox, &wake, &cfg);
+        reconcile_requests_with_config(&state, &handled, &inbox, &ledger, &wake, &cfg);
         assert!(
             inbox
                 .entries()
@@ -1833,7 +1861,7 @@ mod tests {
             "claude",
         ));
         add_chat(&state, &parent);
-        reconcile_requests_with_config(&state, &handled, &inbox, &wake, &cfg);
+        reconcile_requests_with_config(&state, &handled, &inbox, &ledger, &wake, &cfg);
         assert_eq!(inbox.entries().len(), 2);
         assert_eq!(
             inbox.entries()[0].status,
@@ -1848,6 +1876,7 @@ mod tests {
         let (state, dir) = test_state("local", "suzy");
         let inbox = Inbox::open(dir.path(), 100).unwrap();
         let handled = super::super::handled::HandledMentions::load(dir.path());
+        let ledger = ledger_at_startup(dir.path());
         let mut message = request("delegation", "claude").message;
         message.author = crate::control::Author::Agent;
         message.mentions = vec!["claude".into(), "codex".into()];
@@ -1858,7 +1887,7 @@ mod tests {
         add_chat(&state, &message);
         let wake = tokio::sync::Notify::new();
         let cfg = inbox_config();
-        reconcile_requests_with_config(&state, &handled, &inbox, &wake, &cfg);
+        reconcile_requests_with_config(&state, &handled, &inbox, &ledger, &wake, &cfg);
         assert_eq!(inbox.entries().len(), 1);
         assert_eq!(inbox.entries()[0].request.agent, "claude");
     }
@@ -1883,6 +1912,7 @@ mod tests {
                 &state,
                 &handled,
                 &inbox,
+                &ledger_at_startup(dir.path()),
                 &tokio::sync::Notify::new(),
                 &inbox_config(),
                 &message,
@@ -2741,11 +2771,14 @@ mod tests {
         let (state, dir) = test_state("local", "suzy");
         let inbox = Inbox::open(dir.path(), 100).unwrap();
         let handled = super::super::handled::HandledMentions::load(dir.path());
+        let ledger = ledger_at_startup(dir.path());
         let wake = tokio::sync::Notify::new();
         let cfg = inbox_config();
         let mut message = room_message("named", "@claude please look at the retry path");
         message.mentions = vec!["claude".into()];
-        admit_message(&state, &handled, &inbox, &wake, &cfg, &message, true);
+        admit_message(
+            &state, &handled, &inbox, &ledger, &wake, &cfg, &message, true,
+        );
         let entries = inbox.entries();
         assert_eq!(entries.len(), 1);
         assert!(!entries[0].request.ambient);
@@ -2821,6 +2854,109 @@ mod tests {
         add_chat(&state, &parent);
         drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
         assert!(ledger.decided("orphan"), "now it can be decided");
+    }
+
+    #[test]
+    fn a_peer_whose_clock_runs_slow_can_still_mention_an_agent() {
+        // The severe half of the clock defect, and the reason §2.4 exists. The
+        // admission gate compared the *author's* `ts` against this device's
+        // `activated_at`, so a peer whose clock sat behind that moment had its
+        // explicit @mentions dropped here — silently, and for as long as the
+        // Circle existed. Not ambient: addressed work.
+        use super::super::inbox::{tests::request, Inbox};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), chrono::Utc::now().timestamp()).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let ledger = ledger_at_startup(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let cfg = inbox_config();
+
+        let mut message = request("slow-peer", "claude").message;
+        message.ts = chrono::Utc::now().timestamp() - 3600;
+        message.mentions = vec!["claude".into()];
+        add_chat(&state, &message);
+        admit_message(
+            &state, &handled, &inbox, &ledger, &wake, &cfg, &message, true,
+        );
+        let entries = inbox.entries();
+        assert_eq!(entries.len(), 1, "an hour behind is not a reason to ignore");
+        assert_eq!(entries[0].request.agent, "claude");
+    }
+
+    #[test]
+    fn history_present_at_activation_never_fires_however_the_clocks_read() {
+        // The property the timestamp was there for, and which must survive its
+        // removal: switching agents on in a Circle with history must not fire
+        // every @mention ever written in it.
+        use super::super::inbox::{tests::request, Inbox};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let cfg = inbox_config();
+        let mut history = Vec::new();
+        for i in 0..5 {
+            let mut m = request(&format!("past{i}"), "claude").message;
+            m.mentions = vec!["claude".into()];
+            // Timestamps all over the place, including the future.
+            m.ts = chrono::Utc::now().timestamp() + (i as i64 - 2) * 3600;
+            add_chat(&state, &m);
+            history.push(m.id.clone());
+        }
+        let ledger = super::super::ledger::AmbientLedger::load(dir.path(), &history, 100);
+        for id in &history {
+            let message = state
+                .transcript()
+                .into_iter()
+                .find(|m| &m.id == id)
+                .unwrap();
+            admit_message(
+                &state, &handled, &inbox, &ledger, &wake, &cfg, &message, true,
+            );
+        }
+        assert!(
+            inbox.entries().is_empty(),
+            "history present at activation stays history"
+        );
+
+        // But the next thing anyone says is new, whatever its timestamp.
+        let mut fresh = request("after", "claude").message;
+        fresh.mentions = vec!["claude".into()];
+        fresh.ts = 1;
+        add_chat(&state, &fresh);
+        admit_message(&state, &handled, &inbox, &ledger, &wake, &cfg, &fresh, true);
+        assert_eq!(inbox.entries().len(), 1);
+        assert_eq!(inbox.entries()[0].request.message.id, "after");
+    }
+
+    #[test]
+    fn a_room_with_no_listener_still_answers_a_mention() {
+        // `no-listener` and `pre-activation` had to be separate decisions:
+        // recording "nobody reads the room" as the activation boundary would
+        // have made a Circle without an ambient agent ignore @mentions too.
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let ledger = ledger_at_startup(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let mut cfg = inbox_config();
+        cfg.ambient.clear();
+
+        let mut message = room_message("quiet", "how does the retry path work here?");
+        add_chat(&state, &message);
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        assert_eq!(
+            ledger.decision("quiet"),
+            Some(super::super::ledger::Decision::NoListener)
+        );
+        assert!(inbox.entries().is_empty());
+
+        message.mentions = vec!["claude".into()];
+        admit_message(
+            &state, &handled, &inbox, &ledger, &wake, &cfg, &message, true,
+        );
+        assert_eq!(inbox.entries().len(), 1, "an @mention is still addressed");
     }
 
     #[test]
@@ -3200,6 +3336,7 @@ mod tests {
             &state,
             &handled,
             &inbox,
+            &ledger_at_startup(dir.path()),
             &tokio::sync::Notify::new(),
             &inbox_config(),
         );

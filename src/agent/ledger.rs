@@ -38,8 +38,20 @@ pub enum Decision {
     Offered,
     /// Eligible, but collapsed into a backlog whose tail carried the turn.
     Backlog,
-    /// Present before this Circle started listening, so never a candidate.
+    /// Already in the transcript when this device's agent loop first ran.
+    ///
+    /// The only decision that also suppresses an **addressed** mention, which
+    /// is what lets it replace the `activated_at` timestamp comparison (§2.4):
+    /// enabling agents in a Circle with history must not fire every `@mention`
+    /// ever written in it, and "was this here when I started" is a set
+    /// membership question, not a question about two machines' clocks.
     PreActivation,
+    /// No agent reads this room, so there was nothing to offer it to.
+    ///
+    /// Distinct from [`Self::PreActivation`] precisely because it must *not*
+    /// suppress an addressed mention: a Circle with no ambient listener still
+    /// answers `@claude`.
+    NoListener,
     /// Declined by a cheap gate, carrying the reason for diagnosis.
     Skipped(String),
 }
@@ -50,6 +62,7 @@ impl Decision {
             Self::Offered => "offered".into(),
             Self::Backlog => "backlog".into(),
             Self::PreActivation => "pre-activation".into(),
+            Self::NoListener => "no-listener".into(),
             Self::Skipped(reason) => format!("skipped:{reason}"),
         }
     }
@@ -59,6 +72,7 @@ impl Decision {
             "offered" => Some(Self::Offered),
             "backlog" => Some(Self::Backlog),
             "pre-activation" => Some(Self::PreActivation),
+            "no-listener" => Some(Self::NoListener),
             other => other
                 .strip_prefix("skipped:")
                 .map(|reason| Self::Skipped(reason.to_string())),
@@ -131,6 +145,16 @@ impl AmbientLedger {
             ledger.rewrite(now);
         }
         ledger
+    }
+
+    /// Was this message already in the room when this device started listening?
+    ///
+    /// The replacement for `message.ts < inbox.activated_at()`. Unlike that
+    /// comparison it cannot be wrong about a peer whose clock disagrees, and it
+    /// cannot silently drop that peer's mentions for the lifetime of the
+    /// Circle.
+    pub fn predates_activation(&self, message_id: &str) -> bool {
+        self.decision(message_id) == Some(Decision::PreActivation)
     }
 
     pub fn decided(&self, message_id: &str) -> bool {

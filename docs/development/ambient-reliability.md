@@ -113,11 +113,12 @@ irrelevant by construction, which is the property you asked for.
 
 ## 2. The observation ledger
 
-> **Shipped (Phase C), except §2.4.** `agent::ledger::AmbientLedger` is the
-> durable set; `reaction::drain_ambient` replaces the per-event `offer_ambient`;
+> **Shipped (Phases C and E).** `agent::ledger::AmbientLedger` is the durable
+> set; `reaction::drain_ambient` replaces the per-event `offer_ambient`;
 > `ambient_backlog_tail` (default 1) collapses a backlog to its tail. The
-> `ts >= now - 30` gate and the in-inbox one-shot guard are both gone. §2.4
-> (retiring `activated_at`) is still Phase E.
+> `ts >= now - 30` gate, the in-inbox one-shot guard and the `activated_at`
+> comparison are all gone — no wall clock is consulted on the admission path
+> any more.
 
 ### 2.1 Shape
 
@@ -206,6 +207,10 @@ this.
 
 ### 2.4 Retiring `activated_at`
 
+> **Shipped (Phase E).** `AmbientLedger::predates_activation` replaces
+> `message.ts < inbox.activated_at()` in `admit_message`. `activated_at` stays
+> in the snapshot and on `/api/execution` for display, and gates nothing.
+
 `activated_at` is the same defect one layer up and it damages addressed work,
 so it should go the same way. At first activation, seed the ledger with every
 id currently in the transcript, marked `pre-activation`. Afterwards "was this
@@ -213,7 +218,20 @@ message posted before the agent was switched on" is answered by set membership
 rather than by comparing two machines' clocks.
 
 Cost is one O(n) pass at first activation and n ledger lines; the compaction
-rule in §2.1 keeps it proportional to the transcript. The `activated_at` field
+rule in §2.1 keeps it proportional to the transcript.
+
+*One thing the spec did not anticipate: `pre-activation` had to stop being the
+catch-all. Phase C also used it to record messages seen while no listener was
+configured, and once the same decision suppresses addressed mentions, that
+would have made a Circle with no ambient agent ignore `@mention`s as well.
+Those are now `no-listener`, which settles ambient and says nothing about
+addressed work.*
+
+*Failure mode worth knowing: if `ambient_decisions.log` is deleted while the
+inbox survives, the ledger re-seeds from the current transcript, so a mention
+that arrived while the daemon was down is recorded as pre-activation and never
+runs. Same class of loss as deleting `handled_mentions.log`, and in the other
+direction — that one re-runs old mentions rather than dropping new ones.* The `activated_at` field
 stays in the snapshot for the `/api/execution` response and for display, but
 stops being consulted for admission.
 
@@ -532,7 +550,7 @@ Each phase is independently landable and independently useful.
 | ~~**B**~~ | ~~§5 — ambient prompt frame, who-else-was-offered, already-answered recheck, §5.3 attachments~~ **Shipped.** | Text and plumbing only, no state changes. Independently improves PASS quality. |
 | ~~**C**~~ | ~~§2.1–2.3 — observation ledger, drain, backlog collapse; delete the `ts >= now - 30` gate and the in-inbox one-shot guard~~ **Shipped.** | The core fix. Needs A to be verifiable. |
 | ~~**D**~~ | ~~§3.2, §3.4 — re-offer on failure, attempt budget, ambient turn timeout~~ **Shipped.** | Builds directly on C's ledger. |
-| **E** | §2.4 — retire `activated_at` for admission | Highest blast radius (touches addressed work); land last, behind the tests from C. |
+| ~~**E**~~ | ~~§2.4 — retire `activated_at` for admission~~ **Shipped.** | Highest blast radius (touches addressed work); land last, behind the tests from C. |
 | **F** | §6 — the small defects | Any time; independent. |
 
 ## 8. Open questions
