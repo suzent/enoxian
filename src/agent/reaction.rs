@@ -1359,14 +1359,25 @@ fn answered_by_an_agent(state: &AppState, message_id: &str) -> bool {
 ///
 /// The queue uses only the boolean; the hold turn needs the reply itself, so it
 /// can show the agent what it is being asked to react to.
+///
+/// The name is qualified by the device that ran it, because `agent_id` is a
+/// bare label and namesakes across devices are ordinary — a Circle can easily
+/// hold two `claude`s. Unqualified, a hold prompt can tell an agent that
+/// "claude answered", meaning a different machine's claude, while speaking to
+/// claude. Deliberately *not* rendered as `@owner/device/agent`: the agent is
+/// being asked to write a reply, and handing it a live mention invites one into
+/// the answer, which would wake that agent on the next pass.
 pub(super) fn answering_agent(state: &AppState, message_id: &str) -> Option<(String, String)> {
-    state
-        .transcript()
-        .into_iter()
-        .find(|m| {
-            m.reply_to.as_deref() == Some(message_id) && m.author == crate::control::Author::Agent
-        })
-        .map(|m| (m.agent_id, m.text))
+    let answer = state.transcript().into_iter().find(|m| {
+        m.reply_to.as_deref() == Some(message_id) && m.author == crate::control::Author::Agent
+    })?;
+    let name = match message_author_scope(state, &answer.peer_id) {
+        Some((owner, device)) if !owner.is_empty() && !device.is_empty() => {
+            format!("{} (on {owner}/{device})", answer.agent_id)
+        }
+        _ => answer.agent_id.clone(),
+    };
+    Some((name, answer.text))
 }
 
 fn concise_error(error: &anyhow::Error) -> String {
@@ -3308,14 +3319,35 @@ mod tests {
         answer.agent_id = "codex".into();
         answer.reply_to = Some("asked".into());
         add_chat(&state, &answer);
-        assert_eq!(
-            answering_agent(&state, "asked"),
-            Some((
-                "codex".to_string(),
-                "it retries on the reconcile tick".to_string()
-            ))
-        );
+        let (named, said) = answering_agent(&state, "asked").unwrap();
+        assert_eq!(said, "it retries on the reconcile tick");
+        assert!(named.starts_with("codex"));
         assert!(answered_by_an_agent(&state, "asked"));
+    }
+
+    #[test]
+    fn a_held_draft_says_which_device_answered_not_just_which_name() {
+        // `agent_id` is a bare label and namesakes are ordinary: this user's
+        // own Circles run two `claude`s and two `suzent`s across devices.
+        // Unqualified, a hold prompt tells claude that "claude answered".
+        let (state, _dir) = test_state("local", "suzy");
+        add_member(&state, "elsewhere", "suzy", "jessair");
+        add_chat(
+            &state,
+            &room_message("asked", "how does the retry path work?"),
+        );
+        let mut answer = room_message("answer", "it retries on the reconcile tick");
+        answer.author = crate::control::Author::Agent;
+        answer.agent_id = "claude".into();
+        answer.peer_id = "elsewhere".into();
+        answer.reply_to = Some("asked".into());
+        add_chat(&state, &answer);
+
+        let (named, _) = answering_agent(&state, "asked").unwrap();
+        assert_eq!(named, "claude (on suzy/jessair)");
+        // Not a live mention: the agent is about to write a reply, and handing
+        // it @suzy/jessair/claude invites that handle into the answer.
+        assert!(!named.contains('@'));
     }
 
     #[test]
