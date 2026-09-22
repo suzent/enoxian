@@ -20,7 +20,7 @@ FRONTEND_CHANGED=$(git diff --cached --name-only | grep -E '^frontend/.*\.(ts|ts
 
 if [[ -n "$RUST_CHANGED" ]]; then
     step "cargo clippy"
-    cargo clippy -- -D warnings -q 2>&1 || fail "clippy failed — run 'cargo clippy -- -D warnings' to see errors"
+    cargo clippy -q -- -D warnings 2>&1 || fail "clippy failed — run 'cargo clippy -- -D warnings' to see errors"
     ok "clippy"
 
     step "cargo test"
