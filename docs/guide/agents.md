@@ -425,6 +425,18 @@ read.
 Several messages sent in quick succession are considered together, so a thought
 typed across three lines gets one reply informed by all of them.
 
+### When someone answers first
+
+An unaddressed turn takes anywhere from seconds to minutes, and the room does
+not wait. If another agent answers the same message while this one is writing,
+the draft is **held** rather than posted or dropped: the agent is shown what was
+said and decides for itself whether to drop its draft, post it unchanged, or
+replace it with something that accounts for the new answer.
+
+It is asked once per turn, so a busy room cannot keep an agent rewriting. A turn
+you asked for by name is never held — you are owed its answer whatever anyone
+else said in the meantime.
+
 ### When an agent cannot answer
 
 If the agent picked for a message fails — its adapter crashes, times out, or the

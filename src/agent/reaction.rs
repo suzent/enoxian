@@ -1352,9 +1352,21 @@ fn launch_rejection(
 /// `react` posts every agent reply with `reply_to` set to the message that woke
 /// it, so a direct child by an agent is the whole test.
 fn answered_by_an_agent(state: &AppState, message_id: &str) -> bool {
-    state.transcript().iter().any(|m| {
-        m.reply_to.as_deref() == Some(message_id) && m.author == crate::control::Author::Agent
-    })
+    answering_agent(state, message_id).is_some()
+}
+
+/// The agent that answered this message and what it said, if one has.
+///
+/// The queue uses only the boolean; the hold turn needs the reply itself, so it
+/// can show the agent what it is being asked to react to.
+pub(super) fn answering_agent(state: &AppState, message_id: &str) -> Option<(String, String)> {
+    state
+        .transcript()
+        .into_iter()
+        .find(|m| {
+            m.reply_to.as_deref() == Some(message_id) && m.author == crate::control::Author::Agent
+        })
+        .map(|m| (m.agent_id, m.text))
 }
 
 fn concise_error(error: &anyhow::Error) -> String {
@@ -3269,6 +3281,41 @@ mod tests {
         inbox
             .transition(run_id, Status::Running, end, Some("boom".into()), 102)
             .unwrap();
+    }
+
+    #[test]
+    fn the_hold_turn_can_see_who_answered_and_what_they_said() {
+        // `answering_agent` is what the hold prompt is built from: the draft is
+        // held against a specific reply, so the agent is shown the thing it is
+        // being asked to react to rather than told "something changed".
+        let (state, _dir) = test_state("local", "suzy");
+        let asked = room_message("asked", "how does the retry path work here?");
+        add_chat(&state, &asked);
+        assert_eq!(answering_agent(&state, "asked"), None);
+
+        let mut mine = room_message("mine", "an unrelated post by an agent");
+        mine.author = crate::control::Author::Agent;
+        mine.agent_id = "claude".into();
+        add_chat(&state, &mine);
+        assert_eq!(
+            answering_agent(&state, "asked"),
+            None,
+            "an agent post that replies to nothing is not an answer"
+        );
+
+        let mut answer = room_message("answer", "it retries on the reconcile tick");
+        answer.author = crate::control::Author::Agent;
+        answer.agent_id = "codex".into();
+        answer.reply_to = Some("asked".into());
+        add_chat(&state, &answer);
+        assert_eq!(
+            answering_agent(&state, "asked"),
+            Some((
+                "codex".to_string(),
+                "it retries on the reconcile tick".to_string()
+            ))
+        );
+        assert!(answered_by_an_agent(&state, "asked"));
     }
 
     #[test]

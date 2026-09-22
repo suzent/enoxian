@@ -344,6 +344,7 @@ pub async fn launch_cancellable(
         Driver::Acp => run_acp(
             req.cmd,
             req.initiator,
+            req.trigger_id,
             req.task,
             &run_dir,
             resume,
@@ -418,6 +419,7 @@ async fn run_argv(
 async fn run_acp(
     cmd: &AgentCommand,
     initiator: Initiator,
+    trigger_id: Option<&str>,
     task: &str,
     run_dir: &Path,
     resume: Option<&str>,
@@ -480,17 +482,94 @@ async fn run_acp(
         task.to_string()
     };
     let result = acp.prompt(&prompt).await;
+    // The reply is the agent's final message this turn (see ReplyBuf).
+    let draft = std::mem::take(&mut *reply.lock().unwrap()).into_reply();
+
+    // The room may have moved while the agent was writing. This is the last
+    // moment it can be asked about that: the session is shut down on the next
+    // line, and nothing downstream has anyone to ask. See
+    // `docs/development/read-the-room.md` §2.
+    let held = match result.as_ref().ok().and(draft.as_deref()) {
+        Some(text) => {
+            hold_draft(
+                &mut acp,
+                &reply,
+                initiator,
+                trigger_id,
+                coordination.as_ref(),
+                text,
+            )
+            .await
+        }
+        None => None,
+    };
+
     let acp_session_id = acp.session_id().map(str::to_string);
     acp.shutdown().await;
     let turn = result.context("ACP prompt turn failed")?;
 
-    // The reply is the agent's final message this turn (see ReplyBuf).
-    let text = std::mem::take(&mut *reply.lock().unwrap()).into_reply();
+    let (posted, outcome) = match held {
+        // Withdrawing is reported as a pass, because to the room it is one: the
+        // existing PASS path suppresses the post, advances the seen-mark, and
+        // shows "considered and passed" rather than silence. Which of the two
+        // it was stays in `detail`, which is what the choice distribution is
+        // counted from — see read-the-room.md §2.3.
+        Some(super::ambient::Held::Withdrawn) => (
+            Some(super::ambient::PASS_TOKEN.to_string()),
+            " hold=withdrawn",
+        ),
+        Some(super::ambient::Held::Unchanged) => (draft, " hold=unchanged"),
+        Some(super::ambient::Held::Revised(text)) => (Some(text), " hold=revised"),
+        None => (draft, ""),
+    };
     Ok(AcpRun {
-        detail: format!("stop_reason={}", turn.stop_reason),
-        reply: text,
+        detail: format!("stop_reason={}{outcome}", turn.stop_reason),
+        reply: posted,
         acp_session_id,
     })
+}
+
+/// Ask the agent what to do with a draft the room has overtaken.
+///
+/// `None` when no hold applies, which is the overwhelmingly common case: the
+/// turn was addressed, nothing answered the message, or the draft was already a
+/// decline. One hold per turn — a second would let a busy room livelock a
+/// conversational aside on rewrite → hold → rewrite, and chasing a room that
+/// keeps moving is not worth the budget.
+#[allow(clippy::too_many_arguments)]
+async fn hold_draft<H: super::acp::ClientHooks>(
+    acp: &mut AcpSession<H>,
+    reply: &Arc<Mutex<ReplyBuf>>,
+    initiator: Initiator,
+    trigger_id: Option<&str>,
+    coordination: Option<&crate::state::AppState>,
+    draft: &str,
+) -> Option<super::ambient::Held> {
+    // Addressed work is exempt: naming an agent means you are owed its answer,
+    // whatever anyone else said in the meantime.
+    if initiator != Initiator::Ambient || super::ambient::is_pass(draft) {
+        return None;
+    }
+    let (state, message_id) = (coordination?, trigger_id?);
+    // The queue already refuses a turn whose message was answered before it
+    // started, so anything found now arrived while this agent was writing.
+    let (other, their_reply) = super::reaction::answering_agent(state, message_id)?;
+    tracing::info!("[agent] holding draft: {other} answered {message_id} first");
+    match acp
+        .prompt(&super::ambient::hold_instruction(&other, &their_reply))
+        .await
+    {
+        Ok(_) => Some(super::ambient::hold_decision(
+            &std::mem::take(&mut *reply.lock().unwrap())
+                .into_reply()
+                .unwrap_or_default(),
+        )),
+        // A failed hold must not swallow a reply the agent already wrote.
+        Err(error) => {
+            tracing::debug!("[agent] hold turn failed, posting the draft: {error}");
+            None
+        }
+    }
 }
 
 fn working_dir(workspace: &Path, rel: Option<&str>) -> PathBuf {

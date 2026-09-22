@@ -69,7 +69,66 @@ fn weighted_len(text: &str) -> usize {
 const AMBIENT_QUIET_SECS: i64 = 30;
 
 /// The reply that means "nothing to add" (§2.3).
-const PASS_TOKEN: &str = "PASS";
+pub const PASS_TOKEN: &str = "PASS";
+
+/// The reply that means "post my draft unchanged" on a hold turn.
+const SEND_TOKEN: &str = "SEND";
+
+/// What an agent decided when its draft was held.
+///
+/// Three outcomes, two tokens: revision is the fall-through, so there is no
+/// prefix to parse, no ambiguity when a genuine reply opens with a keyword, and
+/// an agent that does not understand the protocol emits prose that is posted as
+/// a revision — which is what would have happened anyway.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Held {
+    /// `PASS` — someone else covered it; post nothing.
+    Withdrawn,
+    /// `SEND` — the change does not affect the draft; post it as written.
+    Unchanged,
+    /// Anything else — post this instead.
+    Revised(String),
+}
+
+/// Read an agent's answer to a hold.
+pub fn hold_decision(reply: &str) -> Held {
+    let trimmed = reply.trim();
+    if trimmed.eq_ignore_ascii_case(PASS_TOKEN) {
+        Held::Withdrawn
+    } else if trimmed.eq_ignore_ascii_case(SEND_TOKEN) {
+        Held::Unchanged
+    } else if trimmed.is_empty() {
+        // An empty second turn is not a revision to anything. Falling back to
+        // the draft keeps a confused adapter from silently eating the answer
+        // the agent already worked out.
+        Held::Unchanged
+    } else {
+        Held::Revised(trimmed.to_string())
+    }
+}
+
+/// The prompt for a hold turn: the room moved while this agent was thinking.
+///
+/// Deliberately a *turn*, not a check. The ACP session is still open at this
+/// point and is shut down immediately after, so this is the last moment anyone
+/// can ask the agent what it wants — and asking is the whole point. A version
+/// that dropped the draft without asking would be the harness deciding, which
+/// is the design this exists to avoid.
+pub fn hold_instruction(other: &str, their_reply: &str) -> String {
+    let quoted: String = their_reply.chars().take(600).collect();
+    format!(
+        "Hold on — while you were writing, {other} answered the same message:\n\n\
+         ---\n{quoted}\n---\n\n\
+         Your draft has not been posted yet. Decide what to do with it:\n\
+         - Reply with exactly PASS to drop it, if {other} covered the point.\n\
+         - Reply with exactly SEND to post your draft unchanged, if you still \
+         have something they did not say.\n\
+         - Otherwise, reply with the text you want posted instead, and that \
+         replaces your draft.\n\n\
+         Adding a second take on a point already made is worse than saying \
+         nothing, but do not drop a genuine disagreement or a correction."
+    )
+}
 
 /// Did the agent decline rather than answer?
 ///
@@ -319,6 +378,61 @@ mod tests {
         // The queue cancels what it can see; this covers the rest of the race.
         let text = ambient_instruction(&["claude".to_string()], "claude");
         assert!(text.contains("Someone may also have answered"));
+    }
+
+    #[test]
+    fn a_hold_has_three_outcomes_and_only_two_tokens() {
+        assert_eq!(hold_decision("PASS"), Held::Withdrawn);
+        assert_eq!(hold_decision(" pAsS \n"), Held::Withdrawn);
+        assert_eq!(hold_decision("SEND"), Held::Unchanged);
+        assert_eq!(hold_decision("  send  "), Held::Unchanged);
+        // Revision is the fall-through: no prefix to parse, no keyword to miss.
+        assert_eq!(
+            hold_decision("  Actually the retry is on the reconcile tick.  "),
+            Held::Revised("Actually the retry is on the reconcile tick.".into())
+        );
+    }
+
+    #[test]
+    fn a_reply_that_merely_mentions_a_token_is_a_revision() {
+        // The whole trimmed reply must be the token, exactly as `is_pass`
+        // already requires. Otherwise a genuine answer opening with the word
+        // would be swallowed.
+        for text in ["SEND it to the other device", "PASS the token through"] {
+            assert_eq!(hold_decision(text), Held::Revised(text.into()), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn an_empty_hold_reply_keeps_the_draft_rather_than_eating_it() {
+        // A confused adapter returning nothing must not silently discard work
+        // the agent already did. Falling back to the draft is the safe reading.
+        assert_eq!(hold_decision(""), Held::Unchanged);
+        assert_eq!(hold_decision("   \n  "), Held::Unchanged);
+    }
+
+    #[test]
+    fn the_hold_prompt_names_who_answered_and_offers_both_escapes() {
+        let p = hold_instruction("codex", "it retries on the reconcile tick");
+        assert!(p.contains("codex answered the same message"));
+        assert!(p.contains("it retries on the reconcile tick"));
+        assert!(p.contains("exactly PASS"));
+        assert!(p.contains("exactly SEND"), "force-send must be offered");
+        assert!(
+            p.contains("has not been posted yet"),
+            "the agent needs to know nothing has happened yet"
+        );
+    }
+
+    #[test]
+    fn a_very_long_prior_reply_is_truncated_in_the_hold_prompt() {
+        let huge = "x".repeat(5_000);
+        let p = hold_instruction("codex", &huge);
+        assert!(
+            p.len() < 2_000,
+            "a hold prompt must stay small: {}",
+            p.len()
+        );
     }
 
     #[test]
