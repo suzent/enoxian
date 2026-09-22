@@ -99,7 +99,7 @@ fn path(circle_dir: &Path) -> PathBuf {
 /// restart, which is a duplicate turn at worst and never a lost one.
 pub struct AmbientLedger {
     file: PathBuf,
-    decided: Mutex<HashMap<String, Decision>>,
+    decided: Mutex<HashMap<String, (Decision, i64)>>,
 }
 
 impl AmbientLedger {
@@ -120,15 +120,15 @@ impl AmbientLedger {
             transcript_ids.iter().map(String::as_str).collect();
         let raw = std::fs::read_to_string(&file);
         let seeding = raw.is_err();
-        let decided: HashMap<String, Decision> = raw
+        let decided: HashMap<String, (Decision, i64)> = raw
             .map(|text| {
                 text.lines()
                     .filter_map(|line| {
                         let mut parts = line.splitn(3, ' ');
                         let id = parts.next()?;
-                        let _at = parts.next()?;
+                        let at: i64 = parts.next()?.parse().ok()?;
                         let decision = Decision::decode(parts.next()?)?;
-                        known.contains(id).then(|| (id.to_string(), decision))
+                        known.contains(id).then(|| (id.to_string(), (decision, at)))
                     })
                     .collect()
             })
@@ -142,7 +142,7 @@ impl AmbientLedger {
                 ledger.record(id, Decision::PreActivation, now);
             }
         } else {
-            ledger.rewrite(now);
+            ledger.rewrite();
         }
         ledger
     }
@@ -162,7 +162,20 @@ impl AmbientLedger {
     }
 
     pub fn decision(&self, message_id: &str) -> Option<Decision> {
-        self.decided.lock().unwrap().get(message_id).cloned()
+        self.decided
+            .lock()
+            .unwrap()
+            .get(message_id)
+            .map(|(d, _)| d.clone())
+    }
+
+    /// When the decision was taken, not when the file was last compacted.
+    pub fn decided_at(&self, message_id: &str) -> Option<i64> {
+        self.decided
+            .lock()
+            .unwrap()
+            .get(message_id)
+            .map(|(_, at)| *at)
     }
 
     pub fn len(&self) -> usize {
@@ -183,15 +196,15 @@ impl AmbientLedger {
         if decided.contains_key(message_id) {
             return false;
         }
-        decided.insert(message_id.to_string(), decision);
+        decided.insert(message_id.to_string(), (decision, now));
         drop(decided);
-        self.append(message_id, now);
+        self.append(message_id);
         true
     }
 
     /// Append the current decision for `message_id` to the log.
-    fn append(&self, message_id: &str, now: i64) {
-        let Some(decision) = self.decision(message_id) else {
+    fn append(&self, message_id: &str) {
+        let Some((decision, at)) = self.decided.lock().unwrap().get(message_id).cloned() else {
             return;
         };
         if let Some(parent) = self.file.parent() {
@@ -203,7 +216,7 @@ impl AmbientLedger {
             .open(&self.file)
         {
             Ok(mut f) => {
-                let _ = writeln!(f, "{message_id} {now} {}", decision.encode());
+                let _ = writeln!(f, "{message_id} {at} {}", decision.encode());
             }
             Err(e) => tracing::warn!("[agent] could not persist an ambient decision: {e}"),
         }
@@ -218,19 +231,24 @@ impl AmbientLedger {
         self.decided
             .lock()
             .unwrap()
-            .insert(message_id.to_string(), decision);
+            .insert(message_id.to_string(), (decision, now));
         // The file is append-only, and `load` keeps the *last* line for an id,
         // so appending the new decision is the overwrite.
-        self.append(message_id, now);
+        self.append(message_id);
     }
 
     /// Flush the compacted set back to disk, so entries dropped by [`Self::load`]
     /// do not accumulate in the file forever.
-    fn rewrite(&self, now: i64) {
+    ///
+    /// Each line keeps the timestamp its decision was taken at. Stamping them
+    /// with the compaction time instead — which this did — rewrote the whole
+    /// file to "now" on every daemon start, so the one question the log exists
+    /// to answer, *when was this decided*, could not be asked after a restart.
+    fn rewrite(&self) {
         let decided = self.decided.lock().unwrap();
         let body: String = decided
             .iter()
-            .map(|(id, decision)| format!("{id} {now} {}\n", decision.encode()))
+            .map(|(id, (decision, at))| format!("{id} {at} {}\n", decision.encode()))
             .collect();
         drop(decided);
         // A failed compaction leaves the longer file in place, which is
@@ -344,11 +362,41 @@ mod tests {
     }
 
     #[test]
+    fn compaction_keeps_when_a_decision_was_taken() {
+        // The log's whole purpose is answering "when was this decided". Stamping
+        // every line with the load time on compaction erased that on each
+        // restart, which is exactly when someone goes looking.
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = AmbientLedger::load(dir.path(), &[], 100);
+        ledger.record("m1", Decision::Offered, 1_000);
+        ledger.record("m2", Decision::Backlog, 2_000);
+        drop(ledger);
+
+        let reloaded = AmbientLedger::load(dir.path(), &ids(&["m1", "m2"]), 9_999);
+        assert_eq!(reloaded.decided_at("m1"), Some(1_000));
+        assert_eq!(reloaded.decided_at("m2"), Some(2_000));
+        assert!(
+            !std::fs::read_to_string(path(dir.path()))
+                .unwrap()
+                .contains("9999"),
+            "the compaction time must not replace the decision times"
+        );
+
+        // And settling stamps the new decision, not the old one.
+        reloaded.settle(
+            "m1",
+            Decision::Skipped("every attempt failed".into()),
+            3_000,
+        );
+        assert_eq!(reloaded.decided_at("m1"), Some(3_000));
+    }
+
+    #[test]
     fn a_corrupt_line_is_skipped_rather_than_fatal() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             path(dir.path()),
-            "m1 100 offered\ngarbage\nm2 100 whatever\nm3 100 backlog\n",
+            "m1 100 offered\ngarbage\nm2 notanumber offered\nm3 100 backlog\n",
         )
         .unwrap();
         let ledger = AmbientLedger::load(dir.path(), &ids(&["m1", "m2", "m3"]), 200);

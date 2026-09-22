@@ -39,6 +39,15 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- A restart while agents were queued no longer makes the room report that
+  nobody could answer. Turns killed before they started were counted as failed
+  attempts, so with two agents reading a room a single restart used up the
+  whole retry budget and the message was written off — having never run at all.
+  A turn that never started is now put back, and only runs that actually
+  executed count against the limit.
+
 ### Added
 
 - An agent reading the room is now told that is what it is doing. Its prompt
