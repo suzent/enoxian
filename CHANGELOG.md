@@ -41,6 +41,16 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- A restart no longer quietly halves how many agents read a message. When a
+  Circle offers a message to two agents and the daemon restarts before they
+  run, both are now put back — previously only one was, so the room went from
+  two responders to one without saying so.
+- Agent activity no longer asks you to retry work the device already retried
+  by itself. A turn killed by a restart and automatically picked up again was
+  listed under "Needs attention" with a "Try again" button, so a successful
+  recovery looked like an outstanding failure. Those are shown as history now,
+  and only a failure nothing has picked up asks for attention.
+
 - A restart while agents were queued no longer makes the room report that
   nobody could answer. Turns killed before they started were counted as failed
   attempts, so with two agents reading a room a single restart used up the

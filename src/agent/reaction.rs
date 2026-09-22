@@ -563,9 +563,12 @@ fn drain_ambient(
         // Two separate ceilings, because they bound two different things: how
         // many agents may burn a real turn on one message, and how many times a
         // restart may put back a turn that never ran.
+        // A restart expires a whole round at once, so the requeue ceiling is
+        // measured in rounds: one listener or four, three restarts is three.
+        let round = listeners.len().max(1);
         let spent = match (
             state_of.executed >= max_attempts,
-            state_of.expired >= EXPIRED_REQUEUE_LIMIT,
+            state_of.expired >= EXPIRED_REQUEUE_LIMIT * round,
         ) {
             (true, _) => Some("every attempt failed"),
             (_, true) => Some("this device kept restarting before it could run"),
@@ -598,14 +601,23 @@ fn drain_ambient(
         // was not an attempt by that agent at anything, so offering it again is
         // not a retry. The inbox dedups on (message, agent), so this has to go
         // through `retry` rather than a fresh admission.
-        if let Some(run_id) = state_of.never_started {
-            match inbox.retry(&run_id, settings.max_relay_turns, now) {
-                Ok(_) => {
-                    wake.notify_one();
-                    continue;
-                }
+        // All of them, not the first: the listeners were admitted together and
+        // the restart took the whole round, so putting one back would quietly
+        // demote a room configured for two responders to one.
+        let mut requeued = 0;
+        for run_id in &state_of.never_started {
+            match inbox.retry(run_id, settings.max_relay_turns, now) {
+                Ok(_) => requeued += 1,
                 Err(error) => tracing::debug!("[agent] could not requeue {run_id}: {error}"),
             }
+        }
+        if requeued > 0 {
+            tracing::info!(
+                "[agent] put {requeued} turn(s) back for {} after a restart",
+                message.id
+            );
+            wake.notify_one();
+            continue;
         }
         let reason = "every agent reading this room tried and could not answer";
         ledger.settle(&message.id, Decision::Skipped(reason.into()), now);
@@ -704,7 +716,7 @@ struct Unanswered {
     /// left `2 >= 2` and the message was settled as "every attempt failed"
     /// having never run at all.
     executed: usize,
-    /// Runs that expired without ever starting, and the first one's id.
+    /// Runs that expired without ever starting.
     ///
     /// Distinct from a failure: nothing was tried, so offering the same agent
     /// again is not a retry of anything. Bounded separately by
@@ -715,14 +727,23 @@ struct Unanswered {
     /// have done visible work, and the inbox already records its retry as
     /// suppressed.
     expired: usize,
-    never_started: Option<String>,
+    /// Every run that expired before starting, so all of them can be put back.
+    ///
+    /// All, not the first: `ambient_responders` listeners are admitted together
+    /// and a restart expires the whole round, so requeueing one silently
+    /// demotes a room configured for two responders to one.
+    never_started: Vec<String>,
 }
 
-/// How many times a turn killed before it started may be put back.
+/// How many rounds of turns killed before they started may be put back.
 ///
 /// Not user-facing: it bounds a pathology (a daemon restart loop), not a
 /// policy. Three is enough to survive an upgrade or a crash-restart without
 /// letting a machine that cannot stay up requeue the same turn indefinitely.
+///
+/// Counted in rounds rather than runs, because a round is `ambient_responders`
+/// entries wide — against a flat run count, two listeners would exhaust three
+/// restarts' worth of tolerance in one and a half.
 const EXPIRED_REQUEUE_LIMIT: usize = 3;
 
 fn unanswered_attempts(entries: &[super::inbox::Entry], message_id: &str) -> Option<Unanswered> {
@@ -731,7 +752,7 @@ fn unanswered_attempts(entries: &[super::inbox::Entry], message_id: &str) -> Opt
         offered: Vec::new(),
         executed: 0,
         expired: 0,
-        never_started: None,
+        never_started: Vec::new(),
     };
     for entry in entries
         .iter()
@@ -745,9 +766,7 @@ fn unanswered_attempts(entries: &[super::inbox::Entry], message_id: &str) -> Opt
                 match status {
                     Status::Expired => {
                         out.expired += 1;
-                        if out.never_started.is_none() {
-                            out.never_started = Some(entry.run_id.clone());
-                        }
+                        out.never_started.push(entry.run_id.clone());
                     }
                     // Ran, and produced no answer. Only these spend the budget.
                     _ => out.executed += 1,
@@ -3385,10 +3404,17 @@ mod tests {
         assert!(inbox.entries().iter().all(|e| e.status == Status::Expired));
 
         drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
-        assert!(
-            inbox.entries().iter().any(|e| e.status == Status::Pending),
-            "a turn that never ran is put back, not counted against the budget"
-        );
+        let back: Vec<String> = inbox
+            .entries()
+            .into_iter()
+            .filter(|e| e.status == Status::Pending)
+            .map(|e| e.request.agent)
+            .collect();
+        // The whole round, not one of it. Putting a single turn back quietly
+        // demotes a room configured for two responders to one.
+        assert_eq!(back.len(), 2, "expected both listeners back: {back:?}");
+        assert!(back.contains(&"claude".to_string()));
+        assert!(back.contains(&"codex".to_string()));
         assert!(
             !state
                 .transcript()

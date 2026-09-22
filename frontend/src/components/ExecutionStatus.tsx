@@ -79,8 +79,26 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
     } finally { if (generation.current === current) setBusy(null) }
   }
   const active = runs.filter(r => r.status === 'running' || r.status === 'pending')
-  const attention = runs.filter(r => r.status === 'failed' || r.status === 'interrupted' || r.status === 'expired')
-  const history = runs.filter(r => r.status === 'completed' || r.status === 'cancelled')
+  // A message the device has since picked up again, or already answered. Its
+  // earlier failures are history, not something anyone needs to act on: a turn
+  // killed by a restart and automatically put back would otherwise sit under
+  // "Needs attention" offering a "Try again" that has already happened, which
+  // makes a successful recovery read as an outstanding failure.
+  const movedOn = new Set(
+    runs.filter(r => r.status === 'completed' || r.status === 'running' || r.status === 'pending')
+      .map(r => r.message_id),
+  )
+  const failed = (r: ExecutionRun) =>
+    r.status === 'failed' || r.status === 'interrupted' || r.status === 'expired'
+  const attention = runs.filter(r => failed(r) && !movedOn.has(r.message_id))
+  // Listed explicitly rather than as "everything else": an imported marker is
+  // shown nowhere at all, and a catch-all would surface it as history.
+  const history = runs.filter(
+    r => r.status === 'completed' || r.status === 'cancelled' || (failed(r) && movedOn.has(r.message_id)),
+  )
+  // Retrying a run the device has already replaced just starts a duplicate
+  // turn on a question that is being answered.
+  const canRetry = (r: ExecutionRun) => retryable.has(r.status) && !movedOn.has(r.message_id)
   const rows = (items: ExecutionRun[]) => <ul className="agent-activity__list">
     {items.map(run => {
       const agent = normalizedAgent(run)
@@ -105,8 +123,8 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
         {run.detail && run.detail !== label && <p className="agent-activity__detail">{run.detail}</p>}
         <div className="agent-activity__actions">
           {local && run.status === 'pending' && <button type="button" className="underline underline-offset-2" disabled={busy !== null} onClick={() => void act(run, 'cancel')}>{busy === run.run_id ? 'Updating…' : 'Cancel request'}</button>}
-          {local && retryable.has(run.status) && <button type="button" className="underline underline-offset-2" disabled={busy !== null} onClick={() => void act(run, 'retry')}>{busy === run.run_id ? 'Updating…' : 'Try again'}</button>}
-          {!local && retryable.has(run.status) && <span className="text-slate">Retry on {device}.</span>}
+          {local && canRetry(run) && <button type="button" className="underline underline-offset-2" disabled={busy !== null} onClick={() => void act(run, 'retry')}>{busy === run.run_id ? 'Updating…' : 'Try again'}</button>}
+          {!local && canRetry(run) && <span className="text-slate">Retry on {device}.</span>}
         </div>
       </li>
     })}
