@@ -1,6 +1,6 @@
 //! Which messages this device has already decided about, and what it decided.
 //!
-//! See `docs/development/ambient-reliability.md` §2. Ambient admission used to
+//! See `docs/concepts/internals.md`, "Agent Runtime". Ambient admission used to
 //! ask "was this message authored in the last thirty seconds", comparing the
 //! *author's* wall clock against this device's. A peer whose clock ran a minute
 //! slow could therefore never trigger an ambient turn here — not "after a

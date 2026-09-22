@@ -22,7 +22,7 @@ use yrs::{Any, Map, Out, ReadTxn, Transact};
 /// paragraph appended at the end denying it. A prompt that asserts the agent was
 /// mentioned, frames the text as a request to it, tells it to respond, and then
 /// says none of that was true is asking PASS of a model it has just argued out
-/// of passing. See `docs/development/ambient-reliability.md` §5.
+/// of passing. See `docs/concepts/internals.md`, "Agent Runtime".
 ///
 /// Who else was offered the same message is deliberately *not* here. It belongs
 /// beside the decision it informs, which is the PASS convention in
@@ -395,7 +395,7 @@ fn compose(
 /// Without this an image posted with no words produced a turn whose entire
 /// instruction was the empty string: the ambient floor deliberately lets a
 /// wordless image through, and nothing downstream had ever looked at
-/// `ChatMessage::attachments`. See ambient-reliability.md §5.3.
+/// `ChatMessage::attachments`.
 fn attachment_note(circle_id: &str, message: &ChatMessage) -> String {
     if message.attachments.is_empty() {
         return String::new();

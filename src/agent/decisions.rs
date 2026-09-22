@@ -1,6 +1,6 @@
 //! Why nothing ran: a bounded, local record of admission decisions.
 //!
-//! See `docs/development/ambient-reliability.md` §4.2. The reaction loop drops
+//! See `docs/guide/agents.md`, "Finding out why nothing happened". The reaction loop drops
 //! messages for a dozen good reasons and, until this existed, said so at
 //! `trace!` or not at all — [`reaction::dispatch`] returns silently when the
 //! device is in pull mode or the agent is not configured, which are the two

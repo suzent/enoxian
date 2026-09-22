@@ -1,6 +1,6 @@
 //! Ambient engagement: letting an agent read the room and volunteer.
 //!
-//! See `docs/development/engagement.md` §2. An agent configured
+//! See `docs/guide/agents.md`, "Agents that read the room". An agent configured
 //! `engagement = "ambient"` is offered every human message in the Circle and
 //! may answer or decline. Nothing about it is addressed, which is what makes it
 //! both the interesting idea and the expensive one.
@@ -119,7 +119,7 @@ pub fn spoke_recently(history: &[ChatMessage], agent: &str, now: i64) -> bool {
 /// undo the `REQUEST from <sender> (@mention)` header the prompt had already
 /// asserted above it; now that an unaddressed turn is framed as overheard from
 /// the start, repeating the denial here would be the contradiction in the other
-/// direction. See `docs/development/ambient-reliability.md` §5.
+/// direction. See `docs/concepts/internals.md`, "Agent Runtime".
 ///
 /// `co_listeners` is every agent shown this message, `self_id` included. What it
 /// buys is a reason to pass that is not self-deprecation: an agent with nothing

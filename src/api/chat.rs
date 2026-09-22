@@ -344,7 +344,7 @@ fn activity_is_live(activity: &ChatActivity, now: i64) -> bool {
 /// `false` because an agent that mentions another agent would otherwise set
 /// off an endless trigger loop. Delegation needs a middle answer: an agent
 /// reply may trigger, but only within the budget its cascade still has (see
-/// [`crate::agent::relay`] and `docs/development/engagement.md` §3).
+/// [`crate::agent::relay`] and `docs/guide/agents.md`).
 ///
 /// Mentions are always *stored* on the message, for chip rendering, whatever
 /// the trigger decision is.

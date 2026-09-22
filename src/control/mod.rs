@@ -635,8 +635,8 @@ pub enum Author {
     System,
 }
 
-/// Provenance of one delegation cascade. See `docs/development/engagement.md`
-/// §3.
+/// Provenance of one delegation cascade. See `docs/guide/agents.md`,
+/// "Agents mentioning agents".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Relay {
     /// Id of the human message at the base of the cascade.
