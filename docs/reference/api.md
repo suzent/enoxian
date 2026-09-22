@@ -413,7 +413,7 @@ Read recipient-local execution summaries without changing run state. Supports
 Run states include `pending`, `running`, `completed`, `failed`, `interrupted`,
 `cancelled`, and `expired`. Prompt bodies, executable commands and credentials are
 not returned. This is local status, not a cross-device delivery receipt.
-See [Execution inbox](../development/execution-inbox.md) for lifecycle and recovery.
+See [Execution inbox](execution-inbox.md) for lifecycle and recovery.
 
 ### `GET /circles/<id>/api/chat/engagement`
 

@@ -25,6 +25,7 @@ exact CLI/API behavior.
 | [reference/protocol.md](reference/protocol.md) | Yjs sync WebSocket and event-stream protocol details |
 | [reference/p2p-protocols.md](reference/p2p-protocols.md) | Versioned peer wire formats, encryption, and limits |
 | [reference/rendezvous-setup.md](reference/rendezvous-setup.md) | Deploying and using a bootstrap rendezvous/relay server |
+| [reference/execution-inbox.md](reference/execution-inbox.md) | Per-device agent execution inbox: admission, lifecycle, recovery, and limits |
 
 ## Concepts
 

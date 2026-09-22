@@ -4,7 +4,7 @@
 //! An agent reply used to fire no triggers at all (`fire_mentions = false`),
 //! because a total ban was the only bound that needed no bookkeeping. This
 //! module is the bookkeeping, so the ban can be narrowed to a budget. See
-//! `docs/development/engagement.md` §3.
+//! `docs/guide/agents.md`, "Agents mentioning agents".
 //!
 //! Three bounds, because each alone has a shape it does not catch:
 //!

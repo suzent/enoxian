@@ -74,6 +74,36 @@ window, and an unaddressed message offered to an ambient agent. The gate checks
 the allowlist, the delegation budget where one applies, and the durable
 `(message, key)` dedup before anything is enqueued.
 
+**Nothing on the admission path reads a clock.** A message's timestamp is
+stamped by the machine that posted it, so comparing it against this device's
+clock answers a question about two unsynchronised machines rather than about the
+message. It used to: an unaddressed message had to be under thirty seconds old,
+and any message had to post-date this device's activation. A peer running a
+minute slow could therefore never reach an agent here — not after a delay, but
+never, because its messages arrived already too old to consider, and through the
+activation check that silently included its explicit mentions. Eligibility is now
+"this device has never decided about it", recorded per message in a durable
+ledger beside the inbox. Arrival latency stops mattering by construction, and the
+activation boundary becomes the set of messages present when listening started
+rather than a moment on a clock.
+
+**Draining, not reacting.** Unaddressed messages are resolved as a set rather
+than one chat event at a time. Deciding over a set is what makes two things
+expressible: a burst of messages collapses into one turn on its tail instead of
+racing, and a backlog — a first sync, a long offline period — collapses to its
+newest eligible messages rather than spending a turn on each or, as the clock
+gate did, discarding all of them. Ordering is CRDT insertion order, which every
+peer agrees on and which involves no clock either.
+
+**Failure is not an answer.** A turn that crashed, timed out, or expired on a
+restart returns its message to the candidates, and selection's
+least-recently-offered ordering rotates to the next agent. A cancellation does
+not: "another agent answered first" and "cascade stopped" are decisions this
+device made, and retrying a decision undoes it. An expired turn is the one case
+that re-runs the *same* agent, because it never started — nothing was tried.
+Attempts are counted from inbox entries rather than a separate counter, since
+the inbox is already the durable record of what was attempted.
+
 **Run queue.** Turns do not race. A single worker per Circle drains them in
 arrival order, four deep per agent, which is also why the Circle-wide managed
 change-session lock is never contended from here. A managed session still marked
@@ -90,6 +120,14 @@ whose user dismissed it.
 **Per-root relay counters.** Each device keeps its own count of agent turns per
 delegation cascade. The `spent` field on the wire can only shrink a budget,
 never extend one.
+
+**Unaddressed turns are framed as such.** An agent reading the room is told the
+message was overheard, that the room is a group conversation mostly not aimed at
+it, and which other agents were shown the same message. The prompt used to open
+by asserting an `@mention` and then deny it in a trailing paragraph, which asks a
+model to decline from a position the prompt has just argued against. The
+addressed prompt is deliberately unchanged, because resumed ACP conversations
+hold earlier turns phrased the old way.
 
 ## Failure Boundaries
 

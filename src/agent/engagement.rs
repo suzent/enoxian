@@ -1,6 +1,6 @@
 //! Follow-up routing: a reply to an agent should not need a mention.
 //!
-//! See `docs/development/engagement.md` §1.1. After an agent answers you,
+//! See `docs/guide/agents.md`, "Replying without a mention". After an agent answers you,
 //! re-typing `@claude` says nothing the room does not already know, so for a
 //! short window your next message routes back to the same agent on the same
 //! machine.

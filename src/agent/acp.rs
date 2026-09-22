@@ -128,7 +128,7 @@ pub struct AcpSession<H: ClientHooks> {
     /// An addressed turn is a work order and may legitimately run for a long
     /// time. An unaddressed one is a conversational aside nobody asked for, and
     /// letting it hold a device permit and a conversation lease for half an
-    /// hour puts real work behind it. See ambient-reliability.md §3.4.
+    /// hour puts real work behind it.
     prompt_timeout: Duration,
 }
 

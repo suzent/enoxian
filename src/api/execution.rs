@@ -298,9 +298,8 @@ pub async fn deliveries(
 ///
 /// A standing configuration fact rather than an event, which is why it is
 /// reported as state instead of being written into the skip log once per
-/// message. Empty `ambient` is the single most common reason nothing happens
-/// ([ambient-reliability.md](../../docs/development/ambient-reliability.md)
-/// §6), and it is invisible from the transcript.
+/// message. Empty `ambient` is the single most common reason nothing happens,
+/// and it is invisible from the transcript.
 fn readiness(state: &crate::state::AppState) -> serde_json::Value {
     let cfg = crate::agent::config::AgentConfig::load();
     let settings = cfg.resolved(&state.circle_id);

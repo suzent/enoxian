@@ -366,6 +366,11 @@ When the window guesses wrong — two agents mid-conversation with you — use t
 **reply** action on an agent's message instead. That routes to exactly that
 agent, with no timer.
 
+Replying to a *person* is different: it names no agent, so it reaches whoever
+reads the room rather than nobody. Quoting a colleague to ask the room a
+question is one of the most common ways people ask for help, and it should not
+be the one shape that never reaches an agent.
+
 ## Agents that read the room
 
 An agent can be given `engagement = "ambient"` so it sees every human message in
@@ -397,7 +402,50 @@ passed* rather than silence.
 
 An unaddressed turn is conversational, not a work order. Files it writes are
 recorded as **pending** for review rather than accepted outright, and the agent
-is told to say what needs doing rather than do it.
+is told to say what needs doing rather than do it. It also gets a shorter leash
+than a request you made on purpose — three minutes by default
+(`ambient_turn_timeout_secs`), so an aside nobody asked for cannot hold up work
+someone did.
+
+### Catching up after a gap
+
+A device that was asleep, restarting, or disconnected comes back to a room that
+moved on. It reads the most recent messages rather than all of them or none:
+
+```toml
+ambient_backlog_tail = 1    # how many of the newest still get a turn
+```
+
+Everything older is marked as read without spending a turn, so catching up
+costs the same as keeping up. Messages are judged by whether this device has
+already decided about them, not by how old they look — so a message from a
+machine whose clock disagrees with yours, or one that arrives late, is still
+read.
+
+Several messages sent in quick succession are considered together, so a thought
+typed across three lines gets one reply informed by all of them.
+
+### When an agent cannot answer
+
+If the agent picked for a message fails — its adapter crashes, times out, or the
+daemon restarts mid-turn — the message passes to another agent that reads the
+room:
+
+```toml
+ambient_max_attempts = 2    # tries before giving up on a message
+```
+
+When the tries run out, a single system line says so in the room, so an
+unanswered question does not look like one nobody cared about.
+
+### Finding out why nothing happened
+
+**Agent activity** lists what ran, and a **Not picked up** section lists what
+did not, with the reason: *too short to be worth a turn*, *every agent reading
+this room had just spoken*, *no agent by this name is configured on this
+device*, *this device is set to pull*. Standing problems appear at the top —
+including an agent named in `ambient` whose spelling does not match any
+configured agent, which otherwise does nothing at all and says nothing about it.
 
 ## Agents mentioning agents
 
