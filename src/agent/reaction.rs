@@ -560,16 +560,31 @@ fn drain_ambient(
         let Some(state_of) = unanswered_attempts(&entries, &message.id) else {
             continue;
         };
-        if state_of.attempts >= max_attempts {
-            let reason = "every attempt failed";
+        // Two separate ceilings, because they bound two different things: how
+        // many agents may burn a real turn on one message, and how many times a
+        // restart may put back a turn that never ran.
+        let spent = match (
+            state_of.executed >= max_attempts,
+            state_of.expired >= EXPIRED_REQUEUE_LIMIT,
+        ) {
+            (true, _) => Some("every attempt failed"),
+            (_, true) => Some("this device kept restarting before it could run"),
+            _ => None,
+        };
+        if let Some(reason) = spent {
             ledger.settle(&message.id, Decision::Skipped(reason.into()), now);
-            note(state, &message.id, None, "gave up after repeated failures");
+            note(state, &message.id, None, reason);
             announce_unanswered(state, &message.id, reason);
             continue;
         }
         let untried: Vec<String> = listeners
             .iter()
-            .filter(|name| !state_of.tried.iter().any(|t| t.eq_ignore_ascii_case(name)))
+            .filter(|name| {
+                !state_of
+                    .offered
+                    .iter()
+                    .any(|t| t.eq_ignore_ascii_case(name))
+            })
             .cloned()
             .collect();
         if !untried.is_empty() {
@@ -672,26 +687,50 @@ fn drain_ambient(
 ///   answered first", "cascade stopped" and "ambient participation disabled"
 ///   are all decisions, and retrying a decision would undo it.
 struct Unanswered {
-    /// Agents that have an attempt on record, in admission order. Not offered
-    /// the message again; a fresh listener is what rotation is for.
-    tried: Vec<String>,
-    /// Total attempts, including repeats of one agent. This is what the budget
-    /// counts, so a daemon that restarts in a loop cannot retry forever.
-    attempts: usize,
-    /// A run that expired without ever starting, if any.
+    /// Every agent with an entry for this message, in admission order —
+    /// whether it ran or expired before it could.
     ///
-    /// Distinct from one that failed: nothing was tried, so offering the same
-    /// agent again is not a retry of anything. `Interrupted` is deliberately
-    /// not included — that run was executing, may have done visible work, and
-    /// the inbox already records its retry as suppressed.
+    /// This is what a fresh offer must skip, and the reason is mechanical
+    /// rather than principled: the inbox dedups on `(message, agent)`, so
+    /// re-admitting one of these is silently dropped. Putting an agent back
+    /// goes through `Inbox::retry`, not a new admission.
+    offered: Vec<String>,
+    /// Runs that actually executed and did not produce an answer.
+    ///
+    /// This is what `ambient_max_attempts` bounds, and it deliberately excludes
+    /// runs that expired without starting. Counting every entry instead made
+    /// the budget unspendable the moment `ambient_responders` reached it: two
+    /// listeners offered in the opening round are two entries, so one restart
+    /// left `2 >= 2` and the message was settled as "every attempt failed"
+    /// having never run at all.
+    executed: usize,
+    /// Runs that expired without ever starting, and the first one's id.
+    ///
+    /// Distinct from a failure: nothing was tried, so offering the same agent
+    /// again is not a retry of anything. Bounded separately by
+    /// [`EXPIRED_REQUEUE_LIMIT`] — a daemon restarting in a loop expires the
+    /// requeue it just made, which without a cap of its own is forever.
+    ///
+    /// `Interrupted` is deliberately not here — that run was executing, may
+    /// have done visible work, and the inbox already records its retry as
+    /// suppressed.
+    expired: usize,
     never_started: Option<String>,
 }
+
+/// How many times a turn killed before it started may be put back.
+///
+/// Not user-facing: it bounds a pathology (a daemon restart loop), not a
+/// policy. Three is enough to survive an upgrade or a crash-restart without
+/// letting a machine that cannot stay up requeue the same turn indefinitely.
+const EXPIRED_REQUEUE_LIMIT: usize = 3;
 
 fn unanswered_attempts(entries: &[super::inbox::Entry], message_id: &str) -> Option<Unanswered> {
     use super::inbox::Status;
     let mut out = Unanswered {
-        tried: Vec::new(),
-        attempts: 0,
+        offered: Vec::new(),
+        executed: 0,
+        expired: 0,
         never_started: None,
     };
     for entry in entries
@@ -703,21 +742,27 @@ fn unanswered_attempts(entries: &[super::inbox::Entry], message_id: &str) -> Opt
                 return None
             }
             status => {
-                out.attempts += 1;
+                match status {
+                    Status::Expired => {
+                        out.expired += 1;
+                        if out.never_started.is_none() {
+                            out.never_started = Some(entry.run_id.clone());
+                        }
+                    }
+                    // Ran, and produced no answer. Only these spend the budget.
+                    _ => out.executed += 1,
+                }
                 if !out
-                    .tried
+                    .offered
                     .iter()
                     .any(|a| a.eq_ignore_ascii_case(&entry.request.agent))
                 {
-                    out.tried.push(entry.request.agent.clone());
-                }
-                if status == Status::Expired && out.never_started.is_none() {
-                    out.never_started = Some(entry.run_id.clone());
+                    out.offered.push(entry.request.agent.clone());
                 }
             }
         }
     }
-    (out.attempts > 0).then_some(out)
+    (out.executed + out.expired > 0).then_some(out)
 }
 
 /// Offer one eligible message to this device's listeners./// Offer one eligible message to this device's listeners.
@@ -3309,6 +3354,88 @@ mod tests {
             ledger.decision("poison"),
             Some(super::super::ledger::Decision::Skipped(
                 "every attempt failed".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn two_listeners_plus_one_restart_is_not_two_failed_attempts() {
+        // Observed in a real Circle: `ambient_responders = 2` admits two
+        // entries in the opening round, so counting entries left `2 >= 2` after
+        // a single restart. The message settled as "every attempt failed" and
+        // the room was told nobody could answer — when nothing had run at all.
+        use super::super::inbox::{Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let mut inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let mut cfg = inbox_config();
+        cfg.ambient = vec!["claude".into(), "codex".into()];
+        cfg.ambient_responders = 2;
+        cfg.ambient_max_attempts = 2;
+
+        let message = room_message("both", "how does the retry path work here?");
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
+        assert_eq!(inbox.entries().len(), 2, "both listeners offered");
+
+        // The restart everyone hits while iterating on a build.
+        drop(inbox);
+        inbox = Inbox::open(dir.path(), 101).unwrap();
+        assert!(inbox.entries().iter().all(|e| e.status == Status::Expired));
+
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        assert!(
+            inbox.entries().iter().any(|e| e.status == Status::Pending),
+            "a turn that never ran is put back, not counted against the budget"
+        );
+        assert!(
+            !state
+                .transcript()
+                .iter()
+                .any(|m| m.author == crate::control::Author::System),
+            "and the room is not told nobody could answer"
+        );
+    }
+
+    #[test]
+    fn a_machine_that_keeps_restarting_stops_requeueing_eventually() {
+        // The bound the entry count was there for, kept — just applied to the
+        // pathology rather than to the opening round.
+        use super::super::inbox::{Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let mut inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let cfg = inbox_config();
+        offer_room(
+            &state,
+            &handled,
+            &inbox,
+            &ledger,
+            &wake,
+            &cfg,
+            &room_message("doomed", "how does the retry path work here?"),
+        );
+        let mut restarts = 0;
+        for _ in 0..10 {
+            drop(inbox);
+            inbox = Inbox::open(dir.path(), 101).unwrap();
+            restarts += 1;
+            drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+            if !inbox.entries().iter().any(|e| e.status == Status::Pending) {
+                break;
+            }
+        }
+        assert!(
+            restarts <= EXPIRED_REQUEUE_LIMIT + 1,
+            "gave up after {restarts} restarts"
+        );
+        assert_eq!(
+            ledger.decision("doomed"),
+            Some(super::super::ledger::Decision::Skipped(
+                "this device kept restarting before it could run".into()
             ))
         );
     }
