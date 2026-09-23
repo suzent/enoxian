@@ -42,6 +42,32 @@ describe('agent activity', () => {
     expect(screen.queryByText('@claude')).toBeNull()
     expect(screen.queryByRole('button', { name: /Try again/ })).toBeNull()
   })
+  it('does not ask you to retry a turn the device already put back', async () => {
+    // A restart expires whatever was queued and the drain requeues it. Both
+    // records exist, and listing the dead one under "Needs attention" with a
+    // Try again button makes a successful recovery read as a failure.
+    getExecutions.mockResolvedValue({ peer_id: 'local', runs: [
+      { run_id: 'dead', message_id: 'm1', agent_id: 'claude', peer_id: 'local', status: 'expired', ambient: true, detail: 'ambient observation expired on restart' },
+      { run_id: 'back', message_id: 'm1', agent_id: 'claude', peer_id: 'local', status: 'running', ambient: true },
+    ] })
+    render(<ExecutionStatus circleId="circle" />)
+    await waitFor(() => expect(getExecutions).toHaveBeenCalled())
+    expect(screen.queryByText(/Needs attention/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Try again/ })).toBeNull()
+    // The superseded run is still findable, just not demanding action.
+    await userEvent.click(await screen.findByText(/Recent history/))
+    expect(screen.getByText(/expired on restart/)).toBeTruthy()
+  })
+  it('still flags a failure nothing has picked up', async () => {
+    getExecutions.mockResolvedValue({ peer_id: 'local', runs: [
+      { run_id: 'dead', message_id: 'm1', agent_id: 'claude', peer_id: 'local', status: 'failed', ambient: true, detail: 'adapter exited' },
+    ] })
+    render(<ExecutionStatus circleId="circle" />)
+    await waitFor(() => expect(getExecutions).toHaveBeenCalled())
+    expect(await screen.findByText(/Needs attention/)).toBeTruthy()
+    await userEvent.click(screen.getByText(/Needs attention/))
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+  })
   it('distinguishes a quiet listener from a waiting request', async () => {
     getExecutions.mockResolvedValue({ peer_id: 'local', runs: [
       { run_id: 'wait', message_id: 'm1', agent_id: 'codex', peer_id: 'local', status: 'pending', ambient: true },
