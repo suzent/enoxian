@@ -41,6 +41,14 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Agents in a busy Circle no longer stop responding, with the activity list
+  filling up with "ambient observation expired on restart" when nothing
+  restarted. Saving the execution queue briefly marked it as unavailable, and
+  anything checking at that moment concluded the queue was dead and tore the
+  agent loop down — which expired the waiting turns, re-queued them, and
+  triggered the same collapse seconds later. The busier the Circle, the more
+  often it happened.
+
 - A restart no longer quietly halves how many agents read a message. When a
   Circle offers a message to two agents and the daemon restarts before they
   run, both are now put back — previously only one was, so the room went from

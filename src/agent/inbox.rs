@@ -555,7 +555,22 @@ impl Inbox {
         std::fs::create_dir_all(parent)?;
         // Unique temporary file, durable data, atomic replacement. A failed
         // commit cannot acknowledge a request or mutate the in-memory snapshot.
-        if !self.healthy.swap(false, Ordering::SeqCst) {
+        //
+        // `healthy` is read here, not swapped. Swapping it false for the
+        // duration of the write made every *successful* persist look like a
+        // dead inbox to anyone asking concurrently — and `reaction::run`
+        // asks, on another task, after every loop iteration. A write holds
+        // two fsyncs, so the window is milliseconds wide and lands often in a
+        // busy Circle: the loop would tear itself down, `Inbox::open` would
+        // expire the queued ambient turns, the drain would put them back, and
+        // the next persist would do it again. A five-second restart loop that
+        // never restarted anything.
+        //
+        // Nothing is lost by reading instead. Concurrent persists cannot
+        // happen — every caller holds `snapshot` across this — so the swap was
+        // never excluding anything, and the flag's real job is to latch a
+        // failure until an owner recovers.
+        if !self.healthy.load(Ordering::SeqCst) {
             bail!("execution inbox persistence failed; owner recovery required before further execution");
         }
         let tmp_path = parent.join(format!(".inbox-{}.tmp", uuid::Uuid::new_v4()));
@@ -577,9 +592,8 @@ impl Inbox {
             std::fs::File::open(parent)?.sync_all()?;
             Ok(())
         })();
-        if result.is_ok() {
-            self.healthy.store(true, Ordering::SeqCst);
-        } else {
+        if result.is_err() {
+            self.healthy.store(false, Ordering::SeqCst);
             let _ = std::fs::remove_file(tmp_path);
         }
         result
@@ -655,6 +669,46 @@ pub(crate) mod tests {
             inbox.admit(request("m1", "claude"), 20, 1001).unwrap(),
             Admission::Duplicate
         ));
+    }
+
+    #[test]
+    fn a_successful_write_never_looks_like_a_dead_inbox_to_anyone_else() {
+        // `reaction::run` asserts `is_healthy()` after every loop iteration,
+        // from a different task than the one writing. While `persist` swapped
+        // the flag false for the duration of the write — two fsyncs — that
+        // assertion could land mid-write and tear the reaction loop down. The
+        // loop then expired the queued ambient turns, the drain put them back,
+        // and the next write did it again: a five-second restart loop that
+        // never restarted anything, and the reason a Circle filled with
+        // "ambient observation expired on restart" without anyone restarting.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = Arc::new(Inbox::open(dir.path(), 100).unwrap());
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (inbox, stop) = (inbox.clone(), stop.clone());
+            std::thread::spawn(move || {
+                for i in 0..40 {
+                    let _ = inbox.admit(request(&format!("m{i}"), "claude"), 20, 100);
+                }
+                stop.store(true, Ordering::SeqCst);
+            })
+        };
+        let mut seen_unhealthy = false;
+        while !stop.load(Ordering::SeqCst) {
+            if !inbox.is_healthy() {
+                seen_unhealthy = true;
+                break;
+            }
+        }
+        writer.join().unwrap();
+        assert!(
+            !seen_unhealthy,
+            "a write in progress must not read as an unhealthy inbox"
+        );
+        assert!(inbox.is_healthy());
     }
 
     #[test]
