@@ -99,6 +99,16 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
             _ = token.cancelled() => break,
             result = &mut worker => {
                 result??;
+                // The worker only returns `Ok` when its token was cancelled, and
+                // on shutdown that is the correct thing to have happened. Both
+                // this branch and `token.cancelled()` above become ready in the
+                // same instant then, and `select!` picks between them at
+                // random — so without this check a clean stop logs
+                // "stopped unexpectedly; recovering owner" about half the time,
+                // which reads exactly like the fault it is not.
+                if token.is_cancelled() {
+                    return Ok(());
+                }
                 anyhow::bail!("execution worker stopped unexpectedly; recovering owner");
             },
             _ = reconcile.tick() => {
@@ -2511,6 +2521,32 @@ mod tests {
         assert!(run_next_with_config(&state, &inbox, &cfg).await.unwrap());
         assert_eq!(inbox.entries()[0].status, Status::Completed);
     }
+    #[tokio::test]
+    async fn stopping_a_circle_is_not_reported_as_a_fault() {
+        // On shutdown the worker's token is cancelled, so the worker returns
+        // and `token.cancelled()` fires in the same instant. `select!` picks
+        // between two ready branches at random, so roughly half of all clean
+        // stops used to log "execution worker stopped unexpectedly; recovering
+        // owner" — a WARN that reads like a crash and sent a real debugging
+        // session chasing it. Repeated because the race is what is being
+        // tested: one pass proves nothing.
+        for _ in 0..20 {
+            let (state, _dir) = test_state("local", "suzy");
+            let token = CancellationToken::new();
+            let running = tokio::spawn(run(state, token.clone()));
+            tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+            token.cancel();
+            let outcome = tokio::time::timeout(LIVENESS, running)
+                .await
+                .expect("the loop should stop promptly")
+                .expect("the loop task should not panic");
+            assert!(
+                outcome.is_ok(),
+                "a cancelled circle is a clean stop, not a fault: {outcome:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn worker_errors_reach_its_supervisor() {
         use super::super::inbox::{tests::request, Inbox};
