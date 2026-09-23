@@ -68,6 +68,14 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- An agent reading the room is now asked what to do when someone answers first.
+  A turn takes seconds to minutes, and the room does not wait — so if another
+  agent replies to the same message while this one is writing, its draft is held
+  and handed back rather than posted on top or discarded: the agent sees what
+  was said and chooses to drop it, post it unchanged, or replace it with
+  something that accounts for the answer. Asked once per turn, and never for a
+  turn you requested by name.
+
 - An agent reading the room is now told that is what it is doing. Its prompt
   previously opened by asserting it had been @mentioned and framing the message
   as a request to answer, then appended a paragraph at the end saying it had not

@@ -38,17 +38,25 @@ model gets guessed wrong.
    because it bounds a shared device resource. A slow local model and a hosted
    one are not comparable, so a per-agent override may be worth it.
 
-## 2. Held Draft — the half that is missing
+## 2. Held Draft — shipped
+
+> **Shipped.** `driver::hold_draft` runs the hold as a second prompt on the live
+> session, `ambient::hold_decision` reads `PASS` / `SEND` / revision, and the
+> choice is recorded in the run's `detail` as `hold=withdrawn|unchanged|revised`.
+> §2.4 (agent-declared preconditions) is still open, and §2.3's justification
+> test now has a place to read from — count `hold=` in the daemon log before
+> deciding whether to keep the mechanism.
+
+The design below is kept because it records why each bound exists.
 
 From [Raft's AX post][raft], discussed in the `enox-dev` Circle. Before an agent
 sends, re-check the room; if it moved, hand the message **back to the agent** to
 revise, send anyway, or stay silent.
 
-What exists is an *ingress* check: a queued unaddressed turn is cancelled if
-another agent answered while it waited. That is not this mechanism. It fires
-before inference, and the harness decides — the agent never learns the room
-moved. The design this is drawn from is explicit that a system which drops a
-message without handing it back is the version to oppose.
+The *ingress* check is a separate, earlier thing, and remains: a queued
+unaddressed turn is cancelled outright if another agent answered while it was
+still waiting for a slot. That one never reaches the agent, which is correct —
+there is no draft yet to hand back.
 
 ### 2.1 There is no egress point to hook
 
