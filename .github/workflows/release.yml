@@ -129,12 +129,17 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
 
       # This step has stalled a runner so badly that it neither timed out
-      # cleanly nor uploaded a log. A step timeout well inside the job's lets
-      # the runner stop it while it can still report, and the sampler shows
-      # whether memory, disk, or a runaway process count was the cause.
+      # cleanly nor uploaded a log, and not even the step timeout could stop
+      # it. So the limits live inside the step, where the kernel enforces them
+      # whatever state the runner is in: a process cap turns a runaway spawn
+      # into a failed `fork`, a file-size cap turns a runaway writer into
+      # SIGXFSZ, and `timeout` kills the run before the job limit does. The
+      # sampler shows which of memory, disk or process count was climbing.
       - name: Rust tests
         timeout-minutes: 15
         run: |
+          ulimit -u 4096
+          ulimit -f 4194304
           (
             while true; do
               {
@@ -149,14 +154,14 @@ jobs:
           ) </dev/null >/dev/null 2>&1 &
           sampler=$!
           status=0
-          cargo test --locked --all-targets || status=$?
+          timeout --kill-after=30s 12m cargo test --locked --all-targets || status=$?
           kill "$sampler" || true
           exit "$status"
 
       - name: Runner resources during tests
         if: always()
         run: |
-          cat "$RUNNER_TEMP/resources.log" || true
+          tail -n 60 "$RUNNER_TEMP/resources.log" || true
           sudo dmesg | grep -iE 'out of memory|killed process' || true
 
       - name: Rust doctests
