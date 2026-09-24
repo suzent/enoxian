@@ -39,6 +39,15 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- A self-hosted relay's automatic updater now updates itself. It ships with
+  each release and is verified against the release's checksums, so a change
+  it could not have anticipated no longer strands it. An updater installed
+  before 0.9.0 cannot do this and fails every daily run on the new
+  `enox --version` format; replace it once by hand as described in
+  `scripts/rendezvous/README.md`.
+
 ## [0.9.2] — 2026-09-24
 
 ### Added
