@@ -14,6 +14,7 @@
 
 pub mod acp;
 pub mod ambient;
+pub mod claims;
 pub mod config;
 pub mod context;
 pub mod decisions;

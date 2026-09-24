@@ -84,6 +84,9 @@ pub enum AgentCommands {
     },
     /// Manage Circle members
     Member(MemberArgs),
+    /// What is waiting for an agent, and taking a message so ambient agents
+    /// leave it alone
+    Inbox(InboxArgs),
     /// Show recent chat messages
     Chat {
         /// Stream new messages as they arrive
@@ -291,6 +294,33 @@ pub enum IdentityAction {
         handle: String,
         /// The 24-word mnemonic (quote the whole phrase)
         mnemonic: String,
+    },
+}
+
+#[derive(Parser)]
+pub struct InboxArgs {
+    /// Whose inbox. Defaults to `ENOXIAN_AGENT_ID`, the name claims are made as.
+    #[arg(long)]
+    pub agent: Option<String>,
+    #[command(subcommand)]
+    pub action: Option<InboxAction>,
+}
+
+#[derive(Subcommand)]
+pub enum InboxAction {
+    /// Take a message: ambient agents on every device leave it to you until
+    /// the claim expires or you release it
+    Claim {
+        /// Message id, or an unambiguous prefix of one (the list shows eight)
+        message_id: String,
+        /// Seconds to hold it (default 600, at most 3600)
+        #[arg(long)]
+        ttl: Option<i64>,
+    },
+    /// Give a message back so the room can answer it
+    Release {
+        /// Message id, or an unambiguous prefix of one
+        message_id: String,
     },
 }
 
@@ -556,6 +586,37 @@ pub enum ServiceAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inbox_lists_by_default_and_takes_claim_and_release() {
+        let cli = AgentCli::try_parse_from(["enox", "inbox"]).unwrap();
+        let AgentCommands::Inbox(args) = cli.command else {
+            panic!("expected inbox");
+        };
+        assert!(args.action.is_none(), "bare `enox inbox` lists");
+
+        let cli = AgentCli::try_parse_from([
+            "enox", "inbox", "--agent", "reviewer", "claim", "4f2a9c1e", "--ttl", "120",
+        ])
+        .unwrap();
+        let AgentCommands::Inbox(args) = cli.command else {
+            panic!("expected inbox");
+        };
+        assert_eq!(args.agent.as_deref(), Some("reviewer"));
+        assert!(matches!(
+            args.action,
+            Some(InboxAction::Claim { ref message_id, ttl: Some(120) }) if message_id == "4f2a9c1e"
+        ));
+
+        let cli = AgentCli::try_parse_from(["enox", "inbox", "release", "4f2a9c1e"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            AgentCommands::Inbox(InboxArgs {
+                action: Some(InboxAction::Release { .. }),
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn actor_token_is_accepted_after_subcommand() {

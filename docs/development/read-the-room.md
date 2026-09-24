@@ -133,17 +133,68 @@ a protocol primitive the agent programs. v1 with a fixed rule and a real `SEND`
 escape is honest, and the choice distribution from §2.3 is what tells you whether
 the general form earns its complexity.
 
-## 3. Agent Inbox — pull instead of push
+## 3. Agent Inbox and claims — shipped
 
-Also from [Raft][raft]. enoxian already has the durable, bounded half: `Inbox`
-persists requests and outcomes per Circle, and the drain resolves candidates as
-a set. What is missing is direction — it pushes turns at agents, and an agent
-cannot ask what is waiting and choose what to load into its own context.
-`/api/execution` is read-only and reports runs, not pending observations.
+> **Shipped** as one feature, because they turned out to be one: pulling a
+> message from your inbox *is* claiming it. `GET /api/inbox` (and `enox inbox`)
+> lists what is waiting; `POST /api/inbox/claim` takes a message; the drain and
+> the launch check consult live claims (`agent::claims`) before spending a turn.
 
-This is the smallest remaining change with the largest reach, and it is closest
-to the underlying asymmetry: people perceive a room continuously, agents only
-when invoked.
+### 3.1 The claim signal already existed
+
+An ACP turn has always published a `Working` activity for the message it is
+answering, renewed it every fifteen seconds, and replicated it to every peer.
+"Someone is on this" was on the wire already — nothing read it for a decision.
+So a claim is not new state. An explicit claim from a CLI agent or a person is
+the same activity with a longer lifetime, stored under its own `claim:` key so
+that releasing one can never cancel a running turn's heartbeat. Both expire by
+themselves, which is what stops a crashed or forgetful claimer from holding a
+message forever.
+
+### 3.2 Who a claim blocks
+
+A claim blocks you **unless it was made by one of the agents this device itself
+offered the message to**. The exception is not a nicety. Without it,
+`ambient_responders = 2` cancels itself: two listeners are admitted together, the
+first to start publishes a heartbeat, and the second reads that as someone
+else's claim. And an agent never blocks itself, or a requeued turn would be
+stopped by the heartbeat left behind by the attempt a restart killed.
+
+Addressed turns ignore claims entirely, for the reason the other ambient-only
+checks do: if you named an agent, you are owed its answer.
+
+### 3.3 Where claims are read
+
+- **The drain.** A claimed message is left *undecided* rather than settled — a
+  claim can lapse without an answer, and then the message has to be offerable
+  again rather than written off. A message that is undecided here but already
+  has an agent's reply is settled instead: someone else answered it.
+- **Launch.** A queued turn whose message was claimed while it waited for a
+  slot is cancelled, the same way one whose message was *answered* already is.
+
+### 3.4 What it does and does not buy
+
+With Held Draft in place, claims are mostly about **cost**, not noise: Held
+Draft already stops a second agent posting a duplicate, but only after it has
+spent a full turn producing one. A claim stops the turn before it starts.
+
+It cannot help in the tightest race — two devices receiving a message in the
+same instant both start before either's claim propagates. That case still
+reaches Held Draft, which is the right layer for it.
+
+The more distinctive use is the one pull exists for: an agent that was never
+pushed a message — a CLI agent in a terminal, or a person — takes one, and every
+ambient listener in the room leaves it alone.
+
+### 3.5 Still open
+
+- **Batching during a turn.** A pushed ACP agent is told the inbox exists and
+  can look, but claiming a *second* message mid-turn is awkward: its reply is
+  threaded to the first, so the claim lapses unanswered. Letting one turn answer
+  several messages needs a reply that can address more than one.
+- **Surfacing claims in the UI.** A claim shows as the agent "working" through
+  the existing indicator, which is accurate but does not say it was taken on
+  purpose.
 
 ## 4. Cheap triage as a participant
 
@@ -166,12 +217,19 @@ wasted-wakeup cost first.
 - **Salience decay instead of a quiet window.** The 30-second rule is a hard
   switch. Closer to how people behave: having just spoken raises the bar rather
   than forbidding speech — let the length floor float with recent activity.
-- **Thread awareness.** `thread_root` is already on every `ChatMessage` and the
-  reaction loop never reads it. "This belongs to a thread I have been following"
-  is a far better signal than "this is long enough".
-- **Explicit claim state.** "Someone is handling this" is invisible, which is
-  why `ambient_responders = 1` is the only crosstalk control — at the cost of
-  misses. A visible claim would make several responders safe rather than noisy.
+- **Thread awareness — not built, and not buildable as described.**
+  `thread_root` is on every `ChatMessage` and the reaction loop never reads it,
+  but measured against real Circles the signal it was meant to carry does not
+  occur. Of 18 threaded messages across every Circle checked, **none** was a
+  human message in a thread an agent had spoken in. Threads here form one way
+  only: an agent replies to a person, setting `reply_to`, and the person's next
+  message is top-level, starting a new thread. So "this belongs to a thread I
+  have been following" never fires, and building it would be dead code.
+  The continuity it reaches for is real — the same person talking to the same
+  agent shortly afterwards — and that is what the engagement window already
+  routes on. `thread_root` becomes useful only if people reply-thread, which is a
+  composer change, not a gating one.
+- ~~**Explicit claim state.**~~ Shipped as part of §3.
 
 [raft]: https://raft.build/resources/blog/is-having-agents-in-the-room-meant-to-be-chaotic/
 [cost]: https://github.com/suzent/enoxian/blob/50f0c37/docs/development/engagement.md

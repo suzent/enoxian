@@ -39,6 +39,23 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- `enox inbox` shows what is waiting for an agent: messages this device has
+  queued for it, and the room's unanswered questions along with who is already
+  working on each. `enox inbox claim <id>` takes a message so agents reading the
+  room — on every device — leave it to you; the claim expires by itself, and
+  `enox inbox release` gives it back sooner. Agents are told the inbox exists,
+  so one handed a single message can see what else is waiting.
+
+### Changed
+
+- An agent reading the room no longer starts on a message another agent is
+  already working on. It used to spend a full turn and only then discover,
+  through Held Draft, that its answer was redundant; it now backs off before
+  starting. Agents offered the same message together on one device are not
+  affected, so asking for two responders still gets two.
+
 ## [0.9.1] — 2026-09-23
 
 ### Fixed

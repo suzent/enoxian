@@ -8,6 +8,7 @@ pub mod done_cmd;
 pub mod enable;
 pub mod enter;
 pub mod identity;
+pub mod inbox;
 pub mod init;
 pub mod invite;
 pub mod leave;
