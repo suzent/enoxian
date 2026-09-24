@@ -30,6 +30,21 @@ check, or changed peer ID restores the previous binary. No peer keys are changed
 The backup stays at `/usr/local/bin/enox.previous`. Updates never run in the
 relay startup command, so a download outage cannot prevent startup.
 
+The updater also keeps itself current: each release ships `update-relay.py`,
+listed in SHA256SUMS, and every run installs a changed, verified copy over
+`/usr/local/sbin/enoxian-relay-update` before doing anything else, then hands
+the run to it. `--check` never replaces it.
+
+An updater installed before this existed cannot fetch its replacement, and one
+from before 0.9.0 fails on the new `enox --version` format ("Expected a stable
+semantic version") before installing anything. Replace it once by hand; the
+timer and service stay as they are:
+
+```bash
+scp update-relay.py root@relay:/tmp/enoxian-relay-update.new
+ssh root@relay 'install -m 755 /tmp/enoxian-relay-update.new /usr/local/sbin/enoxian-relay-update && systemctl start enoxian-relay-update.service'
+```
+
 ```bash
 systemctl list-timers enoxian-relay-update.timer
 journalctl -u enoxian-relay-update.service

@@ -131,6 +131,72 @@ class UpdaterTests(unittest.TestCase):
              patch.object(updater.time, "sleep"):
             self.assertFalse(updater.healthy("relay", 36521, "original"))
 
+    def updater_release(self, body, checksum=None, listed=True):
+        checksum = checksum or hashlib.sha256(body).hexdigest()
+        sums = f"{checksum}  update-relay.py\n" if listed else "0" * 64 + "  enoxian-linux-x86_64.tar.gz\n"
+        return patch.object(updater, "fetch", side_effect=[io.BytesIO(sums.encode()), io.BytesIO(body)])
+
+    def installed_updater(self):
+        path = self.directory / "enoxian-relay-update"
+        path.write_bytes(b"print('old updater')\n")
+        return path
+
+    def test_verified_updater_replaces_the_installed_one(self):
+        path = self.installed_updater()
+        with self.updater_release(b"print('new updater')\n"):
+            self.assertTrue(updater.refresh_self("v0.9.3", path))
+        self.assertEqual(path.read_bytes(), b"print('new updater')\n")
+        self.assertTrue(path.stat().st_mode & 0o111)
+
+    def test_updater_with_bad_checksum_is_not_installed(self):
+        path = self.installed_updater()
+        with self.updater_release(b"print('new updater')\n", "0" * 64), \
+             self.assertRaisesRegex(ValueError, "checksum mismatch"):
+            updater.refresh_self("v0.9.3", path)
+        self.assertEqual(path.read_bytes(), b"print('old updater')\n")
+
+    def test_updater_that_does_not_compile_is_not_installed(self):
+        path = self.installed_updater()
+        with self.updater_release(b"def broken(:\n"), self.assertRaises(SyntaxError):
+            updater.refresh_self("v0.9.3", path)
+        self.assertEqual(path.read_bytes(), b"print('old updater')\n")
+
+    def test_identical_updater_is_left_alone(self):
+        path = self.installed_updater()
+        with self.updater_release(path.read_bytes()):
+            self.assertFalse(updater.refresh_self("v0.9.3", path))
+
+    def test_release_without_an_updater_leaves_it_alone(self):
+        path = self.installed_updater()
+        with self.updater_release(b"unused", listed=False) as fetch:
+            self.assertFalse(updater.refresh_self("v0.9.2", path))
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(path.read_bytes(), b"print('old updater')\n")
+
+    def test_a_refreshed_updater_takes_over_the_run(self):
+        path = self.installed_updater()
+        release = io.BytesIO(json.dumps({"tag_name": "v0.9.3"}).encode())
+        with patch.object(updater, "fetch", return_value=release), \
+             patch.object(updater, "refresh_self", return_value=True), \
+             patch.dict(updater.os.environ, {}, clear=False), \
+             patch.object(updater.os, "execv", side_effect=SystemExit("exec")) as execv, \
+             patch.object(updater, "run") as run, \
+             self.assertRaisesRegex(SystemExit, "exec"):
+            updater.update(SimpleNamespace(binary=self.binary, check=False, updater=path))
+        self.assertEqual(execv.call_args.args[1][1], str(path))
+        run.assert_not_called()
+
+    def test_check_mode_and_a_refreshed_run_do_not_refresh_again(self):
+        path = self.installed_updater()
+        for check, env in ((True, {}), (False, {updater.REFRESHED_ENV: "1"})):
+            release = io.BytesIO(json.dumps({"tag_name": "v0.6.1"}).encode())
+            with patch.object(updater, "fetch", return_value=release), \
+                 patch.object(updater, "refresh_self") as refresh, \
+                 patch.dict(updater.os.environ, env), \
+                 patch.object(updater, "run", return_value="enox 0.6.1"):
+                updater.update(SimpleNamespace(binary=self.binary, check=check, updater=path))
+            refresh.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

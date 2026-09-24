@@ -452,9 +452,12 @@ jobs:
           for asset in "${expected[@]}"; do
             test -s "dist/$asset" || { echo "missing asset: $asset" >&2; exit 1; }
           done
-          (cd dist && sha256sum "${expected[@]}" > SHA256SUMS)
+          # Relays install the updater from each release, so it is checksummed
+          # with the binaries it installs.
+          cp scripts/rendezvous/update-relay.py dist/
+          (cd dist && sha256sum "${expected[@]}" update-relay.py > SHA256SUMS)
           cp scripts/install.sh scripts/install.ps1 dist/
-          for asset in SHA256SUMS install.sh install.ps1; do
+          for asset in SHA256SUMS install.sh install.ps1 update-relay.py; do
             test -s "dist/$asset" || { echo "missing release support asset: $asset" >&2; exit 1; }
           done
 

@@ -10,6 +10,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -17,6 +18,11 @@ import urllib.request
 
 RELEASE_API = "https://api.github.com/repos/suzent/enoxian/releases/latest"
 RELEASE_BASE = "https://github.com/suzent/enoxian/releases/download"
+# The updater ships with each release so an installed copy can follow changes
+# it could not have anticipated — such as a new `enox --version` format, which
+# left every pre-0.9.0 copy failing before it could install anything.
+UPDATER_ASSET = "update-relay.py"
+REFRESHED_ENV = "ENOXIAN_RELAY_UPDATER_REFRESHED"
 
 
 def fetch(url):
@@ -64,14 +70,49 @@ def healthy(service, port, expected):
     return False
 
 
-def stage_release(tag, arch, directory):
-    asset = f"enoxian-linux-{arch}.tar.gz"
-    base = f"{RELEASE_BASE}/{tag}"
-    with fetch(base + "/SHA256SUMS") as response:
-        lines = response.read().decode("utf-8").splitlines()
+def checksums(tag):
+    with fetch(f"{RELEASE_BASE}/{tag}/SHA256SUMS") as response:
+        return response.read().decode("utf-8").splitlines()
+
+
+def checksum_of(lines, asset):
+    """The one well-formed checksum `lines` lists for `asset`, or None."""
     hashes = [line.split()[0] for line in lines
               if len(line.split()) == 2 and line.split()[1].lstrip("*") == asset]
     if len(hashes) != 1 or not re.fullmatch(r"[0-9a-fA-F]{64}", hashes[0]):
+        return None
+    return hashes[0].lower()
+
+
+def refresh_self(tag, updater):
+    """Install the updater shipped with `tag` over `updater`; True if it changed.
+
+    Verified against the release's SHA256SUMS like the binary, and required to
+    compile, so a bad download cannot replace a working updater. A release that
+    predates shipping the updater leaves it alone.
+    """
+    expected = checksum_of(checksums(tag), UPDATER_ASSET)
+    if expected is None:
+        return False
+    with fetch(f"{RELEASE_BASE}/{tag}/{UPDATER_ASSET}") as response:
+        body = response.read(1024 * 1024 + 1)
+    if len(body) > 1024 * 1024 or hashlib.sha256(body).hexdigest() != expected:
+        raise ValueError("Updater checksum mismatch; installed updater unchanged")
+    if body == updater.read_bytes():
+        return False
+    compile(body, str(updater), "exec")
+    staged = updater.with_name(f".{updater.name}.new")
+    staged.write_bytes(body)
+    staged.chmod(0o755)
+    os.replace(staged, updater)
+    return True
+
+
+def stage_release(tag, arch, directory):
+    asset = f"enoxian-linux-{arch}.tar.gz"
+    base = f"{RELEASE_BASE}/{tag}"
+    expected = checksum_of(checksums(tag), asset)
+    if expected is None:
         raise ValueError("Missing or ambiguous asset checksum")
     archive = directory / asset
     digest = hashlib.sha256()
@@ -82,7 +123,7 @@ def stage_release(tag, arch, directory):
                 break
             digest.update(chunk)
             output.write(chunk)
-    if digest.hexdigest() != hashes[0].lower():
+    if digest.hexdigest() != expected:
         raise ValueError("Release checksum mismatch; installed binary unchanged")
     staged = directory / "enox"
     # Extract only the executable, never archive paths or links.
@@ -130,6 +171,15 @@ def update(args):
         raise ValueError("Refusing an unpublished or prerelease build")
     tag = release["tag_name"]
     available = version(tag)
+    # Before anything that could fail on an assumption this copy makes about
+    # the release: a newer updater may be what knows how to read it.
+    updater = getattr(args, "updater", None)
+    if updater and not args.check and not os.environ.get(REFRESHED_ENV):
+        if refresh_self(tag, updater):
+            print(f"Updated the relay updater to the one shipped with {tag}", flush=True)
+            os.environ[REFRESHED_ENV] = "1"
+            # The lock is close-on-exec, so the new updater takes it afresh.
+            os.execv(sys.executable, [sys.executable, str(updater), *sys.argv[1:]])
     current = version(run(str(args.binary), "--version"))
     if available <= current:
         print(f"Relay is current ({'.'.join(map(str, current))}); no restart needed")
@@ -153,6 +203,8 @@ def main():
     parser.add_argument("--port", type=int, default=36521)
     parser.add_argument("--binary", type=Path, default=Path("/usr/local/bin/enox"))
     parser.add_argument("--check", action="store_true", help="Report updates without installing")
+    parser.add_argument("--updater", type=Path, default=Path(__file__).resolve(),
+                        help="This updater's installed path, refreshed from each release")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("invalid HTTP port")
