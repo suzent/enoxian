@@ -408,9 +408,11 @@ pub fn consume_finished(dir: &Path, through: chrono::DateTime<chrono::Utc>) -> R
 fn process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
+        // `--` so a negative pid is a process group, not an option; see
+        // `agent::spawn::kill_tree` for what procps-ng does without it.
         [pid.to_string(), format!("-{pid}")].iter().any(|target| {
             std::process::Command::new("kill")
-                .args(["-0", target])
+                .args(["-0", "--", target])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
