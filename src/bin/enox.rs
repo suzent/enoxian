@@ -257,6 +257,38 @@ async fn main() -> anyhow::Result<()> {
                     )
                     .await
                 }
+                AgentCommands::Inbox(args) => {
+                    use enoxian::cli::InboxAction;
+                    match args.action {
+                        None => {
+                            enoxian::commands::inbox::list(&client, &base, args.agent, cli.json)
+                                .await
+                        }
+                        Some(InboxAction::Claim { message_id, ttl }) => {
+                            enoxian::commands::inbox::claim(
+                                &client,
+                                &base,
+                                args.agent,
+                                message_id,
+                                ttl,
+                                actor_token.as_deref(),
+                                cli.json,
+                            )
+                            .await
+                        }
+                        Some(InboxAction::Release { message_id }) => {
+                            enoxian::commands::inbox::release(
+                                &client,
+                                &base,
+                                args.agent,
+                                message_id,
+                                actor_token.as_deref(),
+                                cli.json,
+                            )
+                            .await
+                        }
+                    }
+                }
                 AgentCommands::Chat { follow, since } => {
                     enoxian::commands::chat::run(&client, &base, follow, since).await
                 }

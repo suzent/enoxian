@@ -638,6 +638,16 @@ fn drain_ambient(
     // The cheap gates run before the tail is chosen, so a backlog ending in
     // "ok thanks" does not spend its one turn there while a real question
     // sits behind it.
+    // Computed once per drain rather than per message: a backlog can be
+    // hundreds of candidates, and both read the whole control doc.
+    let answered: std::collections::HashSet<&str> = history
+        .iter()
+        .filter(|m| m.author == crate::control::Author::Agent)
+        .filter_map(|m| m.reply_to.as_deref())
+        .collect();
+    let claims = super::claims::live_claims(
+        &crate::api::chat::live_activities(state, now).unwrap_or_default(),
+    );
     let mut eligible: Vec<&crate::control::ChatMessage> = Vec::new();
     for message in undecided {
         // Is this part of an exchange somebody is already having with an agent?
@@ -672,7 +682,35 @@ fn drain_ambient(
                     note(state, &message.id, None, reason);
                 }
             }
-            None => eligible.push(message),
+            None => {
+                // Undecided here but already answered means someone else did
+                // it — another device, or a turn addressed to an agent. This
+                // device has nothing to add, and saying so settles it.
+                if answered.contains(message.id.as_str()) {
+                    ledger.record(
+                        &message.id,
+                        Decision::Skipped("another agent answered".into()),
+                        now,
+                    );
+                    continue;
+                }
+                // Claimed by someone this device did not offer it to. Left
+                // undecided rather than settled: a claim expires on its own,
+                // and if the claimer never answers, the message has to become
+                // offerable again rather than be written off.
+                if let Some(claim) =
+                    super::claims::blocking(&claims, &message.id, &state.peer_id, &listeners)
+                {
+                    note(
+                        state,
+                        &message.id,
+                        None,
+                        &format!("{} is already working on it", claim.agent),
+                    );
+                    continue;
+                }
+                eligible.push(message);
+            }
         }
     }
     // Collapse to the tail, never discard it. However late a message arrives,
@@ -1345,6 +1383,21 @@ fn launch_rejection(
     // this agent, someone else replying does not discharge the request.
     if request.ambient && answered_by_an_agent(state, &request.message.id) {
         return Ok(Some("another agent answered first"));
+    }
+    // Earlier than an answer: someone started on it. The agents this device
+    // offered the message to together are not competitors — that set is the
+    // plan — and an agent never blocks itself, which a requeued turn would
+    // otherwise do through its own heartbeat from the attempt a restart killed.
+    if request.ambient {
+        let mut mine = request.co_listeners.clone();
+        mine.push(request.agent.clone());
+        let claims = super::claims::live_claims(
+            &crate::api::chat::live_activities(state, chrono::Utc::now().timestamp())
+                .unwrap_or_default(),
+        );
+        if super::claims::blocking(&claims, &request.message.id, &state.peer_id, &mine).is_some() {
+            return Ok(Some("another agent is already working on this"));
+        }
     }
     if let Some((_, Some((owner, device)))) = Mention::parse(&request.mention_key)
         .as_ref()
@@ -2870,6 +2923,136 @@ mod tests {
             .transcript()
             .iter()
             .any(|m| m.author == crate::control::Author::System));
+    }
+
+    /// Publish a live `Working` activity, as a running turn or a claim does.
+    fn claim(state: &AppState, message: &str, agent: &str, peer: &str, expires_in: i64) {
+        let now = chrono::Utc::now().timestamp();
+        crate::api::chat::put_activity(
+            state,
+            crate::control::ChatActivity {
+                activity_id: super::super::claims::claim_activity_id(message, agent, peer),
+                actor_id: agent.into(),
+                peer_id: peer.into(),
+                kind: ChatActivityKind::Working,
+                detail: None,
+                message_id: Some(message.into()),
+                updated_at: now,
+                expires_at: now + expires_in,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_message_someone_else_is_working_on_is_left_to_them() {
+        // Another device's claude started on it. Spending a full turn here to
+        // produce what Held Draft would then ask to be withdrawn is the cost
+        // claims exist to avoid.
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let cfg = inbox_config();
+        let message = room_message("taken", "how does the retry path work here?");
+        claim(&state, "taken", "claude", "elsewhere", 60);
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
+        assert!(inbox.entries().is_empty(), "not offered while it is held");
+        assert!(
+            !ledger.decided("taken"),
+            "left undecided: a claim can lapse, and then it must be offerable"
+        );
+    }
+
+    #[test]
+    fn a_claim_that_lapses_without_an_answer_gives_the_message_back() {
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let cfg = inbox_config();
+        let message = room_message("dropped", "how does the retry path work here?");
+        // Already expired: the claimer went away and never answered.
+        claim(&state, "dropped", "claude", "elsewhere", -1);
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
+        assert_eq!(inbox.entries().len(), 1, "an expired claim holds nothing");
+    }
+
+    #[test]
+    fn a_message_answered_elsewhere_is_settled_not_offered() {
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let cfg = inbox_config();
+        let message = room_message("done", "how does the retry path work here?");
+        add_chat(&state, &message);
+        let mut answer = room_message("reply", "it retries on the reconcile tick");
+        answer.author = crate::control::Author::Agent;
+        answer.agent_id = "codex".into();
+        answer.reply_to = Some("done".into());
+        answer.ts = chrono::Utc::now().timestamp() - 300;
+        add_chat(&state, &answer);
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        assert!(inbox.entries().is_empty());
+        assert_eq!(
+            ledger.decision("done"),
+            Some(super::super::ledger::Decision::Skipped(
+                "another agent answered".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn two_listeners_on_one_device_do_not_cancel_each_other() {
+        // The regression the co-listener exception exists for. Both are
+        // admitted together; the first to start publishes a heartbeat; without
+        // the exception, the second would read it as someone else's claim.
+        use super::super::inbox::tests::request;
+        let (state, _dir) = test_state("local", "suzy");
+        let mut cfg = inbox_config();
+        cfg.ambient = vec!["claude".into(), "codex".into()];
+        add_chat(
+            &state,
+            &room_message("pair", "how does the retry path work?"),
+        );
+        claim(&state, "pair", "claude", "local", 60);
+        let mut req = request("pair", "codex");
+        req.message = room_message("pair", "how does the retry path work?");
+        req.ambient = true;
+        req.co_listeners = vec!["claude".into(), "codex".into()];
+        assert_eq!(launch_rejection(&state, &req, &cfg).unwrap(), None);
+    }
+
+    #[test]
+    fn a_queued_turn_backs_off_when_another_device_started_first() {
+        use super::super::inbox::tests::request;
+        let (state, _dir) = test_state("local", "suzy");
+        let cfg = inbox_config();
+        add_chat(
+            &state,
+            &room_message("race", "how does the retry path work?"),
+        );
+        claim(&state, "race", "claude", "elsewhere", 60);
+        let mut req = request("race", "claude");
+        req.message = room_message("race", "how does the retry path work?");
+        req.ambient = true;
+        req.co_listeners = vec!["claude".into()];
+        assert_eq!(
+            launch_rejection(&state, &req, &cfg).unwrap(),
+            Some("another agent is already working on this")
+        );
+
+        // An addressed turn is owed its answer whoever else is working.
+        let mut addressed = req.clone();
+        addressed.ambient = false;
+        assert_eq!(launch_rejection(&state, &addressed, &cfg).unwrap(), None);
     }
 
     #[test]

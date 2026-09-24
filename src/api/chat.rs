@@ -317,7 +317,10 @@ pub(crate) fn put_activity(
     Ok(())
 }
 
-fn live_activities(state: &crate::state::AppState, now: i64) -> Option<Vec<ChatActivity>> {
+pub(crate) fn live_activities(
+    state: &crate::state::AppState,
+    now: i64,
+) -> Option<Vec<ChatActivity>> {
     let txn = state.control.try_transact().ok()?;
     let Some(map) = txn.get_map(CHAT_ACTIVITY_KEY) else {
         return Some(Vec::new());

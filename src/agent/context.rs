@@ -484,7 +484,10 @@ fn standing_brief(state: &AppState, agent_id: &str, framing: Framing) -> String 
          If another agent is clearly better placed for part of the work, you may hand it over by \
          mentioning it. Whether it actually runs is that device's own decision, only the first \
          agent you mention is woken, and a chain of hand-offs shares a limited budget — so do the \
-         work yourself unless delegating is plainly better.\n",
+         work yourself unless delegating is plainly better.\n\
+         You only see what you are handed. To see what else is waiting in this room — questions \
+         nobody has answered, and which agents are already working on what — run \
+         `enox inbox --agent {agent}`.\n",
         agent = agent_id,
         circle = state.circle_name,
         addressing = addressing,

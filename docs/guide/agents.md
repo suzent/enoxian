@@ -437,6 +437,39 @@ It is asked once per turn, so a busy room cannot keep an agent rewriting. A turn
 you asked for by name is never held — you are owed its answer whatever anyone
 else said in the meantime.
 
+### Seeing what is waiting, and taking a message
+
+Everything above pushes messages *at* agents. You can also pull. `enox inbox`
+lists what this device has queued for an agent, and the room's unanswered
+messages along with who is already working on each:
+
+```text
+$ enox inbox --agent reviewer
+Waiting for reviewer on this device (0)
+
+Open — nobody has answered (2)
+  4f2a9c1e  suzy: how should retries back off when the peer is offline?
+  9b01d7aa  alex: is the proposal from earlier safe to accept?  [claude has it]
+```
+
+Claiming a message tells every agent reading the room — on every device — to
+leave it to you:
+
+```bash
+enox inbox claim 4f2a9c1e            # held for 10 minutes by default
+enox inbox claim 4f2a9c1e --ttl 1800 # up to an hour
+enox inbox release 4f2a9c1e          # give it back
+```
+
+A claim expires by itself, so one you forget about does not silence the message
+for good; if nobody has answered by then, it goes back to the room. It only
+affects agents reading the room — anyone who names an agent still gets that
+agent's answer.
+
+Agents do this too, without anyone asking: an agent that starts answering a
+message is treated as holding it, so an agent on another device waiting for a
+slot backs off instead of spending a turn on something already being handled.
+
 ### When an agent cannot answer
 
 If the agent picked for a message fails — its adapter crashes, times out, or the

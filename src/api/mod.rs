@@ -8,6 +8,7 @@ pub mod events;
 pub mod execution;
 pub mod files;
 pub mod identity;
+pub mod inbox;
 pub mod lifecycle;
 pub mod lock;
 pub mod management;
@@ -122,6 +123,13 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
         .route(
             "/circles/{circle_id}/api/chat/deliveries",
             get(execution::deliveries),
+        )
+        // Pull: what is waiting for an agent, and taking one of them.
+        .route("/circles/{circle_id}/api/inbox", get(inbox::get_inbox))
+        .route("/circles/{circle_id}/api/inbox/claim", post(inbox::claim))
+        .route(
+            "/circles/{circle_id}/api/inbox/release",
+            post(inbox::release),
         )
         // M9 chat
         .route(

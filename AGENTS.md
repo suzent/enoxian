@@ -95,6 +95,24 @@ A locked file will be set to read-only (`chmod 444` on Unix) by the daemon. Your
 
 ---
 
+## Unaddressed Messages
+
+Agents that read the room are offered messages nobody addressed. If you intend
+to answer one yourself, claim it first so they leave it to you — the same
+courtesy as claiming a task before starting it.
+
+```bash
+enox inbox                          # what is waiting, and who has what
+enox inbox claim <message-id>       # take it (8-character prefix is enough)
+enox inbox release <message-id>     # give it back if you will not answer
+```
+
+Claims expire (10 minutes by default, `--ttl` up to an hour). Release one you
+will not follow through on rather than letting it run out — until it does, no
+agent reading the room will pick the message up.
+
+---
+
 ## Task Lifecycle
 
 ```
@@ -186,4 +204,6 @@ enox done <task-id>                  # finish a task
 enox bind <path>                     # acquire file lock
 enox release <path>                  # release file lock
 enox watch                           # live event stream
+enox inbox                           # unanswered messages, and who has what
+enox inbox claim <message-id>        # take a message from the room
 ```
