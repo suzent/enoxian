@@ -128,8 +128,36 @@ jobs:
       - name: Rust Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
+      # This step has stalled a runner so badly that it neither timed out
+      # cleanly nor uploaded a log. A step timeout well inside the job's lets
+      # the runner stop it while it can still report, and the sampler shows
+      # whether memory, disk, or a runaway process count was the cause.
       - name: Rust tests
-        run: cargo test --locked --all-targets
+        timeout-minutes: 15
+        run: |
+          (
+            while true; do
+              {
+                echo "=== $(date -u +%H:%M:%S)"
+                free -m | sed -n 2p
+                df -h / | tail -1
+                echo "processes: $(ps -e --no-headers | wc -l)"
+                ps -eo rss,etimes,comm --sort=-rss --no-headers | head -5
+              } >> "$RUNNER_TEMP/resources.log"
+              sleep 20
+            done
+          ) </dev/null >/dev/null 2>&1 &
+          sampler=$!
+          status=0
+          cargo test --locked --all-targets || status=$?
+          kill "$sampler" || true
+          exit "$status"
+
+      - name: Runner resources during tests
+        if: always()
+        run: |
+          cat "$RUNNER_TEMP/resources.log" || true
+          sudo dmesg | grep -iE 'out of memory|killed process' || true
 
       - name: Rust doctests
         run: cargo test --locked --doc
