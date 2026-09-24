@@ -144,18 +144,50 @@ pub fn kill_tree(pid: u32) {
     }
     #[cfg(unix)]
     {
-        // Negative pid targets the process group; the child is a group leader
-        // only if spawned that way, so also try the pid directly as a fallback.
-        let _ = std::process::Command::new("kill")
-            .args(["-KILL", &format!("-{pid}")])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        let _ = std::process::Command::new("kill")
-            .args(["-KILL", &pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        for args in unix_kill_args(pid) {
+            let _ = std::process::Command::new("kill")
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+}
+
+/// The `kill` invocations that reap `pid`'s tree: its process group, then the
+/// pid directly, since the child is a group leader only if spawned that way.
+///
+/// The `--` is load-bearing. procps-ng 4.0.4 (Ubuntu 24.04) reads
+/// `kill -KILL -<pid>` for a group that no longer exists as `kill -1`, and
+/// SIGKILLs every process the user owns. The group is usually gone by the
+/// time this runs, because the child has already been reaped — so without the
+/// separator, finishing an agent run took down the user's whole session.
+#[cfg(unix)]
+fn unix_kill_args(pid: u32) -> [[String; 3]; 2] {
+    [
+        ["-KILL".into(), "--".into(), format!("-{pid}")],
+        ["-KILL".into(), "--".into(), pid.to_string()],
+    ]
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+
+    // Never exercised against the real `kill`: a regression here signals every
+    // process the user owns, which is how it froze the release runner.
+    #[test]
+    fn a_process_group_target_is_never_read_as_an_option() {
+        for args in unix_kill_args(4321) {
+            let separator = args.iter().position(|a| a == "--");
+            let target = args
+                .iter()
+                .position(|a| a.trim_start_matches('-') == "4321");
+            assert!(
+                matches!((separator, target), (Some(s), Some(t)) if s < t),
+                "the pid must follow `--`: {args:?}"
+            );
+        }
     }
 }
 

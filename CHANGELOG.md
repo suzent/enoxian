@@ -56,6 +56,15 @@ refuses to publish a version whose section is missing or empty.
   starting. Agents offered the same message together on one device are not
   affected, so asking for two responders still gets two.
 
+### Security
+
+- On Linux, finishing an agent run no longer kills every process you own.
+  Cleaning up after an agent signalled its process group with the system
+  `kill`, and procps-ng 4.0.4 (Ubuntu 24.04) reads a group that has already
+  exited as "every process" — so a completed turn could take down your
+  terminal, editor and desktop session along with the daemon. macOS was not
+  affected.
+
 ## [0.9.1] — 2026-09-23
 
 ### Fixed
