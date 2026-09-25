@@ -184,11 +184,20 @@ pub fn spoke_recently(history: &[ChatMessage], agent: &str, now: i64) -> bool {
 /// buys is a reason to pass that is not self-deprecation: an agent with nothing
 /// uniquely useful to say can leave it to someone who has, rather than weighing
 /// its own contribution in a vacuum.
-pub fn ambient_instruction(co_listeners: &[String], self_id: &str) -> String {
-    let others: Vec<&str> = co_listeners
+///
+/// `name` renders each co-listener for the prompt, so the caller can qualify it
+/// with the machine it runs on (see [`super::label`]). Self is filtered by bare
+/// name first, since that is what the list holds.
+pub fn ambient_instruction(
+    co_listeners: &[String],
+    self_id: &str,
+    name: impl Fn(&str) -> String,
+) -> String {
+    let others: Vec<String> = co_listeners
         .iter()
         .map(String::as_str)
-        .filter(|name| !name.eq_ignore_ascii_case(self_id))
+        .filter(|listener| !listener.eq_ignore_ascii_case(self_id))
+        .map(name)
         .collect();
     let shared = if others.is_empty() {
         String::new()
@@ -347,7 +356,7 @@ mod tests {
         // "You were not addressed" existed only to undo a header that now says
         // the right thing. Keeping both would contradict in the other direction.
         let solo = ["claude".to_string()];
-        let text = ambient_instruction(&solo, "claude");
+        let text = ambient_instruction(&solo, "claude", str::to_string);
         assert!(!text.contains("You were not addressed"));
         assert!(text.contains("reply with exactly PASS"));
         assert!(text.contains("do not change files"));
@@ -360,12 +369,12 @@ mod tests {
     #[test]
     fn a_listener_is_told_who_else_could_answer() {
         let pair = ["claude".to_string(), "codex".to_string()];
-        let text = ambient_instruction(&pair, "claude");
+        let text = ambient_instruction(&pair, "claude", str::to_string);
         assert!(text.contains("codex is also deciding whether to answer this"));
         assert!(!text.contains("claude is also"), "never about itself");
 
         let trio = ["claude".to_string(), "codex".to_string(), "pi".to_string()];
-        let text = ambient_instruction(&trio, "CLAUDE");
+        let text = ambient_instruction(&trio, "CLAUDE", str::to_string);
         assert!(
             text.contains("codex and pi are also deciding"),
             "self-match ignores case, and the verb agrees"
@@ -373,10 +382,21 @@ mod tests {
     }
 
     #[test]
+    fn co_listeners_are_named_with_their_machine() {
+        let pair = ["claude".to_string(), "codex".to_string()];
+        let text = ambient_instruction(&pair, "claude", |a| format!("{a} (on suzy/macbook-pro)"));
+        assert!(text.contains("codex (on suzy/macbook-pro) is also deciding"));
+        assert!(
+            !text.contains("claude (on"),
+            "self is filtered before naming, by its bare name"
+        );
+    }
+
+    #[test]
     fn every_listener_is_told_the_point_may_already_be_made() {
         // A turn can wait behind a device permit while someone else answers.
         // The queue cancels what it can see; this covers the rest of the race.
-        let text = ambient_instruction(&["claude".to_string()], "claude");
+        let text = ambient_instruction(&["claude".to_string()], "claude", str::to_string);
         assert!(text.contains("Someone may also have answered"));
     }
 

@@ -648,6 +648,7 @@ fn drain_ambient(
     let claims = super::claims::live_claims(
         &crate::api::chat::live_activities(state, now).unwrap_or_default(),
     );
+    let roster = super::label::Roster::load(state);
     let mut eligible: Vec<&crate::control::ChatMessage> = Vec::new();
     for message in undecided {
         // Is this part of an exchange somebody is already having with an agent?
@@ -705,7 +706,10 @@ fn drain_ambient(
                         state,
                         &message.id,
                         None,
-                        &format!("{} is already working on it", claim.agent),
+                        &format!(
+                            "{} is already working on it",
+                            roster.agent(&claim.agent, &claim.peer_id)
+                        ),
                     );
                     continue;
                 }
@@ -1210,6 +1214,10 @@ async fn run_next_cancellable(
         } else {
             Initiator::RemoteMember
         };
+        // Who is asking, named so it cannot be mistaken for a namesake. For a
+        // delegated turn this is another agent, and "REQUEST from claude" does
+        // not say which claude — possibly one with the reader's own name.
+        let sender = super::label::Roster::load(state).speaker(&request.message);
         let result = react(
             state,
             Turn {
@@ -1217,7 +1225,7 @@ async fn run_next_cancellable(
                 agent_id: &request.agent,
                 cmd,
                 task: &request.task,
-                sender: &request.message.agent_id,
+                sender: &sender,
                 message_id: &request.message.id,
                 initiator,
                 relay: request.relay.clone(),
@@ -1275,8 +1283,15 @@ const ANNOUNCE_THROTTLE_SECS: i64 = 120;
 const ANNOUNCE_SCAN: usize = 50;
 
 /// The opening of a failure announcement, and how we recognise our own.
-fn failure_prefix(agent: &str) -> String {
-    format!("{agent} could not answer")
+///
+/// Qualified by the device that ran it. Bare, "claude could not answer" from one
+/// machine matched the prefix of the same line from another, so a second
+/// device's genuine failure was throttled away as a repeat of the first.
+fn failure_prefix(state: &AppState, agent: &str) -> String {
+    format!(
+        "{} could not answer",
+        super::label::Roster::load(state).agent(agent, &state.peer_id)
+    )
 }
 
 /// The opening used when a message the room was waiting on runs out of agents.
@@ -1347,7 +1362,7 @@ fn announce_unanswered(state: &AppState, message_id: &str, reason: &str) {
 /// see [`announce_unanswered`] for where that case is reported instead. Only
 /// "you asked, it broke, nothing is coming".
 fn announce_failure(state: &AppState, request: &super::inbox::Request, reason: &str) {
-    let prefix = failure_prefix(&request.agent);
+    let prefix = failure_prefix(state, &request.agent);
     let text =
         format!("{prefix} — {reason}. No reply was posted; you can try again from Agent activity.");
     announce(state, &request.message.id, &prefix, text);
@@ -1434,12 +1449,7 @@ pub(super) fn answering_agent(state: &AppState, message_id: &str) -> Option<(Str
     let answer = state.transcript().into_iter().find(|m| {
         m.reply_to.as_deref() == Some(message_id) && m.author == crate::control::Author::Agent
     })?;
-    let name = match message_author_scope(state, &answer.peer_id) {
-        Some((owner, device)) if !owner.is_empty() && !device.is_empty() => {
-            format!("{} (on {owner}/{device})", answer.agent_id)
-        }
-        _ => answer.agent_id.clone(),
-    };
+    let name = super::label::Roster::load(state).speaker(&answer);
     Some((name, answer.text))
 }
 
@@ -1530,7 +1540,15 @@ async fn react(
     let mut prompt = delivery.prompt;
     if ambient {
         prompt.push_str("\n\n");
-        prompt.push_str(&super::ambient::ambient_instruction(co_listeners, agent_id));
+        // Co-listeners were all offered the message by this device, so they
+        // all run here; named with it so a namesake on another machine is not
+        // mistaken for the one sharing this turn.
+        let roster = super::label::Roster::load(state);
+        prompt.push_str(&super::ambient::ambient_instruction(
+            co_listeners,
+            agent_id,
+            |listener| roster.agent(listener, &state.peer_id),
+        ));
     }
     let (actor_token, _) = state
         .actor_tokens
@@ -1622,18 +1640,7 @@ async fn react(
         // Post under the agent's name, carrying this cascade's relay forward.
         // A mention in the reply may wake another agent, but only within the
         // budget the rooting human message minted — see `agent::relay`.
-        let posted = crate::api::chat::post_reply(
-            state,
-            agent_id.to_string(),
-            reply.to_string(),
-            Vec::new(),
-            crate::api::chat::Trigger::AgentReply {
-                agent: agent_id.to_string(),
-                parent: relay,
-            },
-            Some(message_id.to_string()),
-        );
-        posted?;
+        post_when_free(state, agent_id, reply, relay, message_id, POST_PATIENCE).await?;
         if let Some(cursor) = &delivery.cursor {
             mark_seen(state, agent_id, cursor, &delivery.delivered);
         }
@@ -1651,6 +1658,68 @@ async fn react(
         false,
     );
     Ok(None)
+}
+
+/// How long a finished reply may wait for the control doc to be free.
+///
+/// Long by the standard of a lock that is normally held for milliseconds, and
+/// short by the standard of the turn that produced the reply — which can have
+/// taken minutes and is the thing being protected.
+const POST_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Post an agent's reply, waiting for the control doc if it is momentarily busy.
+///
+/// `post_reply` takes the doc with `try_transact_mut`, which fails at once if
+/// any other writer holds it — a periodic save, an incoming sync. That used to
+/// surface straight away as "circle state busy", failing a turn that had
+/// already done all of its work: the agent's answer was computed and then
+/// thrown away over a lock that would have been free a few milliseconds later.
+/// Seen live, on a reply to a real question that was never posted.
+///
+/// Only that one failure is retried. Anything else is not going to change by
+/// waiting, and is returned as it was.
+async fn post_when_free(
+    state: &AppState,
+    agent_id: &str,
+    reply: &str,
+    relay: Option<Relay>,
+    message_id: &str,
+    patience: std::time::Duration,
+) -> anyhow::Result<String> {
+    let deadline = tokio::time::Instant::now() + patience;
+    let mut wait = std::time::Duration::from_millis(20);
+    loop {
+        let attempt = crate::api::chat::post_reply(
+            state,
+            agent_id.to_string(),
+            reply.to_string(),
+            Vec::new(),
+            crate::api::chat::Trigger::AgentReply {
+                agent: agent_id.to_string(),
+                parent: relay.clone(),
+            },
+            Some(message_id.to_string()),
+        );
+        match attempt {
+            Err(error)
+                if error.to_string().contains("state busy")
+                    && tokio::time::Instant::now() + wait < deadline =>
+            {
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(std::time::Duration::from_millis(500));
+            }
+            Err(error) => {
+                // Out of patience. The turn fails as before, but the answer is
+                // at least recoverable from the log rather than gone.
+                tracing::warn!(
+                    "[agent] could not post `{agent_id}`'s reply to {message_id}: {error}; \
+                     the reply was: {reply}"
+                );
+                return Err(error);
+            }
+            Ok(id) => return Ok(id),
+        }
+    }
 }
 
 /// Remember the last chat line this agent has seen — its own reply, or the
@@ -2600,6 +2669,69 @@ mod tests {
         }
     }
 
+    /// Hold the control doc's write lock from another thread for `hold`.
+    /// Returns once the lock is actually held, so the caller races nothing.
+    fn hold_the_doc(state: &AppState, hold: std::time::Duration) -> std::thread::JoinHandle<()> {
+        let doc = state.control.clone();
+        let (taken, ready) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _txn = doc.transact_mut();
+            taken.send(()).unwrap();
+            std::thread::sleep(hold);
+        });
+        ready.recv().unwrap();
+        holder
+    }
+
+    #[tokio::test]
+    async fn a_finished_reply_waits_for_a_busy_doc_instead_of_being_lost() {
+        // Seen live: a turn completed, `post_reply` found the doc locked for a
+        // moment, and the agent's whole answer was dropped as "circle state
+        // busy".
+        let (state, _dir) = test_state("local", "suzy");
+        let holder = hold_the_doc(&state, std::time::Duration::from_millis(150));
+        let posted = post_when_free(
+            &state,
+            "claude",
+            "it retries on the reconcile tick",
+            None,
+            "asked",
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        holder.join().unwrap();
+        assert!(posted.is_ok(), "{posted:?}");
+        assert!(state
+            .transcript()
+            .iter()
+            .any(|m| m.text == "it retries on the reconcile tick"));
+    }
+
+    #[tokio::test]
+    async fn a_doc_that_never_frees_up_is_eventually_given_up_on() {
+        // Waiting forever would hold a device permit and the conversation lease
+        // for as long as the doc stayed locked. Bounded, and reported.
+        let (state, _dir) = test_state("local", "suzy");
+        let holder = hold_the_doc(&state, std::time::Duration::from_millis(600));
+        let started = std::time::Instant::now();
+        let posted = post_when_free(
+            &state,
+            "claude",
+            "unposted",
+            None,
+            "asked",
+            std::time::Duration::from_millis(150),
+        )
+        .await;
+        let waited = started.elapsed();
+        holder.join().unwrap();
+        assert!(posted.unwrap_err().to_string().contains("state busy"));
+        assert!(
+            waited < std::time::Duration::from_millis(500),
+            "waited {waited:?}"
+        );
+    }
+
     #[tokio::test]
     async fn worker_errors_reach_its_supervisor() {
         use super::super::inbox::{tests::request, Inbox};
@@ -2900,6 +3032,39 @@ mod tests {
             1,
             "throttled to one line per agent per window"
         );
+    }
+
+    #[test]
+    fn another_machines_failure_does_not_silence_this_ones() {
+        // Both devices run an agent called `claude`. Bare, their notices began
+        // with the same words, so whichever posted second matched the first's
+        // prefix and was throttled away as a repeat — and one real failure went
+        // unreported.
+        use super::super::inbox::tests::request;
+        let (state, _dir) = test_state("local", "suzy");
+        add_member(&state, "local", "suzy", "macbook-pro");
+        add_member(&state, "elsewhere", "suzy", "jessair");
+        let asked = room_message("asked", "how does the retry path work?");
+        add_chat(&state, &asked);
+        let mut theirs = room_message("theirs", "");
+        theirs.author = crate::control::Author::System;
+        theirs.agent_id = "system".into();
+        theirs.peer_id = "elsewhere".into();
+        theirs.text = "claude (on suzy/jessair) could not answer — adapter exited.".into();
+        add_chat(&state, &theirs);
+
+        let mut failed = request("asked", "claude");
+        failed.message = asked;
+        announce_failure(&state, &failed, "the adapter exited before starting");
+        let ours: Vec<_> = state
+            .transcript()
+            .into_iter()
+            .filter(|m| m.author == crate::control::Author::System && m.id != "theirs")
+            .collect();
+        assert_eq!(ours.len(), 1, "this machine's failure is its own news");
+        assert!(ours[0]
+            .text
+            .starts_with("claude (on suzy/macbook-pro) could not answer"));
     }
 
     #[test]
