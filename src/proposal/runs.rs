@@ -312,6 +312,10 @@ pub fn release_finished_locks(state: &crate::state::AppState) -> Result<()> {
                 path: path.clone(),
                 action: crate::control::LockAction::Release,
                 ts: chrono::Utc::now(),
+                expires_at: None,
+                takeover: false,
+                taken_over_from: None,
+                taken_over_from_peer_id: None,
             },
         )?;
         if let Ok(abs) = super::canonical_workspace_path(&state.workspace, Path::new(&path)) {

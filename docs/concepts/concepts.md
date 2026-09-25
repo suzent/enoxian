@@ -36,6 +36,8 @@ A task is a unit of coordinated work. Claiming it tells other participants who i
 
 A file lock, exposed as `bind`/`release` in the CLI, is an advisory coordination lease for conflict-prone paths. CRDT synchronization still provides convergence, but the lock communicates that others should wait before editing.
 
+The lock never blocks a write — permissions are untouched, so the holder's own tools work normally. It lasts 10 minutes unless renewed (up to an hour per lease), so an agent that disappears frees its locks on its own, and `--takeover` hands a lock over explicitly. An edit from a device other than the holder's raises `lock_violated` on both devices. Only devices can be told apart: agents sharing a device all edit as that device, so edits there are not reported. Agents the daemon runs itself are the exception — their writes wait for a lock another agent holds.
+
 ## Presence and Awareness
 
 Presence describes connected participants and transient activity such as a current file. It is intentionally short-lived and is not restored as durable project history.

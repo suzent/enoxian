@@ -1,4 +1,5 @@
 use crate::control::{LockAction, LockEntry};
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use yrs::{Any, Array, ArrayRef, Out, ReadTxn};
 
@@ -10,8 +11,15 @@ use yrs::{Any, Array, ArrayRef, Out, ReadTxn};
 /// thousands of entries in hours.
 const COMPACT_THRESHOLD: u32 = 2_000;
 
+/// How long a lock lasts when the binder does not say.
+pub const DEFAULT_LOCK_SECS: i64 = 600;
+
+/// The longest a lock may be held before it has to be renewed. A lock is
+/// advisory, so its only failure mode is outliving the work it announced; a
+/// bound on the lease is what stops a crashed binder holding a path forever.
+pub const MAX_LOCK_SECS: i64 = 3600;
+
 /// Replay the lock_log and return the current holder per path.
-/// Deterministic: first unmatched acquire = holder.
 pub fn compute_lock_state<T: ReadTxn>(lock_log: &ArrayRef, txn: &T) -> HashMap<String, String> {
     compute_lock_holders(lock_log, txn)
         .into_iter()
@@ -19,41 +27,89 @@ pub fn compute_lock_state<T: ReadTxn>(lock_log: &ArrayRef, txn: &T) -> HashMap<S
         .collect()
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct LockHolder {
     pub(crate) run_id: Option<String>,
     pub(crate) agent_id: String,
     pub(crate) peer_id: String,
+    pub(crate) expires_at: DateTime<Utc>,
+    pub(crate) taken_over_from: Option<String>,
+    pub(crate) taken_over_from_peer_id: Option<String>,
 }
 
+impl LockHolder {
+    fn from_entry(entry: &LockEntry) -> Self {
+        Self {
+            run_id: entry.run_id.clone(),
+            agent_id: entry.agent_id.clone(),
+            peer_id: entry.peer_id.clone(),
+            expires_at: lease_end(entry),
+            taken_over_from: entry.taken_over_from.clone(),
+            taken_over_from_peer_id: entry.taken_over_from_peer_id.clone(),
+        }
+    }
+}
+
+fn lease_end(entry: &LockEntry) -> DateTime<Utc> {
+    entry
+        .expires_at
+        .unwrap_or(entry.ts + chrono::Duration::seconds(DEFAULT_LOCK_SECS))
+}
+
+/// Holders whose lease is still running at `now`.
 pub(crate) fn compute_lock_holders<T: ReadTxn>(
     lock_log: &ArrayRef,
     txn: &T,
 ) -> HashMap<String, LockHolder> {
-    let mut holders: HashMap<String, LockHolder> = HashMap::new();
+    compute_lock_holders_at(lock_log, txn, Utc::now())
+}
 
-    for item in lock_log.iter(txn) {
-        let json_str = match item {
-            Out::Any(Any::String(s)) => s,
-            _ => continue,
-        };
-        let entry: LockEntry = match serde_json::from_str(&json_str) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+pub(crate) fn compute_lock_holders_at<T: ReadTxn>(
+    lock_log: &ArrayRef,
+    txn: &T,
+    now: DateTime<Utc>,
+) -> HashMap<String, LockHolder> {
+    let entries = parse_all(lock_log.iter(txn).filter_map(|item| match item {
+        Out::Any(Any::String(s)) => Some(s.to_string()),
+        _ => None,
+    }));
+    replay(&entries)
+        .into_iter()
+        .filter(|(_, (_, holder))| holder.expires_at > now)
+        .map(|(path, (_, holder))| (path, holder))
+        .collect()
+}
+
+/// Fold the log into the holder of each path, with the index of the entry
+/// that put the holder there. The one source of truth for both lookups and
+/// compaction, so the two can never disagree.
+///
+/// Expiry is judged against each entry's own timestamp, never the replaying
+/// device's clock, so every peer folds the same log to the same holders:
+/// - an acquire on a free path, or on one whose lease ended before it, takes it;
+/// - an acquire by the holder renews its lease;
+/// - a takeover replaces a live holder; any other acquire yields to one;
+/// - a release by the holder frees the path.
+fn replay(entries: &[Option<LockEntry>]) -> HashMap<String, (usize, LockHolder)> {
+    let mut holders: HashMap<String, (usize, LockHolder)> = HashMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let Some(entry) = entry else { continue };
         match entry.action {
             LockAction::Acquire => {
-                // First acquire without a release = lock holder
-                holders.entry(entry.path).or_insert(LockHolder {
-                    run_id: entry.run_id,
-                    agent_id: entry.agent_id,
-                    peer_id: entry.peer_id,
-                });
+                let takes = match holders.get(&entry.path) {
+                    None => true,
+                    Some((_, holder)) => {
+                        entry.ts >= holder.expires_at || entry.takeover || same_actor(holder, entry)
+                    }
+                };
+                if takes {
+                    holders.insert(entry.path.clone(), (index, LockHolder::from_entry(entry)));
+                }
             }
             LockAction::Release => {
                 if holders
                     .get(&entry.path)
-                    .map(|holder| same_actor(holder, &entry))
+                    .map(|(_, holder)| same_actor(holder, entry))
                     .unwrap_or(false)
                 {
                     holders.remove(&entry.path);
@@ -62,6 +118,26 @@ pub(crate) fn compute_lock_holders<T: ReadTxn>(
         }
     }
     holders
+}
+
+/// The live holder of `path` when it is bound from a device other than
+/// `editor_peer` — an edit from `editor_peer` then went against the lock.
+///
+/// Only devices can be told apart: several agents on one device all edit as
+/// that device, so an edit on the holder's own device is never reported.
+/// Legacy holders without a device are skipped for the same reason. A busy
+/// control doc skips the check rather than stalling the edit it describes.
+pub(crate) fn holder_elsewhere(
+    control: &yrs::Doc,
+    path: &str,
+    editor_peer: &str,
+) -> Option<LockHolder> {
+    use yrs::Transact;
+    let txn = control.try_transact().ok()?;
+    let log = txn.get_array(crate::control::LOCK_LOG_KEY)?;
+    compute_lock_holders(&log, &txn)
+        .remove(path)
+        .filter(|holder| !holder.peer_id.is_empty() && holder.peer_id != editor_peer)
 }
 
 /// True if `path` is locked by someone other than `agent_id`.
@@ -103,38 +179,18 @@ fn same_actor(holder: &LockHolder, entry: &LockEntry) -> bool {
             || holder.peer_id == entry.peer_id)
 }
 
-/// Indices of the acquires that no matching release has cancelled.
+/// Indices of the entries that put each current holder in place.
 ///
-/// Mirrors [`compute_lock_holders`] exactly: dropping every other entry must
-/// leave the derived holder set identical, or compaction would silently hand a
-/// held path to someone else.
+/// Every acquire that takes a path carries the full holder in itself, so
+/// replaying just these entries rebuilds the same holders — the property that
+/// lets compaction drop everything else. Expired holders are kept: whether a
+/// later entry sees them as expired depends on that entry's timestamp, and
+/// dropping them would change the answer for an entry from a skewed clock.
 fn held_indices(entries: &[Option<LockEntry>]) -> Vec<usize> {
-    let mut holders: HashMap<&str, (usize, LockHolder)> = HashMap::new();
-    for (index, entry) in entries.iter().enumerate() {
-        let Some(entry) = entry else { continue };
-        match entry.action {
-            LockAction::Acquire => {
-                holders.entry(&entry.path).or_insert((
-                    index,
-                    LockHolder {
-                        run_id: entry.run_id.clone(),
-                        agent_id: entry.agent_id.clone(),
-                        peer_id: entry.peer_id.clone(),
-                    },
-                ));
-            }
-            LockAction::Release => {
-                if holders
-                    .get(entry.path.as_str())
-                    .map(|(_, holder)| same_actor(holder, entry))
-                    .unwrap_or(false)
-                {
-                    holders.remove(entry.path.as_str());
-                }
-            }
-        }
-    }
-    holders.into_values().map(|(index, _)| index).collect()
+    replay(entries)
+        .into_values()
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// Which entries a compaction keeps: the unmatched acquires, plus anything that
@@ -247,6 +303,10 @@ mod tests {
             path: "src/shared.rs".to_string(),
             action,
             ts: Utc::now(),
+            expires_at: None,
+            takeover: false,
+            taken_over_from: None,
+            taken_over_from_peer_id: None,
         }
     }
 
@@ -263,6 +323,10 @@ mod tests {
             path: path.to_string(),
             action,
             ts: Utc::now(),
+            expires_at: None,
+            takeover: false,
+            taken_over_from: None,
+            taken_over_from_peer_id: None,
         }
     }
 
@@ -466,5 +530,177 @@ mod tests {
             "peer",
             Some("new")
         ));
+    }
+
+    use chrono::Duration;
+
+    /// An acquire of `src/shared.rs` stamped `at`, leased for `secs`.
+    fn lease(agent: &str, peer: &str, at: DateTime<Utc>, secs: i64) -> LockEntry {
+        let mut e = entry(agent, peer, LockAction::Acquire);
+        e.ts = at;
+        e.expires_at = Some(at + Duration::seconds(secs));
+        e
+    }
+
+    fn log_of(entries: &[LockEntry]) -> (Doc, ArrayRef) {
+        let doc = Doc::new();
+        let log = doc.get_or_insert_array("locks");
+        {
+            let mut txn = doc.transact_mut();
+            for e in entries {
+                append_lock_entry(&log, &mut txn, e).unwrap();
+            }
+        }
+        (doc, log)
+    }
+
+    fn holder_at(entries: &[LockEntry], now: DateTime<Utc>) -> Option<LockHolder> {
+        let (doc, log) = log_of(entries);
+        let txn = doc.transact();
+        compute_lock_holders_at(&log, &txn, now).remove("src/shared.rs")
+    }
+
+    #[test]
+    fn a_lock_frees_itself_when_its_lease_ends() {
+        let t = Utc::now();
+        let entries = [lease("a", "peer-a", t, 60)];
+        assert!(holder_at(&entries, t + Duration::seconds(59)).is_some());
+        assert!(holder_at(&entries, t + Duration::seconds(61)).is_none());
+    }
+
+    #[test]
+    fn a_legacy_acquire_lasts_the_default_lease() {
+        let t = Utc::now();
+        let mut legacy = entry("a", "peer-a", LockAction::Acquire);
+        legacy.ts = t;
+        let before_end = t + Duration::seconds(DEFAULT_LOCK_SECS - 1);
+        assert!(holder_at(std::slice::from_ref(&legacy), before_end).is_some());
+        let after_end = t + Duration::seconds(DEFAULT_LOCK_SECS + 1);
+        assert!(holder_at(&[legacy], after_end).is_none());
+    }
+
+    #[test]
+    fn binding_again_renews_the_holders_lease() {
+        let t = Utc::now();
+        let entries = [
+            lease("a", "peer-a", t, 60),
+            lease("a", "peer-a", t + Duration::seconds(30), 600),
+        ];
+        let holder = holder_at(&entries, t + Duration::seconds(120)).unwrap();
+        assert_eq!(holder.agent_id, "a");
+        assert_eq!(holder.expires_at, t + Duration::seconds(630));
+    }
+
+    #[test]
+    fn an_acquire_yields_to_a_live_holder() {
+        let t = Utc::now();
+        let entries = [
+            lease("a", "peer-a", t, 600),
+            lease("b", "peer-b", t + Duration::seconds(10), 600),
+        ];
+        let holder = holder_at(&entries, t + Duration::seconds(20)).unwrap();
+        assert_eq!(holder.agent_id, "a");
+    }
+
+    #[test]
+    fn an_acquire_after_the_lease_ended_takes_the_path() {
+        let t = Utc::now();
+        let entries = [
+            lease("a", "peer-a", t, 60),
+            lease("b", "peer-b", t + Duration::seconds(90), 600),
+        ];
+        let holder = holder_at(&entries, t + Duration::seconds(100)).unwrap();
+        assert_eq!(holder.agent_id, "b");
+    }
+
+    #[test]
+    fn expiry_is_judged_by_each_entrys_time_not_the_replayers_clock() {
+        // B's acquire landed while A was live, so it yielded — replaying the
+        // log after A's lease ended must not retroactively hand B the lock.
+        let t = Utc::now();
+        let entries = [
+            lease("a", "peer-a", t, 60),
+            lease("b", "peer-b", t + Duration::seconds(10), 600),
+        ];
+        assert!(holder_at(&entries, t + Duration::seconds(120)).is_none());
+    }
+
+    #[test]
+    fn a_takeover_replaces_a_live_holder_and_says_whom_it_replaced() {
+        let t = Utc::now();
+        let mut takeover = lease("b", "peer-b", t + Duration::seconds(10), 600);
+        takeover.takeover = true;
+        takeover.taken_over_from = Some("a".into());
+        takeover.taken_over_from_peer_id = Some("peer-a".into());
+        let entries = [lease("a", "peer-a", t, 600), takeover];
+
+        let holder = holder_at(&entries, t + Duration::seconds(20)).unwrap();
+        assert_eq!(holder.agent_id, "b");
+        assert_eq!(holder.taken_over_from.as_deref(), Some("a"));
+        assert_eq!(holder.taken_over_from_peer_id.as_deref(), Some("peer-a"));
+
+        // The displaced holder's release no longer frees the path.
+        let mut release = entry("a", "peer-a", LockAction::Release);
+        release.ts = t + Duration::seconds(30);
+        let mut with_release = entries.to_vec();
+        with_release.push(release);
+        let holder = holder_at(&with_release, t + Duration::seconds(40)).unwrap();
+        assert_eq!(holder.agent_id, "b");
+    }
+
+    #[test]
+    fn compaction_keeps_a_renewed_and_taken_over_lease_as_it_was() {
+        let t = Utc::now();
+        let json = |e: &LockEntry| serde_json::to_string(e).unwrap();
+        let mut takeover = lease("b", "peer-b", t + Duration::seconds(10), 600);
+        takeover.takeover = true;
+        takeover.taken_over_from = Some("a".into());
+        let mut renewal = lease("b", "peer-b", t + Duration::seconds(20), 1200);
+        renewal.taken_over_from = Some("a".into());
+        let mut log = vec![json(&lease("a", "peer-a", t, 600)), json(&takeover)];
+        for i in 0..COMPACT_THRESHOLD + 50 {
+            let path = format!("churn-{}.rs", i % 40);
+            log.push(json(&entry_for(&path, "c", LockAction::Acquire)));
+            log.push(json(&entry_for(&path, "c", LockAction::Release)));
+        }
+        log.push(json(&renewal));
+
+        let holder_of = |entries: &[String]| {
+            let doc = Doc::new();
+            let array = doc.get_or_insert_array("locks");
+            let mut txn = doc.transact_mut();
+            for raw in entries {
+                array.push_back(&mut txn, Any::String(raw.as_str().into()));
+            }
+            compute_lock_holders_at(&array, &txn, t + Duration::seconds(700))
+                .remove("src/shared.rs")
+        };
+        let before = holder_of(&log).expect("precondition: b holds the renewed lease");
+        compact_persisted_lock_log(&mut log);
+        let after = holder_of(&log).expect("compaction dropped a live lease");
+        assert_eq!(after.agent_id, before.agent_id);
+        assert_eq!(after.expires_at, before.expires_at);
+        assert_eq!(after.taken_over_from, before.taken_over_from);
+    }
+
+    #[test]
+    fn only_an_edit_from_another_device_goes_against_a_lock() {
+        let t = Utc::now();
+        let doc = Doc::new();
+        {
+            let log = doc.get_or_insert_array(crate::control::LOCK_LOG_KEY);
+            let mut txn = doc.transact_mut();
+            append_lock_entry(&log, &mut txn, &lease("a", "peer-a", t, 600)).unwrap();
+            let mut legacy = entry("b", "", LockAction::Acquire);
+            legacy.path = "legacy.rs".into();
+            append_lock_entry(&log, &mut txn, &legacy).unwrap();
+        }
+        assert!(holder_elsewhere(&doc, "src/shared.rs", "peer-a").is_none());
+        assert_eq!(
+            holder_elsewhere(&doc, "src/shared.rs", "peer-b").map(|h| h.agent_id),
+            Some("a".into())
+        );
+        assert!(holder_elsewhere(&doc, "legacy.rs", "peer-b").is_none());
+        assert!(holder_elsewhere(&doc, "unbound.rs", "peer-b").is_none());
     }
 }

@@ -71,8 +71,16 @@ pub enum AgentCommands {
     Unclaim { task_id: String },
     /// Mark a task as done
     Done { task_id: String },
-    /// Acquire an explicit file lock
-    Bind { path: String },
+    /// Acquire an advisory file lock, or renew one you hold
+    Bind {
+        path: String,
+        /// Seconds to hold it (default 600, at most 3600); bind again to renew
+        #[arg(long)]
+        ttl: Option<i64>,
+        /// Take the lock over from whoever holds it now
+        #[arg(long)]
+        takeover: bool,
+    },
     /// Release a file lock
     Release { path: String },
     /// Stream live Circle events
@@ -659,6 +667,17 @@ mod tests {
         assert!(matches!(
             cli.command,
             AgentCommands::Claim { task_id, takeover: true } if task_id == "task-1"
+        ));
+    }
+
+    #[test]
+    fn bind_accepts_ttl_and_takeover() {
+        let cli =
+            AgentCli::try_parse_from(["enox", "bind", "src/a.rs", "--ttl", "1200", "--takeover"])
+                .expect("bind --ttl --takeover should parse");
+        assert!(matches!(
+            cli.command,
+            AgentCommands::Bind { path, ttl: Some(1200), takeover: true } if path == "src/a.rs"
         ));
     }
 }

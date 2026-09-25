@@ -33,9 +33,10 @@ pub async fn run(client: &reqwest::Client, base: &str, json: bool) -> Result<()>
                 for l in locks {
                     let path = l["path"].as_str().unwrap_or("?");
                     let agent = l["agent_id"].as_str().unwrap_or("?");
+                    let until = crate::commands::bind::until(&l["expires_at"]);
                     match l["run_id"].as_str() {
-                        Some(run) => println!("    ⊘ {path}  ← {agent} (run {run})"),
-                        None => println!("    ⊘ {path}  ← {agent}"),
+                        Some(run) => println!("    ⊘ {path}  ← {agent} (run {run}) until {until}"),
+                        None => println!("    ⊘ {path}  ← {agent} until {until}"),
                     }
                 }
             }

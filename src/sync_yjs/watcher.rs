@@ -275,6 +275,16 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
         // Save CRDT state after a local edit so restarts see the correct state.
         if changed {
             crate::store::crdt::save(&state.workspace, &rel, &doc).await;
+            if let Some(holder) =
+                crate::control::arbitration::holder_elsewhere(&state.control, &rel, &state.peer_id)
+            {
+                let _ = state.events.send(CircleEvent::LockViolated {
+                    path: rel.clone(),
+                    held_by: holder.agent_id,
+                    held_by_peer_id: holder.peer_id,
+                    edited_by_peer_id: state.peer_id.clone(),
+                });
+            }
         }
 
         let _ = state.events.send(CircleEvent::FileUpdated { path: rel });

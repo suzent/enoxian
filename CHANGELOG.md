@@ -47,6 +47,13 @@ refuses to publish a version whose section is missing or empty.
 - `enox claim --takeover` takes a task from a holder that went away, so a
   claim cannot keep a task stuck forever. The previous holder is recorded and
   shown by `enox tasks` and in the `task_claimed` event.
+- `enox bind` locks are now leases: 10 minutes by default, `--ttl` up to an
+  hour, renewed by binding again. A lock nobody renews frees itself, so an
+  agent that crashed no longer holds a file forever. `enox bind --takeover`
+  takes a lock from a holder that has gone away and records who held it, and
+  `enox status` shows when each lock ends.
+- Editing a file someone else holds from another device raises a
+  `lock_violated` event on both devices, so the holder learns about it.
 
 ### Changed
 
@@ -56,6 +63,10 @@ refuses to publish a version whose section is missing or empty.
   was offered a message, who is already working on one, and who delegated a
   request. They now read "claude (on suzy/jessair)", and `enox inbox` shows
   claims the same way.
+- `enox bind` no longer makes the file read-only. It could not stop anyone
+  who owned the file, only applied on the device that bound it, and blocked
+  the holder's own tools from writing. Locks are now advisory throughout, and
+  releasing a file bound by an earlier version makes it writable again.
 
 ### Fixed
 

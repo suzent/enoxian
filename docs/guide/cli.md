@@ -456,11 +456,27 @@ enox [--circle <NAME>] done <TASK-ID>
 
 ### `bind`
 
-Acquire an advisory file lock. `<PATH>` is relative to the workspace, forward slashes.
+Acquire an advisory file lock, or renew one you hold. `<PATH>` is relative to
+the workspace, forward slashes.
 
 ```bash
 enox [--circle <NAME>] bind <PATH>
+enox [--circle <NAME>] bind <PATH> --ttl 1800
+enox [--circle <NAME>] bind <PATH> --takeover
 ```
+
+```
+✦ bound: src/main.rs until 14:32:05
+```
+
+The lock is a lease: 10 minutes by default, `--ttl` seconds up to an hour.
+Bind again before it ends to renew it; one you stop renewing frees itself.
+`--takeover` takes the lock from a holder that has gone away and records who
+held it.
+
+Locks are advisory: file permissions are not changed, and nothing stops a
+write. Editing a path someone else holds raises `lock_violated` on your device
+and on the holder's, so both sides find out.
 
 ---
 
