@@ -11,6 +11,7 @@
 //! nobody follows up on from silencing a message for good.
 
 use crate::agent::claims;
+use crate::agent::label::Roster;
 use crate::control::{Author, ChatActivity, ChatActivityKind, ChatMessage};
 use crate::daemon::DaemonState;
 use axum::{
@@ -48,6 +49,7 @@ pub async fn get_inbox(
         return super::circle_busy();
     };
     let live = claims::live_claims(&activities);
+    let roster = Roster::load(&state);
     let transcript = state.transcript();
 
     let answered: std::collections::HashSet<&str> = transcript
@@ -70,7 +72,7 @@ pub async fn get_inbox(
                 "from": m.agent_id,
                 "text": m.text,
                 "ts": m.ts,
-                "claimed_by": live.get(&m.id).and_then(|c| c.first()).map(claim_json),
+                "claimed_by": live.get(&m.id).and_then(|c| c.first()).map(|c| claim_json(c, &roster)),
             })
         })
         .collect();
@@ -108,7 +110,11 @@ pub async fn get_inbox(
         })
         .collect();
 
-    let mut all_claims: Vec<_> = live.values().flatten().map(claim_json).collect();
+    let mut all_claims: Vec<_> = live
+        .values()
+        .flatten()
+        .map(|c| claim_json(c, &roster))
+        .collect();
     all_claims.sort_by(|a, b| a["message_id"].as_str().cmp(&b["message_id"].as_str()));
 
     Json(json!({
@@ -254,10 +260,14 @@ fn names_an_agent(message: &ChatMessage) -> bool {
     })
 }
 
-fn claim_json(claim: &claims::Claim) -> serde_json::Value {
+/// A claim for the API. `agent` and `peer_id` stay raw, as identifiers;
+/// `label` is the same agent named for a person to read, with its machine —
+/// otherwise a claim by one device's `claude` reads the same as another's.
+fn claim_json(claim: &claims::Claim, roster: &Roster) -> serde_json::Value {
     json!({
         "message_id": claim.message_id,
         "agent": claim.agent,
+        "label": roster.agent(&claim.agent, &claim.peer_id),
         "peer_id": claim.peer_id,
         "expires_at": claim.expires_at,
         "explicit": claim.explicit,
