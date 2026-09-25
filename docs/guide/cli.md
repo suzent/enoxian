@@ -311,7 +311,13 @@ enox [--circle <NAME>] status
   Agent:     mymac-KRhAf4ug
   Workspace: /Users/suzy/enoxian/MyCircle
   Docs:      3
+  Conflicts: none
+  Locks:     1 held
+    ⊘ src/main.rs  ← mymac-KRhAf4ug
 ```
+
+`Locks` shows who currently holds each bound path, so you can check before
+editing instead of discovering it through a failed `bind`.
 
 ---
 
@@ -410,11 +416,17 @@ enox [--circle <NAME>] task-create <TITLE> [--description <TEXT>]
 
 ### `claim`
 
-Claim an open task.
+Claim an open task. Fails if another collaborator already holds the claim;
+re-claiming a task you hold is a no-op. A done task cannot be claimed.
 
 ```bash
 enox [--circle <NAME>] claim <TASK-ID>
+enox [--circle <NAME>] claim <TASK-ID> --takeover
 ```
+
+`--takeover` takes the task from its current holder — use it when that holder
+has gone away. The previous holder is recorded and shown by `enox tasks`
+(`→ you, taken over from them`) and in the `task_claimed` event.
 
 ---
 
@@ -431,7 +443,8 @@ enox [--circle <NAME>] unclaim <TASK-ID>
 
 ### `done`
 
-Mark a task as done.
+Mark a task as done. Only the collaborator holding the claim can do this, and
+done is final.
 
 ```bash
 enox [--circle <NAME>] done <TASK-ID>

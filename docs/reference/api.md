@@ -57,6 +57,9 @@ Circle overview.
   "user_handle": "alice",
   "docs":        3,
   "conflicts":   [],
+  "locks": [
+    { "path": "src/main.rs", "agent_id": "mymac-KRhAf4ug", "peer_id": "12D3KooW...", "run_id": null }
+  ],
   "p2p": {
     "peer_id": "12D3KooW...",
     "listen_addrs": ["/ip4/192.168.1.10/tcp/49822"],
@@ -67,6 +70,8 @@ Circle overview.
   }
 }
 ```
+
+`locks` lists every path currently held through `bind`, sorted by path.
 
 ---
 
@@ -201,6 +206,19 @@ Claim an open task (`open → claimed`).
 { "status": "claimed", "task_id": "4873c16e-..." }
 ```
 
+Returns `409` when another actor or device already holds the claim; the error
+names the current claimant. Claiming a task you already hold succeeds again.
+A task that is `done` cannot be claimed (`409`).
+
+Send `"takeover": true` to claim a task someone else holds — for a claimant
+that went away and would otherwise hold it forever. The response and the
+`task_claimed` event then carry `taken_over_from`, and the task records it in
+`taken_over_from` / `taken_over_from_peer_id`:
+
+```json
+{ "status": "claimed", "task_id": "4873c16e-...", "taken_over_from": "linux-Ab3cDe4f" }
+```
+
 **Events emitted:** `task_claimed`
 
 ---
@@ -229,7 +247,9 @@ the task is not currently claimed.
 
 ### `POST /circles/<id>/api/done`
 
-Mark a task done (`claimed → done`).
+Mark a task done (`claimed → done`). Only the actor and device that claimed
+the task may complete it: `403` otherwise, `409` when it is not claimed. Done
+is final.
 
 **Request:**
 ```json
@@ -812,7 +832,7 @@ data: <json>\n\n
 | `lock_acquired` | `path`, `agent_id` | File lock acquired |
 | `lock_released` | `path`, `agent_id` | File lock released |
 | `task_created` | `task_id` | New task created |
-| `task_claimed` | `task_id`, `agent_id` | Task claimed |
+| `task_claimed` | `task_id`, `agent_id`, `taken_over_from`? | Task claimed; `taken_over_from` is set when it was taken over |
 | `task_unclaimed` | `task_id`, `agent_id` | Task released back to open |
 | `task_done` | `task_id` | Task marked done |
 | `presence_changed` | `agent_id` | Agent presence updated |

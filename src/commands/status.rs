@@ -24,6 +24,22 @@ pub async fn run(client: &reqwest::Client, base: &str, json: bool) -> Result<()>
                 }
             }
         }
+
+        if let Some(locks) = val["locks"].as_array() {
+            if locks.is_empty() {
+                println!("  Locks:   none");
+            } else {
+                println!("  Locks:   {} held", locks.len());
+                for l in locks {
+                    let path = l["path"].as_str().unwrap_or("?");
+                    let agent = l["agent_id"].as_str().unwrap_or("?");
+                    match l["run_id"].as_str() {
+                        Some(run) => println!("    ⊘ {path}  ← {agent} (run {run})"),
+                        None => println!("    ⊘ {path}  ← {agent}"),
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }

@@ -100,6 +100,8 @@ pub async fn create_task(
         unclaimed_by_peer_id: None,
         completed_by: None,
         completed_by_peer_id: None,
+        taken_over_from: None,
+        taken_over_from_peer_id: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };

@@ -39,6 +39,15 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- `enox status` lists who currently holds each bound path, and `/status`
+  returns them as `locks`, so you can check a lock before editing instead of
+  finding it through a failed `enox bind`.
+- `enox claim --takeover` takes a task from a holder that went away, so a
+  claim cannot keep a task stuck forever. The previous holder is recorded and
+  shown by `enox tasks` and in the `task_claimed` event.
+
 ### Changed
 
 - Agents are told which machine each other agent is on. Two agents with the
@@ -59,6 +68,13 @@ refuses to publish a version whose section is missing or empty.
   are now reported. The notice began "claude could not answer" either way, so
   whichever came second looked like a repeat of the first and was suppressed.
   Notices now say which machine: "claude (on suzy/jessair) could not answer".
+- `enox claim` on a task another agent or device already holds now fails
+  with the current claimant's name, instead of silently taking the task over
+  while both sides believe they own it. Re-claiming your own task still
+  succeeds.
+- `enox done` now only works for the task's claimant, and a done task can no
+  longer be claimed. Before, anyone could mark someone else's task done and
+  then claim it, getting around the claim check.
 
 - A self-hosted relay's automatic updater now updates itself. It ships with
   each release and is verified against the release's checksums, so a change

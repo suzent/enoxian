@@ -270,6 +270,9 @@ pub struct TaskRequest {
     pub task_id: String,
     pub agent_id: Option<String>,
     pub actor_token: Option<String>,
+    /// Claim the task even though someone else holds it.
+    #[serde(default)]
+    pub takeover: bool,
 }
 
 pub async fn claim_task(
@@ -297,23 +300,31 @@ pub async fn claim_task(
         Err(error) => return error.into_response(),
     };
     let agent_id = actor.agent_id.clone();
-    match update_task_status(&state, &req.task_id, TaskStatus::Claimed, &actor).await {
-        Ok(_) => {
+    let transition = if req.takeover {
+        Transition::Takeover
+    } else {
+        Transition::Claim
+    };
+    match update_task_status(&state, &req.task_id, transition, &actor).await {
+        Ok(taken_over_from) => {
             let _ = state.events.send(CircleEvent::TaskClaimed {
                 task_id: req.task_id.clone(),
                 agent_id,
+                taken_over_from: taken_over_from.clone(),
             });
-            (
-                StatusCode::OK,
-                Json(json!({ "status": "claimed", "task_id": req.task_id })),
-            )
-                .into_response()
+            let mut body = json!({ "status": "claimed", "task_id": req.task_id });
+            if let Some(previous) = taken_over_from {
+                body["taken_over_from"] = json!(previous);
+            }
+            (StatusCode::OK, Json(body)).into_response()
         }
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response(),
+        Err(error) => {
+            let status = error
+                .downcast_ref::<TaskTransitionError>()
+                .map(TaskTransitionError::status_code)
+                .unwrap_or(StatusCode::NOT_FOUND);
+            (status, Json(json!({ "error": error.to_string() }))).into_response()
+        }
     }
 }
 
@@ -342,7 +353,7 @@ pub async fn unclaim_task(
         Err(error) => return error.into_response(),
     };
     let agent_id = actor.agent_id.clone();
-    match update_task_status(&state, &req.task_id, TaskStatus::Open, &actor).await {
+    match update_task_status(&state, &req.task_id, Transition::Unclaim, &actor).await {
         Ok(_) => {
             let _ = state.events.send(CircleEvent::TaskUnclaimed {
                 task_id: req.task_id.clone(),
@@ -388,7 +399,7 @@ pub async fn done_task(
         Ok(actor) => actor,
         Err(error) => return error.into_response(),
     };
-    match update_task_status(&state, &req.task_id, TaskStatus::Done, &actor).await {
+    match update_task_status(&state, &req.task_id, Transition::Done, &actor).await {
         Ok(_) => {
             let _ = state.events.send(CircleEvent::TaskDone {
                 task_id: req.task_id.clone(),
@@ -399,20 +410,22 @@ pub async fn done_task(
             )
                 .into_response()
         }
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response(),
+        Err(error) => {
+            let status = error
+                .downcast_ref::<TaskTransitionError>()
+                .map(TaskTransitionError::status_code)
+                .unwrap_or(StatusCode::NOT_FOUND);
+            (status, Json(json!({ "error": error.to_string() }))).into_response()
+        }
     }
 }
 
 async fn update_task_status(
     state: &AppState,
     task_id: &str,
-    new_status: TaskStatus,
+    transition: Transition,
     actor: &crate::actor_token::ActorIdentity,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<String>> {
     let json_str = {
         let txn = state
             .control
@@ -428,7 +441,7 @@ async fn update_task_status(
     };
 
     let mut task: Task = serde_json::from_str(&json_str)?;
-    apply_task_status(&mut task, new_status, actor)?;
+    let taken_over_from = apply_task_status(&mut task, transition, actor)?;
 
     let updated_json = serde_json::to_string(&task)?;
     let mut txn = state
@@ -437,57 +450,103 @@ async fn update_task_status(
         .map_err(|_| anyhow::anyhow!("circle state busy; retry shortly"))?;
     let tasks_map = txn.get_or_insert_map(TASKS_KEY);
     tasks_map.insert(&mut txn, task_id, Any::String(updated_json.as_str().into()));
-    Ok(())
+    Ok(taken_over_from)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Transition {
+    /// `open → claimed`; refused while someone else holds the task.
+    Claim,
+    /// `claimed → claimed` for a new holder, recording who was displaced, so
+    /// a task held by an agent that went away does not stay stuck.
+    Takeover,
+    /// `claimed → open`, by the claimant only.
+    Unclaim,
+    /// `claimed → done`, by the claimant only. Final: a done task cannot be
+    /// claimed again.
+    Done,
 }
 
 #[derive(Debug, thiserror::Error)]
 enum TaskTransitionError {
     #[error("task is not currently claimed")]
     NotClaimed,
-    #[error("only the agent that claimed this task can unclaim it")]
+    #[error("only the agent that claimed this task can do that")]
     NotClaimant,
+    #[error("task is already claimed by {0}; use --takeover to take it over")]
+    AlreadyClaimed(String),
+    #[error("task is already done")]
+    AlreadyDone,
 }
 
 impl TaskTransitionError {
     fn status_code(&self) -> StatusCode {
         match self {
-            Self::NotClaimed => StatusCode::CONFLICT,
+            Self::NotClaimed | Self::AlreadyClaimed(_) | Self::AlreadyDone => StatusCode::CONFLICT,
             Self::NotClaimant => StatusCode::FORBIDDEN,
         }
     }
 }
 
+/// Apply `transition` to `task`. Returns the claimant a takeover displaced.
 fn apply_task_status(
     task: &mut Task,
-    new_status: TaskStatus,
+    transition: Transition,
     actor: &crate::actor_token::ActorIdentity,
-) -> Result<(), TaskTransitionError> {
-    if new_status == TaskStatus::Open {
-        if task.status != TaskStatus::Claimed {
-            return Err(TaskTransitionError::NotClaimed);
+) -> Result<Option<String>, TaskTransitionError> {
+    let same_agent = task.claimed_by.as_deref() == Some(actor.agent_id.as_str());
+    let same_device = task
+        .claimed_by_peer_id
+        .as_deref()
+        .is_none_or(|peer_id| peer_id == actor.peer_id);
+    let is_claimant = same_agent && same_device;
+    let mut taken_over_from = None;
+    match transition {
+        Transition::Unclaim | Transition::Done => {
+            if task.status != TaskStatus::Claimed {
+                return Err(TaskTransitionError::NotClaimed);
+            }
+            if !is_claimant {
+                return Err(TaskTransitionError::NotClaimant);
+            }
+            if transition == Transition::Unclaim {
+                task.claimed_by = None;
+                task.claimed_by_peer_id = None;
+                task.unclaimed_by = Some(actor.agent_id.clone());
+                task.unclaimed_by_peer_id = Some(actor.peer_id.clone());
+                task.status = TaskStatus::Open;
+            } else {
+                task.completed_by = Some(actor.agent_id.clone());
+                task.completed_by_peer_id = Some(actor.peer_id.clone());
+                task.status = TaskStatus::Done;
+            }
         }
-        let same_agent = task.claimed_by.as_deref() == Some(actor.agent_id.as_str());
-        let same_device = task
-            .claimed_by_peer_id
-            .as_deref()
-            .is_none_or(|peer_id| peer_id == actor.peer_id);
-        if !same_agent || !same_device {
-            return Err(TaskTransitionError::NotClaimant);
+        Transition::Claim | Transition::Takeover => {
+            if task.status == TaskStatus::Done {
+                return Err(TaskTransitionError::AlreadyDone);
+            }
+            let held_by_other = task.status == TaskStatus::Claimed && !is_claimant;
+            if held_by_other {
+                // Re-claiming your own task stays idempotent; taking someone
+                // else's has to be asked for, so nobody is replaced silently.
+                if transition == Transition::Claim {
+                    let holder = task.claimed_by.clone().unwrap_or_default();
+                    return Err(TaskTransitionError::AlreadyClaimed(holder));
+                }
+                taken_over_from = task.claimed_by.clone();
+                task.taken_over_from = task.claimed_by.take();
+                task.taken_over_from_peer_id = task.claimed_by_peer_id.take();
+            } else if task.status == TaskStatus::Open {
+                task.taken_over_from = None;
+                task.taken_over_from_peer_id = None;
+            }
+            task.claimed_by = Some(actor.agent_id.clone());
+            task.claimed_by_peer_id = Some(actor.peer_id.clone());
+            task.status = TaskStatus::Claimed;
         }
-        task.claimed_by = None;
-        task.claimed_by_peer_id = None;
-        task.unclaimed_by = Some(actor.agent_id.clone());
-        task.unclaimed_by_peer_id = Some(actor.peer_id.clone());
-    } else if new_status == TaskStatus::Claimed {
-        task.claimed_by = Some(actor.agent_id.clone());
-        task.claimed_by_peer_id = Some(actor.peer_id.clone());
-    } else if new_status == TaskStatus::Done {
-        task.completed_by = Some(actor.agent_id.clone());
-        task.completed_by_peer_id = Some(actor.peer_id.clone());
     }
-    task.status = new_status;
     task.updated_at = chrono::Utc::now();
-    Ok(())
+    Ok(taken_over_from)
 }
 
 #[cfg(test)]
@@ -508,6 +567,8 @@ mod tests {
             unclaimed_by_peer_id: None,
             completed_by: None,
             completed_by_peer_id: None,
+            taken_over_from: None,
+            taken_over_from_peer_id: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         }
@@ -530,7 +591,7 @@ mod tests {
     fn claimant_can_return_task_to_open_pool() {
         let mut task = task(Some("codex"), Some("device-a"));
 
-        apply_task_status(&mut task, TaskStatus::Open, &actor("codex", "device-a")).unwrap();
+        apply_task_status(&mut task, Transition::Unclaim, &actor("codex", "device-a")).unwrap();
 
         assert_eq!(task.status, TaskStatus::Open);
         assert_eq!(task.claimed_by, None);
@@ -543,7 +604,7 @@ mod tests {
     fn another_actor_cannot_unclaim_task() {
         let mut task = task(Some("codex"), Some("device-a"));
 
-        let error = apply_task_status(&mut task, TaskStatus::Open, &actor("hermes", "device-a"))
+        let error = apply_task_status(&mut task, Transition::Unclaim, &actor("hermes", "device-a"))
             .unwrap_err();
 
         assert!(matches!(error, TaskTransitionError::NotClaimant));
@@ -554,7 +615,7 @@ mod tests {
     fn same_label_on_another_device_cannot_unclaim_task() {
         let mut task = task(Some("codex"), Some("device-a"));
 
-        let error = apply_task_status(&mut task, TaskStatus::Open, &actor("codex", "device-b"))
+        let error = apply_task_status(&mut task, Transition::Unclaim, &actor("codex", "device-b"))
             .unwrap_err();
 
         assert!(matches!(error, TaskTransitionError::NotClaimant));
@@ -564,7 +625,7 @@ mod tests {
     fn matching_legacy_claim_without_peer_id_can_be_unclaimed() {
         let mut task = task(Some("codex"), None);
 
-        apply_task_status(&mut task, TaskStatus::Open, &actor("codex", "device-a")).unwrap();
+        apply_task_status(&mut task, Transition::Unclaim, &actor("codex", "device-a")).unwrap();
 
         assert_eq!(task.status, TaskStatus::Open);
     }
@@ -574,9 +635,138 @@ mod tests {
         let mut task = task(None, None);
         task.status = TaskStatus::Open;
 
-        let error = apply_task_status(&mut task, TaskStatus::Open, &actor("codex", "device-a"))
+        let error = apply_task_status(&mut task, Transition::Unclaim, &actor("codex", "device-a"))
             .unwrap_err();
 
         assert!(matches!(error, TaskTransitionError::NotClaimed));
+    }
+
+    #[test]
+    fn another_actor_cannot_claim_a_claimed_task() {
+        let mut task = task(Some("codex"), Some("device-a"));
+
+        let error = apply_task_status(&mut task, Transition::Claim, &actor("hermes", "device-b"))
+            .unwrap_err();
+
+        assert!(matches!(error, TaskTransitionError::AlreadyClaimed(ref by) if by == "codex"));
+        assert_eq!(task.claimed_by.as_deref(), Some("codex"));
+        assert_eq!(task.claimed_by_peer_id.as_deref(), Some("device-a"));
+    }
+
+    #[test]
+    fn same_label_on_another_device_cannot_claim_a_claimed_task() {
+        let mut task = task(Some("codex"), Some("device-a"));
+
+        let error = apply_task_status(&mut task, Transition::Claim, &actor("codex", "device-b"))
+            .unwrap_err();
+
+        assert!(matches!(error, TaskTransitionError::AlreadyClaimed(_)));
+        assert_eq!(task.claimed_by_peer_id.as_deref(), Some("device-a"));
+    }
+
+    #[test]
+    fn claimant_can_reclaim_its_own_task() {
+        let mut task = task(Some("codex"), Some("device-a"));
+
+        apply_task_status(&mut task, Transition::Claim, &actor("codex", "device-a")).unwrap();
+
+        assert_eq!(task.status, TaskStatus::Claimed);
+        assert_eq!(task.claimed_by.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn open_task_can_be_claimed() {
+        let mut task = task(None, None);
+        task.status = TaskStatus::Open;
+
+        apply_task_status(&mut task, Transition::Claim, &actor("hermes", "device-b")).unwrap();
+
+        assert_eq!(task.status, TaskStatus::Claimed);
+        assert_eq!(task.claimed_by.as_deref(), Some("hermes"));
+        assert_eq!(task.claimed_by_peer_id.as_deref(), Some("device-b"));
+    }
+
+    #[test]
+    fn takeover_replaces_claimant_and_records_who_was_displaced() {
+        let mut task = task(Some("codex"), Some("device-a"));
+
+        let displaced = apply_task_status(
+            &mut task,
+            Transition::Takeover,
+            &actor("hermes", "device-b"),
+        )
+        .unwrap();
+
+        assert_eq!(displaced.as_deref(), Some("codex"));
+        assert_eq!(task.claimed_by.as_deref(), Some("hermes"));
+        assert_eq!(task.claimed_by_peer_id.as_deref(), Some("device-b"));
+        assert_eq!(task.taken_over_from.as_deref(), Some("codex"));
+        assert_eq!(task.taken_over_from_peer_id.as_deref(), Some("device-a"));
+    }
+
+    #[test]
+    fn takeover_of_own_or_open_task_displaces_nobody() {
+        let mut held = task(Some("codex"), Some("device-a"));
+        let displaced =
+            apply_task_status(&mut held, Transition::Takeover, &actor("codex", "device-a"))
+                .unwrap();
+        assert_eq!(displaced, None);
+
+        let mut open = task(None, None);
+        open.status = TaskStatus::Open;
+        let displaced = apply_task_status(
+            &mut open,
+            Transition::Takeover,
+            &actor("hermes", "device-b"),
+        )
+        .unwrap();
+        assert_eq!(displaced, None);
+        assert_eq!(open.claimed_by.as_deref(), Some("hermes"));
+    }
+
+    #[test]
+    fn claimant_can_mark_task_done() {
+        let mut task = task(Some("codex"), Some("device-a"));
+
+        apply_task_status(&mut task, Transition::Done, &actor("codex", "device-a")).unwrap();
+
+        assert_eq!(task.status, TaskStatus::Done);
+        assert_eq!(task.completed_by.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn another_actor_cannot_mark_task_done() {
+        let mut task = task(Some("codex"), Some("device-a"));
+
+        let error = apply_task_status(&mut task, Transition::Done, &actor("hermes", "device-b"))
+            .unwrap_err();
+
+        assert!(matches!(error, TaskTransitionError::NotClaimant));
+        assert_eq!(task.status, TaskStatus::Claimed);
+    }
+
+    #[test]
+    fn unclaimed_task_cannot_be_marked_done() {
+        let mut task = task(None, None);
+        task.status = TaskStatus::Open;
+
+        let error = apply_task_status(&mut task, Transition::Done, &actor("codex", "device-a"))
+            .unwrap_err();
+
+        assert!(matches!(error, TaskTransitionError::NotClaimed));
+    }
+
+    #[test]
+    fn done_task_cannot_be_claimed_or_taken_over() {
+        for transition in [Transition::Claim, Transition::Takeover] {
+            let mut task = task(Some("codex"), Some("device-a"));
+            task.status = TaskStatus::Done;
+
+            let error =
+                apply_task_status(&mut task, transition, &actor("hermes", "device-b")).unwrap_err();
+
+            assert!(matches!(error, TaskTransitionError::AlreadyDone));
+            assert_eq!(task.status, TaskStatus::Done);
+        }
     }
 }

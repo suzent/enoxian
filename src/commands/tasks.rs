@@ -25,8 +25,13 @@ pub async fn run(
                 let title = t["title"].as_str().unwrap_or("?");
                 let status = t["status"].as_str().unwrap_or("?");
                 let by = t["claimed_by"].as_str().unwrap_or("");
+                let from = t["taken_over_from"]
+                    .as_str()
+                    .filter(|_| status == "claimed");
                 if by.is_empty() {
                     println!("  [{status}] {id}  {title}");
+                } else if let Some(from) = from {
+                    println!("  [{status}] {id}  {title}  (→ {by}, taken over from {from})");
                 } else {
                     println!("  [{status}] {id}  {title}  (→ {by})");
                 }
