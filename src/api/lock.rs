@@ -309,11 +309,13 @@ pub async fn claim_task(
             )
                 .into_response()
         }
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response(),
+        Err(error) => {
+            let status = error
+                .downcast_ref::<TaskTransitionError>()
+                .map(TaskTransitionError::status_code)
+                .unwrap_or(StatusCode::NOT_FOUND);
+            (status, Json(json!({ "error": error.to_string() }))).into_response()
+        }
     }
 }
 
@@ -446,6 +448,8 @@ enum TaskTransitionError {
     NotClaimed,
     #[error("only the agent that claimed this task can unclaim it")]
     NotClaimant,
+    #[error("task is already claimed by {0}")]
+    AlreadyClaimed(String),
 }
 
 impl TaskTransitionError {
@@ -453,6 +457,7 @@ impl TaskTransitionError {
         match self {
             Self::NotClaimed => StatusCode::CONFLICT,
             Self::NotClaimant => StatusCode::FORBIDDEN,
+            Self::AlreadyClaimed(_) => StatusCode::CONFLICT,
         }
     }
 }
@@ -462,16 +467,17 @@ fn apply_task_status(
     new_status: TaskStatus,
     actor: &crate::actor_token::ActorIdentity,
 ) -> Result<(), TaskTransitionError> {
+    let same_agent = task.claimed_by.as_deref() == Some(actor.agent_id.as_str());
+    let same_device = task
+        .claimed_by_peer_id
+        .as_deref()
+        .is_none_or(|peer_id| peer_id == actor.peer_id);
+    let is_claimant = same_agent && same_device;
     if new_status == TaskStatus::Open {
         if task.status != TaskStatus::Claimed {
             return Err(TaskTransitionError::NotClaimed);
         }
-        let same_agent = task.claimed_by.as_deref() == Some(actor.agent_id.as_str());
-        let same_device = task
-            .claimed_by_peer_id
-            .as_deref()
-            .is_none_or(|peer_id| peer_id == actor.peer_id);
-        if !same_agent || !same_device {
+        if !is_claimant {
             return Err(TaskTransitionError::NotClaimant);
         }
         task.claimed_by = None;
@@ -479,6 +485,12 @@ fn apply_task_status(
         task.unclaimed_by = Some(actor.agent_id.clone());
         task.unclaimed_by_peer_id = Some(actor.peer_id.clone());
     } else if new_status == TaskStatus::Claimed {
+        // Re-claiming your own task stays idempotent; taking someone else's
+        // would silently replace them while both believe they own it.
+        if task.status == TaskStatus::Claimed && !is_claimant {
+            let holder = task.claimed_by.clone().unwrap_or_default();
+            return Err(TaskTransitionError::AlreadyClaimed(holder));
+        }
         task.claimed_by = Some(actor.agent_id.clone());
         task.claimed_by_peer_id = Some(actor.peer_id.clone());
     } else if new_status == TaskStatus::Done {
@@ -578,5 +590,50 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, TaskTransitionError::NotClaimed));
+    }
+
+    #[test]
+    fn another_actor_cannot_claim_a_claimed_task() {
+        let mut task = task(Some("codex"), Some("device-a"));
+
+        let error = apply_task_status(&mut task, TaskStatus::Claimed, &actor("hermes", "device-b"))
+            .unwrap_err();
+
+        assert!(matches!(error, TaskTransitionError::AlreadyClaimed(ref by) if by == "codex"));
+        assert_eq!(task.claimed_by.as_deref(), Some("codex"));
+        assert_eq!(task.claimed_by_peer_id.as_deref(), Some("device-a"));
+    }
+
+    #[test]
+    fn same_label_on_another_device_cannot_claim_a_claimed_task() {
+        let mut task = task(Some("codex"), Some("device-a"));
+
+        let error = apply_task_status(&mut task, TaskStatus::Claimed, &actor("codex", "device-b"))
+            .unwrap_err();
+
+        assert!(matches!(error, TaskTransitionError::AlreadyClaimed(_)));
+        assert_eq!(task.claimed_by_peer_id.as_deref(), Some("device-a"));
+    }
+
+    #[test]
+    fn claimant_can_reclaim_its_own_task() {
+        let mut task = task(Some("codex"), Some("device-a"));
+
+        apply_task_status(&mut task, TaskStatus::Claimed, &actor("codex", "device-a")).unwrap();
+
+        assert_eq!(task.status, TaskStatus::Claimed);
+        assert_eq!(task.claimed_by.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn open_task_can_be_claimed() {
+        let mut task = task(None, None);
+        task.status = TaskStatus::Open;
+
+        apply_task_status(&mut task, TaskStatus::Claimed, &actor("hermes", "device-b")).unwrap();
+
+        assert_eq!(task.status, TaskStatus::Claimed);
+        assert_eq!(task.claimed_by.as_deref(), Some("hermes"));
+        assert_eq!(task.claimed_by_peer_id.as_deref(), Some("device-b"));
     }
 }

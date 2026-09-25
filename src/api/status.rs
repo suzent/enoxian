@@ -6,6 +6,7 @@ use axum::{
     Json,
 };
 use serde_json::json;
+use yrs::{ReadTxn, Transact};
 
 pub async fn get_status(
     State(daemon): State<DaemonState>,
@@ -64,6 +65,33 @@ pub async fn get_status(
         None => return super::circle_busy(),
     };
 
+    // Current lock holders, so a member can see who holds a path without
+    // having to attempt a bind and read the conflict.
+    let locks: Vec<_> = {
+        let txn = match state.control.try_transact() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        let mut holders: Vec<_> = txn
+            .get_array(crate::control::LOCK_LOG_KEY)
+            .map(|log| crate::control::arbitration::compute_lock_holders(&log, &txn))
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        holders.sort_by(|a, b| a.0.cmp(&b.0));
+        holders
+            .into_iter()
+            .map(|(path, holder)| {
+                json!({
+                    "path":     path,
+                    "agent_id": holder.agent_id,
+                    "peer_id":  holder.peer_id,
+                    "run_id":   holder.run_id,
+                })
+            })
+            .collect()
+    };
+
     Json(json!({
         "circle_id":    state.circle_id,
         "circle_name":  state.circle_name,
@@ -74,6 +102,7 @@ pub async fn get_status(
         "user_handle":  user_handle,
         "docs":         state.docs.len(),
         "conflicts":    conflicts,
+        "locks":        locks,
         "p2p": {
             "peer_id":          state.peer_id,
             "external_addrs":   external_addrs,

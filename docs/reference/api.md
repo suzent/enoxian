@@ -57,6 +57,9 @@ Circle overview.
   "user_handle": "alice",
   "docs":        3,
   "conflicts":   [],
+  "locks": [
+    { "path": "src/main.rs", "agent_id": "mymac-KRhAf4ug", "peer_id": "12D3KooW...", "run_id": null }
+  ],
   "p2p": {
     "peer_id": "12D3KooW...",
     "listen_addrs": ["/ip4/192.168.1.10/tcp/49822"],
@@ -67,6 +70,8 @@ Circle overview.
   }
 }
 ```
+
+`locks` lists every path currently held through `bind`, sorted by path.
 
 ---
 
@@ -200,6 +205,9 @@ Claim an open task (`open → claimed`).
 ```json
 { "status": "claimed", "task_id": "4873c16e-..." }
 ```
+
+Returns `409` when another actor or device already holds the claim; the error
+names the current claimant. Claiming a task you already hold succeeds again.
 
 **Events emitted:** `task_claimed`
 

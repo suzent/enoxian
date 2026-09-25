@@ -311,7 +311,13 @@ enox [--circle <NAME>] status
   Agent:     mymac-KRhAf4ug
   Workspace: /Users/suzy/enoxian/MyCircle
   Docs:      3
+  Conflicts: none
+  Locks:     1 held
+    ⊘ src/main.rs  ← mymac-KRhAf4ug
 ```
+
+`Locks` shows who currently holds each bound path, so you can check before
+editing instead of discovering it through a failed `bind`.
 
 ---
 
@@ -410,7 +416,8 @@ enox [--circle <NAME>] task-create <TITLE> [--description <TEXT>]
 
 ### `claim`
 
-Claim an open task.
+Claim an open task. Fails if another collaborator already holds the claim;
+re-claiming a task you hold is a no-op.
 
 ```bash
 enox [--circle <NAME>] claim <TASK-ID>
