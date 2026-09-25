@@ -230,6 +230,20 @@ pub struct LockEntry {
     pub path: String,
     pub action: LockAction,
     pub ts: DateTime<Utc>,
+    /// When an acquire's lease ends. Entries written before leases existed
+    /// have none and last [`crate::control::arbitration::DEFAULT_LOCK_SECS`]
+    /// from `ts`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    /// An acquire that replaces a live holder instead of yielding to it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub takeover: bool,
+    /// Who held the path before a takeover. Written into the entry itself so
+    /// compaction, which keeps only the latest entry per held path, keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taken_over_from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taken_over_from_peer_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -742,9 +756,23 @@ pub enum CircleEvent {
     FileDeleted {
         path: String,
     },
+    /// A bound path was edited from a device other than the holder's. Locks
+    /// are advisory, so the edit went through; this is how both sides find
+    /// out. Raised on the editing device for its own edit, and on the
+    /// holder's device for an edit that arrived from a peer.
+    LockViolated {
+        path: String,
+        held_by: String,
+        held_by_peer_id: String,
+        edited_by_peer_id: String,
+    },
     LockAcquired {
         path: String,
         agent_id: String,
+        expires_at: DateTime<Utc>,
+        /// Set when this bind took the path over from another holder.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        taken_over_from: Option<String>,
     },
     LockReleased {
         path: String,

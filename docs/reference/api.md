@@ -58,7 +58,8 @@ Circle overview.
   "docs":        3,
   "conflicts":   [],
   "locks": [
-    { "path": "src/main.rs", "agent_id": "mymac-KRhAf4ug", "peer_id": "12D3KooW...", "run_id": null }
+    { "path": "src/main.rs", "agent_id": "mymac-KRhAf4ug", "peer_id": "12D3KooW...", "run_id": null,
+      "expires_at": "2026-09-25T14:32:05Z", "taken_over_from": null }
   ],
   "p2p": {
     "peer_id": "12D3KooW...",
@@ -269,23 +270,29 @@ is final.
 
 ### `POST /circles/<id>/api/bind`
 
-Acquire an advisory file lock.
+Acquire an advisory file lock, or renew one you hold. File permissions are not
+changed.
 
 **Request:**
 ```json
-{ "path": "src/main.rs", "agent_id": "mymac-KRhAf4ug" }
+{ "path": "src/main.rs", "agent_id": "mymac-KRhAf4ug", "ttl": 600, "takeover": false }
 ```
 
-`path` is relative to the workspace, forward-slash normalized.
+`path` is relative to the workspace, forward-slash normalized. `ttl` is the
+lease in seconds — default 600, clamped to 30–3600. Binding a path you hold
+renews its lease. `takeover: true` takes a path someone else holds; the
+response and event then carry `taken_over_from`.
 
 **Response `200`:**
 ```json
-{ "status": "bound", "path": "src/main.rs", "agent_id": "mymac-KRhAf4ug" }
+{ "status": "bound", "path": "src/main.rs", "agent_id": "mymac-KRhAf4ug",
+  "expires_at": "2026-09-25T14:32:05Z" }
 ```
 
 **Conflict `409`:**
 ```json
-{ "error": "already locked", "held_by": "other-agent" }
+{ "error": "path is bound by linux-Ab3cDe4f (on bob/linux); use --takeover to take it over",
+  "held_by": "linux-Ab3cDe4f (on bob/linux)", "expires_at": "2026-09-25T14:30:00Z" }
 ```
 
 **Events emitted:** `lock_acquired`
@@ -829,7 +836,8 @@ data: <json>\n\n
 |--------|--------|---------|
 | `file_updated` | `path` | A workspace file changed |
 | `file_deleted` | `path` | A workspace file was deleted |
-| `lock_acquired` | `path`, `agent_id` | File lock acquired |
+| `lock_acquired` | `path`, `agent_id`, `expires_at`, `taken_over_from`? | File lock acquired or renewed; `taken_over_from` is set on a takeover |
+| `lock_violated` | `path`, `held_by`, `held_by_peer_id`, `edited_by_peer_id` | A bound path was edited from a device other than the holder's (raised on both devices) |
 | `lock_released` | `path`, `agent_id` | File lock released |
 | `task_created` | `task_id` | New task created |
 | `task_claimed` | `task_id`, `agent_id`, `taken_over_from`? | Task claimed; `taken_over_from` is set when it was taken over |

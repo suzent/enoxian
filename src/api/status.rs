@@ -87,6 +87,8 @@ pub async fn get_status(
                     "agent_id": holder.agent_id,
                     "peer_id":  holder.peer_id,
                     "run_id":   holder.run_id,
+                    "expires_at": holder.expires_at,
+                    "taken_over_from": holder.taken_over_from,
                 })
             })
             .collect()

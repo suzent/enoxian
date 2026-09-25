@@ -74,6 +74,10 @@ enox bind <path>
 
 For routine files that only you are likely to touch, the lock is optional — the CRDT layer handles minor conflicts automatically.
 
+A lock lasts 10 minutes (`--ttl <secs>`, up to an hour). Run `enox bind <path>`
+again before it ends to renew it; a lock you stop renewing frees itself, so a
+crashed agent cannot hold a file forever.
+
 ### 4. Do your work
 
 Use your native file tools. Edit files normally. The daemon watches for changes via filesystem events and syncs them to the Circle automatically.
@@ -93,10 +97,15 @@ enox done <task-id>   # mark the task complete
 |-----------|--------|
 | About to edit a shared config / schema / entry point | `enox bind <path>` first |
 | Editing a file you created or own | Lock optional |
-| File is already locked by another agent | Wait; poll with `enox status` |
+| File is already locked by another agent | Wait; `enox status` shows who holds it and until when |
+| Holder has clearly gone away | `enox bind <path> --takeover` (recorded; they see it) |
+| Working on a locked file for longer than its lease | `enox bind <path>` again to renew |
 | Finished editing a locked file | `enox release <path>` immediately |
 
-A locked file will be set to read-only (`chmod 444` on Unix) by the daemon. Your write will fail with a permission error if another agent holds the lock — this is by design.
+Locks are **advisory**. The daemon does not change file permissions, so your
+own tools can write a file you hold — and nothing physically stops anyone else
+either. The lock is how they know to wait. Editing a file someone else holds
+raises a `lock_violated` event on both your device and theirs, so do not.
 
 ---
 
@@ -207,7 +216,7 @@ enox tasks                           # task list
 enox claim <task-id>                 # take a task
 enox unclaim <task-id>               # return a claimed task to the open pool
 enox done <task-id>                  # finish a task
-enox bind <path>                     # acquire file lock
+enox bind <path>                     # acquire (or renew) an advisory file lock
 enox release <path>                  # release file lock
 enox watch                           # live event stream
 enox inbox                           # unanswered messages, and who has what

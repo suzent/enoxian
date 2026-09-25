@@ -227,11 +227,17 @@ async fn main() -> anyhow::Result<()> {
                     )
                     .await
                 }
-                AgentCommands::Bind { path } => {
+                AgentCommands::Bind {
+                    path,
+                    ttl,
+                    takeover,
+                } => {
                     enoxian::commands::bind::run(
                         &client,
                         &base,
                         path,
+                        ttl,
+                        takeover,
                         actor_token.as_deref(),
                         cli.json,
                     )

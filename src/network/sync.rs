@@ -417,7 +417,18 @@ fn try_apply_once(doc: &Doc, raw: &[u8], path: &str) -> ApplyOutcome {
 /// Returning false tears the sync down and forces a reconnect that re-sends
 /// everything from scratch, so a doc that is merely locked for a moment must
 /// not be allowed to cause one.
-async fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId) -> bool {
+///
+/// `live` marks an update from the steady-state loop. Those come straight from
+/// the peer that made them — `p2p` updates are never forwarded — so an edit to
+/// a path bound on this device can be pinned on that peer. A handshake diff
+/// can carry anyone's edits, the holder's own included, and is not checked.
+async fn apply_update(
+    state: &AppState,
+    path: &str,
+    raw: &[u8],
+    peer_id: PeerId,
+    live: bool,
+) -> bool {
     // A peer that has not yet seen the deletion will keep offering the file.
     // Applying it would recreate the doc and write the file back to disk, so
     // the deletion would bounce between peers forever. The control doc is
@@ -441,6 +452,9 @@ async fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId)
         state.get_or_create_doc(path)
     };
 
+    let before = (live && path != "__control__")
+        .then(|| doc.try_transact().ok().map(|txn| txn.state_vector()))
+        .flatten();
     let mut applied = false;
     for attempt in 0..CONTENTION_RETRIES {
         match try_apply_once(&doc, raw, path) {
@@ -459,6 +473,10 @@ async fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId)
         return false;
     }
 
+    if let Some(before) = before {
+        report_lock_violation(state, &doc, path, &peer_id, &before);
+    }
+
     if path != "__control__" {
         let author = device_label_for_peer(state, &peer_id);
         let state = state.clone();
@@ -468,6 +486,38 @@ async fn apply_update(state: &AppState, path: &str, raw: &[u8], peer_id: PeerId)
         });
     }
     true
+}
+
+/// Warn this device when a peer edits a path bound here. Only an update that
+/// moved the doc counts: a duplicate or already-merged one changes nothing.
+fn report_lock_violation(
+    state: &AppState,
+    doc: &Doc,
+    path: &str,
+    peer_id: &PeerId,
+    before: &StateVector,
+) {
+    let Ok(txn) = doc.try_transact() else { return };
+    if &txn.state_vector() == before {
+        return;
+    }
+    drop(txn);
+    let Some(holder) =
+        crate::control::arbitration::holder_elsewhere(&state.control, path, &peer_id.to_string())
+    else {
+        return;
+    };
+    if holder.peer_id != state.peer_id {
+        return;
+    }
+    let _ = state
+        .events
+        .send(crate::control::CircleEvent::LockViolated {
+            path: path.to_string(),
+            held_by: holder.agent_id,
+            held_by_peer_id: holder.peer_id,
+            edited_by_peer_id: peer_id.to_string(),
+        });
 }
 
 fn apply_awareness(state: &AppState, path: &str, data: Vec<u8>) {
@@ -784,7 +834,7 @@ async fn sync_inner(
         for _ in 0..my_paths.len() {
             let (path, data) = read_frame(&mut rx, state).await?;
             if let IncomingEvent::Apply { raw_update, .. } = parse_frame(path.clone(), &data) {
-                if !apply_update(state, &path, &raw_update, peer_id).await {
+                if !apply_update(state, &path, &raw_update, peer_id, false).await {
                     return Err(anyhow::anyhow!("circle state busy; reconnecting sync"));
                 }
             }
@@ -886,7 +936,7 @@ async fn sync_inner(
         for _ in 0..my_paths.len() {
             let (path, data) = read_frame(&mut rx, state).await?;
             if let IncomingEvent::Apply { raw_update, .. } = parse_frame(path.clone(), &data) {
-                if !apply_update(state, &path, &raw_update, peer_id).await {
+                if !apply_update(state, &path, &raw_update, peer_id, false).await {
                     return Err(anyhow::anyhow!("circle state busy; reconnecting sync"));
                 }
             }
@@ -1061,7 +1111,7 @@ async fn sync_inner(
                 }
                 match event {
                     IncomingEvent::Apply { path, raw_update } => {
-                        if !apply_update(state, &path, &raw_update, peer_id).await {
+                        if !apply_update(state, &path, &raw_update, peer_id, true).await {
                             return Err(anyhow::anyhow!("circle state busy; reconnecting sync"));
                         }
                     }

@@ -1,6 +1,7 @@
 use crate::control::{
-    arbitration::append_lock_entry, fs_lock::set_readonly, CircleEvent, LockAction, LockEntry,
-    Task, TaskStatus, LOCK_LOG_KEY, TASKS_KEY,
+    arbitration::{append_lock_entry, DEFAULT_LOCK_SECS, MAX_LOCK_SECS},
+    fs_lock::set_readonly,
+    CircleEvent, LockAction, LockEntry, Task, TaskStatus, LOCK_LOG_KEY, TASKS_KEY,
 };
 use crate::daemon::DaemonState;
 use crate::state::AppState;
@@ -22,6 +23,12 @@ pub struct PathRequest {
     pub path: String,
     pub agent_id: Option<String>,
     pub actor_token: Option<String>,
+    /// Seconds the lock lasts. Clamped; see [`MAX_LOCK_SECS`].
+    #[serde(default)]
+    pub ttl: Option<i64>,
+    /// Take the lock even though someone else holds it.
+    #[serde(default)]
+    pub takeover: bool,
 }
 
 pub async fn bind_path(
@@ -78,58 +85,99 @@ pub async fn bind_path(
     write_bind(&state, req, actor).await
 }
 
+/// Record the lock. Advisory: nothing on disk changes, so the holder's own
+/// tools can still write the file, and so can anyone else's — the lock is
+/// how they know not to. Binding a path you hold renews its lease.
 async fn write_bind(
     state: &AppState,
     req: PathRequest,
     actor: crate::actor_token::ActorIdentity,
 ) -> axum::response::Response {
     let agent_id = actor.agent_id.clone();
-    {
-        let entry = LockEntry {
+    let now = chrono::Utc::now();
+    let ttl = req
+        .ttl
+        .unwrap_or(DEFAULT_LOCK_SECS)
+        .clamp(30, MAX_LOCK_SECS);
+    let expires_at = now + chrono::Duration::seconds(ttl);
+    let recorded = 'record: {
+        let mut entry = LockEntry {
             run_id: actor.run_id.clone(),
             entry_id: uuid::Uuid::new_v4().to_string(),
             agent_id: agent_id.clone(),
             peer_id: actor.peer_id,
             path: req.path.clone(),
             action: LockAction::Acquire,
-            ts: chrono::Utc::now(),
+            ts: now,
+            expires_at: Some(expires_at),
+            takeover: false,
+            taken_over_from: None,
+            taken_over_from_peer_id: None,
         };
-        let mut txn = match state.control.try_transact_mut() {
-            Ok(txn) => txn,
-            Err(_) => return super::circle_busy(),
+        let Ok(mut txn) = state.control.try_transact_mut() else {
+            return super::circle_busy();
         };
         let lock_log = txn.get_or_insert_array(LOCK_LOG_KEY);
-        if crate::control::arbitration::is_locked_by_other_run(
-            &lock_log,
-            &txn,
-            &req.path,
-            &agent_id,
-            &entry.peer_id,
-            entry.run_id.as_deref(),
-        ) {
+        let current =
+            crate::control::arbitration::compute_lock_holders(&lock_log, &txn).remove(&req.path);
+        let mut displaced = None;
+        if let Some(holder) = current {
+            let held_by_other = holder.agent_id != agent_id
+                || (!holder.peer_id.is_empty() && holder.peer_id != entry.peer_id)
+                || holder.run_id != entry.run_id;
+            if held_by_other {
+                if !req.takeover {
+                    break 'record Err(holder);
+                }
+                entry.takeover = true;
+                entry.taken_over_from = Some(holder.agent_id.clone());
+                entry.taken_over_from_peer_id = Some(holder.peer_id);
+                displaced = Some(holder.agent_id);
+            } else {
+                // A renewal: the lock stays the one it was, including who it
+                // was taken from.
+                entry.taken_over_from = holder.taken_over_from;
+                entry.taken_over_from_peer_id = holder.taken_over_from_peer_id;
+            }
+        }
+        let _ = append_lock_entry(&lock_log, &mut txn, &entry);
+        Ok(displaced)
+    };
+    let taken_over_from = match recorded {
+        Ok(displaced) => displaced,
+        // Named once the control doc is free again: the roster reads it.
+        Err(holder) => {
+            let held_by =
+                crate::agent::label::Roster::load(state).agent(&holder.agent_id, &holder.peer_id);
             return (
                 StatusCode::CONFLICT,
-                Json(json!({"error": "path belongs to another agent or run"})),
+                Json(json!({
+                    "error": format!("path is bound by {held_by}; use --takeover to take it over"),
+                    "held_by": held_by,
+                    "expires_at": holder.expires_at,
+                })),
             )
                 .into_response();
         }
-        let _ = append_lock_entry(&lock_log, &mut txn, &entry);
-    }
+    };
 
-    let full = state
-        .workspace
-        .join(req.path.replace('/', std::path::MAIN_SEPARATOR_STR));
-    let _ = set_readonly(&full, true).await;
     let _ = state.events.send(CircleEvent::LockAcquired {
         path: req.path.clone(),
         agent_id: agent_id.clone(),
+        expires_at,
+        taken_over_from: taken_over_from.clone(),
     });
 
-    (
-        StatusCode::OK,
-        Json(json!({ "status": "bound", "path": req.path, "agent_id": agent_id })),
-    )
-        .into_response()
+    let mut body = json!({
+        "status": "bound",
+        "path": req.path,
+        "agent_id": agent_id,
+        "expires_at": expires_at,
+    });
+    if let Some(previous) = taken_over_from {
+        body["taken_over_from"] = json!(previous);
+    }
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 pub async fn release_path(
@@ -194,6 +242,10 @@ pub async fn release_path(
             path: req.path.clone(),
             action: LockAction::Release,
             ts: chrono::Utc::now(),
+            expires_at: None,
+            takeover: false,
+            taken_over_from: None,
+            taken_over_from_peer_id: None,
         };
         let mut txn = match state.control.try_transact_mut() {
             Ok(txn) => txn,
@@ -217,6 +269,8 @@ pub async fn release_path(
         let _ = append_lock_entry(&lock_log, &mut txn, &entry);
     }
 
+    // Binds no longer touch permissions, but a file bound by an earlier
+    // version may still be read-only; releasing it is when that should end.
     let full = state
         .workspace
         .join(req.path.replace('/', std::path::MAIN_SEPARATOR_STR));
