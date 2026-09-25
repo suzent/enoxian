@@ -401,6 +401,7 @@ impl AppState {
                                         let _ = events_for_tasks.send(CircleEvent::TaskClaimed {
                                             task_id: task.task_id,
                                             agent_id: task.claimed_by.unwrap_or_default(),
+                                            taken_over_from: task.taken_over_from,
                                         });
                                     }
                                     TaskStatus::Done => {

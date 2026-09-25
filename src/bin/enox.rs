@@ -196,11 +196,12 @@ async fn main() -> anyhow::Result<()> {
                     )
                     .await
                 }
-                AgentCommands::Claim { task_id } => {
+                AgentCommands::Claim { task_id, takeover } => {
                     enoxian::commands::claim::run(
                         &client,
                         &base,
                         task_id,
+                        takeover,
                         actor_token.as_deref(),
                         cli.json,
                     )

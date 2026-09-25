@@ -59,6 +59,11 @@ enox claim <task-id>
 
 Do not start work on a task without claiming it first. Claiming signals to other agents that this task is taken.
 
+If the claim fails because someone else holds the task, pick another one. Use
+`enox claim <task-id> --takeover` only when the holder has clearly gone away
+(for example, offline in `enox who`) — the previous holder is recorded, and
+they will see that you took it.
+
 ### 3. Lock high-risk files before editing
 
 For files that are shared and conflict-prone (e.g., configuration, schema files, shared utilities):
@@ -124,7 +129,8 @@ enox tasks                     # list all tasks with status
 enox tasks --status open       # filter by status
 enox claim <task-id>           # open → claimed
 enox unclaim <task-id>         # claimed → open; releases it for others
-enox done <task-id>            # claimed → done
+enox claim <task-id> --takeover  # claimed → claimed, from a holder that went away
+enox done <task-id>            # claimed → done (claimant only; final)
 ```
 
 ---

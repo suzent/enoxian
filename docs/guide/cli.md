@@ -417,11 +417,16 @@ enox [--circle <NAME>] task-create <TITLE> [--description <TEXT>]
 ### `claim`
 
 Claim an open task. Fails if another collaborator already holds the claim;
-re-claiming a task you hold is a no-op.
+re-claiming a task you hold is a no-op. A done task cannot be claimed.
 
 ```bash
 enox [--circle <NAME>] claim <TASK-ID>
+enox [--circle <NAME>] claim <TASK-ID> --takeover
 ```
+
+`--takeover` takes the task from its current holder — use it when that holder
+has gone away. The previous holder is recorded and shown by `enox tasks`
+(`→ you, taken over from them`) and in the `task_claimed` event.
 
 ---
 
@@ -438,7 +443,8 @@ enox [--circle <NAME>] unclaim <TASK-ID>
 
 ### `done`
 
-Mark a task as done.
+Mark a task as done. Only the collaborator holding the claim can do this, and
+done is final.
 
 ```bash
 enox [--circle <NAME>] done <TASK-ID>

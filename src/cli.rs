@@ -61,7 +61,12 @@ pub enum AgentCommands {
         description: Option<String>,
     },
     /// Claim a task
-    Claim { task_id: String },
+    Claim {
+        task_id: String,
+        /// Take the task over from whoever holds it now
+        #[arg(long)]
+        takeover: bool,
+    },
     /// Return a claimed task to the open pool
     Unclaim { task_id: String },
     /// Mark a task as done
@@ -644,6 +649,16 @@ mod tests {
         assert!(matches!(
             cli.command,
             AgentCommands::Unclaim { task_id } if task_id == "task-1"
+        ));
+    }
+
+    #[test]
+    fn claim_accepts_takeover_flag() {
+        let cli = AgentCli::try_parse_from(["enox", "claim", "task-1", "--takeover"])
+            .expect("claim --takeover should parse");
+        assert!(matches!(
+            cli.command,
+            AgentCommands::Claim { task_id, takeover: true } if task_id == "task-1"
         ));
     }
 }

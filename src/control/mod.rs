@@ -262,6 +262,12 @@ pub struct Task {
     pub completed_by: Option<String>,
     #[serde(default)]
     pub completed_by_peer_id: Option<String>,
+    /// The claimant displaced by the most recent `claim --takeover`, so the
+    /// agent that lost the task can see who took it and from whom.
+    #[serde(default)]
+    pub taken_over_from: Option<String>,
+    #[serde(default)]
+    pub taken_over_from_peer_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -750,6 +756,9 @@ pub enum CircleEvent {
     TaskClaimed {
         task_id: String,
         agent_id: String,
+        /// Set when this claim took the task over from another claimant.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        taken_over_from: Option<String>,
     },
     TaskUnclaimed {
         task_id: String,
