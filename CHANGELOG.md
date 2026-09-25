@@ -39,7 +39,26 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Changed
+
+- Agents are told which machine each other agent is on. Two agents with the
+  same name used to look identical in the conversation an agent is shown —
+  "claude: …" twice, one of them possibly the reader itself — and in who else
+  was offered a message, who is already working on one, and who delegated a
+  request. They now read "claude (on suzy/jessair)", and `enox inbox` shows
+  claims the same way.
+
 ### Fixed
+
+- An agent's answer is no longer lost when the Circle happens to be busy the
+  moment it finishes. Posting the reply gave up at once if anything else was
+  writing Circle state — a routine save, an incoming sync — so a turn that had
+  already done all its work failed and its answer was discarded over a delay of
+  milliseconds. It now waits for its turn, for up to ten seconds.
+- When agents with the same name fail on two different machines, both failures
+  are now reported. The notice began "claude could not answer" either way, so
+  whichever came second looked like a repeat of the first and was suppressed.
+  Notices now say which machine: "claude (on suzy/jessair) could not answer".
 
 - A self-hosted relay's automatic updater now updates itself. It ships with
   each release and is verified against the release's checksums, so a change

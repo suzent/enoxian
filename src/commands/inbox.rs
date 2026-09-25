@@ -45,8 +45,10 @@ pub async fn list(
     let open = val["open"].as_array().cloned().unwrap_or_default();
     println!("\nOpen — nobody has answered ({})", open.len());
     for m in &open {
-        let held = m["claimed_by"]["agent"]
+        // `label` names the machine too; an older daemon only sends `agent`.
+        let held = m["claimed_by"]["label"]
             .as_str()
+            .or_else(|| m["claimed_by"]["agent"].as_str())
             .map(|who| format!("  [{who} has it]"))
             .unwrap_or_default();
         println!(

@@ -11,6 +11,7 @@
 //! chat API. The driver identifies failed ACP resume and adds recovery context.
 //! Background stays in <context>; the user's request is the final instruction.
 
+use super::label::Roster;
 use crate::control::{ChatMessage, MemberEntry, MEMBER_LIST_KEY};
 use crate::state::AppState;
 use yrs::{Any, Map, Out, ReadTxn, Transact};
@@ -109,6 +110,10 @@ pub fn build_delivery(
     framing: Framing,
 ) -> Delivery {
     let all = state.transcript();
+    // Loaded once. History is where namesakes are most confusing: a fresh
+    // session's page can hold "claude: …" from two machines, one of them the
+    // reader, with nothing to tell them apart.
+    let roster = Roster::load(state);
     let since = resume.map(|r| r.last_seen_message.as_str());
     let after = since
         .and_then(|id| all.iter().position(|m| m.id == id))
@@ -162,7 +167,7 @@ pub fn build_delivery(
         }
         // `window` keeps only the last few lines, so record what it rendered
         // rather than what was offered to it.
-        let rendered = window(&lines, None, trigger_id);
+        let rendered = window(&lines, None, trigger_id, &roster);
         shown.extend(
             lines
                 .iter()
@@ -210,8 +215,10 @@ pub fn build_delivery(
             if fresh(message) {
                 shown.push(message.id.clone());
                 recent.push_str(&format!(
-                    "\nThread ancestor {} ({} on {}): {}",
-                    message.id, message.agent_id, message.peer_id, message.text
+                    "\nThread ancestor {} ({}): {}",
+                    message.id,
+                    roster.speaker(message),
+                    message.text
                 ));
             } else {
                 withheld.push(message.id.clone());
@@ -299,7 +306,8 @@ fn carry_forward(
 /// history below already shows are not repeated.
 pub fn recovery_context(state: &AppState, agent: &str, withheld: &[String]) -> String {
     let all = state.transcript();
-    let history = window(&all, None, "");
+    let roster = Roster::load(state);
+    let history = window(&all, None, "", &roster);
     // The history block below is the room's last few lines; anything inside it
     // is already on screen.
     let tail: std::collections::HashSet<&str> = all[all.len().saturating_sub(RECENT_CHAT_LINES)..]
@@ -318,7 +326,7 @@ pub fn recovery_context(state: &AppState, agent: &str, withheld: &[String]) -> S
             "Earlier lines you were assumed to remember:\n{}\n",
             restored
                 .iter()
-                .map(|m| format!("  {}: {}", m.agent_id, m.text.replace('\n', " ")))
+                .map(|m| format!("  {}: {}", roster.speaker(m), m.text.replace('\n', " ")))
                 .collect::<Vec<_>>()
                 .join("\n")
         )
@@ -557,7 +565,7 @@ fn member_labels(state: &AppState) -> Vec<String> {
 /// bounded and more useful than sending nothing. `exclude` drops the mention
 /// being handled, since it is already the REQUEST.
 /// The chat window, split out from the yrs read so it can be unit-tested.
-fn window(all: &[ChatMessage], since: Option<&str>, exclude: &str) -> String {
+fn window(all: &[ChatMessage], since: Option<&str>, exclude: &str, roster: &Roster) -> String {
     let after = since
         .filter(|mark| !mark.is_empty())
         .and_then(|mark| all.iter().position(|m| m.id == mark))
@@ -571,7 +579,7 @@ fn window(all: &[ChatMessage], since: Option<&str>, exclude: &str) -> String {
         .iter()
         .map(|m| {
             let text = m.text.replace('\n', " ");
-            format!("  {}: {}", m.agent_id, text)
+            format!("  {}: {}", roster.speaker(m), text)
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -750,6 +758,36 @@ mod tests {
     }
 
     #[test]
+    fn history_tells_two_agents_with_one_name_apart() {
+        // A fresh session's page can hold replies from two machines' `claude`,
+        // one of them the reader. Bare, both read "claude: …" and the agent
+        // cannot tell which it said.
+        let agent = |id: &str, peer: &str, text: &str| {
+            let mut m = msg(id, "claude", text);
+            m.author = crate::control::Author::Agent;
+            m.peer_id = peer.into();
+            m
+        };
+        let all = [
+            msg("m1", "suzy", "how does the retry path work?"),
+            agent("m2", "A", "it retries on the reconcile tick"),
+            agent("m3", "B", "and it backs off exponentially"),
+        ];
+        let roster = Roster::with(&[("A", "suzy", "macbook-pro"), ("B", "suzy", "jessair")]);
+        let out = window(&all, None, "", &roster);
+        assert!(out.contains("  claude (on suzy/macbook-pro): it retries"));
+        assert!(out.contains("  claude (on suzy/jessair): and it backs off"));
+        assert!(
+            out.contains("  suzy: how does"),
+            "people keep their own label"
+        );
+        assert!(
+            !out.contains('@'),
+            "no live mention is put in front of the agent"
+        );
+    }
+
+    #[test]
     fn delta_starts_after_the_seen_mark() {
         let all = [
             msg("m1", "suzy", "@claude add a retry"),
@@ -758,7 +796,7 @@ mod tests {
             msg("m4", "suzy", "@claude ok go ahead"),
         ];
         // Seen through its own reply (m2); the trigger (m4) is the REQUEST.
-        let out = window(&all, Some("m2"), "m4");
+        let out = window(&all, Some("m2"), "m4", &Roster::default());
         assert_eq!(out, "  bob: actually we decided against retries");
     }
 
@@ -769,7 +807,7 @@ mod tests {
             msg("m2", "claude", "hello"),
             msg("m3", "suzy", "@claude again"),
         ];
-        assert!(window(&all, Some("m2"), "m3").is_empty());
+        assert!(window(&all, Some("m2"), "m3", &Roster::default()).is_empty());
     }
 
     #[test]
@@ -779,7 +817,7 @@ mod tests {
             msg("m2", "bob", "hey"),
             msg("m3", "suzy", "@claude do it"),
         ];
-        let out = window(&all, None, "m3");
+        let out = window(&all, None, "m3", &Roster::default());
         assert_eq!(out, "  suzy: hi\n  bob: hey");
     }
 
@@ -787,8 +825,14 @@ mod tests {
     fn unknown_or_empty_mark_falls_back_to_recent_lines() {
         let all = [msg("m1", "suzy", "hi"), msg("m2", "suzy", "@claude do it")];
         // A record predating the seen-mark, and a mark trimmed from the log.
-        assert_eq!(window(&all, Some(""), "m2"), "  suzy: hi");
-        assert_eq!(window(&all, Some("gone"), "m2"), "  suzy: hi");
+        assert_eq!(
+            window(&all, Some(""), "m2", &Roster::default()),
+            "  suzy: hi"
+        );
+        assert_eq!(
+            window(&all, Some("gone"), "m2", &Roster::default()),
+            "  suzy: hi"
+        );
     }
 
     #[test]
@@ -796,7 +840,7 @@ mod tests {
         let all: Vec<ChatMessage> = (0..40)
             .map(|i| msg(&format!("m{i}"), "suzy", &format!("line {i}")))
             .collect();
-        let out = window(&all, Some("m0"), "m39");
+        let out = window(&all, Some("m0"), "m39", &Roster::default());
         assert_eq!(out.lines().count(), RECENT_CHAT_LINES);
         // Capped to the *most recent* lines, ending just before the trigger.
         assert!(out.ends_with("  suzy: line 38"));
@@ -805,6 +849,9 @@ mod tests {
     #[test]
     fn newlines_in_a_message_are_flattened_to_one_line() {
         let all = [msg("m1", "suzy", "first\nsecond")];
-        assert_eq!(window(&all, None, ""), "  suzy: first second");
+        assert_eq!(
+            window(&all, None, "", &Roster::default()),
+            "  suzy: first second"
+        );
     }
 }
