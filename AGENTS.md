@@ -76,7 +76,8 @@ For routine files that only you are likely to touch, the lock is optional — th
 
 A lock lasts 10 minutes (`--ttl <secs>`, up to an hour). Run `enox bind <path>`
 again before it ends to renew it; a lock you stop renewing frees itself, so a
-crashed agent cannot hold a file forever.
+crashed agent cannot hold a file forever. Agents the daemon runs itself (ACP
+mode) have their locks renewed for them while they are running.
 
 ### 4. Do your work
 

@@ -70,6 +70,11 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Agents the daemon runs keep their file locks for as long as they are
+  working. Locks now expire after 10 minutes, and a longer run would have lost
+  its lock mid-edit; the daemon renews them while the run is alive.
+- A task claim conflict names the claimant with its machine, like other
+  messages that mention an agent.
 - An agent's answer is no longer lost when the Circle happens to be busy the
   moment it finishes. Posting the reply gave up at once if anything else was
   writing Circle state — a routine save, an incoming sync — so a turn that had

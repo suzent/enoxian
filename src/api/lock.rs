@@ -373,6 +373,21 @@ pub async fn claim_task(
             (StatusCode::OK, Json(body)).into_response()
         }
         Err(error) => {
+            if let Some(TaskTransitionError::AlreadyClaimed { agent, peer_id }) =
+                error.downcast_ref::<TaskTransitionError>()
+            {
+                let held_by = crate::agent::label::Roster::load(&state).agent(agent, peer_id);
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": format!(
+                            "task is already claimed by {held_by}; use --takeover to take it over"
+                        ),
+                        "held_by": held_by,
+                    })),
+                )
+                    .into_response();
+            }
             let status = error
                 .downcast_ref::<TaskTransitionError>()
                 .map(TaskTransitionError::status_code)
@@ -527,8 +542,10 @@ enum TaskTransitionError {
     NotClaimed,
     #[error("only the agent that claimed this task can do that")]
     NotClaimant,
-    #[error("task is already claimed by {0}; use --takeover to take it over")]
-    AlreadyClaimed(String),
+    /// Carries the claimant's agent and device; the handler names them with
+    /// their machine, which needs the roster this pure transition cannot read.
+    #[error("task is already claimed by {agent}; use --takeover to take it over")]
+    AlreadyClaimed { agent: String, peer_id: String },
     #[error("task is already done")]
     AlreadyDone,
 }
@@ -536,7 +553,9 @@ enum TaskTransitionError {
 impl TaskTransitionError {
     fn status_code(&self) -> StatusCode {
         match self {
-            Self::NotClaimed | Self::AlreadyClaimed(_) | Self::AlreadyDone => StatusCode::CONFLICT,
+            Self::NotClaimed | Self::AlreadyClaimed { .. } | Self::AlreadyDone => {
+                StatusCode::CONFLICT
+            }
             Self::NotClaimant => StatusCode::FORBIDDEN,
         }
     }
@@ -585,7 +604,10 @@ fn apply_task_status(
                 // else's has to be asked for, so nobody is replaced silently.
                 if transition == Transition::Claim {
                     let holder = task.claimed_by.clone().unwrap_or_default();
-                    return Err(TaskTransitionError::AlreadyClaimed(holder));
+                    return Err(TaskTransitionError::AlreadyClaimed {
+                        agent: holder,
+                        peer_id: task.claimed_by_peer_id.clone().unwrap_or_default(),
+                    });
                 }
                 taken_over_from = task.claimed_by.clone();
                 task.taken_over_from = task.claimed_by.take();
@@ -702,7 +724,10 @@ mod tests {
         let error = apply_task_status(&mut task, Transition::Claim, &actor("hermes", "device-b"))
             .unwrap_err();
 
-        assert!(matches!(error, TaskTransitionError::AlreadyClaimed(ref by) if by == "codex"));
+        assert!(
+            matches!(error, TaskTransitionError::AlreadyClaimed { ref agent, ref peer_id }
+                if agent == "codex" && peer_id == "device-a")
+        );
         assert_eq!(task.claimed_by.as_deref(), Some("codex"));
         assert_eq!(task.claimed_by_peer_id.as_deref(), Some("device-a"));
     }
@@ -714,7 +739,7 @@ mod tests {
         let error = apply_task_status(&mut task, Transition::Claim, &actor("codex", "device-b"))
             .unwrap_err();
 
-        assert!(matches!(error, TaskTransitionError::AlreadyClaimed(_)));
+        assert!(matches!(error, TaskTransitionError::AlreadyClaimed { .. }));
         assert_eq!(task.claimed_by_peer_id.as_deref(), Some("device-a"));
     }
 
