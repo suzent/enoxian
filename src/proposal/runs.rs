@@ -257,8 +257,43 @@ pub fn migrate_legacy(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Release only the exact finished run's locks; another run of the same agent
-/// or a remote peer's hold must remain intact.
+/// Renew a running run's lock once less than this is left on its lease.
+///
+/// Half the default lease: the reconcile tick runs every few seconds, so a
+/// lock is renewed about every five minutes and never gets close to lapsing.
+const RENEW_WITHIN_SECS: i64 = crate::control::arbitration::DEFAULT_LOCK_SECS / 2;
+
+/// The entry that extends `holder`'s lease on `path`, when a run still going
+/// holds it and the lease is running low. A run can outlast any lease, and it
+/// should not have to know to renew: the daemon knows it is alive.
+fn renewal(
+    path: &str,
+    holder: &crate::control::arbitration::LockHolder,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<crate::control::LockEntry> {
+    if holder.expires_at - now >= chrono::Duration::seconds(RENEW_WITHIN_SECS) {
+        return None;
+    }
+    Some(crate::control::LockEntry {
+        entry_id: uuid::Uuid::new_v4().to_string(),
+        run_id: holder.run_id.clone(),
+        agent_id: holder.agent_id.clone(),
+        peer_id: holder.peer_id.clone(),
+        path: path.to_string(),
+        action: crate::control::LockAction::Acquire,
+        ts: now,
+        expires_at: Some(
+            now + chrono::Duration::seconds(crate::control::arbitration::DEFAULT_LOCK_SECS),
+        ),
+        takeover: false,
+        taken_over_from: holder.taken_over_from.clone(),
+        taken_over_from_peer_id: holder.taken_over_from_peer_id.clone(),
+    })
+}
+
+/// Release only the exact finished run's locks, and keep a running run's
+/// locks renewed; another run of the same agent or a remote peer's hold must
+/// remain intact.
 pub fn release_finished_locks(state: &crate::state::AppState) -> Result<()> {
     use yrs::{ReadTxn, Transact};
     for mut record in list(&state.circle_dir)? {
@@ -278,11 +313,13 @@ pub fn release_finished_locks(state: &crate::state::AppState) -> Result<()> {
             )?;
         }
     }
-    let finished: std::collections::HashSet<_> = list(&state.circle_dir)?
+    let (open, finished): (Vec<_>, Vec<_>) = list(&state.circle_dir)?
         .into_iter()
-        .filter(|r| !r.session.is_open())
-        .map(|r| r.session.session_id)
-        .collect();
+        .partition(|r| r.session.is_open());
+    let open: std::collections::HashSet<_> =
+        open.into_iter().map(|r| r.session.session_id).collect();
+    let finished: std::collections::HashSet<_> =
+        finished.into_iter().map(|r| r.session.session_id).collect();
     let mut txn = state
         .control
         .try_transact_mut()
@@ -292,13 +329,30 @@ pub fn release_finished_locks(state: &crate::state::AppState) -> Result<()> {
         return prune_consumed(&state.circle_dir, chrono::Utc::now());
     };
     let holders = crate::control::arbitration::compute_lock_holders(&log, &txn);
+    let now = chrono::Utc::now();
     for (path, holder) in holders {
-        if holder.peer_id != state.peer_id
-            || !holder
-                .run_id
-                .as_ref()
-                .is_some_and(|id| finished.contains(id))
-        {
+        if holder.peer_id != state.peer_id {
+            continue;
+        }
+        let Some(run_id) = holder.run_id.as_ref() else {
+            continue;
+        };
+        if open.contains(run_id) {
+            if let Some(entry) = renewal(&path, &holder, now) {
+                let expires_at = entry.expires_at.unwrap_or(now);
+                crate::control::arbitration::append_lock_entry(&log, &mut txn, &entry)?;
+                let _ = state
+                    .events
+                    .send(crate::control::CircleEvent::LockAcquired {
+                        path,
+                        agent_id: holder.agent_id,
+                        expires_at,
+                        taken_over_from: None,
+                    });
+            }
+            continue;
+        }
+        if !finished.contains(run_id) {
             continue;
         }
         crate::control::arbitration::append_lock_entry(
@@ -602,5 +656,71 @@ mod tests {
         assert!(error.to_string().contains("broken.json"));
         assert!(error.to_string().contains("surviving turn"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "truncated");
+    }
+
+    fn held(
+        expires_in_secs: i64,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> crate::control::arbitration::LockHolder {
+        crate::control::arbitration::LockHolder {
+            run_id: Some("run-1".into()),
+            agent_id: "codex".into(),
+            peer_id: "peer-a".into(),
+            expires_at: now + chrono::Duration::seconds(expires_in_secs),
+            taken_over_from: Some("hermes".into()),
+            taken_over_from_peer_id: Some("peer-b".into()),
+        }
+    }
+
+    #[test]
+    fn a_running_lock_with_plenty_of_lease_left_is_not_renewed() {
+        let now = chrono::Utc::now();
+        assert!(renewal("a.rs", &held(RENEW_WITHIN_SECS + 1, now), now).is_none());
+    }
+
+    #[test]
+    fn a_running_lock_running_low_is_renewed_as_the_same_lock() {
+        let now = chrono::Utc::now();
+        let holder = held(RENEW_WITHIN_SECS - 1, now);
+
+        let entry = renewal("a.rs", &holder, now).expect("lease running low");
+
+        assert_eq!(entry.action, crate::control::LockAction::Acquire);
+        assert_eq!(entry.path, "a.rs");
+        assert_eq!(entry.run_id.as_deref(), Some("run-1"));
+        assert_eq!(entry.agent_id, "codex");
+        assert_eq!(entry.peer_id, "peer-a");
+        assert!(!entry.takeover);
+        assert_eq!(entry.taken_over_from.as_deref(), Some("hermes"));
+        assert_eq!(
+            entry.expires_at,
+            Some(now + chrono::Duration::seconds(crate::control::arbitration::DEFAULT_LOCK_SECS))
+        );
+    }
+
+    #[test]
+    fn a_renewal_keeps_the_run_holding_its_lock() {
+        use yrs::{Doc, Transact};
+        let now = chrono::Utc::now();
+        let doc = Doc::new();
+        let log = doc.get_or_insert_array(crate::control::LOCK_LOG_KEY);
+        let holder = held(60, now);
+        {
+            let mut txn = doc.transact_mut();
+            // The bind that started it, ten minutes' lease from 540 s ago.
+            let bound_at = now - chrono::Duration::seconds(540);
+            let first = renewal("a.rs", &held(0, bound_at), bound_at).unwrap();
+            crate::control::arbitration::append_lock_entry(&log, &mut txn, &first).unwrap();
+            let renewed = renewal("a.rs", &holder, now).unwrap();
+            crate::control::arbitration::append_lock_entry(&log, &mut txn, &renewed).unwrap();
+        }
+        let txn = doc.transact();
+        // Past the original lease, the run still holds the path.
+        let later = now + chrono::Duration::seconds(300);
+        let holders = crate::control::arbitration::compute_lock_holders_at(&log, &txn, later);
+        assert_eq!(
+            holders.get("a.rs").map(|h| h.agent_id.as_str()),
+            Some("codex")
+        );
     }
 }

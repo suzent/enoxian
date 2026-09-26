@@ -471,6 +471,7 @@ enox [--circle <NAME>] bind <PATH> --takeover
 
 The lock is a lease: 10 minutes by default, `--ttl` seconds up to an hour.
 Bind again before it ends to renew it; one you stop renewing frees itself.
+Agents the daemon runs have their locks renewed automatically while running.
 `--takeover` takes the lock from a holder that has gone away and records who
 held it.
 
