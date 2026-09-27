@@ -161,12 +161,18 @@ async fn main() -> anyhow::Result<()> {
                     return enoxian::commands::enable::run(&client, &root, cli.circle.as_deref())
                         .await;
                 }
-                AgentCommands::Leave { yes } => {
+                AgentCommands::Leave {
+                    yes,
+                    admin_to,
+                    force,
+                } => {
                     return enoxian::commands::leave::run(
                         &client,
                         &root,
                         cli.circle.as_deref(),
                         *yes,
+                        admin_to.as_deref(),
+                        *force,
                     )
                     .await;
                 }

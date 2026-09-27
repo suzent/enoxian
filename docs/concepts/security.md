@@ -269,6 +269,14 @@ Only the holder of `admin.key` can add, remove, approve, reject, or promote
 members. If the admin private key is compromised, an attacker can perform member
 operations. Admin key rotation and multi-admin recovery are not yet implemented.
 
+An admin that runs `enox leave` hands the key to a connected member first (see
+[`/enoxian/admin-handover/1.0.0`](../reference/p2p-protocols.md)). The key
+travels inside a content frame, so only a member holding the current MLS epoch
+can read it. The recipient keeps it only if its public half is the admin key the
+circle already pins, so no member can be made to trust a new key. The same key
+stays in use, which means the leaving device could have kept a copy. A lost or
+broken admin device cannot hand anything over, and its circle loses admin.
+
 ## LAN Exposure
 
 mDNS announces peer IDs and listen addresses on the local network. It does not

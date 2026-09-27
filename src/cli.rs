@@ -90,10 +90,20 @@ pub enum AgentCommands {
     /// Enable a disabled Circle (allows auto-start)
     Enable,
     /// Leave a Circle permanently (removes local config)
+    ///
+    /// An admin hands its admin key to another member first: another device
+    /// proven to belong to the same user if one is online, otherwise the member
+    /// holding the lowest MLS leaf.
     Leave {
         /// Skip confirmation prompt
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Hand the admin key to this peer id instead of the automatic choice
+        #[arg(long, value_name = "PEER_ID")]
+        admin_to: Option<String>,
+        /// Leave even if no member takes the admin key over, giving admin up
+        #[arg(long)]
+        force: bool,
     },
     /// Manage Circle members
     Member(MemberArgs),

@@ -411,10 +411,29 @@ pub async fn disable_circle(
     Json(json!({ "status": "disabled" })).into_response()
 }
 
+#[derive(Deserialize, Default)]
+pub struct LeaveRequest {
+    /// Peer to hand the admin key to, instead of the automatic choice.
+    #[serde(default)]
+    pub admin_to: Option<String>,
+    /// Leave even though no one takes the admin key over, giving admin up.
+    #[serde(default)]
+    pub force: bool,
+}
+
 pub async fn leave_circle(
     State(daemon): State<DaemonState>,
     Path(circle_id): Path<String>,
+    body: Option<Json<LeaveRequest>>,
 ) -> impl IntoResponse {
+    let req = body.map(|Json(req)| req).unwrap_or_default();
+    let successor = match hand_over_admin(&daemon, &circle_id, &req).await {
+        Ok(successor) => successor,
+        Err(error) => {
+            return (StatusCode::CONFLICT, Json(json!({ "error": error }))).into_response()
+        }
+    };
+
     daemon.stop_circle(&circle_id);
 
     if let Ok(dir) = config::circle_dir(&circle_id) {
@@ -431,7 +450,60 @@ pub async fn leave_circle(
         }
     }
 
-    Json(json!({ "status": "left" })).into_response()
+    Json(json!({ "status": "left", "admin_handed_to": successor })).into_response()
+}
+
+/// Leaving deletes `admin.key`, and nothing can make another. An admin that
+/// leaves hands it to a member first, or the circle can never approve anyone
+/// again. Returns who took it, or `None` when there was nothing to hand over.
+async fn hand_over_admin(
+    daemon: &DaemonState,
+    circle_id: &str,
+    req: &LeaveRequest,
+) -> Result<Option<String>, String> {
+    use crate::network::admin_handover;
+
+    let key_path = config::circle_dir(circle_id)
+        .map_err(|e| e.to_string())?
+        .join("admin.key");
+    // Only a missing file means this device is not the admin. Any other read
+    // failure is recoverable, and deleting the directory on it would throw the
+    // circle's only admin key away.
+    let admin_key_hex = match std::fs::read_to_string(&key_path) {
+        Ok(key) => key,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(format!(
+                "could not read {}: {e} — not leaving, so the admin key is not lost",
+                key_path.display()
+            ))
+        }
+    };
+    if req.force {
+        tracing::warn!("[admin-handover] leaving {circle_id} without handing admin over (forced)");
+        return Ok(None);
+    }
+    let Some(state) = daemon.get(circle_id) else {
+        return Err(
+            "this device is the circle's admin, and the circle is not running, so \
+             the admin key cannot be handed over — enable the circle and try again, or \
+             leave with --force to give admin up for good"
+                .into(),
+        );
+    };
+    let candidates = admin_handover::candidates(&state)
+        .await
+        .map_err(|e| e.to_string())?;
+    // A circle with no other member strands no one.
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    let successor = admin_handover::choose_successor(&candidates, req.admin_to.as_deref())?;
+    admin_handover::hand_over(&state, &successor, admin_key_hex.trim())
+        .await
+        .map_err(|e| format!("could not hand the admin key over: {e}"))?;
+    tracing::info!("[admin-handover] handed admin of {circle_id} to {successor}");
+    Ok(Some(successor))
 }
 
 #[cfg(test)]

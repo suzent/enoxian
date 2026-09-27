@@ -116,6 +116,10 @@ pub struct AppState {
     pub blob_wants: broadcast::Sender<String>,
     /// Local admission failures, exposed to the UI without syncing diagnostic state.
     pub approval_errors: Arc<DashMap<String, String>>,
+    /// Opens outbound streams on this circle's swarm, for requests that start
+    /// outside the swarm loop — handing the admin key over on leave. Set once
+    /// the swarm is built; absent in tests and before start.
+    stream_control: Arc<std::sync::OnceLock<libp2p_stream::Control>>,
     /// Why the reaction loop did not act on a message. Local and in-memory for
     /// the same reason as `approval_errors`: these are this device's own
     /// reasons for declining to spend, and no peer needs them.
@@ -563,6 +567,7 @@ impl AppState {
             blobs: Arc::new(std::sync::OnceLock::new()),
             blob_wants: blob_wants_tx,
             approval_errors: Arc::new(DashMap::new()),
+            stream_control: Arc::new(std::sync::OnceLock::new()),
             admission_log: Arc::new(crate::agent::decisions::AdmissionLog::new()),
             join_policy,
             owner,
@@ -747,6 +752,24 @@ impl AppState {
             .read()
             .map(|set| set.contains(peer_id))
             .unwrap_or(false)
+    }
+
+    pub fn set_stream_control(&self, control: libp2p_stream::Control) {
+        let _ = self.stream_control.set(control);
+    }
+
+    /// A handle for opening streams to connected peers, once the swarm runs.
+    pub fn stream_control(&self) -> Option<libp2p_stream::Control> {
+        self.stream_control.get().cloned()
+    }
+
+    /// Whether this device holds at least one live connection to `peer_id`.
+    pub fn is_connected(&self, peer_id: &str) -> bool {
+        self.peer_connections
+            .read()
+            .unwrap()
+            .get(peer_id)
+            .is_some_and(|connections| !connections.is_empty())
     }
 
     pub fn is_self_removed(&self) -> bool {

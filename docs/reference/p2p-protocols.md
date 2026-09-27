@@ -15,7 +15,7 @@ magic[8] | version[1] | purpose[1] | epoch[8] | nonce[12] | ciphertext | tag[16]
 
 - magic: `ENOXC17\0`
 - version: `1`
-- purpose: CRDT, proposal, or workspace event
+- purpose: CRDT, proposal, workspace event, or admin handover
 - epoch: big-endian MLS epoch
 - nonce: random 96-bit ChaCha20-Poly1305 nonce
 - associated data: the complete header plus circle id
@@ -43,6 +43,22 @@ members replay missed commits and derive the current exporter secret. Daemons
 retain eight recent exporter secrets in memory for in-flight old-epoch frames;
 they are not persisted. A removed member can process its Remove commit but
 cannot export the following epoch secret.
+
+## `/enoxian/admin-handover/1.0.0`
+
+A one-shot stream a leaving admin opens to its chosen successor. Both frames are
+content frames with purpose `admin handover`, each behind a 4-byte big-endian
+length prefix and capped at 64 KiB:
+
+```text
+leaver → successor   { circle_id, admin_key_hex }
+successor → leaver   { ok, error }
+```
+
+The successor accepts only from a current member, only for its own circle, and
+only a key whose public half matches its pinned `admin_pubkey_hex`. It writes
+`admin.key` with owner-only permissions before it replies `ok`. The leaver deletes
+nothing until that reply arrives, and gives up after 30 seconds.
 
 ## `/enoxian/sync/2.0.0`
 

@@ -1,3 +1,4 @@
+pub mod admin_handover;
 pub mod behaviour;
 pub mod bootstrap_behaviour;
 pub mod content_crypto;
