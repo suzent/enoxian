@@ -56,7 +56,17 @@ impl MlsState {
     /// entered it again keeps its peer id but not its MLS keys, so its old leaf
     /// is still in the tree while the device cannot decrypt a thing. A leaf
     /// whose signature key differs from the published KeyPackage is that case.
-    pub fn standing(&self, peer_id: &str, key_package_bytes: Option<&[u8]>) -> Standing {
+    ///
+    /// But only if the peer itself vouches for the new key: `bound_to_peer`
+    /// must confirm that `peer_id` signed the KeyPackage's signature key. Any
+    /// member can write a KeyPackage under someone else's peer id, and an
+    /// unproven one reads as `Current` so the member's leaf stays put.
+    pub fn standing(
+        &self,
+        peer_id: &str,
+        key_package_bytes: Option<&[u8]>,
+        bound_to_peer: impl FnOnce(&[u8]) -> bool,
+    ) -> Standing {
         let Some((_, leaf_key)) = self
             .group
             .as_ref()
@@ -69,7 +79,10 @@ impl MlsState {
         let published = key_package_bytes
             .and_then(|bytes| group::validate_key_package(&self.identity, bytes).ok());
         match published {
-            Some(kp) if kp.leaf_node().signature_key().as_slice() != leaf_key.as_slice() => {
+            Some(kp)
+                if kp.leaf_node().signature_key().as_slice() != leaf_key.as_slice()
+                    && bound_to_peer(kp.leaf_node().signature_key().as_slice()) =>
+            {
                 Standing::Stale
             }
             _ => Standing::Current,
@@ -235,7 +248,10 @@ mod tests {
 
         let first = MlsIdentity::generate(peer).unwrap();
         let first_package = first.generate_key_package().unwrap();
-        assert_eq!(admin.standing(peer, Some(&first_package)), Standing::Absent);
+        assert_eq!(
+            admin.standing(peer, Some(&first_package), |_| true),
+            Standing::Absent
+        );
         admin.admit_member(peer, &first_package).unwrap();
         let (_, bystander_welcome, _) = admin
             .admit_member(
@@ -249,22 +265,32 @@ mod tests {
         // A restart republishes a KeyPackage from the same identity: still a member.
         let restarted_package = first.generate_key_package().unwrap();
         assert_eq!(
-            admin.standing(peer, Some(&restarted_package)),
+            admin.standing(peer, Some(&restarted_package), |_| true),
             Standing::Current
         );
-        assert_eq!(admin.standing(peer, None), Standing::Current);
+        assert_eq!(admin.standing(peer, None, |_| true), Standing::Current);
 
         // Leave and enter again: same peer id, new identity.
         let second = MlsIdentity::generate(peer).unwrap();
         let second_package = second.generate_key_package().unwrap();
-        assert_eq!(admin.standing(peer, Some(&second_package)), Standing::Stale);
+        // Only if the peer vouches for the new key: anyone can write a
+        // KeyPackage under someone else's peer id.
+        assert_eq!(
+            admin.standing(peer, Some(&second_package), |_| false),
+            Standing::Current,
+            "an unproven replacement leaves the leaf in place"
+        );
+        assert_eq!(
+            admin.standing(peer, Some(&second_package), |_| true),
+            Standing::Stale
+        );
 
         let (commit, welcome, _) = admin.admit_member(peer, &second_package).unwrap();
         let rejoined = MlsGroupManager::join_from_welcome(&second, &welcome, None).unwrap();
         bystander_group.apply_commit(&bystander, &commit).unwrap();
 
         assert_eq!(
-            admin.standing(peer, Some(&second_package)),
+            admin.standing(peer, Some(&second_package), |_| true),
             Standing::Current
         );
         let group = admin.group.as_ref().unwrap();

@@ -38,6 +38,9 @@ pub const DELETIONS_KEY: &str = "deletions";
 
 /// Map[peer_id → hex(KeyPackage TLS bytes)] — each peer publishes on daemon start.
 pub const MLS_KEY_PACKAGES_KEY: &str = "mls_key_packages";
+/// peer_id → hex signature, by that peer's own key, over the MLS signature key
+/// of the KeyPackage it published. See `identity::sign_key_package_binding`.
+pub const MLS_KEY_PACKAGE_BINDINGS_KEY: &str = "mls_key_package_bindings";
 /// Map[peer_id → hex(Welcome TLS bytes)] — admin stores after `member add`.
 pub const MLS_WELCOMES_KEY: &str = "mls_welcomes";
 /// Array[MlsCommitEntry] — every Commit stored so offline members can catch up.
