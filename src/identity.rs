@@ -640,6 +640,54 @@ pub fn verify_binding(
     Ok(device_key.verify(&msg, &sig))
 }
 
+fn key_package_binding_message(circle_id: &str, signature_key: &[u8]) -> Vec<u8> {
+    [
+        b"enoxian-mls-key-package-v1\0".as_slice(),
+        circle_id.as_bytes(),
+        b"\0",
+        signature_key,
+    ]
+    .concat()
+}
+
+/// Sign, with this peer's own circle key, the MLS signature key of the
+/// KeyPackage it publishes.
+///
+/// The KeyPackage map in the control document is keyed by peer id, but any
+/// member can write any entry, and a KeyPackage's credential is just bytes its
+/// own key signed. Without this, a member could publish a KeyPackage under
+/// another member's peer id and have that member's leaf swapped out as if it
+/// had rejoined.
+pub fn sign_key_package_binding(
+    peer_key: &libp2p::identity::Keypair,
+    circle_id: &str,
+    signature_key: &[u8],
+) -> Result<String> {
+    let sig = peer_key
+        .sign(&key_package_binding_message(circle_id, signature_key))
+        .context("sign key package binding")?;
+    Ok(hex::encode(sig))
+}
+
+/// Whether `binding_hex` is `peer_id`'s own signature over `signature_key`.
+pub fn verify_key_package_binding(
+    peer_id: &str,
+    circle_id: &str,
+    signature_key: &[u8],
+    binding_hex: &str,
+) -> bool {
+    let Ok(peer) = peer_id.trim().parse::<libp2p::PeerId>() else {
+        return false;
+    };
+    let Some(key) = peer_public_key(&peer) else {
+        return false;
+    };
+    let Ok(sig) = hex::decode(binding_hex.trim()) else {
+        return false;
+    };
+    key.verify(&key_package_binding_message(circle_id, signature_key), &sig)
+}
+
 /// Recover the public key an Ed25519 peer ID carries inline.
 fn peer_public_key(peer: &libp2p::PeerId) -> Option<libp2p::identity::PublicKey> {
     let hash = libp2p::multihash::Multihash::from(*peer);
