@@ -49,6 +49,13 @@ pub enum Standing {
     Current,
     /// A leaf left over from before the peer rejoined with new keys.
     Stale,
+    /// A leaf, and a published KeyPackage with other keys that cannot replace
+    /// it: the peer did not sign it, or it is not newer than the leaf. Either
+    /// someone published it in the peer's name, or the peer rejoined and its
+    /// KeyPackage's time does not show it (a clock that went back). Neither
+    /// is admission, so the join request stays until a KeyPackage that can
+    /// replace the leaf arrives — the device publishes one on every start.
+    Unproven,
 }
 
 pub fn new_mls_state(identity: MlsIdentity, group: Option<MlsGroupManager>) -> SharedMlsState {
@@ -74,10 +81,11 @@ impl MlsState {
     /// is still in the tree while the device cannot decrypt a thing. A leaf
     /// whose signature key differs from the published KeyPackage is that case.
     ///
-    /// But only if the peer itself vouches for the new key: `bound_to_peer`
-    /// must confirm that `peer_id` signed the KeyPackage's signature key. Any
-    /// member can write a KeyPackage under someone else's peer id, and an
-    /// unproven one reads as `Current` so the member's leaf stays put.
+    /// But only if the peer itself vouches for the new key and it is newer than
+    /// the leaf: `bound_to_peer` must confirm that `peer_id` signed the
+    /// KeyPackage's signature key. Any member can write a KeyPackage under
+    /// someone else's peer id, or replay one the peer used before. Either reads
+    /// as `Unproven`, and the leaf stays put.
     pub fn standing(
         &self,
         peer_id: &str,
@@ -94,18 +102,21 @@ impl MlsState {
         // stale, and approval would fail on it anyway.
         let published = key_package_bytes
             .and_then(|bytes| group::validate_key_package(&self.identity, bytes).ok());
-        match published {
-            Some(kp)
-                if kp.leaf_node().signature_key().as_slice() != leaf_key.as_slice()
-                    && bound_to_peer(kp.leaf_node().signature_key().as_slice())
-                    && newer_than_leaf(
-                        kp.life_time().not_before(),
-                        group.leaf_not_before(leaf_index),
-                    ) =>
-            {
-                Standing::Stale
-            }
-            _ => Standing::Current,
+        let Some(kp) = published else {
+            return Standing::Current;
+        };
+        let key = kp.leaf_node().signature_key().as_slice();
+        if key == leaf_key.as_slice() {
+            Standing::Current
+        } else if bound_to_peer(key)
+            && newer_than_leaf(
+                kp.life_time().not_before(),
+                group.leaf_not_before(leaf_index),
+            )
+        {
+            Standing::Stale
+        } else {
+            Standing::Unproven
         }
     }
 
@@ -298,7 +309,7 @@ mod tests {
         // KeyPackage under someone else's peer id.
         assert_eq!(
             admin.standing(peer, Some(&second_package), |_| false),
-            Standing::Current,
+            Standing::Unproven,
             "an unproven replacement leaves the leaf in place"
         );
         assert_eq!(
@@ -362,8 +373,35 @@ mod tests {
 
         assert_eq!(
             admin.standing(peer, Some(&second_package), |_| true),
-            Standing::Current,
+            Standing::Unproven,
             "a replayed older KeyPackage leaves the newer leaf in place"
+        );
+    }
+
+    /// A genuine rejoin whose KeyPackage time does not show it is newer — the
+    /// same second as its admission, or a clock that went back — is not
+    /// mistaken for a device already admitted. It stays `Unproven`, which keeps
+    /// the join request, and the next KeyPackage it publishes readmits it.
+    #[test]
+    fn a_rejoin_with_a_tied_time_waits_for_a_later_key_package() {
+        let peer = "12D3KooWrejoiner";
+        let mut admin = state_with_group("12D3KooWadmin");
+        let first = MlsIdentity::generate(peer).unwrap();
+        admin
+            .admit_member(peer, &first.generate_key_package_from(3600).unwrap())
+            .unwrap();
+
+        let rejoined = MlsIdentity::generate(peer).unwrap();
+        let tied = rejoined.generate_key_package_from(3600).unwrap();
+        assert_eq!(
+            admin.standing(peer, Some(&tied), |_| true),
+            Standing::Unproven
+        );
+
+        let restarted = rejoined.generate_key_package_from(60).unwrap();
+        assert_eq!(
+            admin.standing(peer, Some(&restarted), |_| true),
+            Standing::Stale
         );
     }
 

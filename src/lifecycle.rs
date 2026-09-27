@@ -1776,6 +1776,11 @@ fn grant_admits<T: yrs::ReadTxn>(
 const APPROVAL_RETRIES: u32 = 10;
 const APPROVAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// Why a join request from a member with a leaf is left waiting.
+pub(crate) const UNPROVEN_REJOIN: &str = "This device already has a place in the circle, and its \
+     new key is not signed by it or not newer than that place. If it rejoined, restart it \
+     so it publishes a fresh key.";
+
 /// The binding `peer_id` published for its KeyPackage, if any.
 pub(crate) fn key_package_binding<T: yrs::ReadTxn>(txn: &T, peer_id: &str) -> Option<String> {
     use yrs::{Any, Map, Out};
@@ -1864,13 +1869,21 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                 // from before the device left and entered again — readmit it.
                 let published = kp_hex.as_deref().and_then(|h| hex::decode(h).ok());
                 let binding = key_package_binding(&txn, &peer_id_str);
-                if mls_locked.standing(&peer_id_str, published.as_deref(), |key| {
+                match mls_locked.standing(&peer_id_str, published.as_deref(), |key| {
                     binding_proves(&state.circle_id, &peer_id_str, key, binding.as_deref())
-                }) == crate::mls::Standing::Current
-                {
-                    pending.remove(&mut txn, peer_id_str.as_str());
-                    state.approval_errors.remove(&peer_id_str);
-                    return;
+                }) {
+                    crate::mls::Standing::Current => {
+                        pending.remove(&mut txn, peer_id_str.as_str());
+                        state.approval_errors.remove(&peer_id_str);
+                        return;
+                    }
+                    // Not admission, so the request stays: the device's next
+                    // start publishes a KeyPackage that can replace the leaf.
+                    crate::mls::Standing::Unproven => {
+                        record_approval_error(&state, &peer_id_str, UNPROVEN_REJOIN.into());
+                        return;
+                    }
+                    crate::mls::Standing::Absent | crate::mls::Standing::Stale => {}
                 }
                 let Some(kp_hex) = kp_hex else {
                     record_approval_error(
@@ -2545,6 +2558,54 @@ mod tests {
         retry_pending_approvals(&state).await;
         assert!(!is_pending(&state, peer));
         assert_eq!(state.mls.lock().await.current_epoch(), Some(1));
+    }
+
+    /// The review case: a genuine rejoin whose KeyPackage time ties with its
+    /// admission. The sweep must not take that for admission and drop the
+    /// request, or the device waits forever for a Welcome.
+    #[tokio::test]
+    async fn automatic_sweep_keeps_a_rejoin_it_cannot_prove_and_admits_the_next_key() {
+        let (state, _dir) = automatic_state().await;
+        let peer_key = libp2p::identity::Keypair::generate_ed25519();
+        let peer = peer_key.public().to_peer_id().to_string();
+        let publish = |identity: &crate::mls::MlsIdentity, seconds_ago: u64| {
+            let kp = identity.generate_key_package_from(seconds_ago).unwrap();
+            let binding = crate::identity::sign_key_package_binding(
+                &peer_key,
+                &state.circle_id,
+                identity.signer.public(),
+            )
+            .unwrap();
+            let mut txn = state.control.transact_mut();
+            let packages = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+            packages.insert(&mut txn, peer.as_str(), hex::encode(kp));
+            let bindings = txn.get_or_insert_map(MLS_KEY_PACKAGE_BINDINGS_KEY);
+            bindings.insert(&mut txn, peer.as_str(), binding);
+        };
+
+        publish(&crate::mls::MlsIdentity::generate(&peer).unwrap(), 3600);
+        seed_valid_request(&state, &peer);
+        retry_pending_approvals(&state).await;
+        assert!(!is_pending(&state, &peer));
+        let admitted = state.mls.lock().await.current_epoch();
+
+        let rejoined = crate::mls::MlsIdentity::generate(&peer).unwrap();
+        publish(&rejoined, 3600);
+        seed_valid_request(&state, &peer);
+        retry_pending_approvals(&state).await;
+        assert!(is_pending(&state, &peer), "the request is kept");
+        assert!(state
+            .approval_errors
+            .get(&peer)
+            .unwrap()
+            .contains("restart it"));
+        assert_eq!(state.mls.lock().await.current_epoch(), admitted);
+
+        // The device restarts and publishes a later KeyPackage.
+        publish(&rejoined, 60);
+        retry_pending_approvals(&state).await;
+        assert!(!is_pending(&state, &peer));
+        assert!(state.mls.lock().await.current_epoch() > admitted);
     }
 
     #[tokio::test]
