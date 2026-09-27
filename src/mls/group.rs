@@ -11,6 +11,18 @@ use super::{identity::MlsIdentity, CIPHERSUITE};
 const CONTENT_LABEL: &str = "enoxian-content-v1";
 const CONTENT_SECRET_LEN: usize = 32;
 
+/// Parse and validate a KeyPackage a joining device published.
+pub fn validate_key_package(
+    identity: &MlsIdentity,
+    key_package_bytes: &[u8],
+) -> Result<KeyPackage> {
+    let mut b = key_package_bytes;
+    let key_package_in = KeyPackageIn::tls_deserialize(&mut b).context("deserialize KeyPackage")?;
+    key_package_in
+        .validate(identity.provider.crypto(), ProtocolVersion::Mls10)
+        .map_err(|e| anyhow::anyhow!("invalid KeyPackage: {e:?}"))
+}
+
 pub struct MlsGroupManager {
     pub group: MlsGroup,
 }
@@ -81,13 +93,7 @@ impl MlsGroupManager {
         identity: &MlsIdentity,
         key_package_bytes: &[u8],
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-        let mut b = key_package_bytes;
-        let key_package_in =
-            KeyPackageIn::tls_deserialize(&mut b).context("deserialize KeyPackage")?;
-
-        let key_package = key_package_in
-            .validate(identity.provider.crypto(), ProtocolVersion::Mls10)
-            .map_err(|e| anyhow::anyhow!("invalid KeyPackage: {e:?}"))?;
+        let key_package = validate_key_package(identity, key_package_bytes)?;
 
         let (commit, welcome_msg, _group_info) = self
             .group
@@ -98,6 +104,46 @@ impl MlsGroupManager {
             .merge_pending_commit(&identity.provider)
             .map_err(|e| anyhow::anyhow!("merge add commit: {e:?}"))?;
 
+        self.admission_messages(commit, welcome_msg)
+    }
+
+    // ── Admin: re-admit a member that came back with a new MLS identity ──────
+    // A device that leaves a circle deletes its MLS state, but its peer id is
+    // derived from the device key and comes back unchanged when it rejoins. Its
+    // old leaf is still in the tree and nobody holds that leaf's keys any more.
+    // Replace the leaf with the new KeyPackage in one commit, so the member is
+    // never counted twice and never missing.
+
+    pub fn readmit_member(
+        &mut self,
+        identity: &MlsIdentity,
+        leaf_index: u32,
+        key_package_bytes: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        let key_package = validate_key_package(identity, key_package_bytes)?;
+
+        let messages = self
+            .group
+            .swap_members(
+                &identity.provider,
+                &identity.signer,
+                &[LeafNodeIndex::new(leaf_index)],
+                &[key_package],
+            )
+            .map_err(|e| anyhow::anyhow!("MLS swap_members: {e:?}"))?;
+
+        self.group
+            .merge_pending_commit(&identity.provider)
+            .map_err(|e| anyhow::anyhow!("merge swap commit: {e:?}"))?;
+
+        self.admission_messages(messages.commit, messages.welcome)
+    }
+
+    fn admission_messages(
+        &self,
+        commit: MlsMessageOut,
+        welcome_msg: MlsMessageOut,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let commit_bytes = commit
             .tls_serialize_detached()
             .context("serialize Commit")?;
@@ -193,6 +239,15 @@ impl MlsGroupManager {
             } else {
                 None
             }
+        })
+    }
+
+    /// Signature key of the leaf `peer_id` occupies, with its index.
+    pub fn leaf_signature_key_for_peer(&self, peer_id: &str) -> Option<(u32, Vec<u8>)> {
+        let target = peer_id.as_bytes();
+        self.group.members().find_map(|m| {
+            let bc = BasicCredential::try_from(m.credential).ok()?;
+            (bc.identity() == target).then_some((m.index.u32(), m.signature_key))
         })
     }
 

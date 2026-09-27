@@ -1817,26 +1817,26 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                     state.approval_errors.remove(&peer_id_str);
                     return;
                 }
-                // The coordination member list includes provisional self-entries;
-                // only the actual encrypted group proves completed admission.
-                if mls_locked
-                    .group
-                    .as_ref()
-                    .and_then(|group| group.leaf_index_for_peer(&peer_id_str))
-                    .is_some()
-                {
-                    pending.remove(&mut txn, peer_id_str.as_str());
-                    state.approval_errors.remove(&peer_id_str);
-                    return;
-                }
-                let Some(kp_hex) = txn
+                let kp_hex = txn
                     .get_map(MLS_KEY_PACKAGES_KEY)
                     .and_then(|kp_map| kp_map.get(&txn, peer_id_str.as_str()))
                     .and_then(|v| match v {
                         Out::Any(Any::String(s)) => Some(s.to_string()),
                         _ => None,
-                    })
-                else {
+                    });
+                // The coordination member list includes provisional self-entries;
+                // only a leaf holding the keys this device publishes proves
+                // completed admission. A leaf holding other keys is left over
+                // from before the device left and entered again — readmit it.
+                let published = kp_hex.as_deref().and_then(|h| hex::decode(h).ok());
+                if mls_locked.standing(&peer_id_str, published.as_deref())
+                    == crate::mls::Standing::Current
+                {
+                    pending.remove(&mut txn, peer_id_str.as_str());
+                    state.approval_errors.remove(&peer_id_str);
+                    return;
+                }
+                let Some(kp_hex) = kp_hex else {
                     record_approval_error(
                         &state,
                         &peer_id_str,
@@ -1896,7 +1896,7 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                 }
 
                 let (commit_bytes, welcome_bytes, ratchet_tree_bytes) =
-                    match mls_locked.add_member(&kp_bytes) {
+                    match mls_locked.admit_member(&peer_id_str, &kp_bytes) {
                         Ok(t) => t,
                         Err(error) => {
                             record_approval_error(
