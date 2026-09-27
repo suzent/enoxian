@@ -386,13 +386,15 @@ mod tests {
     fn a_rejoin_with_a_tied_time_waits_for_a_later_key_package() {
         let peer = "12D3KooWrejoiner";
         let mut admin = state_with_group("12D3KooWadmin");
+        // One fixed time for both, so the tie holds across a second boundary.
+        let tie = identity::unix_now().unwrap() - 3600;
         let first = MlsIdentity::generate(peer).unwrap();
         admin
-            .admit_member(peer, &first.generate_key_package_from(3600).unwrap())
+            .admit_member(peer, &first.generate_key_package_valid_from(tie).unwrap())
             .unwrap();
 
         let rejoined = MlsIdentity::generate(peer).unwrap();
-        let tied = rejoined.generate_key_package_from(3600).unwrap();
+        let tied = rejoined.generate_key_package_valid_from(tie).unwrap();
         assert_eq!(
             admin.standing(peer, Some(&tied), |_| true),
             Standing::Unproven
