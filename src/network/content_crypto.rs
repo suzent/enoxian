@@ -22,6 +22,7 @@ pub enum FrameKind {
     Crdt = 1,
     Proposal = 2,
     WorkspaceEvent = 3,
+    AdminHandover = 4,
 }
 
 impl TryFrom<u8> for FrameKind {
@@ -32,6 +33,7 @@ impl TryFrom<u8> for FrameKind {
             1 => Ok(Self::Crdt),
             2 => Ok(Self::Proposal),
             3 => Ok(Self::WorkspaceEvent),
+            4 => Ok(Self::AdminHandover),
             _ => anyhow::bail!("unknown encrypted content frame kind {value}"),
         }
     }

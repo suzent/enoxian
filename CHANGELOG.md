@@ -41,6 +41,13 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- `enox leave` on the admin's device first hands the admin key to another
+  member: another device of the same owner if one is online, otherwise the
+  member that joined first, or the one named with `--admin-to`. Before this, a
+  circle whose admin left could never approve anyone again. If no member is
+  online to take the key, `leave` refuses and changes nothing; `--force` leaves
+  anyway and gives admin up.
+
 - `enox status` lists who currently holds each bound path, and `/status`
   returns them as `locks`, so you can check a lock before editing instead of
   finding it through a failed `enox bind`.

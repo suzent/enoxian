@@ -43,6 +43,7 @@ use crate::{
     daemon::DaemonState,
     mls::{MlsGroupManager, MlsIdentity, SharedMlsState},
     network::{
+        admin_handover,
         behaviour::{EnochBehaviour, EnochEvent},
         event_sync, mls_bootstrap, proposal_sync, sync,
     },
@@ -470,10 +471,13 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
 
     // Sweep immediately (including restored requests) and periodically. Pending
     // entries and key packages can arrive separately or be updated in place.
-    let is_admin = cdir.join("admin.key").exists();
-    if is_admin && config.join_policy == JoinPolicy::Auto {
+    //
+    // Checked per tick, not once at start: a member can become admin while
+    // running, when a leaving admin hands it the key.
+    if config.join_policy == JoinPolicy::Auto {
         let approval_state = state.clone();
         let approval_token = token.clone();
+        let admin_key = cdir.join("admin.key");
         tokio::spawn(async move {
             let mut ticks = tokio::time::interval(std::time::Duration::from_secs(5));
             ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -481,7 +485,9 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                 tokio::select! {
                     _ = approval_token.cancelled() => break,
                     _ = ticks.tick() => {
-                        retry_pending_approvals(&approval_state).await;
+                        if admin_key.exists() {
+                            retry_pending_approvals(&approval_state).await;
+                        }
                     }
                 }
             }
@@ -918,6 +924,33 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     Some((peer_id, stream)) => {
                         let state = state_for_bootstrap.clone();
                         tokio::spawn(mls_bootstrap::run(peer_id, stream, state, false));
+                    }
+                    None => break,
+                }
+            }
+        }
+    });
+
+    // ── Accept an admin key handed over by a leaving admin ───────────────────
+    state.set_stream_control(swarm.behaviour().stream.new_control());
+    let mut handover_control = swarm.behaviour().stream.new_control();
+    let state_for_handover = state.clone();
+    let handover_token = token.clone();
+    tokio::spawn(async move {
+        let mut incoming = match handover_control.accept(admin_handover::PROTOCOL) {
+            Ok(streams) => streams,
+            Err(error) => {
+                warn!("[admin-handover] accept failed: {error}");
+                return;
+            }
+        };
+        loop {
+            tokio::select! {
+                _ = handover_token.cancelled() => break,
+                item = incoming.next() => match item {
+                    Some((peer_id, stream)) => {
+                        let state = state_for_handover.clone();
+                        tokio::spawn(admin_handover::accept(peer_id, stream, state));
                     }
                     None => break,
                 }

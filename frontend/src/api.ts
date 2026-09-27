@@ -271,8 +271,10 @@ export const enableCircle = (id: string) =>
   post<{status: string}>(`${api(id)}/enable`, {})
 export const disableCircle = (id: string) =>
   post<{status: string}>(`${api(id)}/disable`, {})
+// An admin hands its key to another member before leaving, which waits on
+// that member's reply — longer than an ordinary request.
 export const leaveCircle = (id: string) =>
-  post<{status: string}>(`${api(id)}/leave`, {})
+  post<{status: string, admin_handed_to?: string | null}>(`${api(id)}/leave`, {}, INVITE_TIMEOUT_MS)
 export function chatStream(circleId: string): EventSource {
   return new EventSource(withToken(`${api(circleId)}/chat/stream`))
 }
