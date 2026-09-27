@@ -65,8 +65,9 @@ refuses to publish a version whose section is missing or empty.
   claims the same way.
 - `enox bind` no longer makes the file read-only. It could not stop anyone
   who owned the file, only applied on the device that bound it, and blocked
-  the holder's own tools from writing. Locks are now advisory throughout, and
-  releasing a file bound by an earlier version makes it writable again.
+  the holder's own tools from writing. Locks are now advisory throughout. A
+  file still read-only from a lock taken by an earlier version stays that way;
+  make it writable again with `chmod u+w <file>`.
 
 ### Fixed
 
