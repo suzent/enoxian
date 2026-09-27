@@ -296,9 +296,11 @@ enox [--circle <NAME>] leave [--yes] [--admin-to <PEER_ID>] [--force]
 | `--force` | Leave even if no member takes the admin key over, giving admin up for good |
 
 On the admin's device, `leave` hands `admin.key` to another member before
-removing anything: another device of the same owner if one is online,
-otherwise the member that joined first. The member must be connected and fully
-joined. If none is, `leave` refuses and changes nothing, because a circle
+removing anything. It prefers another device proven to belong to the same
+user (a linked device with a verified owner claim), and otherwise the member
+holding the lowest MLS leaf, which is roughly the one that joined first. An owner
+name alone does not count, because any member can write any name. The member
+must be connected and fully joined. If none is, `leave` refuses and changes nothing, because a circle
 without its admin key can never approve anyone again. Enoxian must be running
 for the handover; `--force` skips it.
 

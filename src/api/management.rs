@@ -466,8 +466,18 @@ async fn hand_over_admin(
     let key_path = config::circle_dir(circle_id)
         .map_err(|e| e.to_string())?
         .join("admin.key");
-    let Ok(admin_key_hex) = std::fs::read_to_string(&key_path) else {
-        return Ok(None);
+    // Only a missing file means this device is not the admin. Any other read
+    // failure is recoverable, and deleting the directory on it would throw the
+    // circle's only admin key away.
+    let admin_key_hex = match std::fs::read_to_string(&key_path) {
+        Ok(key) => key,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(format!(
+                "could not read {}: {e} — not leaving, so the admin key is not lost",
+                key_path.display()
+            ))
+        }
     };
     if req.force {
         tracing::warn!("[admin-handover] leaving {circle_id} without handing admin over (forced)");
@@ -488,8 +498,7 @@ async fn hand_over_admin(
     if candidates.is_empty() {
         return Ok(None);
     }
-    let successor =
-        admin_handover::choose_successor(&state.owner, &candidates, req.admin_to.as_deref())?;
+    let successor = admin_handover::choose_successor(&candidates, req.admin_to.as_deref())?;
     admin_handover::hand_over(&state, &successor, admin_key_hex.trim())
         .await
         .map_err(|e| format!("could not hand the admin key over: {e}"))?;

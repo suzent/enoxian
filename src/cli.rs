@@ -91,8 +91,9 @@ pub enum AgentCommands {
     Enable,
     /// Leave a Circle permanently (removes local config)
     ///
-    /// An admin hands its admin key to another member first: another device of
-    /// the same owner if one is online, otherwise the longest-standing member.
+    /// An admin hands its admin key to another member first: another device
+    /// proven to belong to the same user if one is online, otherwise the member
+    /// holding the lowest MLS leaf.
     Leave {
         /// Skip confirmation prompt
         #[arg(long, short = 'y')]

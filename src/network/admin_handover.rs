@@ -24,7 +24,10 @@ use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{info, warn};
 use yrs::{Map, Out, ReadTxn, Transact, WriteTxn};
 
-use crate::control::{MemberEntry, MemberRole, MEMBER_LIST_KEY, MLS_KEY_PACKAGES_KEY};
+use crate::control::{
+    MemberEntry, MemberRole, OwnerClaim, MEMBER_LIST_KEY, MLS_KEY_PACKAGES_KEY,
+    MLS_OWNER_CLAIMS_KEY,
+};
 use crate::network::content_crypto::{self, FrameKind};
 use crate::state::AppState;
 
@@ -48,11 +51,21 @@ struct Ack {
 // ── Choosing a successor ─────────────────────────────────────────────────────
 
 /// A member that could take the admin key over.
+///
+/// Ranked only on what a member cannot forge. `owner` and `added_at` in a
+/// member entry are whatever that member last wrote to the replicated control
+/// document, so a hostile member could copy the admin's owner name or backdate
+/// itself and be handed the key. The user identity here is proven by an owner
+/// claim's attestation chain, and the leaf index is assigned by the MLS group.
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub peer_id: String,
-    pub owner: String,
-    pub added_at: chrono::DateTime<chrono::Utc>,
+    /// Proven to belong to the same user identity as the leaving admin. False
+    /// unless both sides carry a verified owner claim for that user.
+    pub same_user: bool,
+    /// This member's leaf in the MLS group: the earliest free slot when it was
+    /// admitted, so a lower index roughly means it joined earlier.
+    pub leaf_index: Option<u32>,
     /// Holds a current leaf in the MLS group. A member without one cannot
     /// commit, so it could hold the key but not approve anyone with it.
     pub admitted: bool,
@@ -61,10 +74,9 @@ pub struct Candidate {
 }
 
 /// Pick who takes the admin key: `requested` if given, otherwise another
-/// device of the leaving admin's own owner, otherwise the longest-standing
-/// member. Only admitted, connected members qualify.
+/// device proven to belong to the leaving admin's own user, otherwise the
+/// member holding the lowest MLS leaf. Only admitted, connected members qualify.
 pub fn choose_successor(
-    own_owner: &str,
     candidates: &[Candidate],
     requested: Option<&str>,
 ) -> Result<String, String> {
@@ -85,7 +97,7 @@ pub fn choose_successor(
     candidates
         .iter()
         .filter(|c| c.admitted && c.connected)
-        .min_by_key(|c| (c.owner != own_owner, c.added_at, c.peer_id.clone()))
+        .min_by_key(|c| (!c.same_user, c.leaf_index, c.peer_id.clone()))
         .map(|c| c.peer_id.clone())
         .ok_or_else(|| {
             "no other member is online to take over as admin — bring one of its \
@@ -97,49 +109,64 @@ pub fn choose_successor(
 
 /// Every other member of the circle, as a possible successor.
 pub async fn candidates(state: &AppState) -> Result<Vec<Candidate>> {
-    let entries: Vec<(MemberEntry, Option<Vec<u8>>)> = {
+    struct Entry {
+        peer_id: String,
+        package: Option<Vec<u8>>,
+        user: Option<String>,
+    }
+    let (own_user, entries) = {
         let txn = state
             .control
             .try_transact()
             .map_err(|_| anyhow::anyhow!("circle state busy"))?;
         let packages = txn.get_map(MLS_KEY_PACKAGES_KEY);
-        txn.get_map(MEMBER_LIST_KEY)
+        let claims = txn.get_map(MLS_OWNER_CLAIMS_KEY);
+        let verified_user = |peer_id: &str| {
+            claims
+                .as_ref()
+                .and_then(|c| c.get(&txn, peer_id))
+                .and_then(|v| match v {
+                    Out::Any(yrs::Any::String(s)) => serde_json::from_str::<OwnerClaim>(&s).ok(),
+                    _ => None,
+                })
+                .and_then(|claim| claim.verified_user(peer_id, &state.circle_id))
+        };
+        let entries: Vec<Entry> = txn
+            .get_map(MEMBER_LIST_KEY)
             .map(|members| {
                 members
                     .iter(&txn)
-                    .filter_map(|(_, value)| match value {
-                        Out::Any(yrs::Any::String(s)) => {
-                            serde_json::from_str::<MemberEntry>(&s).ok()
-                        }
-                        _ => None,
-                    })
-                    .map(|entry| {
-                        let package = packages
+                    .map(|(peer_id, _)| peer_id.to_string())
+                    .filter(|peer_id| *peer_id != state.peer_id && !state.is_peer_removed(peer_id))
+                    .map(|peer_id| Entry {
+                        package: packages
                             .as_ref()
-                            .and_then(|p| p.get(&txn, entry.peer_id.as_str()))
+                            .and_then(|p| p.get(&txn, peer_id.as_str()))
                             .and_then(|v| match v {
                                 Out::Any(yrs::Any::String(s)) => hex::decode(s.as_ref()).ok(),
                                 _ => None,
-                            });
-                        (entry, package)
+                            }),
+                        user: verified_user(&peer_id),
+                        peer_id,
                     })
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        (verified_user(&state.peer_id), entries)
     };
     let mls = state.mls.lock().await;
     Ok(entries
         .into_iter()
-        .filter(|(entry, _)| {
-            entry.peer_id != state.peer_id && !state.is_peer_removed(&entry.peer_id)
-        })
-        .map(|(entry, package)| Candidate {
-            admitted: mls.standing(&entry.peer_id, package.as_deref())
+        .map(|entry| Candidate {
+            admitted: mls.standing(&entry.peer_id, entry.package.as_deref())
                 == crate::mls::Standing::Current,
+            leaf_index: mls
+                .group
+                .as_ref()
+                .and_then(|group| group.leaf_index_for_peer(&entry.peer_id)),
+            same_user: own_user.is_some() && entry.user == own_user,
             connected: state.is_connected(&entry.peer_id),
             peer_id: entry.peer_id,
-            owner: entry.owner,
-            added_at: entry.added_at,
         })
         .collect())
 }
@@ -308,7 +335,7 @@ async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R, state: &AppState) -> Res
 mod tests {
     use super::*;
     use crate::mls::{MlsGroupManager, MlsIdentity};
-    use chrono::{Duration as Days, Utc};
+    use chrono::Utc;
     use libp2p::identity::Keypair;
     use std::path::PathBuf;
     use yrs::WriteTxn;
@@ -449,6 +476,22 @@ mod tests {
         assert!(!successor.state.circle_dir.join("admin.key").exists());
     }
 
+    /// Both member entries say owner "suzy", but neither device proves it.
+    /// An owner name a member wrote itself must not earn it the admin key.
+    #[tokio::test]
+    async fn an_unproven_owner_name_does_not_rank_as_the_same_user() {
+        let (leaver, successor, _) = circle();
+
+        let found = candidates(&leaver.state).await.unwrap();
+
+        assert_eq!(found.len(), 1);
+        let c = &found[0];
+        assert_eq!(c.peer_id, successor.peer.to_string());
+        assert!(!c.same_user);
+        assert!(c.admitted);
+        assert!(c.leaf_index.is_some(), "ranked by its MLS leaf instead");
+    }
+
     #[tokio::test]
     async fn a_key_from_a_non_member_is_refused() {
         let (leaver, successor, admin_key) = circle();
@@ -465,69 +508,63 @@ mod tests {
 
     fn member(
         peer: &str,
-        owner: &str,
-        age_days: i64,
+        same_user: bool,
+        leaf: u32,
         admitted: bool,
         connected: bool,
     ) -> Candidate {
         Candidate {
             peer_id: peer.into(),
-            owner: owner.into(),
-            added_at: Utc::now() - Days::days(age_days),
+            same_user,
+            leaf_index: Some(leaf),
             admitted,
             connected,
         }
     }
 
     #[test]
-    fn prefers_another_device_of_the_same_owner() {
+    fn prefers_another_device_of_the_same_verified_user() {
         let candidates = [
-            member("bob-laptop", "bob", 30, true, true),
-            member("suzy-air", "suzy", 1, true, true),
+            member("bob-laptop", false, 1, true, true),
+            member("suzy-air", true, 5, true, true),
         ];
-        assert_eq!(
-            choose_successor("suzy", &candidates, None).unwrap(),
-            "suzy-air"
-        );
+        assert_eq!(choose_successor(&candidates, None).unwrap(), "suzy-air");
     }
 
     #[test]
-    fn otherwise_the_longest_standing_member() {
+    fn otherwise_the_lowest_mls_leaf() {
         let candidates = [
-            member("carol", "carol", 3, true, true),
-            member("bob", "bob", 30, true, true),
+            member("carol", false, 4, true, true),
+            member("bob", false, 1, true, true),
         ];
-        assert_eq!(choose_successor("suzy", &candidates, None).unwrap(), "bob");
+        assert_eq!(choose_successor(&candidates, None).unwrap(), "bob");
     }
 
     #[test]
     fn only_admitted_connected_members_qualify() {
         let candidates = [
-            member("suzy-offline", "suzy", 30, true, false),
-            member("suzy-joining", "suzy", 30, false, true),
-            member("bob", "bob", 1, true, true),
+            member("suzy-offline", true, 1, true, false),
+            member("suzy-joining", true, 2, false, true),
+            member("bob", false, 3, true, true),
         ];
-        assert_eq!(choose_successor("suzy", &candidates, None).unwrap(), "bob");
+        assert_eq!(choose_successor(&candidates, None).unwrap(), "bob");
     }
 
     #[test]
     fn no_one_online_is_an_error_not_a_silent_loss_of_admin() {
-        let candidates = [member("bob", "bob", 30, true, false)];
-        assert!(choose_successor("suzy", &candidates, None).is_err());
-        assert!(choose_successor("suzy", &[], None).is_err());
+        let candidates = [member("bob", false, 1, true, false)];
+        assert!(choose_successor(&candidates, None).is_err());
+        assert!(choose_successor(&[], None).is_err());
     }
 
     #[test]
     fn a_requested_successor_must_qualify_too() {
         let candidates = [
-            member("bob", "bob", 30, true, true),
-            member("carol", "carol", 30, true, false),
+            member("bob", false, 1, true, true),
+            member("carol", false, 2, true, false),
         ];
-        assert_eq!(
-            choose_successor("suzy", &candidates, Some("bob")).unwrap(),
-            "bob"
-        );
-        assert!(choose_successor("suzy", &candidates, Some("carol")).is_err());
-        assert!(choose_successor("suzy", &candidates, Some("dave")).is_err());
+        assert_eq!(choose_successor(&candidates, Some("bob")).unwrap(), "bob");
+        assert!(choose_successor(&candidates, Some("carol")).is_err());
+        assert!(choose_successor(&candidates, Some("dave")).is_err());
     }
 }
