@@ -112,6 +112,7 @@ pub async fn candidates(state: &AppState) -> Result<Vec<Candidate>> {
     struct Entry {
         peer_id: String,
         package: Option<Vec<u8>>,
+        binding: Option<String>,
         user: Option<String>,
     }
     let (own_user, entries) = {
@@ -146,6 +147,7 @@ pub async fn candidates(state: &AppState) -> Result<Vec<Candidate>> {
                                 Out::Any(yrs::Any::String(s)) => hex::decode(s.as_ref()).ok(),
                                 _ => None,
                             }),
+                        binding: crate::lifecycle::key_package_binding(&txn, &peer_id),
                         user: verified_user(&peer_id),
                         peer_id,
                     })
@@ -158,8 +160,14 @@ pub async fn candidates(state: &AppState) -> Result<Vec<Candidate>> {
     Ok(entries
         .into_iter()
         .map(|entry| Candidate {
-            admitted: mls.standing(&entry.peer_id, entry.package.as_deref())
-                == crate::mls::Standing::Current,
+            admitted: mls.standing(&entry.peer_id, entry.package.as_deref(), |key| {
+                crate::lifecycle::binding_proves(
+                    &state.circle_id,
+                    &entry.peer_id,
+                    key,
+                    entry.binding.as_deref(),
+                )
+            }) == crate::mls::Standing::Current,
             leaf_index: mls
                 .group
                 .as_ref()
