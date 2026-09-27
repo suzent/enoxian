@@ -572,11 +572,27 @@ pub async fn approve_member(
         {
             let mut mls_locked = state.mls.lock().await;
             if let Ok(mut txn) = state.control.try_transact_mut() {
-                if mls_locked
-                    .group
-                    .as_ref()
-                    .and_then(|group| group.leaf_index_for_peer(&req.peer_id))
-                    .is_some()
+                // Read what we need from the same transaction we will write to.
+                let kp_hex = txn
+                    .get_map(MLS_KEY_PACKAGES_KEY)
+                    .and_then(|kp_map| kp_map.get(&txn, req.peer_id.as_str()))
+                    .and_then(|v| match v {
+                        Out::Any(Any::String(s)) => Some(s.to_string()),
+                        _ => None,
+                    });
+                // A leaf holding other keys than the published KeyPackage is
+                // left over from before the device left and entered again: not
+                // a member, but one to readmit.
+                let published = kp_hex.as_deref().and_then(|h| hex::decode(h).ok());
+                let binding = crate::lifecycle::key_package_binding(&txn, &req.peer_id);
+                if mls_locked.standing(&req.peer_id, published.as_deref(), |key| {
+                    crate::lifecycle::binding_proves(
+                        &state.circle_id,
+                        &req.peer_id,
+                        key,
+                        binding.as_deref(),
+                    )
+                }) == crate::mls::Standing::Current
                 {
                     let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
                     pending.remove(&mut txn, req.peer_id.as_str());
@@ -584,15 +600,7 @@ pub async fn approve_member(
                     return Json(json!({"status": "already_member", "peer_id": req.peer_id}))
                         .into_response();
                 }
-                // Read what we need from the same transaction we will write to.
-                let Some(kp_hex) = txn
-                    .get_map(MLS_KEY_PACKAGES_KEY)
-                    .and_then(|kp_map| kp_map.get(&txn, req.peer_id.as_str()))
-                    .and_then(|v| match v {
-                        Out::Any(Any::String(s)) => Some(s.to_string()),
-                        _ => None,
-                    })
-                else {
+                let Some(kp_hex) = kp_hex else {
                     break Err((StatusCode::BAD_REQUEST, "key package not found".to_string()));
                 };
                 let kp_bytes = match hex::decode(&kp_hex) {
@@ -641,7 +649,7 @@ pub async fn approve_member(
 
                 // Irreversible from here.
                 let (commit_bytes, welcome_bytes, ratchet_tree_bytes) =
-                    match mls_locked.add_member(&kp_bytes) {
+                    match mls_locked.admit_member(&req.peer_id, &kp_bytes) {
                         Ok(t) => t,
                         Err(e) => {
                             break Err((
@@ -886,17 +894,21 @@ mod tests {
     /// The MLS credential must carry the peer id, not the owner name:
     /// `leaf_index_for_peer` matches on it, so a credential built any other way
     /// leaves the member unremovable at the MLS layer. `enter.rs` does the same.
-    fn candidate(fx: &Fixture, _owner: &str) -> String {
-        let peer = Keypair::generate_ed25519()
-            .public()
-            .to_peer_id()
-            .to_string();
+    fn candidate(fx: &Fixture, owner: &str) -> String {
+        candidate_with_key(fx, owner).1
+    }
+
+    /// As [`candidate`], also returning the peer's own key, for tests where
+    /// the peer has to sign something.
+    fn candidate_with_key(fx: &Fixture, _owner: &str) -> (Keypair, String) {
+        let key = Keypair::generate_ed25519();
+        let peer = key.public().to_peer_id().to_string();
         let identity = MlsIdentity::generate(&peer).unwrap();
         let kp = identity.generate_key_package().unwrap();
         let mut txn = fx.state.control.transact_mut();
         let packages = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
         packages.insert(&mut txn, peer.as_str(), hex::encode(kp).as_str());
-        peer
+        (key, peer)
     }
 
     fn map_has(fx: &Fixture, key: &str, field: &str) -> bool {
@@ -1019,6 +1031,107 @@ mod tests {
         assert_eq!(epoch(&fx), admitted_epoch);
         assert_eq!(commit_count(&fx), 1);
         assert!(!map_has(&fx, MLS_PENDING_KEY, &peer));
+    }
+
+    /// A device that left and entered again keeps its peer id but publishes a
+    /// KeyPackage from a new MLS identity. Its old leaf is not admission: the
+    /// request must produce a fresh commit and Welcome, not "already_member".
+    #[tokio::test]
+    async fn approve_readmits_a_member_that_rejoined_with_new_keys() {
+        let fx = fixture();
+        let (peer_key, peer) = candidate_with_key(&fx, "alice");
+        let approve = || {
+            approve_member(
+                State(fx.daemon.clone()),
+                Path(CIRCLE.into()),
+                Json(ApproveMemberRequest {
+                    peer_id: peer.clone(),
+                    role: None,
+                    owner: "alice".into(),
+                    admin_signature: sign(&fx.admin, &format!("add:{peer}:member:owner:alice")),
+                    agents: None,
+                }),
+            )
+        };
+        assert_eq!(approve().await.into_response().status(), StatusCode::OK);
+        let welcome_of = |fx: &Fixture| {
+            let txn = fx.state.control.transact();
+            txn.get_map(MLS_WELCOMES_KEY)
+                .and_then(|m| m.get(&txn, peer.as_str()))
+                .map(|v| v.to_string(&txn))
+        };
+        let first_welcome = welcome_of(&fx);
+        let admitted_epoch = epoch(&fx);
+
+        let rejoined = MlsIdentity::generate(&peer).unwrap();
+        publish_rejoin(&fx, &peer, &rejoined, Some(&peer_key));
+        let resp = approve().await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        assert!(
+            epoch(&fx) > admitted_epoch,
+            "readmission must advance the epoch"
+        );
+        assert_eq!(commit_count(&fx), 2, "and publish the commit that does it");
+        let welcome = welcome_of(&fx).expect("a new welcome");
+        assert_ne!(Some(welcome.clone()), first_welcome);
+        MlsGroupManager::join_from_welcome(&rejoined, &hex::decode(welcome).unwrap(), None)
+            .expect("the rejoined device can use the new welcome");
+        assert!(!map_has(&fx, MLS_PENDING_KEY, &peer));
+    }
+
+    /// Put a rejoining device's new KeyPackage and join request in place,
+    /// with its binding signed by `signer` (the peer's own key, or not).
+    fn publish_rejoin(fx: &Fixture, peer: &str, identity: &MlsIdentity, signer: Option<&Keypair>) {
+        let mut txn = fx.state.control.transact_mut();
+        let packages = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+        let kp = hex::encode(identity.generate_key_package().unwrap());
+        packages.insert(&mut txn, peer, kp.as_str());
+        if let Some(signer) = signer {
+            let binding =
+                crate::identity::sign_key_package_binding(signer, CIRCLE, identity.signer.public())
+                    .unwrap();
+            let bindings = txn.get_or_insert_map(crate::control::MLS_KEY_PACKAGE_BINDINGS_KEY);
+            bindings.insert(&mut txn, peer, binding.as_str());
+        }
+        let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
+        pending.insert(&mut txn, peer, "{}");
+    }
+
+    /// Any member can write a KeyPackage under another member's peer id. One
+    /// the victim did not sign must not get the victim's leaf swapped out.
+    #[tokio::test]
+    async fn approve_does_not_swap_a_leaf_for_a_key_package_the_peer_did_not_sign() {
+        let fx = fixture();
+        let victim = candidate(&fx, "alice");
+        let approve = || {
+            approve_member(
+                State(fx.daemon.clone()),
+                Path(CIRCLE.into()),
+                Json(ApproveMemberRequest {
+                    peer_id: victim.clone(),
+                    role: None,
+                    owner: "alice".into(),
+                    admin_signature: sign(&fx.admin, &format!("add:{victim}:member:owner:alice")),
+                    agents: None,
+                }),
+            )
+        };
+        assert_eq!(approve().await.into_response().status(), StatusCode::OK);
+        let admitted_epoch = epoch(&fx);
+
+        let attacker_identity = MlsIdentity::generate(&victim).unwrap();
+        for signer in [None, Some(Keypair::generate_ed25519())] {
+            publish_rejoin(&fx, &victim, &attacker_identity, signer.as_ref());
+            let resp = approve().await.into_response();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(
+                epoch(&fx),
+                admitted_epoch,
+                "the victim's leaf stays in place"
+            );
+            assert_eq!(commit_count(&fx), 1);
+        }
     }
 
     #[tokio::test]

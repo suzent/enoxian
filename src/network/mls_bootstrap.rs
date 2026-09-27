@@ -13,8 +13,9 @@ use tracing::warn;
 use yrs::{Array, Map, Out, ReadTxn, Transact, WriteTxn};
 
 use crate::control::{
-    MlsCommitEntry, MEMBER_LIST_KEY, MLS_COMMITS_KEY, MLS_KEY_PACKAGES_KEY, MLS_OWNER_CLAIMS_KEY,
-    MLS_PENDING_KEY, MLS_REMOVED_KEY, MLS_WELCOMES_KEY,
+    MlsCommitEntry, MEMBER_LIST_KEY, MLS_COMMITS_KEY, MLS_KEY_PACKAGES_KEY,
+    MLS_KEY_PACKAGE_BINDINGS_KEY, MLS_OWNER_CLAIMS_KEY, MLS_PENDING_KEY, MLS_REMOVED_KEY,
+    MLS_WELCOMES_KEY,
 };
 use crate::state::AppState;
 
@@ -26,6 +27,9 @@ struct Snapshot {
     circle_id: String,
     sender_peer_id: String,
     key_packages: Vec<(String, String)>,
+    /// Absent from peers that predate KeyPackage bindings.
+    #[serde(default)]
+    key_package_bindings: Vec<(String, String)>,
     owner_claims: Vec<(String, String)>,
     pending: Vec<(String, String)>,
     members: Vec<(String, String)>,
@@ -82,6 +86,7 @@ fn try_snapshot(state: &AppState, receiver: &PeerId) -> Option<Snapshot> {
         circle_id: state.circle_id.clone(),
         sender_peer_id: state.peer_id.clone(),
         key_packages: map_strings_in(&txn, MLS_KEY_PACKAGES_KEY),
+        key_package_bindings: map_strings_in(&txn, MLS_KEY_PACKAGE_BINDINGS_KEY),
         owner_claims: map_strings_in(&txn, MLS_OWNER_CLAIMS_KEY),
         pending: map_strings_in(&txn, MLS_PENDING_KEY),
         members: map_strings_in(&txn, MEMBER_LIST_KEY),
@@ -148,10 +153,25 @@ async fn apply_snapshot(state: &AppState, peer: PeerId, incoming: Snapshot) -> R
         incoming.sender_peer_id == peer.to_string(),
         "bootstrap peer mismatch"
     );
+    // A peer speaks for its own KeyPackage only. Merging every entry let two
+    // peers with different values under one key overwrite each other on every
+    // exchange — the admin's stale copy of a rejoined device's old KeyPackage
+    // against the new one the device just published — and let any peer
+    // publish a KeyPackage under another's id.
+    let own = |entries: &[(String, String)]| -> Vec<(String, String)> {
+        entries
+            .iter()
+            .filter(|(peer_id, _)| *peer_id == incoming.sender_peer_id)
+            .cloned()
+            .collect()
+    };
+    let key_packages = own(&incoming.key_packages);
+    let key_package_bindings = own(&incoming.key_package_bindings);
     merge_maps(
         state,
         &[
-            (MLS_KEY_PACKAGES_KEY, &incoming.key_packages),
+            (MLS_KEY_PACKAGES_KEY, &key_packages),
+            (MLS_KEY_PACKAGE_BINDINGS_KEY, &key_package_bindings),
             (MLS_OWNER_CLAIMS_KEY, &incoming.owner_claims),
             (MLS_PENDING_KEY, &incoming.pending),
             (MEMBER_LIST_KEY, &incoming.members),
@@ -332,6 +352,7 @@ mod tests {
             circle_id: circle.into(),
             sender_peer_id: "peer".into(),
             key_packages: vec![],
+            key_package_bindings: vec![],
             owner_claims: vec![],
             pending: vec![],
             members: vec![],
@@ -433,5 +454,65 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    /// A peer's snapshot speaks for its own KeyPackage only. Otherwise the
+    /// admin's stale copy of a rejoined device's old KeyPackage and the new one
+    /// the device publishes overwrite each other on every exchange, and any
+    /// peer could plant a KeyPackage under someone else's id.
+    #[tokio::test]
+    async fn a_snapshot_merges_only_the_senders_own_key_package() {
+        use yrs::{Map, ReadTxn, Transact, WriteTxn};
+        let dir = tempfile::tempdir().unwrap();
+        let identity = crate::mls::MlsIdentity::generate("local").unwrap();
+        let state = AppState::new(
+            "circle".into(),
+            "test".into(),
+            dir.path().into(),
+            dir.path().into(),
+            String::new(),
+            "agent".into(),
+            1,
+            libp2p::identity::Keypair::generate_ed25519()
+                .public()
+                .to_peer_id()
+                .to_string(),
+            crate::config::JoinPolicy::Auto,
+            "owner".into(),
+            crate::mls::new_mls_state(identity, None),
+        );
+        let sender = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        {
+            let mut txn = state.control.transact_mut();
+            let packages = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+            packages.insert(&mut txn, "victim", "victims-own");
+        }
+        let mut incoming = snapshot_value("circle");
+        incoming.sender_peer_id = sender.to_string();
+        incoming.key_packages = vec![
+            (sender.to_string(), "senders-own".into()),
+            ("victim".into(), "planted".into()),
+        ];
+        incoming.key_package_bindings = vec![("victim".into(), "planted".into())];
+
+        apply_snapshot(&state, sender, incoming).await.unwrap();
+
+        let txn = state.control.transact();
+        let get = |key: &str, peer: &str| {
+            txn.get_map(key)
+                .and_then(|m| m.get(&txn, peer))
+                .map(|v| v.to_string(&txn))
+        };
+        assert_eq!(
+            get(MLS_KEY_PACKAGES_KEY, &sender.to_string()).as_deref(),
+            Some("senders-own")
+        );
+        assert_eq!(
+            get(MLS_KEY_PACKAGES_KEY, "victim").as_deref(),
+            Some("victims-own")
+        );
+        assert_eq!(get(MLS_KEY_PACKAGE_BINDINGS_KEY, "victim"), None);
     }
 }

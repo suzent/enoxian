@@ -36,8 +36,8 @@ use crate::{
     config::{self, CircleConfig, JoinPolicy},
     control::{
         MemberEntry, MemberRole, MlsCommitEntry, OwnerClaim, PendingEntry, INVITE_NONCES_KEY,
-        MEMBER_LIST_KEY, MLS_COMMITS_KEY, MLS_KEY_PACKAGES_KEY, MLS_OWNER_CLAIMS_KEY,
-        MLS_PENDING_KEY, MLS_WELCOMES_KEY,
+        MEMBER_LIST_KEY, MLS_COMMITS_KEY, MLS_KEY_PACKAGES_KEY, MLS_KEY_PACKAGE_BINDINGS_KEY,
+        MLS_OWNER_CLAIMS_KEY, MLS_PENDING_KEY, MLS_WELCOMES_KEY,
     },
     crypto::{keypair_from_hex, psk_from_hex},
     daemon::DaemonState,
@@ -135,17 +135,28 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
 
     let token = CancellationToken::new();
 
-    // Publish MLS key package
+    // Publish MLS key package, with this peer's signature binding its MLS
+    // signature key to its peer id.
     {
         use yrs::{Map, Transact};
-        let kp_bytes = {
+        let (kp_bytes, binding) = {
             let mls_locked = mls.lock().await;
-            mls_locked.identity.generate_key_package()?
+            let kp = mls_locked.identity.generate_key_package()?;
+            let binding = crate::identity::sign_key_package_binding(
+                &keypair,
+                &config.circle_id,
+                mls_locked.identity.signer.public(),
+            )?;
+            (kp, binding)
         };
         let kp_hex = hex::encode(&kp_bytes);
         let kp_map = state.control.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+        let bindings_map = state
+            .control
+            .get_or_insert_map(MLS_KEY_PACKAGE_BINDINGS_KEY);
         let mut txn = state.control.transact_mut();
         kp_map.insert(&mut txn, peer_id.to_string().as_str(), kp_hex.as_str());
+        bindings_map.insert(&mut txn, peer_id.to_string().as_str(), binding.as_str());
     }
 
     // Sign and publish owner claim
@@ -1765,6 +1776,29 @@ fn grant_admits<T: yrs::ReadTxn>(
 const APPROVAL_RETRIES: u32 = 10;
 const APPROVAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// The binding `peer_id` published for its KeyPackage, if any.
+pub(crate) fn key_package_binding<T: yrs::ReadTxn>(txn: &T, peer_id: &str) -> Option<String> {
+    use yrs::{Any, Map, Out};
+    txn.get_map(MLS_KEY_PACKAGE_BINDINGS_KEY)
+        .and_then(|bindings| bindings.get(txn, peer_id))
+        .and_then(|v| match v {
+            Out::Any(Any::String(s)) => Some(s.to_string()),
+            _ => None,
+        })
+}
+
+/// Whether `binding` shows `peer_id` itself vouching for MLS `signature_key`.
+pub(crate) fn binding_proves(
+    circle_id: &str,
+    peer_id: &str,
+    signature_key: &[u8],
+    binding: Option<&str>,
+) -> bool {
+    binding.is_some_and(|binding| {
+        crate::identity::verify_key_package_binding(peer_id, circle_id, signature_key, binding)
+    })
+}
+
 async fn retry_pending_approvals(state: &AppState) {
     use yrs::{Map, ReadTxn, Transact};
     let peers: Vec<String> = {
@@ -1817,26 +1851,28 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                     state.approval_errors.remove(&peer_id_str);
                     return;
                 }
-                // The coordination member list includes provisional self-entries;
-                // only the actual encrypted group proves completed admission.
-                if mls_locked
-                    .group
-                    .as_ref()
-                    .and_then(|group| group.leaf_index_for_peer(&peer_id_str))
-                    .is_some()
-                {
-                    pending.remove(&mut txn, peer_id_str.as_str());
-                    state.approval_errors.remove(&peer_id_str);
-                    return;
-                }
-                let Some(kp_hex) = txn
+                let kp_hex = txn
                     .get_map(MLS_KEY_PACKAGES_KEY)
                     .and_then(|kp_map| kp_map.get(&txn, peer_id_str.as_str()))
                     .and_then(|v| match v {
                         Out::Any(Any::String(s)) => Some(s.to_string()),
                         _ => None,
-                    })
-                else {
+                    });
+                // The coordination member list includes provisional self-entries;
+                // only a leaf holding the keys this device publishes proves
+                // completed admission. A leaf holding other keys is left over
+                // from before the device left and entered again — readmit it.
+                let published = kp_hex.as_deref().and_then(|h| hex::decode(h).ok());
+                let binding = key_package_binding(&txn, &peer_id_str);
+                if mls_locked.standing(&peer_id_str, published.as_deref(), |key| {
+                    binding_proves(&state.circle_id, &peer_id_str, key, binding.as_deref())
+                }) == crate::mls::Standing::Current
+                {
+                    pending.remove(&mut txn, peer_id_str.as_str());
+                    state.approval_errors.remove(&peer_id_str);
+                    return;
+                }
+                let Some(kp_hex) = kp_hex else {
                     record_approval_error(
                         &state,
                         &peer_id_str,
@@ -1896,7 +1932,7 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                 }
 
                 let (commit_bytes, welcome_bytes, ratchet_tree_bytes) =
-                    match mls_locked.add_member(&kp_bytes) {
+                    match mls_locked.admit_member(&peer_id_str, &kp_bytes) {
                         Ok(t) => t,
                         Err(error) => {
                             record_approval_error(
