@@ -75,8 +75,9 @@ refuses to publish a version whose section is missing or empty.
 - A device that left a circle and entered it again is admitted again. It used
   to stay pending for good: connected, but every sync timed out waiting for a
   key it was never given. A replacement key is only accepted when the device
-  itself signed it, so no member can get another member's access revoked by
-  publishing keys in its name.
+  itself signed it and it is newer than the key it replaces, so no member can
+  get another member's access revoked by publishing keys in its name or by
+  replaying keys the device used before.
 
 - Agents the daemon runs keep their file locks for as long as they are
   working. Locks now expire after 10 minutes, and a longer run would have lost

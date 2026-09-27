@@ -585,20 +585,29 @@ pub async fn approve_member(
                 // a member, but one to readmit.
                 let published = kp_hex.as_deref().and_then(|h| hex::decode(h).ok());
                 let binding = crate::lifecycle::key_package_binding(&txn, &req.peer_id);
-                if mls_locked.standing(&req.peer_id, published.as_deref(), |key| {
+                match mls_locked.standing(&req.peer_id, published.as_deref(), |key| {
                     crate::lifecycle::binding_proves(
                         &state.circle_id,
                         &req.peer_id,
                         key,
                         binding.as_deref(),
                     )
-                }) == crate::mls::Standing::Current
-                {
-                    let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
-                    pending.remove(&mut txn, req.peer_id.as_str());
-                    state.approval_errors.remove(&req.peer_id);
-                    return Json(json!({"status": "already_member", "peer_id": req.peer_id}))
-                        .into_response();
+                }) {
+                    crate::mls::Standing::Current => {
+                        let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
+                        pending.remove(&mut txn, req.peer_id.as_str());
+                        state.approval_errors.remove(&req.peer_id);
+                        return Json(json!({"status": "already_member", "peer_id": req.peer_id}))
+                            .into_response();
+                    }
+                    // Neither admitted nor safe to readmit. Keep the request.
+                    crate::mls::Standing::Unproven => {
+                        break Err((
+                            StatusCode::CONFLICT,
+                            crate::lifecycle::UNPROVEN_REJOIN.to_string(),
+                        ));
+                    }
+                    crate::mls::Standing::Absent | crate::mls::Standing::Stale => {}
                 }
                 let Some(kp_hex) = kp_hex else {
                     break Err((StatusCode::BAD_REQUEST, "key package not found".to_string()));
@@ -904,7 +913,9 @@ mod tests {
         let key = Keypair::generate_ed25519();
         let peer = key.public().to_peer_id().to_string();
         let identity = MlsIdentity::generate(&peer).unwrap();
-        let kp = identity.generate_key_package().unwrap();
+        // Older than any KeyPackage a test later publishes to replace it,
+        // as a real admission is older than a later rejoin.
+        let kp = identity.generate_key_package_from(6 * 3600).unwrap();
         let mut txn = fx.state.control.transact_mut();
         let packages = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
         packages.insert(&mut txn, peer.as_str(), hex::encode(kp).as_str());
@@ -1124,13 +1135,15 @@ mod tests {
         for signer in [None, Some(Keypair::generate_ed25519())] {
             publish_rejoin(&fx, &victim, &attacker_identity, signer.as_ref());
             let resp = approve().await.into_response();
-            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(resp.status(), StatusCode::CONFLICT);
             assert_eq!(
                 epoch(&fx),
                 admitted_epoch,
                 "the victim's leaf stays in place"
             );
             assert_eq!(commit_count(&fx), 1);
+            // Not taken for admission either: the request is not dropped.
+            assert!(map_has(&fx, MLS_PENDING_KEY, &victim));
         }
     }
 
