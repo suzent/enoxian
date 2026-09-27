@@ -2568,8 +2568,12 @@ mod tests {
         let (state, _dir) = automatic_state().await;
         let peer_key = libp2p::identity::Keypair::generate_ed25519();
         let peer = peer_key.public().to_peer_id().to_string();
-        let publish = |identity: &crate::mls::MlsIdentity, seconds_ago: u64| {
-            let kp = identity.generate_key_package_from(seconds_ago).unwrap();
+        // One fixed time for the tie, so it holds across a second boundary.
+        let tie = crate::mls::identity::unix_now().unwrap() - 3600;
+        let publish = |identity: &crate::mls::MlsIdentity, not_before: u64| {
+            let kp = identity
+                .generate_key_package_valid_from(not_before)
+                .unwrap();
             let binding = crate::identity::sign_key_package_binding(
                 &peer_key,
                 &state.circle_id,
@@ -2583,14 +2587,14 @@ mod tests {
             bindings.insert(&mut txn, peer.as_str(), binding);
         };
 
-        publish(&crate::mls::MlsIdentity::generate(&peer).unwrap(), 3600);
+        publish(&crate::mls::MlsIdentity::generate(&peer).unwrap(), tie);
         seed_valid_request(&state, &peer);
         retry_pending_approvals(&state).await;
         assert!(!is_pending(&state, &peer));
         let admitted = state.mls.lock().await.current_epoch();
 
         let rejoined = crate::mls::MlsIdentity::generate(&peer).unwrap();
-        publish(&rejoined, 3600);
+        publish(&rejoined, tie);
         seed_valid_request(&state, &peer);
         retry_pending_approvals(&state).await;
         assert!(is_pending(&state, &peer), "the request is kept");
@@ -2602,7 +2606,7 @@ mod tests {
         assert_eq!(state.mls.lock().await.current_epoch(), admitted);
 
         // The device restarts and publishes a later KeyPackage.
-        publish(&rejoined, 60);
+        publish(&rejoined, tie + 3600);
         retry_pending_approvals(&state).await;
         assert!(!is_pending(&state, &peer));
         assert!(state.mls.lock().await.current_epoch() > admitted);
