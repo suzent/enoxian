@@ -372,19 +372,6 @@ pub fn release_finished_locks(state: &crate::state::AppState) -> Result<()> {
                 taken_over_from_peer_id: None,
             },
         )?;
-        if let Ok(abs) = super::canonical_workspace_path(&state.workspace, Path::new(&path)) {
-            if let Ok(metadata) = std::fs::metadata(&abs) {
-                let mut permissions = metadata.permissions();
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    permissions.set_mode(permissions.mode() | 0o200);
-                }
-                #[cfg(not(unix))]
-                permissions.set_readonly(false);
-                std::fs::set_permissions(abs, permissions)?;
-            }
-        }
         let _ = state
             .events
             .send(crate::control::CircleEvent::LockReleased {

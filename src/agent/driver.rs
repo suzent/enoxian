@@ -130,7 +130,6 @@ impl ClientHooks for PolicyHooks {
         let _order = crate::proposal::evidence::WRITE_ORDER
             .lock()
             .map_err(|_| anyhow::anyhow!("write journal poisoned"))?;
-        let mut owns_lock = false;
         let annotate = |detail| {
             if let Some(state) = &self.coordination {
                 if let Some(inbox) = state
@@ -167,40 +166,16 @@ impl ClientHooks for PolicyHooks {
                     annotate(Some(format!("waiting for file lock: {rel}")));
                     anyhow::bail!("file locked by another agent or run: {rel}");
                 }
-                owns_lock =
-                    crate::control::arbitration::compute_lock_holders(&log, txn).contains_key(&rel);
             }
-        }
-        // chmod is a cooperative signal, not per-process isolation. The
-        // owning native hook may write, then restores the visible lock mode.
-        let permissions = std::fs::metadata(path)
-            .ok()
-            .map(|m| m.permissions())
-            .filter(|p| p.readonly());
-        if let Some(original) = &permissions {
-            anyhow::ensure!(owns_lock, "read-only file without a verified owned lock");
-            let mut writable = original.clone();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                writable.set_mode(writable.mode() | 0o200);
-            }
-            #[cfg(not(unix))]
-            writable.set_readonly(false);
-            std::fs::set_permissions(path, writable)?;
         }
         annotate(None);
-        let result = crate::proposal::evidence::write_ordered(
+        crate::proposal::evidence::write_ordered(
             &self.workspace,
             &self.circle_dir,
             &self.session,
             path,
             content,
-        );
-        if let Some(original) = permissions {
-            std::fs::set_permissions(path, original)?;
-        }
-        result
+        )
     }
     fn on_permission(&self, tool: &Value) -> PermissionDecision {
         tracing::info!("[agent] permission requested: {}", compact(tool));

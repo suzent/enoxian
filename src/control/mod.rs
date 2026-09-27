@@ -1,5 +1,4 @@
 pub mod arbitration;
-pub mod fs_lock;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

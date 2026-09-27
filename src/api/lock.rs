@@ -1,6 +1,5 @@
 use crate::control::{
     arbitration::{append_lock_entry, DEFAULT_LOCK_SECS, MAX_LOCK_SECS},
-    fs_lock::set_readonly,
     CircleEvent, LockAction, LockEntry, Task, TaskStatus, LOCK_LOG_KEY, TASKS_KEY,
 };
 use crate::daemon::DaemonState;
@@ -269,12 +268,6 @@ pub async fn release_path(
         let _ = append_lock_entry(&lock_log, &mut txn, &entry);
     }
 
-    // Binds no longer touch permissions, but a file bound by an earlier
-    // version may still be read-only; releasing it is when that should end.
-    let full = state
-        .workspace
-        .join(req.path.replace('/', std::path::MAIN_SEPARATOR_STR));
-    let _ = set_readonly(&full, false).await;
     let _ = state.events.send(CircleEvent::LockReleased {
         path: req.path.clone(),
         agent_id: agent_id.clone(),
