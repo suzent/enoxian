@@ -64,6 +64,11 @@ If the claim fails because someone else holds the task, pick another one. Use
 (for example, offline in `enox who`) — the previous holder is recorded, and
 they will see that you took it.
 
+Claims are checked against what this device has synced. Two devices that are
+not yet in sync (one offline, say) can both claim the same task; once they
+sync, one of them ends up holding it. After reconnecting, run `enox tasks` to
+confirm the task is still yours before carrying on.
+
 ### 3. Lock high-risk files before editing
 
 For files that are shared and conflict-prone (e.g., configuration, schema files, shared utilities):
