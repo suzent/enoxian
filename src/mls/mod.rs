@@ -23,6 +23,23 @@ pub struct MlsState {
 
 pub type SharedMlsState = Arc<Mutex<MlsState>>;
 
+/// Whether a replacement KeyPackage postdates the leaf it would replace.
+///
+/// A device that rejoined more than once has published several KeyPackages,
+/// each with a valid binding. Without this, a member could replay an earlier
+/// one and swap the device back onto keys it deleted when it left, locking it
+/// out. Every KeyPackage the device made before its current leaf became valid
+/// earlier than that leaf, so the replacement must be strictly later. Both
+/// times come from the device's own clock, and each is covered by the
+/// KeyPackage's signature or the group's tree, so neither can be adjusted.
+///
+/// A leaf with no lifetime belongs to a member that has since committed, which
+/// replaced its leaf. There is nothing to compare against then, and refusing
+/// would strand that device in pending for good, so the replacement is allowed.
+fn newer_than_leaf(replacement_not_before: u64, leaf_not_before: Option<u64>) -> bool {
+    leaf_not_before.is_none_or(|leaf| replacement_not_before > leaf)
+}
+
 /// A peer's place in the MLS group; see [`MlsState::standing`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Standing {
@@ -67,11 +84,10 @@ impl MlsState {
         key_package_bytes: Option<&[u8]>,
         bound_to_peer: impl FnOnce(&[u8]) -> bool,
     ) -> Standing {
-        let Some((_, leaf_key)) = self
-            .group
-            .as_ref()
-            .and_then(|group| group.leaf_signature_key_for_peer(peer_id))
-        else {
+        let Some(group) = self.group.as_ref() else {
+            return Standing::Absent;
+        };
+        let Some((leaf_index, leaf_key)) = group.leaf_signature_key_for_peer(peer_id) else {
             return Standing::Absent;
         };
         // No KeyPackage, or one that does not parse: nothing shows the leaf is
@@ -81,7 +97,11 @@ impl MlsState {
         match published {
             Some(kp)
                 if kp.leaf_node().signature_key().as_slice() != leaf_key.as_slice()
-                    && bound_to_peer(kp.leaf_node().signature_key().as_slice()) =>
+                    && bound_to_peer(kp.leaf_node().signature_key().as_slice())
+                    && newer_than_leaf(
+                        kp.life_time().not_before(),
+                        group.leaf_not_before(leaf_index),
+                    ) =>
             {
                 Standing::Stale
             }
@@ -247,7 +267,8 @@ mod tests {
         let bystander = MlsIdentity::generate("12D3KooWbystander").unwrap();
 
         let first = MlsIdentity::generate(peer).unwrap();
-        let first_package = first.generate_key_package().unwrap();
+        // Made well before the rejoin, as it would be in practice.
+        let first_package = first.generate_key_package_from(6 * 3600).unwrap();
         assert_eq!(
             admin.standing(peer, Some(&first_package), |_| true),
             Standing::Absent
@@ -309,5 +330,48 @@ mod tests {
         let secret = group.content_secret(&admin.identity).unwrap();
         assert_eq!(secret, rejoined.content_secret(&second).unwrap());
         assert_eq!(secret, bystander_group.content_secret(&bystander).unwrap());
+    }
+
+    /// A device that rejoined twice has published two KeyPackages, both with
+    /// valid bindings. Replaying the earlier one must not swap the device back
+    /// onto keys it deleted when it left again.
+    #[test]
+    fn an_older_key_package_cannot_be_replayed_over_a_newer_leaf() {
+        let peer = "12D3KooWrejoiner";
+        let mut admin = state_with_group("12D3KooWadmin");
+        let first = MlsIdentity::generate(peer).unwrap();
+        admin
+            .admit_member(peer, &first.generate_key_package_from(5 * 3600).unwrap())
+            .unwrap();
+
+        let second = MlsIdentity::generate(peer).unwrap();
+        let second_package = second.generate_key_package_from(4 * 3600).unwrap();
+        assert_eq!(
+            admin.standing(peer, Some(&second_package), |_| true),
+            Standing::Stale
+        );
+        admin.admit_member(peer, &second_package).unwrap();
+
+        let third = MlsIdentity::generate(peer).unwrap();
+        let third_package = third.generate_key_package_from(3 * 3600).unwrap();
+        assert_eq!(
+            admin.standing(peer, Some(&third_package), |_| true),
+            Standing::Stale
+        );
+        admin.admit_member(peer, &third_package).unwrap();
+
+        assert_eq!(
+            admin.standing(peer, Some(&second_package), |_| true),
+            Standing::Current,
+            "a replayed older KeyPackage leaves the newer leaf in place"
+        );
+    }
+
+    #[test]
+    fn a_replacement_must_be_strictly_newer_unless_the_leaf_has_no_lifetime() {
+        assert!(newer_than_leaf(101, Some(100)));
+        assert!(!newer_than_leaf(100, Some(100)));
+        assert!(!newer_than_leaf(99, Some(100)));
+        assert!(newer_than_leaf(99, None));
     }
 }

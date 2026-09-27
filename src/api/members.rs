@@ -904,7 +904,9 @@ mod tests {
         let key = Keypair::generate_ed25519();
         let peer = key.public().to_peer_id().to_string();
         let identity = MlsIdentity::generate(&peer).unwrap();
-        let kp = identity.generate_key_package().unwrap();
+        // Older than any KeyPackage a test later publishes to replace it,
+        // as a real admission is older than a later rejoin.
+        let kp = identity.generate_key_package_from(6 * 3600).unwrap();
         let mut txn = fx.state.control.transact_mut();
         let packages = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
         packages.insert(&mut txn, peer.as_str(), hex::encode(kp).as_str());

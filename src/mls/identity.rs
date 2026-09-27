@@ -116,7 +116,22 @@ impl MlsIdentity {
     // ── Generate a KeyPackage (serialised, ready for distribution) ────────────
 
     pub fn generate_key_package(&self) -> Result<Vec<u8>> {
-        let bundle = KeyPackage::builder()
+        self.key_package_with(KeyPackage::builder())
+    }
+
+    /// A KeyPackage that became valid `seconds_ago`, for tests that need
+    /// KeyPackages ordered in time without waiting between them.
+    #[cfg(test)]
+    pub fn generate_key_package_from(&self, seconds_ago: u64) -> Result<Vec<u8>> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        let lifetime = Lifetime::init(now - seconds_ago, now + 60 * 60 * 24 * 28);
+        self.key_package_with(KeyPackage::builder().key_package_lifetime(lifetime))
+    }
+
+    fn key_package_with(&self, builder: KeyPackageBuilder) -> Result<Vec<u8>> {
+        let bundle = builder
             .build(
                 CIPHERSUITE,
                 &self.provider,

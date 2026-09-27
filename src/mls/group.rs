@@ -242,6 +242,21 @@ impl MlsGroupManager {
         })
     }
 
+    /// When the KeyPackage behind leaf `leaf_index` became valid.
+    ///
+    /// `None` once that member has committed or updated, which replaces its
+    /// leaf with one that carries no lifetime.
+    pub fn leaf_not_before(&self, leaf_index: u32) -> Option<u64> {
+        let leaf = self
+            .group
+            .public_group()
+            .leaf(LeafNodeIndex::new(leaf_index))?;
+        match leaf.leaf_node_source() {
+            openmls::treesync::LeafNodeSource::KeyPackage(lifetime) => Some(lifetime.not_before()),
+            _ => None,
+        }
+    }
+
     /// Signature key of the leaf `peer_id` occupies, with its index.
     pub fn leaf_signature_key_for_peer(&self, peer_id: &str) -> Option<(u32, Vec<u8>)> {
         let target = peer_id.as_bytes();
