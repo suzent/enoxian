@@ -289,17 +289,8 @@ pub async fn launch_cancellable(
     if let (Some(state), Some(token)) = (&req.coordination, req.actor_token) {
         state.actor_tokens.bind_run(token, &session.session_id);
     }
-    let _device = crate::proposal::runs::DeviceLease::acquire_cancellable(
-        &crate::proposal::runs::device_slots_dir()?,
-        &req.circle_dir
-            .join("managed_runs")
-            .join(format!("{}.json", session.session_id)),
-        super::config::AgentConfig::load().max_concurrent_runs,
-        cancel,
-        std::time::Duration::from_secs(30),
-    )
-    .await?;
-    // Listed from here until it returns, so it can be watched and stopped.
+    // Listed from here until it returns, so it can be watched and stopped —
+    // including while it waits for a device slot, which can take a while.
     let live = match (&req.coordination, req.run_id) {
         (Some(state), Some(run_id)) => Some(state.live_runs.register(
             run_id,
@@ -310,6 +301,34 @@ pub async fn launch_cancellable(
         _ => None,
     };
     let live_run = live.as_ref().map(|guard| guard.run().clone());
+    let stopped_early = || {
+        let cause = live_run.as_ref().and_then(|run| run.stop_cause());
+        anyhow::Error::new(super::liveness::TurnStopped(
+            cause.unwrap_or(super::liveness::StopCause::Requested),
+        ))
+    };
+    let never = tokio_util::sync::CancellationToken::new();
+    let stop_requested = live_run.as_ref().map_or(&never, |run| run.stop_token());
+    let slots = crate::proposal::runs::device_slots_dir()?;
+    let record = req
+        .circle_dir
+        .join("managed_runs")
+        .join(format!("{}.json", session.session_id));
+    let _device = tokio::select! {
+        device = crate::proposal::runs::DeviceLease::acquire_cancellable(
+            &slots,
+            &record,
+            super::config::AgentConfig::load().max_concurrent_runs,
+            cancel,
+            std::time::Duration::from_secs(30),
+        ) => device?,
+        // Stopped before it had a slot: no agent was started. Close the run
+        // record as finished; dropping it open would record an interruption.
+        _ = stop_requested.cancelled() => {
+            lease.finish()?;
+            return Err(stopped_early());
+        }
+    };
     tracing::info!(
         "[agent] launching `{}` ({:?}) session={} resume={:?} task_len={}",
         req.agent_name,
@@ -452,18 +471,6 @@ async fn run_acp(
         capturing: capturing.clone(),
     };
 
-    let mut acp = AcpSession::start(
-        &cmd.command,
-        run_dir,
-        hooks,
-        resume,
-        actor.agent_id,
-        actor.circle_id,
-        actor.token,
-    )
-    .await
-    .context("ACP handshake failed")?;
-
     // No time limit on the turn. An unaddressed one that holds this agent's
     // conversation is stopped when an addressed request for the agent arrives
     // (`LiveRuns::preempt_ambient`), which is what the old limit was for.
@@ -471,6 +478,29 @@ async fn run_acp(
         .as_ref()
         .map(|run| run.stop_token().clone())
         .unwrap_or_default();
+
+    // A stop during the handshake ends it there, rather than after it: the
+    // handshake has its own limits, far longer than a stop should take.
+    // Dropping the half-started session ends the agent's process tree.
+    let started = tokio::select! {
+        started = AcpSession::start(
+            &cmd.command,
+            run_dir,
+            hooks,
+            resume,
+            actor.agent_id,
+            actor.circle_id,
+            actor.token,
+        ) => started,
+        _ = stop.cancelled() => {
+            return Ok(AcpRun {
+                detail: "stop_reason=cancelled (before the agent finished starting)".into(),
+                reply: None,
+                acp_session_id: None,
+            });
+        }
+    };
+    let mut acp = started.context("ACP handshake failed")?;
     if let Some(run) = &live {
         acp.set_activity(run.activity.clone());
     }
@@ -732,5 +762,97 @@ mod tests {
         assert!(state.live_runs.get(&run_id).is_none(), "no longer listed");
         let memory = super::super::memory::load(dir.path(), agent).unwrap();
         assert_eq!(memory.session_id, "fake-session");
+    }
+
+    /// A stop while the agent is still starting ends the run there — not after
+    /// the handshake's own 45-second limit — and ends it as stopped, not as a
+    /// failed handshake.
+    #[tokio::test]
+    async fn a_stop_during_the_handshake_ends_the_run_as_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::state::AppState::new(
+            "c1".into(),
+            "circle".into(),
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            String::new(),
+            "label".into(),
+            1,
+            "peer".into(),
+            crate::config::JoinPolicy::Manual,
+            "owner".into(),
+            crate::mls::new_mls_state(crate::mls::MlsIdentity::generate("peer").unwrap(), None),
+        );
+        let cmd: AgentCommand = serde_json::from_value(serde_json::json!({
+            "command": super::super::acp::tests::fake_agent_command(),
+            "driver": "acp",
+        }))
+        .unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        // Stop once the agent's process is running, so the stop lands in the
+        // handshake rather than before a slot is taken.
+        let stopper = {
+            let (runs, run_id) = (state.live_runs.clone(), run_id.clone());
+            let record = dir
+                .path()
+                .join("managed_runs")
+                .join(format!("{run_id}.json"));
+            tokio::spawn(async move {
+                loop {
+                    let spawned = std::fs::read(&record)
+                        .ok()
+                        .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())
+                        .is_some_and(|r| !r["child_pid"].is_null());
+                    if let (true, Some(run)) = (spawned, runs.get(&run_id)) {
+                        run.request_stop(super::super::liveness::StopCause::Requested);
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+        };
+        let started = std::time::Instant::now();
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            launch(LaunchRequest {
+                run_id: Some(&run_id),
+                trigger_id: None,
+                coordination: Some(state.clone()),
+                agent_name: "fake-acp:mute",
+                cmd: &cmd,
+                task: "build it",
+                workspace: dir.path(),
+                base_snapshot: "",
+                circle_id: "c1",
+                circle_dir: dir.path(),
+                actor_token: None,
+                relay_path: vec![],
+                initiator: Initiator::Local,
+                resume: None,
+                withheld: &[],
+            }),
+        )
+        .await
+        .expect("the stop ends the run")
+        .expect("a stopped handshake is not a failed one");
+
+        stopper.await.unwrap();
+        assert_eq!(
+            outcome.stopped,
+            Some(super::super::liveness::StopCause::Requested)
+        );
+        assert!(
+            outcome
+                .detail
+                .contains("before the agent finished starting"),
+            "{}",
+            outcome.detail
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(40),
+            "waited out the handshake: {:?}",
+            started.elapsed()
+        );
     }
 }

@@ -833,6 +833,8 @@ pub(crate) mod tests {
             };
             let id = msg.get("id").cloned();
             match msg["method"].as_str() {
+                // An agent that never finishes starting.
+                _ if mode == "mute" => {}
                 Some("initialize") => send(json!({"jsonrpc": "2.0", "id": id,
                     "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": false}}})),
                 Some("session/new") => send(json!({"jsonrpc": "2.0", "id": id,

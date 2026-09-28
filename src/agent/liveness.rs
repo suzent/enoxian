@@ -183,10 +183,21 @@ impl LiveRun {
 
 /// The turns running in one Circle on this device, by run id.
 #[derive(Debug, Clone, Default)]
-pub struct LiveRuns(Arc<dashmap::DashMap<String, Arc<LiveRun>>>);
+pub struct LiveRuns {
+    runs: Arc<dashmap::DashMap<String, Arc<LiveRun>>>,
+    /// Agents an addressed request is waiting on, asked to give way before
+    /// their unaddressed turn was listed. A turn is listed only once it has a
+    /// device slot, and an agent is busy from the moment the worker takes its
+    /// turn — so a request can arrive in between, find nothing to stop, and
+    /// nothing would ask again. The request is remembered and served when the
+    /// turn is listed. Keys are lowercase.
+    waiting: Arc<dashmap::DashSet<String>>,
+}
 
 impl LiveRuns {
-    /// Record a turn as running until the returned guard drops.
+    /// Record a turn as running until the returned guard drops. An
+    /// unaddressed turn an addressed request is already waiting on is stopped
+    /// at once; an addressed one serves that request.
     pub fn register(&self, run_id: &str, agent: &str, ambient: bool, now: i64) -> LiveRunGuard {
         let run = Arc::new(LiveRun {
             agent: agent.to_string(),
@@ -196,7 +207,11 @@ impl LiveRuns {
             stop: CancellationToken::new(),
             cause: Mutex::new(None),
         });
-        self.0.insert(run_id.to_string(), run.clone());
+        if self.waiting.remove(&agent.to_lowercase()).is_some() && ambient {
+            tracing::info!("[agent] stopping {agent}'s unaddressed turn {run_id}: an addressed request is waiting");
+            run.request_stop(StopCause::Preempted);
+        }
+        self.runs.insert(run_id.to_string(), run.clone());
         LiveRunGuard {
             runs: self.clone(),
             run_id: run_id.to_string(),
@@ -204,26 +219,39 @@ impl LiveRuns {
         }
     }
 
+    /// Forget a waiting request for `agent`: its turn ended without being
+    /// listed, so there is nothing left for the request to stop.
+    pub fn clear_waiting(&self, agent: &str) {
+        self.waiting.remove(&agent.to_lowercase());
+    }
+
     pub fn get(&self, run_id: &str) -> Option<Arc<LiveRun>> {
-        self.0.get(run_id).map(|entry| entry.value().clone())
+        self.runs.get(run_id).map(|entry| entry.value().clone())
     }
 
     /// Any turn `agent` is running. At most one per Circle: a conversation
     /// takes one turn at a time.
     pub fn get_by_agent(&self, agent: &str) -> Option<Arc<LiveRun>> {
-        self.0
+        self.runs
             .iter()
             .find(|entry| entry.value().agent.eq_ignore_ascii_case(agent))
             .map(|entry| entry.value().clone())
     }
 
-    /// Stop `agent`'s unaddressed turn, if it is running one, so an addressed
-    /// request can have its conversation. Returns whether it asked one to stop.
+    /// Stop `agent`'s unaddressed turn so an addressed request can have its
+    /// conversation. Returns whether it asked a listed turn to stop. With no
+    /// turn listed for the agent, the request is remembered for when one is
+    /// (see `waiting`).
     pub fn preempt_ambient(&self, agent: &str) -> bool {
         let mut stopped = false;
-        for entry in self.0.iter() {
+        let mut busy = false;
+        for entry in self.runs.iter() {
             let run = entry.value();
-            if run.ambient && run.agent.eq_ignore_ascii_case(agent) && !run.stop.is_cancelled() {
+            if !run.agent.eq_ignore_ascii_case(agent) {
+                continue;
+            }
+            busy = true;
+            if run.ambient && !run.stop.is_cancelled() {
                 tracing::info!(
                     "[agent] stopping {agent}'s unaddressed turn {}: an addressed request is waiting",
                     entry.key()
@@ -231,6 +259,9 @@ impl LiveRuns {
                 run.request_stop(StopCause::Preempted);
                 stopped = true;
             }
+        }
+        if !busy {
+            self.waiting.insert(agent.to_lowercase());
         }
         stopped
     }
@@ -251,7 +282,7 @@ impl LiveRunGuard {
 
 impl Drop for LiveRunGuard {
     fn drop(&mut self) {
-        self.runs.0.remove(&self.run_id);
+        self.runs.runs.remove(&self.run_id);
     }
 }
 
@@ -321,6 +352,59 @@ mod tests {
         assert!(!addressed.run().stop_token().is_cancelled());
         assert!(!other.run().stop_token().is_cancelled());
         assert!(!runs.preempt_ambient("claude"), "already stopping");
+    }
+
+    /// The race the worker has: its turn is taken before it is listed, so a
+    /// request can arrive with nothing to stop yet. It must not be lost.
+    #[test]
+    fn a_request_that_arrives_before_the_turn_is_listed_stops_it_once_it_is() {
+        let runs = LiveRuns::default();
+        assert!(
+            !runs.preempt_ambient("claude"),
+            "nothing listed to stop yet"
+        );
+        let aside = runs.register("r1", "Claude", true, 0);
+        assert_eq!(aside.run().stop_cause(), Some(StopCause::Preempted));
+
+        // Served once: the next aside is not stopped for the same request.
+        drop(aside);
+        let next = runs.register("r2", "claude", true, 0);
+        assert!(!next.run().stop_token().is_cancelled());
+    }
+
+    #[test]
+    fn a_remembered_request_is_served_by_the_addressed_turn_itself() {
+        let runs = LiveRuns::default();
+        runs.preempt_ambient("claude");
+        let addressed = runs.register("r1", "claude", false, 0);
+        assert!(!addressed.run().stop_token().is_cancelled());
+        drop(addressed);
+        let aside = runs.register("r2", "claude", true, 0);
+        assert!(
+            !aside.run().stop_token().is_cancelled(),
+            "nothing left waiting"
+        );
+    }
+
+    #[test]
+    fn a_request_is_not_remembered_while_an_addressed_turn_runs_or_once_cleared() {
+        let runs = LiveRuns::default();
+        let addressed = runs.register("r1", "claude", false, 0);
+        runs.preempt_ambient("claude");
+        drop(addressed);
+        assert!(!runs
+            .register("r2", "claude", true, 0)
+            .run()
+            .stop_token()
+            .is_cancelled());
+
+        runs.preempt_ambient("codex");
+        runs.clear_waiting("codex");
+        assert!(!runs
+            .register("r3", "codex", true, 0)
+            .run()
+            .stop_token()
+            .is_cancelled());
     }
 
     #[test]

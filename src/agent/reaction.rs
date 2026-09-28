@@ -1130,6 +1130,9 @@ fn spawn_run_worker(
                     match joined {
                         Some(Ok((agent, Ok(progress)))) => {
                             active.remove(&agent);
+                            // Whatever a waiting request was owed from this
+                            // turn, it has now: the agent is free.
+                            state.live_runs.clear_waiting(&agent);
                             if !progress { paused.insert(agent); }
                         },
                         Some(Ok((agent, Err(error)))) => {
