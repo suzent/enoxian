@@ -44,11 +44,11 @@ refuses to publish a version whose section is missing or empty.
 - `enox leave` on the admin's device first hands the admin key to another
   member: another device proven to belong to the same user if one is online,
   otherwise roughly the member that joined first, or the one named with
-  `--admin-to`. Before this, a
-  circle whose admin left could never approve anyone again. If no member is
-  online to take the key, `leave` refuses and changes nothing; `--force` leaves
-  anyway and gives admin up.
-
+  `--admin-to`. Before this, a circle whose admin left could never approve
+  anyone again. If no member is online to take the key, `leave` refuses and
+  changes nothing; `--force` leaves anyway and gives admin up. The member
+  taking the key must run this version too; handing it to an older one fails,
+  and `leave` refuses.
 - `enox status` lists who currently holds each bound path, and `/status`
   returns them as `locks`, so you can check a lock before editing instead of
   finding it through a failed `enox bind`.
@@ -85,8 +85,9 @@ refuses to publish a version whose section is missing or empty.
   key it was never given. A replacement key is only accepted when the device
   itself signed it and it is newer than the key it replaces, so no member can
   get another member's access revoked by publishing keys in its name or by
-  replaying keys the device used before.
-
+  replaying keys the device used before. Both the rejoining device and the
+  admin need this version: a device on an older one publishes no signature for
+  its key and stays pending.
 - Agents the daemon runs keep their file locks for as long as they are
   working. Locks now expire after 10 minutes, and a longer run would have lost
   its lock mid-edit; the daemon renews them while the run is alive.
@@ -108,7 +109,6 @@ refuses to publish a version whose section is missing or empty.
 - `enox done` now only works for the task's claimant, and a done task can no
   longer be claimed. Before, anyone could mark someone else's task done and
   then claim it, getting around the claim check.
-
 - A self-hosted relay's automatic updater now updates itself. It ships with
   each release and is verified against the release's checksums, so a change
   it could not have anticipated no longer strands it. An updater installed
