@@ -497,6 +497,25 @@ mod tests {
         s.actor_id = Some(agent.into());
         s
     }
+    /// Acquire once the lock is free.
+    ///
+    /// Closing a lock file releases its `flock` only if no other process holds
+    /// a copy of the descriptor, and a child another test forks at that moment
+    /// does, until it execs. Tests here spawn processes in parallel, so a just
+    /// released lock can stay held for a moment. The daemon meets the same
+    /// thing as `ConversationBusy` and retries the run later.
+    fn acquire_when_free(dir: &Path, agent: &str) -> RunLease {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match RunLease::acquire(dir, session(agent)) {
+                Ok(lease) => return lease,
+                Err(e) if e.is::<ConversationBusy>() && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
+    }
     #[test]
     fn independent_agents_and_exclusive_conversation() {
         let d = tempfile::tempdir().unwrap();
@@ -505,7 +524,7 @@ mod tests {
         assert!(RunLease::acquire(d.path(), session("a")).is_err());
         a.finish().unwrap();
         drop(a);
-        let _next = RunLease::acquire(d.path(), session("a")).unwrap();
+        let _next = acquire_when_free(d.path(), "a");
         assert!(b.record.session.is_open());
         assert_eq!(list(d.path()).unwrap().len(), 3);
     }
