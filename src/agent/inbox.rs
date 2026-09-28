@@ -493,7 +493,12 @@ impl Inbox {
                     Status::Running | Status::Cancelled | Status::Expired
                 ) | (
                     Status::Running,
-                    Status::Completed | Status::Failed | Status::Interrupted | Status::Pending
+                    // Cancelled: the turn was stopped while it ran.
+                    Status::Completed
+                        | Status::Failed
+                        | Status::Interrupted
+                        | Status::Pending
+                        | Status::Cancelled
                 )
             ),
             "invalid execution state transition"

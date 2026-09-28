@@ -1059,6 +1059,21 @@ fn device_permits() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
     })
 }
 
+/// An addressed request waiting on an agent busy with an unaddressed turn
+/// takes over: the aside is asked to stop, and the request runs next in the
+/// same conversation (`run_next_cancellable` runs addressed work first). This
+/// is what a time limit on unaddressed turns used to be for, without cutting
+/// off one that nothing is waiting behind.
+fn preempt_for_addressed(
+    state: &AppState,
+    request: &super::inbox::Request,
+    active: &std::collections::HashSet<String>,
+) -> bool {
+    !request.ambient
+        && active.contains(&request.agent)
+        && state.live_runs.preempt_ambient(&request.agent)
+}
+
 fn spawn_run_worker(
     state: AppState,
     inbox: std::sync::Arc<super::inbox::Inbox>,
@@ -1079,6 +1094,7 @@ fn spawn_run_worker(
                 .into_iter()
                 .filter(|e| e.status == super::inbox::Status::Pending)
             {
+                preempt_for_addressed(&state, &entry.request, &active);
                 let agent = entry.request.agent;
                 if paused.contains(&agent) || !active.insert(agent.clone()) {
                     continue;
@@ -1170,11 +1186,15 @@ async fn run_next_cancellable(
     {
         return Ok(false);
     }
-    for entry in inbox
+    let mut pending: Vec<_> = inbox
         .entries()
         .into_iter()
         .filter(|e| e.status == Status::Pending && agent.is_none_or(|a| e.request.agent == a))
-    {
+        .collect();
+    // Addressed work before unaddressed, oldest first within each: a request
+    // that stopped an ambient turn to go first must not queue behind another.
+    pending.sort_by_key(|e| e.request.ambient);
+    for entry in pending {
         let request = &entry.request;
         let rejection = match launch_rejection(state, request, cfg) {
             Ok(reason) => reason,
@@ -1245,6 +1265,11 @@ async fn run_next_cancellable(
                 Status::Pending,
                 Some("waiting for device capacity; no process launched".into()),
             ),
+            // Stopped, not failed: not announced, and not handed to another
+            // listener (a cancelled ambient run settles its message).
+            Err(error) if error.is::<super::liveness::TurnStopped>() => {
+                (Status::Cancelled, Some(error.to_string()))
+            }
             Err(error) => {
                 let reason = concise_error(&error);
                 tracing::warn!("[agent] run {} failed: {error:#}", entry.run_id);
@@ -1603,6 +1628,22 @@ async fn react(
         outcome.session_id,
         outcome.detail
     );
+
+    // A stopped turn posts nothing. What it was shown is still in the agent's
+    // conversation, which the next turn resumes, so it counts as seen.
+    if let Some(cause) = outcome.stopped {
+        if let Some(cursor) = &delivery.cursor {
+            mark_seen(state, agent_id, cursor, &delivery.delivered);
+        }
+        publish_agent_activity(
+            state,
+            agent_id,
+            message_id,
+            ChatActivityKind::Working,
+            false,
+        );
+        return Err(super::liveness::TurnStopped(cause).into());
+    }
 
     // Post the agent's streamed reply back into the chat room so the mention
     // reads like a conversation. File changes still surface separately as a
@@ -2730,6 +2771,144 @@ mod tests {
             waited < std::time::Duration::from_millis(500),
             "waited {waited:?}"
         );
+    }
+
+    /// An addressed request for an agent busy with an unaddressed turn stops
+    /// that turn. It must end as a stop — not a failure: nothing posted, not
+    /// announced, and not handed to the next listener as if it had crashed.
+    #[tokio::test]
+    async fn a_preempted_ambient_turn_settles_cancelled_and_is_not_handed_on() {
+        use super::super::inbox::{tests::request, Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let agent = "fake-acp:cooperative";
+        let mut aside = request("m", agent);
+        aside.ambient = true;
+        aside.mention_key = format!("~ambient:{agent}");
+        inbox.admit(aside, 20, 100).unwrap();
+        let mut cfg = inbox_config();
+        cfg.agents.insert(
+            agent.into(),
+            serde_json::from_value(serde_json::json!({
+                "command": super::super::acp::tests::fake_agent_command(),
+                "driver": "acp",
+            }))
+            .unwrap(),
+        );
+        cfg.ambient = vec![agent.into()];
+        // What the worker does when an addressed request for this agent
+        // arrives: stop its unaddressed turn once one is visibly running.
+        let preempt = {
+            let runs = state.live_runs.clone();
+            tokio::spawn(async move {
+                loop {
+                    let running = runs
+                        .get_by_agent(agent)
+                        .is_some_and(|run| !run.activity.lock().unwrap().open_tools.is_empty());
+                    if running && runs.preempt_ambient(agent) {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+        };
+
+        let progressed = tokio::time::timeout(
+            LIVENESS,
+            run_next_for_agent(&state, &inbox, &cfg, Some(agent)),
+        )
+        .await
+        .expect("the stop ends the turn")
+        .unwrap();
+
+        preempt.await.unwrap();
+        assert!(progressed);
+        let entries = inbox.entries();
+        assert_eq!(entries[0].status, Status::Cancelled);
+        assert!(entries[0]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("addressed request"));
+        assert!(
+            unanswered_attempts(&entries, "m").is_none(),
+            "a stopped aside is settled, not offered to another listener"
+        );
+        assert!(state.transcript().iter().all(|m| m.agent_id != agent));
+    }
+
+    #[test]
+    fn only_a_waiting_addressed_request_stops_the_agents_aside() {
+        use super::super::inbox::tests::request;
+        let (state, _dir) = test_state("local", "suzy");
+        let busy: std::collections::HashSet<String> = ["claude".to_string()].into();
+        let aside = state.live_runs.register("r1", "claude", true, 0);
+
+        let mut ambient = request("m1", "claude");
+        ambient.ambient = true;
+        assert!(
+            !preempt_for_addressed(&state, &ambient, &busy),
+            "an aside waits its turn"
+        );
+        assert!(!preempt_for_addressed(
+            &state,
+            &request("m2", "claude"),
+            &Default::default()
+        ));
+        assert!(!aside.run().stop_token().is_cancelled());
+
+        assert!(preempt_for_addressed(
+            &state,
+            &request("m3", "claude"),
+            &busy
+        ));
+        assert!(aside.run().stop_token().is_cancelled());
+
+        // An addressed turn in progress is never stopped for another.
+        let (state, _dir) = test_state("local", "suzy");
+        let addressed = state.live_runs.register("r2", "claude", false, 0);
+        assert!(!preempt_for_addressed(
+            &state,
+            &request("m4", "claude"),
+            &busy
+        ));
+        assert!(!addressed.run().stop_token().is_cancelled());
+    }
+
+    /// The request that stopped an aside must run next, not behind another
+    /// unaddressed turn that happened to be queued first.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn addressed_work_runs_before_an_earlier_unaddressed_turn() {
+        use super::super::inbox::{tests::request, Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let mut aside = request("first", "claude");
+        aside.ambient = true;
+        aside.mention_key = "~ambient:claude".into();
+        inbox.admit(aside, 20, 100).unwrap();
+        inbox.admit(request("second", "claude"), 20, 101).unwrap();
+        let mut cfg = inbox_config();
+        cfg.agents.get_mut("claude").unwrap().command = vec!["true".into()];
+
+        tokio::time::timeout(
+            LIVENESS,
+            run_next_for_agent(&state, &inbox, &cfg, Some("claude")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let status = |id: &str| {
+            inbox
+                .entries()
+                .into_iter()
+                .find(|e| e.request.message.id == id)
+                .unwrap()
+                .status
+        };
+        assert_eq!(status("second"), Status::Completed);
+        assert_eq!(status("first"), Status::Pending);
     }
 
     #[tokio::test]

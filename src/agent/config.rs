@@ -217,13 +217,6 @@ pub struct AgentConfig {
     pub ambient_responders: usize,
     #[serde(default)]
     pub ambient_rotate_count: bool,
-    /// How long an unaddressed turn may spend in one prompt.
-    ///
-    /// Device-wide rather than per Circle: it is a bound on what this machine
-    /// lets a conversational aside hold, and the queue it blocks is shared
-    /// across Circles.
-    #[serde(default = "default_ambient_turn_timeout_secs")]
-    pub ambient_turn_timeout_secs: u64,
     /// Listeners an unaddressed message may burn through before this device
     /// gives up on it.
     ///
@@ -231,8 +224,7 @@ pub struct AgentConfig {
     /// can try (§3.2); this stops a message that kills every adapter in the
     /// room from costing one turn per agent. Per Circle, like the other
     /// `ambient_*` settings — how many of a room's listeners get a go is a
-    /// property of the room. Unlike [`Self::ambient_turn_timeout_secs`], which
-    /// bounds a shared device resource and so stays device-wide.
+    /// property of the room.
     #[serde(default = "default_ambient_max_attempts")]
     pub ambient_max_attempts: usize,
     /// How many of a backlog's eligible messages still get a turn.
@@ -343,10 +335,6 @@ fn default_ambient_backlog_tail() -> usize {
 
 /// Three minutes. An unaddressed turn is being asked whether it has anything
 /// to say, which is not work that wants half an hour.
-fn default_ambient_turn_timeout_secs() -> u64 {
-    180
-}
-
 /// Two. Enough to rotate past one broken adapter, few enough that a message
 /// nothing can handle does not cost a turn per agent in the room.
 fn default_ambient_max_attempts() -> usize {
@@ -368,7 +356,6 @@ impl Default for AgentConfig {
             ambient_responders: 1,
             ambient_rotate_count: false,
             ambient_backlog_tail: default_ambient_backlog_tail(),
-            ambient_turn_timeout_secs: default_ambient_turn_timeout_secs(),
             ambient_max_attempts: default_ambient_max_attempts(),
             max_concurrent_runs: default_max_concurrent_runs(),
             reaction: Reaction::default(),
@@ -659,6 +646,14 @@ command = ["claude-agent-acp"]
             global.engagement_window_secs,
             DEFAULT_ENGAGEMENT_WINDOW_SECS
         );
+    }
+
+    /// Turns no longer time out. A config written while they did still loads.
+    #[test]
+    fn a_config_that_still_sets_the_removed_turn_timeout_loads() {
+        let cfg = AgentConfig::from_toml("ambient_turn_timeout_secs = 180\nreaction = \"push\"\n")
+            .unwrap();
+        assert_eq!(cfg.reaction, Reaction::Push);
     }
 
     #[test]

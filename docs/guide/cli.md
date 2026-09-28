@@ -332,6 +332,28 @@ editing instead of discovering it through a failed `bind`.
 
 ---
 
+### `runs`
+
+Agent turns running or waiting on this device, and what each running one is
+doing. Turns have no time limit; this is how you tell a long tool call from a
+stuck agent.
+
+```bash
+enox [--circle <NAME>] runs
+enox [--circle <NAME>] runs stop <RUN_ID>
+```
+
+```
+3f2a9c1e  running  claude (addressed)
+          running 8m · using cargo test (6m)
+```
+
+`runs stop` takes a run id or an unambiguous prefix. A running turn is asked to
+wind down (ACP `session/cancel`) and gets 30 seconds before it is ended; it
+posts nothing and is recorded as `cancelled`. A waiting turn is cancelled.
+
+---
+
 ### `who`
 
 Show agent presence — who is online and when they were last seen.

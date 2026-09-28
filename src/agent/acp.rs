@@ -24,10 +24,14 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+
+use super::liveness::Activity;
 
 /// The ACP protocol version we implement. Agents may echo it as a string or an
 /// integer; we accept either on the response and never hard-fail on a mismatch
@@ -123,23 +127,26 @@ pub struct AcpSession<H: ClientHooks> {
     workspace: PathBuf,
     hooks: H,
     next_id: u64,
-    /// How long one `session/prompt` may take.
-    ///
-    /// An addressed turn is a work order and may legitimately run for a long
-    /// time. An unaddressed one is a conversational aside nobody asked for, and
-    /// letting it hold a device permit and a conversation lease for half an
-    /// hour puts real work behind it.
-    prompt_timeout: Duration,
+    /// What the agent has been doing, for whoever is watching the turn.
+    activity: Option<Arc<Mutex<Activity>>>,
+    /// How long an agent gets to wind down after `session/cancel`.
+    cancel_grace: Duration,
+    /// Set once `session/cancel` is sent for the current prompt.
+    cancelling: bool,
 }
 
-/// What an addressed turn gets: long enough for real work.
-pub const DEFAULT_PROMPT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Handshake requests are bounded: an agent that cannot even start is broken,
+/// not busy. A prompt turn is not — see [`AcpSession::prompt_until`].
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// How long an agent has to end a turn after being asked to stop, before its
+/// process is killed.
+pub const CANCEL_GRACE: Duration = Duration::from_secs(30);
 
 impl<H: ClientHooks> AcpSession<H> {
-    /// Bound how long one prompt may take. Applies from the next call on, so
-    /// `session/load` and `session/new` keep their own shorter limit.
-    pub fn set_prompt_timeout(&mut self, limit: Duration) {
-        self.prompt_timeout = limit;
+    /// Record what the agent does from now on into `activity`.
+    pub fn set_activity(&mut self, activity: Arc<Mutex<Activity>>) {
+        self.activity = Some(activity);
     }
 
     pub fn was_resumed(&self) -> bool {
@@ -240,7 +247,9 @@ impl<H: ClientHooks> AcpSession<H> {
             workspace: workspace.to_path_buf(),
             hooks,
             next_id: 1,
-            prompt_timeout: DEFAULT_PROMPT_TIMEOUT,
+            activity: None,
+            cancel_grace: CANCEL_GRACE,
+            cancelling: false,
         };
 
         session.initialize().await?;
@@ -333,21 +342,35 @@ impl<H: ClientHooks> AcpSession<H> {
         Ok(())
     }
 
-    /// Run one prompt turn to completion. Blocks (awaiting the agent) until it
-    /// returns a stop reason — during which the agent may issue fs/permission
-    /// requests that we service against the workspace and the policy hooks.
-    pub async fn prompt(&mut self, task: &str) -> Result<TurnResult> {
+    /// Run one prompt turn until the agent ends it — during which the agent may
+    /// issue fs/permission requests that we service against the workspace and
+    /// the policy hooks.
+    ///
+    /// There is no time limit. ACP has no heartbeat, and a turn that says
+    /// nothing for minutes is often a long tool call, which is work; timing it
+    /// out threw that work away. The turn ends when the agent ends it, when its
+    /// process exits, or when `stop` fires: then the agent is sent
+    /// `session/cancel`, which obliges it to wind down and answer `cancelled`,
+    /// and gets [`CANCEL_GRACE`] to do so before this returns an error and the
+    /// caller kills it.
+    pub async fn prompt_until(
+        &mut self,
+        task: &str,
+        stop: &CancellationToken,
+    ) -> Result<TurnResult> {
         let sid = self
             .session_id
             .clone()
             .ok_or_else(|| anyhow!("prompt before session/new"))?;
+        self.cancelling = false;
         let result = self
-            .call(
+            .exchange(
                 "session/prompt",
                 json!({
                     "sessionId": sid,
                     "prompt": [{ "type": "text", "text": task }]
                 }),
+                Some(stop),
             )
             .await?;
         let stop_reason = result
@@ -373,9 +396,27 @@ impl<H: ClientHooks> AcpSession<H> {
 
     // ── JSON-RPC plumbing ─────────────────────────────────────────────────────
 
-    /// Send a request and await its response, servicing any agent-initiated
-    /// requests that arrive in the meantime.
+    /// Send a handshake request and await its response.
     async fn call(&mut self, method: &str, params: Value) -> Result<Value> {
+        tokio::time::timeout(HANDSHAKE_TIMEOUT, self.exchange(method, params, None))
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "ACP `{method}` timed out after {} seconds",
+                    HANDSHAKE_TIMEOUT.as_secs()
+                )
+            })?
+    }
+
+    /// Send a request and await its response, servicing any agent-initiated
+    /// requests that arrive in the meantime. When `stop` fires, ask the agent
+    /// to cancel and give it [`Self::cancel_grace`] to answer.
+    async fn exchange(
+        &mut self,
+        method: &str,
+        params: Value,
+        stop: Option<&CancellationToken>,
+    ) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
         self.send(json!({
@@ -386,14 +427,22 @@ impl<H: ClientHooks> AcpSession<H> {
         }))
         .await?;
 
-        let limit = if method == "session/prompt" {
-            self.prompt_timeout
-        } else {
-            Duration::from_secs(45)
-        };
-        let response = tokio::time::timeout(limit, async {
-          loop {
+        let never = CancellationToken::new();
+        let stop = stop.unwrap_or(&never);
+        let mut grace: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+        loop {
             tokio::select! {
+                _ = stop.cancelled(), if !self.cancelling => {
+                    self.cancelling = true;
+                    self.send_cancel().await?;
+                    grace = Some(Box::pin(tokio::time::sleep(self.cancel_grace)));
+                }
+                _ = async { grace.as_mut().unwrap().await }, if grace.is_some() => {
+                    bail!(
+                        "agent did not stop within {} seconds of session/cancel",
+                        self.cancel_grace.as_secs()
+                    );
+                }
                 // A message from the agent that is our response or an out-of-band one.
                 resp = self.resp_rx.recv() => {
                     let resp = resp.ok_or_else(|| anyhow!("agent closed the connection during `{method}`"))?;
@@ -409,14 +458,29 @@ impl<H: ClientHooks> AcpSession<H> {
                 // An agent-initiated request/notification we must service.
                 req = self.req_rx.recv() => {
                     if let Some(req) = req {
+                        if let Some(activity) = &self.activity {
+                            activity.lock().unwrap().observe(&req, chrono::Utc::now().timestamp());
+                        }
                         self.handle_agent_request(req).await?;
                     }
                 }
             }
-          }
-        }).await;
-        response
-            .map_err(|_| anyhow!("ACP `{method}` timed out after {} seconds", limit.as_secs()))?
+        }
+    }
+
+    /// Tell the agent to stop the current turn (a notification; the turn's
+    /// `session/prompt` response carries the outcome).
+    async fn send_cancel(&mut self) -> Result<()> {
+        let Some(sid) = self.session_id.clone() else {
+            return Ok(());
+        };
+        tracing::info!("[acp] asking the agent to stop session {sid}");
+        self.send(json!({
+            "jsonrpc": "2.0",
+            "method": "session/cancel",
+            "params": { "sessionId": sid },
+        }))
+        .await
     }
 
     /// Handle a request or notification the agent sent us.
@@ -441,6 +505,13 @@ impl<H: ClientHooks> AcpSession<H> {
             "fs/write_text_file" => {
                 let result = self.fs_write(&params);
                 self.reply(id, result).await?;
+            }
+            // Once stopping, whatever the agent asks permission for is the
+            // turn it was told to end. The spec has the client answer those
+            // `cancelled`.
+            "session/request_permission" if self.cancelling => {
+                self.reply(id, Ok(json!({ "outcome": { "outcome": "cancelled" } })))
+                    .await?;
             }
             "session/request_permission" => {
                 if let Some(opts) = params.get("options") {
@@ -639,7 +710,7 @@ fn compact(v: &Value) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -708,5 +779,145 @@ mod tests {
             to_ascii_json(&msg).unwrap(),
             serde_json::to_string(&msg).unwrap()
         );
+    }
+
+    // ── A real turn against a fake agent ─────────────────────────────────────
+    //
+    // The test binary doubles as the agent: `fake_acp_agent` below does nothing
+    // in a normal run, and speaks ACP on stdin/stdout when started as a child
+    // whose agent id is `fake-acp:<mode>` (set only in the child's environment,
+    // so it cannot fire in the parent). libtest's own lines are not JSON, and
+    // the session skips them like any other unparseable line.
+
+    struct AllowAll;
+    impl ClientHooks for AllowAll {
+        fn on_permission(&self, _tool: &Value) -> PermissionDecision {
+            PermissionDecision::Allow
+        }
+    }
+
+    /// The command that starts the fake agent; see [`fake_acp_agent`].
+    pub(crate) fn fake_agent_command() -> Vec<String> {
+        vec![
+            std::env::current_exe().unwrap().display().to_string(),
+            "agent::acp::tests::fake_acp_agent".into(),
+            "--exact".into(),
+            "--nocapture".into(),
+            "--test-threads=1".into(),
+            "-q".into(),
+        ]
+    }
+
+    /// Generous: it bounds a hang in the test, and asserts nothing about speed.
+    const LIVENESS: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn fake_acp_agent() {
+        use std::io::{BufRead, Write};
+        let Some(mode) = std::env::var("ENOXIAN_AGENT_ID")
+            .ok()
+            .and_then(|id| id.strip_prefix("fake-acp:").map(str::to_string))
+        else {
+            return;
+        };
+        let mut out = std::io::stdout();
+        let mut send = |msg: Value| {
+            writeln!(out, "{msg}").unwrap();
+            out.flush().unwrap();
+        };
+        let mut prompt = None;
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let id = msg.get("id").cloned();
+            match msg["method"].as_str() {
+                Some("initialize") => send(json!({"jsonrpc": "2.0", "id": id,
+                    "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": false}}})),
+                Some("session/new") => send(json!({"jsonrpc": "2.0", "id": id,
+                    "result": {"sessionId": "fake-session"}})),
+                // Start a long tool call and say nothing more, as an agent in
+                // the middle of a build does.
+                Some("session/prompt") => {
+                    prompt = id;
+                    send(
+                        json!({"jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": "fake-session", "update": {"sessionUpdate": "tool_call",
+                        "toolCallId": "t1", "title": "long build", "kind": "execute",
+                        "status": "in_progress"}}}),
+                    );
+                }
+                Some("session/cancel") if mode == "cooperative" => {
+                    send(json!({"jsonrpc": "2.0", "id": prompt.take(),
+                        "result": {"stopReason": "cancelled"}}));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    async fn fake_session(mode: &str) -> (AcpSession<AllowAll>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let session = AcpSession::start(
+            &fake_agent_command(),
+            dir.path(),
+            AllowAll,
+            None,
+            &format!("fake-acp:{mode}"),
+            "circle",
+            None,
+        )
+        .await
+        .unwrap();
+        (session, dir)
+    }
+
+    #[tokio::test]
+    async fn stopping_a_turn_asks_the_agent_to_cancel_and_the_turn_ends_cancelled() {
+        let (mut acp, _dir) = fake_session("cooperative").await;
+        let activity = Arc::new(Mutex::new(Activity::default()));
+        acp.set_activity(activity.clone());
+        let stop = CancellationToken::new();
+        // Stop only once the agent is visibly in its tool call: a quiet agent
+        // with a tool call open is working, and is not stopped for being quiet.
+        let stopper = {
+            let (stop, activity) = (stop.clone(), activity.clone());
+            tokio::spawn(async move {
+                while activity.lock().unwrap().open_tools.is_empty() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                stop.cancel();
+            })
+        };
+
+        let turn = tokio::time::timeout(LIVENESS, acp.prompt_until("build it", &stop))
+            .await
+            .expect("the turn ends once the agent answers the cancel")
+            .unwrap();
+
+        assert_eq!(turn.stop_reason, "cancelled");
+        assert_eq!(
+            activity.lock().unwrap().open_tools["t1"].title,
+            "long build"
+        );
+        stopper.await.unwrap();
+        acp.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_ignores_the_cancel_is_given_up_on_after_the_grace() {
+        let (mut acp, _dir) = fake_session("stubborn").await;
+        acp.cancel_grace = Duration::from_millis(200);
+        let stop = CancellationToken::new();
+        stop.cancel();
+
+        let error = tokio::time::timeout(LIVENESS, acp.prompt_until("build it", &stop))
+            .await
+            .expect("the grace bounds how long a stop can take")
+            .unwrap_err();
+
+        assert!(error.to_string().contains("did not stop"), "{error}");
+        acp.shutdown().await;
     }
 }

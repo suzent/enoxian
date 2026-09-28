@@ -160,6 +160,31 @@ What the acp driver gives you that argv does not: a real completion signal
 (stop reason), a **text reply** posted to chat, and **conversation memory** via
 session resume.
 
+#### How long a turn may run
+
+As long as it needs. ACP has no heartbeat, and a turn that says nothing for
+minutes is usually a long tool call (a build, a test suite), which is work. So
+enoxian never stops a turn for taking long. It watches what the agent reports
+instead — each tool call it has open, and when it last said anything — and
+shows it in the activity panel and in `enox runs`. A turn quiet for ten
+minutes with no tool call open is flagged as possibly stuck; nothing more
+happens unless you act.
+
+A turn ends when the agent ends it, when its process exits, or when it is
+stopped:
+
+- **By you**: **Stop** in the activity panel, or `enox runs stop <id>`.
+- **By an addressed request** for the same agent, when the running turn is an
+  unaddressed one.
+
+Stopping sends `session/cancel`, which obliges the agent to wind down and end
+the turn as `cancelled`. It gets 30 seconds; after that its process is ended.
+A stopped turn posts nothing, is recorded as `cancelled` (not a failure), and
+keeps its conversation, so the next turn picks up where it stopped. Anything
+it already changed in the workspace stays, and is reviewed like any other
+change. An argv agent has no protocol to be asked through, so stopping one
+ends its process.
+
 Built-in managed adapter plugins:
 
 - **Claude Code via ACP bridge** — `claude-agent-acp`. The adapter is only the
@@ -402,10 +427,10 @@ passed* rather than silence.
 
 An unaddressed turn is conversational, not a work order. Files it writes are
 recorded as **pending** for review rather than accepted outright, and the agent
-is told to say what needs doing rather than do it. It also gets a shorter leash
-than a request you made on purpose — three minutes by default
-(`ambient_turn_timeout_secs`), so an aside nobody asked for cannot hold up work
-someone did.
+is told to say what needs doing rather than do it. It also gives way to a
+request you made on purpose: if you address an agent while it is in an
+unaddressed turn, that turn is stopped and your request runs next, in the same
+conversation. An aside nobody asked for never holds up work someone did.
 
 ### Catching up after a gap
 

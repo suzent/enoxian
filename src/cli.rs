@@ -110,6 +110,8 @@ pub enum AgentCommands {
     /// What is waiting for an agent, and taking a message so ambient agents
     /// leave it alone
     Inbox(InboxArgs),
+    /// Agent turns running or waiting on this device, and what each is doing
+    Runs(RunsArgs),
     /// Show recent chat messages
     Chat {
         /// Stream new messages as they arrive
@@ -317,6 +319,22 @@ pub enum IdentityAction {
         handle: String,
         /// The 24-word mnemonic (quote the whole phrase)
         mnemonic: String,
+    },
+}
+
+#[derive(Parser)]
+pub struct RunsArgs {
+    #[command(subcommand)]
+    pub action: Option<RunsAction>,
+}
+
+#[derive(Subcommand)]
+pub enum RunsAction {
+    /// Stop a running turn: the agent is asked to wind down and gets 30
+    /// seconds before it is ended. A waiting turn is cancelled.
+    Stop {
+        /// Run id, or an unambiguous prefix of one (the list shows eight)
+        run_id: String,
     },
 }
 
