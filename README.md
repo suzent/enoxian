@@ -218,7 +218,7 @@ For a fuller walkthrough, start with
 
 ## Current Status
 
-The current package version is **0.9.2**.
+The current package version is **0.9.3**.
 
 | Area | Status |
 |------|--------|
