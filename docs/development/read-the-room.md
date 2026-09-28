@@ -34,9 +34,10 @@ model gets guessed wrong.
 3. **Should a drained burst be concatenated?** The tail message carries the turn
    and the others reach the prompt only through the normal history window. That
    is probably enough; if not, the drain could mark them as one thought.
-4. **Per-agent turn timeouts.** `ambient_turn_timeout_secs` is device-wide,
-   because it bounds a shared device resource. A slow local model and a hosted
-   one are not comparable, so a per-agent override may be worth it.
+4. ~~**Per-agent turn timeouts.**~~ Settled differently: turns have no time
+   limit. An unaddressed turn gives way when an addressed request for the same
+   agent arrives, which is what the limit was for; see *How long a turn may
+   run* in the agents guide.
 
 ## 2. Held Draft — shipped
 

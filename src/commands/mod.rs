@@ -19,6 +19,7 @@ pub mod proposals;
 pub mod register;
 pub mod release;
 pub mod rendezvous;
+pub mod runs;
 pub mod say;
 pub mod serve;
 pub mod service;

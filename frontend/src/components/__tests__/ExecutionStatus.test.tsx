@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 const getExecutions = vi.fn()
 const updateExecution = vi.fn(async () => ({}))
 vi.mock('../../api', () => ({ getExecutions, updateExecution }))
-const { default: ExecutionStatus } = await import('../ExecutionStatus')
+const { default: ExecutionStatus, describeActivity, QUIET_HINT_SECS } = await import('../ExecutionStatus')
 beforeEach(() => { cleanup(); vi.clearAllMocks(); getExecutions.mockResolvedValue({ peer_id: 'local', runs: [
   { run_id: 'r1', message_id: 'm1', agent_id: 'claude', peer_id: 'local', status: 'interrupted', ambient: false },
   { run_id: 'r2', message_id: 'm2', agent_id: 'codex', peer_id: 'remote', status: 'failed', ambient: false },
@@ -88,5 +88,39 @@ describe('agent activity', () => {
     await screen.findByText(/Needs attention/)
     resolveOld({ peer_id: 'wrong', runs: [] })
     await waitFor(() => expect(screen.getByText(/Needs attention/)).toBeTruthy())
+  })
+  it('shows what a running turn is doing and stops it only after confirmation', async () => {
+    const now = Date.now() / 1000
+    getExecutions.mockResolvedValue({ peer_id: 'local', runs: [
+      { run_id: 'r9', message_id: 'm9', agent_id: 'claude', peer_id: 'local', status: 'running', ambient: false },
+    ], activity: { r9: { started_at: now - 300, idle_secs: 200, stopping: false,
+      open_tools: [{ title: 'cargo test', status: 'in_progress', since: now - 240 }] } } })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
+    render(<ExecutionStatus circleId="circle" />)
+    expect(await screen.findByText(/using cargo test \(4m\)/)).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    expect(updateExecution).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    await waitFor(() => expect(updateExecution).toHaveBeenCalledWith('circle', 'r9', 'cancel'))
+    expect(confirm).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('describeActivity', () => {
+  const base = { started_at: 0, open_tools: [], stopping: false }
+  it('names an open tool call instead of calling the turn quiet', () => {
+    const d = describeActivity({ ...base, idle_secs: QUIET_HINT_SECS * 3,
+      open_tools: [{ title: 'build', status: 'in_progress', since: 0 }] }, 3600)
+    expect(d.quiet).toBe(false)
+    expect(d.text).toContain('using build')
+  })
+  it('hints, and only hints, when nothing is reported for a long time', () => {
+    expect(describeActivity({ ...base, idle_secs: QUIET_HINT_SECS - 1 }, 1000).quiet).toBe(false)
+    const quiet = describeActivity({ ...base, idle_secs: QUIET_HINT_SECS }, 1000)
+    expect(quiet.quiet).toBe(true)
+    expect(quiet.text).toContain('may be stuck')
+  })
+  it('says when a turn is stopping', () => {
+    expect(describeActivity({ ...base, idle_secs: 0, stopping: true }, 5).text).toBe('Stopping…')
   })
 })

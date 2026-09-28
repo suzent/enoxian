@@ -40,14 +40,21 @@ Explicit mentions or replies are the reliable form for offline requests.
 - `failed`: the invocation or reply publication failed; no automatic retry.
 - `interrupted`: the daemon restarted with a run still marked running. No automatic
   retry, because external effects may already have happened.
-- `cancelled`: a chain stop, targeting change, or relay budget prevented execution.
+- `cancelled`: a chain stop, targeting change, or relay budget prevented execution;
+  or the turn was stopped while running — by the user, or because an addressed
+  request for the same agent took over an unaddressed turn. A stopped turn posts
+  nothing and is not handed to another listener.
 - `expired`: queue overflow displaced the request, or a pending ambient observation
   was discarded on restart.
 
 Retry or cancel through the Agent delivery panel. Retry creates a new attempt and
 retains the previous outcome; the UI asks the user to acknowledge possible duplicate
-effects. Only pending attempts can be cancelled. Transcript replay never revives a
-terminal request.
+effects. Cancelling a pending attempt cancels it; cancelling a running one stops
+its agent through ACP `session/cancel`, with 30 seconds to wind down before its
+process is ended. Transcript replay never revives a terminal request.
+
+For each agent, addressed requests run before unaddressed ones, oldest first
+within each. Turns have no time limit.
 
 Atomic snapshot replacement and file synchronization precede acknowledgement and
 launch. A process-level file lock prevents two inbox owners from executing the same

@@ -270,6 +270,12 @@ async fn main() -> anyhow::Result<()> {
                     )
                     .await
                 }
+                AgentCommands::Runs(args) => match args.action {
+                    None => enoxian::commands::runs::list(&client, &base, cli.json).await,
+                    Some(enoxian::cli::RunsAction::Stop { run_id }) => {
+                        enoxian::commands::runs::stop(&client, &base, run_id, cli.json).await
+                    }
+                },
                 AgentCommands::Inbox(args) => {
                     use enoxian::cli::InboxAction;
                     match args.action {

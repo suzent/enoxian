@@ -120,6 +120,9 @@ pub struct AppState {
     /// outside the swarm loop — handing the admin key over on leave. Set once
     /// the swarm is built; absent in tests and before start.
     stream_control: Arc<std::sync::OnceLock<libp2p_stream::Control>>,
+    /// Agent turns running in this Circle on this device: what each is doing,
+    /// and a way to stop it. Local and in memory; no peer needs it.
+    pub live_runs: crate::agent::liveness::LiveRuns,
     /// Why the reaction loop did not act on a message. Local and in-memory for
     /// the same reason as `approval_errors`: these are this device's own
     /// reasons for declining to spend, and no peer needs them.
@@ -568,6 +571,7 @@ impl AppState {
             blob_wants: blob_wants_tx,
             approval_errors: Arc::new(DashMap::new()),
             stream_control: Arc::new(std::sync::OnceLock::new()),
+            live_runs: Default::default(),
             admission_log: Arc::new(crate::agent::decisions::AdmissionLog::new()),
             join_policy,
             owner,

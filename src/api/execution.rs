@@ -79,6 +79,7 @@ pub async fn list(
     let next_cursor = matching
         .next()
         .and_then(|_| page.last().map(|e| e.run_id.clone()));
+    let now = chrono::Utc::now().timestamp();
     let runs: Vec<_> = page
         .into_iter()
         .map(|e| {
@@ -89,6 +90,7 @@ pub async fn list(
                 "relay_root": e.request.relay.as_ref().map(|r| &r.root),
                 "reply_to": e.request.message.reply_to,
                 "ambient": e.request.ambient,
+                "activity": state.live_runs.get(&e.run_id).map(|run| run.snapshot(now)),
             })
         })
         .collect();
@@ -127,6 +129,24 @@ pub async fn update(
     };
     let now = chrono::Utc::now().timestamp();
     let result = match action.action.as_str() {
+        // A running turn is asked to stop; the run settles as cancelled once
+        // the agent winds down (or is killed for not doing so).
+        "cancel"
+            if inbox
+                .entries()
+                .iter()
+                .any(|e| e.run_id == run && e.status == crate::agent::inbox::Status::Running) =>
+        {
+            match state.live_runs.get(&run) {
+                Some(live) => {
+                    live.request_stop(crate::agent::liveness::StopCause::Requested);
+                    Ok(json!({"status": "stopping"}))
+                }
+                None => Err(anyhow::anyhow!(
+                    "the run has not started its agent yet; try again in a moment"
+                )),
+            }
+        }
         "cancel" => inbox
             .transition(
                 &run,
@@ -285,9 +305,18 @@ pub async fn deliveries(
     // they are here rather than on their own endpoint only so the activity
     // panel — which already polls this one — can show a run and the reason a
     // run is missing side by side. No peer sees them.
+    // What this device's running turns are doing, by run id. Local, like the
+    // two fields below it: it changes constantly and no peer needs it.
+    let now = chrono::Utc::now().timestamp();
+    let activity: serde_json::Map<String, serde_json::Value> = runs
+        .iter()
+        .filter_map(|run| run["run_id"].as_str())
+        .filter_map(|id| Some((id.to_string(), state.live_runs.get(id)?.snapshot(now))))
+        .collect();
     Json(json!({
         "peer_id": state.peer_id,
         "runs": runs,
+        "activity": activity,
         "readiness": readiness(&state),
         "skips": state.admission_log.recent(30),
     }))
@@ -323,4 +352,82 @@ fn readiness(state: &crate::state::AppState) -> serde_json::Value {
         // there is no agent for the drain to offer anything to.
         "ambient_unconfigured": missing,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::inbox::{tests::request, Status};
+
+    fn circle() -> (
+        DaemonState,
+        crate::state::AppState,
+        std::sync::Arc<Inbox>,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::state::AppState::new(
+            "c1".into(),
+            "circle".into(),
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            String::new(),
+            "label".into(),
+            1,
+            "peer".into(),
+            crate::config::JoinPolicy::Manual,
+            "owner".into(),
+            crate::mls::new_mls_state(crate::mls::MlsIdentity::generate("peer").unwrap(), None),
+        );
+        let inbox = std::sync::Arc::new(Inbox::open(dir.path(), 100).unwrap());
+        *state.execution_inbox.write().unwrap() = Some(std::sync::Arc::downgrade(&inbox));
+        let daemon = DaemonState::new();
+        daemon.insert_circle(
+            "c1".into(),
+            state.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        (daemon, state, inbox, dir)
+    }
+
+    async fn cancel(daemon: &DaemonState, run: &str) -> (StatusCode, serde_json::Value) {
+        let resp = update(
+            State(daemon.clone()),
+            Path(("c1".into(), run.into())),
+            Json(Action {
+                action: "cancel".into(),
+            }),
+        )
+        .await;
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_running_turn_asks_it_to_stop() {
+        let (daemon, state, inbox, _dir) = circle();
+        inbox.admit(request("m", "claude"), 20, 100).unwrap();
+        let entry = inbox.entries().remove(0);
+        inbox
+            .transition(&entry.run_id, Status::Pending, Status::Running, None, 101)
+            .unwrap();
+
+        // Running, but its agent not started yet: nothing to stop so far.
+        let (status, body) = cancel(&daemon, &entry.run_id).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+        let live = state
+            .live_runs
+            .register(&entry.run_id, "claude", false, 101);
+        let (status, body) = cancel(&daemon, &entry.run_id).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "stopping");
+        assert_eq!(
+            live.run().stop_cause(),
+            Some(crate::agent::liveness::StopCause::Requested)
+        );
+    }
 }

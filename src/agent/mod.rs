@@ -24,6 +24,7 @@ pub mod handled;
 pub mod inbox;
 pub mod label;
 pub mod ledger;
+pub mod liveness;
 pub mod memory;
 pub mod mention;
 pub mod plugin;

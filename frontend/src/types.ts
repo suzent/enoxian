@@ -301,6 +301,17 @@ export interface Readiness {
   ambient_unconfigured: string[]
 }
 
+/** What a turn running on this device is doing. Reported, never acted on:
+ *  ACP has no heartbeat, and a long tool call is work, not a hang. */
+export interface RunActivity {
+  started_at: number
+  last_activity_at?: number | null
+  idle_secs: number
+  last_kind?: string | null
+  open_tools: { title: string; kind?: string | null; status: string; since: number }[]
+  stopping: boolean
+}
+
 export interface ExecutionRun {
   admitted_at?: number
   updated_at?: number

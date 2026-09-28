@@ -1,12 +1,41 @@
 import { useEffect, useRef, useState } from 'react'
 import { getExecutions, updateExecution } from '../api'
-import type { AdmissionSkip, ChatMessage, ExecutionRun, Member, Readiness } from '../types'
+import type { AdmissionSkip, ChatMessage, ExecutionRun, Member, Readiness, RunActivity } from '../types'
 
 const retryable = new Set(['failed', 'interrupted', 'expired', 'cancelled'])
 const statusLabels: Record<ExecutionRun['status'], string> = {
   pending: 'Waiting for a turn', running: 'Working', completed: 'Finished',
   failed: 'Couldn’t finish', interrupted: 'Stopped unexpectedly',
   expired: 'Not run', cancelled: 'Cancelled', legacy_suppressed: 'Outcome unavailable',
+}
+
+function ago(secs: number) {
+  const s = Math.max(0, Math.floor(secs))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m`
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+}
+
+/** How long a turn can say nothing, with no tool call open, before the panel
+ *  mentions it. Only a hint for whoever is looking: nothing is stopped. */
+export const QUIET_HINT_SECS = 10 * 60
+
+/** One line on what a running turn is doing: its open tool calls, or how long
+ *  it has been quiet. */
+export function describeActivity(activity: RunActivity, now: number): { text: string; quiet: boolean } {
+  if (activity.stopping) return { text: 'Stopping…', quiet: false }
+  const running = `Running ${ago(now - activity.started_at)}`
+  if (activity.open_tools.length > 0) {
+    const tools = activity.open_tools.map(t => `${t.title} (${ago(now - t.since)})`).join(', ')
+    return { text: `${running} · using ${tools}`, quiet: false }
+  }
+  const quiet = activity.idle_secs >= QUIET_HINT_SECS
+  return {
+    text: quiet
+      ? `${running} · nothing reported for ${ago(activity.idle_secs)}. It may be stuck; stop it if so.`
+      : `${running} · last activity ${ago(activity.idle_secs)} ago`,
+    quiet,
+  }
 }
 
 function normalizedAgent(run: ExecutionRun) {
@@ -36,6 +65,7 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
 }) {
   const [selfPeer, setSelfPeer] = useState<string | undefined>()
   const [runs, setRuns] = useState<ExecutionRun[]>([])
+  const [activity, setActivity] = useState<Record<string, RunActivity>>({})
   const [skips, setSkips] = useState<AdmissionSkip[]>([])
   const [readiness, setReadiness] = useState<Readiness | undefined>()
   const [error, setError] = useState<string | null>(null)
@@ -45,14 +75,14 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
     const current = ++generation.current
     let disposed = false
     let loading = false
-    setRuns([]); setSkips([]); setReadiness(undefined); setSelfPeer(undefined); setError(null); setBusy(null)
+    setRuns([]); setActivity({}); setSkips([]); setReadiness(undefined); setSelfPeer(undefined); setError(null); setBusy(null)
     const refresh = async () => {
       if (loading) return
       loading = true
       try {
         const page = await getExecutions(circleId)
         if (!disposed && generation.current === current) {
-          setRuns(page.runs); setSkips(page.skips ?? []); setReadiness(page.readiness)
+          setRuns(page.runs); setActivity(page.activity ?? {}); setSkips(page.skips ?? []); setReadiness(page.readiness)
           setSelfPeer(page.peer_id); setError(null)
         }
       } catch {
@@ -65,13 +95,14 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
   }, [circleId])
   const act = async (run: ExecutionRun, action: 'retry' | 'cancel') => {
     if (action === 'retry' && !window.confirm('Run this request again? The earlier attempt may already have changed files or performed actions.')) return
+    if (action === 'cancel' && run.status === 'running' && !window.confirm('Stop this turn? The agent is asked to wind down and posts nothing; anything it already changed stays.')) return
     const current = generation.current
     setBusy(run.run_id)
     try {
       await updateExecution(circleId, run.run_id, action)
       const page = await getExecutions(circleId)
       if (generation.current === current) {
-        setRuns(page.runs); setSkips(page.skips ?? []); setReadiness(page.readiness)
+        setRuns(page.runs); setActivity(page.activity ?? {}); setSkips(page.skips ?? []); setReadiness(page.readiness)
         setSelfPeer(page.peer_id); setError(null)
       }
     } catch (e) {
@@ -108,6 +139,8 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
       const source = messages.find(m => m.id === run.message_id)
       const ambient = run.ambient || run.agent_id.startsWith('~ambient:')
       const label = run.status === 'completed' && run.detail === 'No reply needed' ? 'No reply needed' : statusLabels[run.status]
+      const running = activity[run.run_id]
+      const live = running ? describeActivity(running, Date.now() / 1000) : undefined
       return <li key={run.run_id} className={`agent-activity__item agent-activity__item--${run.status}`}>
         <div className="agent-activity__identity">
           <strong className="agent-activity__name">@{agent}</strong>
@@ -120,8 +153,10 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
         </div>
         {source ? <a className="agent-activity__source" href={`#chat-message-${run.message_id}`} onClick={onNavigate} title={source.text}>{source.text}</a>
           : <span className="agent-activity__unavailable">Message unavailable</span>}
+        {run.status === 'running' && live && <p className={`agent-activity__live${live.quiet ? ' agent-activity__live--quiet' : ''}`}>{live.text}</p>}
         {run.detail && run.detail !== label && <p className="agent-activity__detail">{run.detail}</p>}
         <div className="agent-activity__actions">
+          {local && run.status === 'running' && running && <button type="button" className="underline underline-offset-2" disabled={busy !== null || running.stopping} onClick={() => void act(run, 'cancel')}>{running.stopping ? 'Stopping…' : busy === run.run_id ? 'Updating…' : 'Stop'}</button>}
           {local && run.status === 'pending' && <button type="button" className="underline underline-offset-2" disabled={busy !== null} onClick={() => void act(run, 'cancel')}>{busy === run.run_id ? 'Updating…' : 'Cancel request'}</button>}
           {local && canRetry(run) && <button type="button" className="underline underline-offset-2" disabled={busy !== null} onClick={() => void act(run, 'retry')}>{busy === run.run_id ? 'Updating…' : 'Try again'}</button>}
           {!local && canRetry(run) && <span className="text-slate">Retry on {device}.</span>}

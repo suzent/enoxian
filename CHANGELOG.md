@@ -41,6 +41,13 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- `enox runs` lists the agent turns running or waiting on this device and what
+  each running one is doing: the tool calls it has open, or how long it has been
+  quiet. The activity panel shows the same, and flags a turn quiet for ten
+  minutes with no tool call open as possibly stuck. `enox runs stop <id>`, or
+  **Stop** in the panel, stops a running turn: the agent is asked to wind down
+  and gets 30 seconds before it is ended. A stopped turn posts nothing, is
+  recorded as cancelled, and keeps its conversation.
 - `enox leave` on the admin's device first hands the admin key to another
   member: another device proven to belong to the same user if one is online,
   otherwise roughly the member that joined first, or the one named with
@@ -65,6 +72,13 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
+- Agent turns no longer time out. A turn nobody addressed used to be cut off
+  after three minutes and an addressed one after thirty, even while the agent
+  was working through a long build; the work was lost and the next listener
+  often hit the same limit. Instead, an unaddressed turn gives way when you
+  address the same agent: it is stopped and your request runs next, in the same
+  conversation. The `ambient_turn_timeout_secs` setting is gone; a config that
+  still sets it loads as before.
 - Agents are told which machine each other agent is on. Two agents with the
   same name used to look identical in the conversation an agent is shown —
   "claude: …" twice, one of them possibly the reader itself — and in who else

@@ -438,8 +438,11 @@ Read recipient-local execution summaries without changing run state. Supports
 `message_id`, `limit` (default 50, maximum 200), and `before` (the previous page's
 `next_cursor`). Returns `peer_id`, `activated_at`, `runs`, and `next_cursor`.
 Run states include `pending`, `running`, `completed`, `failed`, `interrupted`,
-`cancelled`, and `expired`. Prompt bodies, executable commands and credentials are
-not returned. This is local status, not a cross-device delivery receipt.
+`cancelled`, and `expired`. A running run carries `activity` (otherwise `null`):
+`started_at`, `last_activity_at`, `idle_secs`, `last_kind`, `open_tools` (each
+`title`, `kind`, `status`, `since`) and `stopping`. Prompt bodies, executable
+commands and credentials are not returned. This is local status, not a
+cross-device delivery receipt.
 See [Execution inbox](execution-inbox.md) for lifecycle and recovery.
 
 ### `GET /circles/<id>/api/chat/engagement`
@@ -880,9 +883,14 @@ Yjs sync WebSocket for collaborative document editing. Connect with a standard Y
 
 `GET /circles/{id}/api/chat/deliveries` returns recent replicated, sanitized run
 receipts and the local peer ID. These are last-known recipient states, not presence.
+The response also carries `activity`, this device's running runs' activity by run
+id (see above); like `skips`, it is local and not replicated.
 `POST /circles/{id}/api/chat/executions/{run_id}` accepts an `action` of `retry` or
-`cancel`; cancellation applies only to pending runs, and retry preserves the previous
-attempt. Requests to mutate a remote run must go to its recipient device.
+`cancel`. Cancelling a pending run cancels it; cancelling a running one asks its
+agent to stop (`{"status": "stopping"}`), and the run settles as `cancelled` once
+the agent winds down or is ended 30 seconds later. A running run whose agent has
+not started yet answers `409`; try again. Retry preserves the previous attempt.
+Requests to mutate a remote run must go to its recipient device.
 
 Chat reads support `after_id` and `limit` (1–200) for chronological history pages.
 New chat records include optional `thread_root` and explicit `reply_to`; neither
