@@ -67,8 +67,12 @@ future explicit retention protocol, not a timeout that could revive old work.
 
 The existing four-pending-turn limit per agent is retained; a 64-pending-turn limit
 also bounds the whole Circle, with 256 pending requests across active device inboxes.
-Per-agent/Circle overflow expires the oldest affected pending request; device
-overflow expires the new admission with a visible reason. Running requests are never
+Per-agent/Circle overflow expires the oldest affected pending *unaddressed*
+request. Only a queue holding nothing but addressed requests gives up one of those,
+its oldest, and only for another addressed request; an unaddressed request arriving
+at such a queue is the one that expires. Device overflow expires the new admission
+with a visible reason, and recovery over the device limit keeps addressed requests
+first, then oldest. Running requests are never
 displaced. Pending jobs, terminal outcomes, and last-known remote receipts are shown
 in the Agent delivery panel.
 

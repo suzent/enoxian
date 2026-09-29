@@ -112,6 +112,32 @@ pub enum Admission {
     Accepted { entry: Entry, displaced: Vec<Entry> },
 }
 
+/// Which entries a queue limit counts.
+type Queue<'a> = dyn Fn(&Entry) -> bool + 'a;
+
+/// The pending entry in `queue` that gives way when it is full.
+///
+/// Unaddressed requests go first, oldest first: nobody asked for them, and an
+/// addressed request is owed its turn. Only a queue holding nothing but
+/// addressed requests displaces the oldest of those — and only for another
+/// addressed request. `None` means the incoming unaddressed request is the one
+/// to refuse.
+fn make_room(
+    entries: &[Entry],
+    queue: &dyn Fn(&Entry) -> bool,
+    incoming_ambient: bool,
+) -> Option<usize> {
+    let pending = |e: &Entry| e.status == Status::Pending && queue(e);
+    entries
+        .iter()
+        .position(|e| pending(e) && e.request.ambient)
+        .or_else(|| {
+            (!incoming_ambient)
+                .then(|| entries.iter().position(pending))
+                .flatten()
+        })
+}
+
 /// Take the exclusive owner lock, waiting out a departing owner's fork window.
 ///
 /// `flock` belongs to the open file description, not the fd, so a child forked
@@ -215,12 +241,13 @@ impl Inbox {
         };
         let mut aggregate = PENDING.lock().unwrap();
         let available = MAX_PENDING_PER_DEVICE.saturating_sub(aggregate.values().sum());
-        for entry in snapshot
-            .entries
-            .iter_mut()
-            .filter(|e| e.status == Status::Pending)
-            .skip(available)
-        {
+        // Keep addressed requests over unaddressed ones, then oldest first.
+        let mut pending: Vec<usize> = (0..snapshot.entries.len())
+            .filter(|&i| snapshot.entries[i].status == Status::Pending)
+            .collect();
+        pending.sort_by_key(|&i| (snapshot.entries[i].request.ambient, i));
+        for &i in pending.iter().skip(available) {
+            let entry = &mut snapshot.entries[i];
             entry.status = Status::Expired;
             entry.detail = Some("device queue capacity exceeded during recovery".into());
             entry.updated_at = now;
@@ -390,39 +417,48 @@ impl Inbox {
             *current = next;
             return Ok(Admission::Rejected(entry));
         }
-        let agent_pending = next
-            .entries
-            .iter()
-            .filter(|e| e.status == Status::Pending && e.request.agent == entry.request.agent)
-            .count();
-        if agent_pending >= MAX_PENDING_PER_AGENT {
-            if let Some(old) = next
+        let agent = entry.request.agent.clone();
+        let limits: [(&Queue<'_>, usize, &str); 2] = [
+            (
+                &|e: &Entry| e.request.agent == agent,
+                MAX_PENDING_PER_AGENT,
+                "per-agent queue capacity exceeded",
+            ),
+            (
+                &|_: &Entry| true,
+                MAX_PENDING_PER_CIRCLE,
+                "Circle queue capacity exceeded",
+            ),
+        ];
+        for (queue, limit, reason) in limits {
+            let queued = next
                 .entries
-                .iter_mut()
-                .find(|e| e.status == Status::Pending && e.request.agent == entry.request.agent)
-            {
-                old.status = Status::Expired;
-                old.detail = Some("per-agent queue capacity exceeded".into());
-                old.updated_at = now;
-                displaced.push(old.clone());
+                .iter()
+                .filter(|e| e.status == Status::Pending && queue(e))
+                .count();
+            if queued < limit {
+                continue;
             }
-        }
-        if next
-            .entries
-            .iter()
-            .filter(|e| e.status == Status::Pending)
-            .count()
-            >= MAX_PENDING_PER_CIRCLE
-        {
-            if let Some(old) = next
-                .entries
-                .iter_mut()
-                .find(|e| e.status == Status::Pending)
-            {
-                old.status = Status::Expired;
-                old.detail = Some("Circle queue capacity exceeded".into());
-                old.updated_at = now;
-                displaced.push(old.clone());
+            match make_room(&next.entries, queue, entry.request.ambient) {
+                Some(index) => {
+                    let old = &mut next.entries[index];
+                    old.status = Status::Expired;
+                    old.detail = Some(reason.into());
+                    old.updated_at = now;
+                    displaced.push(old.clone());
+                }
+                // Full of addressed requests, and this one is not: it is the
+                // one that gives way.
+                None => {
+                    entry.status = Status::Expired;
+                    entry.detail = Some(reason.into());
+                    let mut rejected = current.clone();
+                    rejected.entries.push(entry.clone());
+                    self.persist(&rejected)?;
+                    aggregate.insert(self.path.clone(), pending_count(&rejected));
+                    *current = rejected;
+                    return Ok(Admission::Rejected(entry));
+                }
             }
         }
         // Displaced pending turns never launched, so return their reservations.
@@ -922,6 +958,122 @@ pub(crate) mod tests {
             "claude",
         ));
         req
+    }
+
+    fn aside(id: &str, agent: &str) -> Request {
+        let mut req = request(id, agent);
+        req.ambient = true;
+        req.mention_key = format!("~ambient:{agent}");
+        req
+    }
+
+    fn status_of(inbox: &Inbox, id: &str) -> Status {
+        inbox
+            .entries()
+            .into_iter()
+            .find(|e| e.request.message.id == id)
+            .unwrap()
+            .status
+    }
+
+    #[test]
+    fn a_full_agent_queue_gives_up_an_unaddressed_request_before_an_older_addressed_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        for req in [
+            request("a1", "claude"),
+            aside("b1", "claude"),
+            request("a2", "claude"),
+            request("a3", "claude"),
+        ] {
+            accepted(&inbox, req);
+        }
+
+        let Admission::Accepted { displaced, .. } =
+            inbox.admit(request("a4", "claude"), 20, 101).unwrap()
+        else {
+            panic!("an addressed request is admitted");
+        };
+
+        assert_eq!(displaced.len(), 1);
+        assert_eq!(displaced[0].request.message.id, "b1");
+        assert_eq!(
+            status_of(&inbox, "a1"),
+            Status::Pending,
+            "the oldest addressed one stays"
+        );
+        assert_eq!(status_of(&inbox, "a4"), Status::Pending);
+    }
+
+    #[test]
+    fn a_queue_full_of_addressed_requests_refuses_an_unaddressed_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        for i in 0..MAX_PENDING_PER_AGENT {
+            accepted(&inbox, request(&format!("a{i}"), "claude"));
+        }
+
+        let Admission::Rejected(refused) = inbox.admit(aside("b", "claude"), 20, 101).unwrap()
+        else {
+            panic!("the aside is the one that gives way");
+        };
+
+        assert_eq!(refused.status, Status::Expired);
+        assert_eq!(
+            refused.detail.as_deref(),
+            Some("per-agent queue capacity exceeded")
+        );
+        for i in 0..MAX_PENDING_PER_AGENT {
+            assert_eq!(status_of(&inbox, &format!("a{i}")), Status::Pending);
+        }
+    }
+
+    #[test]
+    fn a_queue_full_of_addressed_requests_still_makes_room_for_a_newer_addressed_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        for i in 0..MAX_PENDING_PER_AGENT {
+            accepted(&inbox, request(&format!("a{i}"), "claude"));
+        }
+        assert!(matches!(
+            inbox.admit(request("new", "claude"), 20, 101).unwrap(),
+            Admission::Accepted { .. }
+        ));
+        assert_eq!(status_of(&inbox, "a0"), Status::Expired);
+        assert_eq!(status_of(&inbox, "new"), Status::Pending);
+    }
+
+    #[test]
+    fn a_full_circle_queue_gives_up_an_unaddressed_request_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        // Filled to the Circle's limit, four per agent, one aside among them.
+        for i in 0..MAX_PENDING_PER_CIRCLE {
+            let agent = format!("agent{}", i / MAX_PENDING_PER_AGENT);
+            let id = format!("m{i}");
+            accepted(
+                &inbox,
+                if i == 9 {
+                    aside(&id, &agent)
+                } else {
+                    request(&id, &agent)
+                },
+            );
+        }
+
+        let Admission::Accepted { displaced, .. } =
+            inbox.admit(request("new", "latecomer"), 20, 101).unwrap()
+        else {
+            panic!("an addressed request is admitted");
+        };
+
+        assert_eq!(displaced.len(), 1);
+        assert_eq!(displaced[0].request.message.id, "m9");
+        assert_eq!(
+            displaced[0].detail.as_deref(),
+            Some("Circle queue capacity exceeded")
+        );
+        assert_eq!(status_of(&inbox, "m0"), Status::Pending);
     }
 
     #[test]
