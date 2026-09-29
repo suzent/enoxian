@@ -94,6 +94,12 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- A full agent queue no longer drops a request you made to keep one nobody
+  made. When an agent had four requests waiting, the next one pushed out the
+  oldest, even if that was an addressed request and a newer one was only the
+  agent reading the room. Unaddressed requests now go first, and one arriving
+  at a queue full of addressed requests is the one turned away. The same holds
+  for a Circle's queue.
 - A device that left a circle and entered it again is admitted again. It used
   to stay pending for good: connected, but every sync timed out waiting for a
   key it was never given. A replacement key is only accepted when the device
