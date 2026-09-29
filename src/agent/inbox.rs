@@ -241,7 +241,10 @@ impl Inbox {
         };
         let mut aggregate = PENDING.lock().unwrap();
         let available = MAX_PENDING_PER_DEVICE.saturating_sub(aggregate.values().sum());
-        // Keep addressed requests over unaddressed ones, then oldest first.
+        // Within this Circle, keep addressed requests over unaddressed ones,
+        // then oldest first. Only within it: Circles recover one at a time, and
+        // this one gets whatever the ones opened before it left of the device
+        // limit, so this is not an ordering across the device.
         let mut pending: Vec<usize> = (0..snapshot.entries.len())
             .filter(|&i| snapshot.entries[i].status == Status::Pending)
             .collect();
