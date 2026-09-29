@@ -174,6 +174,10 @@ enox update --dev
 
 Create a new Circle, generate a workspace directory, and print a shareable invite link.
 
+The workspace gets a minimal `AGENTS.md` at its root: a place for the circle to
+write down how its shared folder is laid out, which agents read first. It is
+written only if the folder has none, and enoxian never touches it again.
+
 ```bash
 enox init --name <NAME> [--ttl <DURATION>] [--dir <PATH>] [--owner <NAME>]
           [--join-policy auto|manual]

@@ -43,6 +43,12 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Agents the daemon runs are told what the circle's folder is for: a shared
+  knowledge base and index (notes, hand-offs, device details, where things
+  live), not a place to clone or build repositories. They are told to read an
+  `AGENTS.md` at the folder's root first, where a circle writes its own
+  conventions. `enox init` writes a minimal one into a new circle's folder if
+  it has none, and never touches it afterwards.
 - `enox runs` lists the agent turns running or waiting on this device and what
   each running one is doing: the tool calls it has open, or how long it has been
   quiet. The activity panel shows the same, and flags a turn quiet for ten
@@ -96,6 +102,9 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- A resumed agent session is no longer sent the standing circle brief again on
+  every turn, and an agent whose session could not be restored no longer gets
+  it twice.
 - A full agent queue no longer drops a request you made to keep one nobody
   made. When an agent had four requests waiting, the next one pushed out the
   oldest, even if that was an addressed request and a newer one was only the

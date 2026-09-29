@@ -1,3 +1,6 @@
+use std::io::Write;
+use std::path::Path;
+
 use anyhow::{bail, Result};
 use chrono::Utc;
 use uuid::Uuid;
@@ -126,6 +129,12 @@ pub async fn run(args: InitArgs) -> Result<()> {
         .save(&mls_identity, &cdir)
         .map_err(|e| anyhow::anyhow!("failed to save MLS group: {e}"))?;
 
+    // ── Seed the Circle's own conventions ─────────────────────────────────────
+    // The circle is made by now, so a failure here is reported, not fatal.
+    if let Err(e) = seed_agents_md(&workspace_dir, &args.name) {
+        eprintln!("  warning: could not write AGENTS.md: {e}");
+    }
+
     // ── Generate invite ───────────────────────────────────────────────────────
     let admin_pubkey_bytes = hex::decode(&admin_pubkey_hex).ok();
     let expires_at = Utc::now() + ttl;
@@ -163,4 +172,66 @@ pub async fn run(args: InitArgs) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// A minimal root `AGENTS.md` for a new Circle, where members write down how
+/// their shared folder is laid out. The standing agent brief tells every agent
+/// to read it first (see `agent::context`).
+///
+/// Written once, when the Circle is created, and only if the folder has none:
+/// `--dir` may point at a folder that already holds one. After that the file
+/// belongs to the members, and enoxian never rewrites it. Devices that join
+/// get it by sync like any other file.
+fn seed_agents_md(workspace: &Path, circle_name: &str) -> std::io::Result<bool> {
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(workspace.join("AGENTS.md"));
+    let mut file = match file {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    file.write_all(agents_md_template(circle_name).as_bytes())?;
+    Ok(true)
+}
+
+fn agents_md_template(circle_name: &str) -> String {
+    format!(
+        "# {circle_name}\n\
+         \n\
+         This folder is the circle's shared knowledge base and index. Agents read this \
+         file first; edit it to fit how the circle works.\n\
+         \n\
+         - `devices/<device>.md`: what each device is, what it runs, where its checkouts live\n\
+         - `notes/`: shared working text and decisions\n\
+         - `handoffs/`: work passed between devices or agents\n\
+         \n\
+         Keep repositories and build output out of this folder. Record where they live \
+         instead (device, path, branch).\n"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_circle_gets_an_agents_md_naming_it() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(seed_agents_md(dir.path(), "Studio").unwrap());
+        let text = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert!(text.starts_with("# Studio\n\nThis folder is the circle's shared knowledge base"));
+        assert!(text.contains("- `notes/`: shared working text and decisions\n"));
+    }
+
+    /// `--dir` can point at a folder that already has one. It is left alone.
+    #[test]
+    fn an_existing_agents_md_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("AGENTS.md");
+        std::fs::write(&path, "ours\n").unwrap();
+        assert!(!seed_agents_md(dir.path(), "Studio").unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "ours\n");
+    }
 }
