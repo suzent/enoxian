@@ -489,6 +489,7 @@ fn standing_brief(state: &AppState, agent_id: &str, framing: Framing) -> String 
          Anything you write to files here is captured as a reviewable *proposal* that members can \
          accept, reject, or revert — so make focused, clear changes and explain what you did. \
          Your text reply is posted back into the circle chat, so answer conversationally.\n\
+         {conventions}\
          If another agent is clearly better placed for part of the work, you may hand it over by \
          mentioning it. Whether it actually runs is that device's own decision, only the first \
          agent you mention is woken, and a chain of hand-offs shares a limited budget — so do the \
@@ -501,8 +502,28 @@ fn standing_brief(state: &AppState, agent_id: &str, framing: Framing) -> String 
         addressing = addressing,
         roster = roster,
         woken = woken,
+        conventions = WORKSPACE_CONVENTIONS,
     )
 }
+
+/// What the shared folder is for, stated in the brief because it is the one
+/// text every agent the daemon runs is sure to read, whatever product it is.
+///
+/// Agents otherwise treat the workspace as any other working directory and
+/// clone or scaffold repositories into it. Every file there syncs to every
+/// member and becomes a proposal someone has to review, so a checkout floods
+/// the Circle. The reason is given, not just the rule, so the agent can judge
+/// the cases the rule does not name. A Circle's own layout belongs in its root
+/// `AGENTS.md`, which members edit; this only points at it.
+const WORKSPACE_CONVENTIONS: &str =
+    "This shared folder is the circle's knowledge base and index, not a place to build \
+     software. Keep in it what the members need to share: notes and working text, decisions, \
+     hand-offs, what each device is and can do, and where things live. Do not clone, \
+     `git init`, or scaffold repositories here, and do not put build output, dependencies, or \
+     large binaries here: every file syncs to every member and becomes a proposal someone has \
+     to review. Code belongs in a checkout on a device's own disk; record its location here \
+     instead (device, path, branch). If this folder has an AGENTS.md at its root, read it first \
+     and follow the circle's own conventions there.\n";
 
 /// This device's own `(owner, device_label)` as the Circle knows it.
 fn self_identity(state: &AppState) -> Option<(String, String)> {
@@ -853,5 +874,33 @@ mod tests {
             window(&all, None, "", &Roster::default()),
             "  suzy: first second"
         );
+    }
+
+    /// Every fresh session is told what the shared folder is for, and where
+    /// the Circle's own conventions live, whichever way the agent was woken.
+    #[test]
+    fn brief_states_the_shared_folder_conventions() {
+        let state = AppState::new(
+            "circle".into(),
+            "Circle".into(),
+            std::path::PathBuf::new(),
+            std::path::PathBuf::new(),
+            String::new(),
+            "suzy-local".into(),
+            1,
+            "peer-local".into(),
+            crate::config::JoinPolicy::Manual,
+            "owner".into(),
+            crate::mls::new_mls_state(
+                crate::mls::MlsIdentity::generate("peer-local").unwrap(),
+                None,
+            ),
+        );
+        for framing in [Framing::Addressed, Framing::Overheard] {
+            let brief = standing_brief(&state, "claude", framing);
+            assert!(brief.contains("knowledge base and index, not a place to build software"));
+            assert!(brief.contains("Do not clone"));
+            assert!(brief.contains("AGENTS.md at its root, read it first"));
+        }
     }
 }

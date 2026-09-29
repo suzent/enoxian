@@ -41,6 +41,11 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Agents the daemon runs are told what the circle's folder is for: a shared
+  knowledge base and index (notes, hand-offs, device details, where things
+  live), not a place to clone or build repositories. They are told to read an
+  `AGENTS.md` at the folder's root first, where a circle can write its own
+  conventions.
 - `enox runs` lists the agent turns running or waiting on this device and what
   each running one is doing: the tool calls it has open, or how long it has been
   quiet. The activity panel shows the same, and flags a turn quiet for ten

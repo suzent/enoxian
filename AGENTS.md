@@ -101,6 +101,27 @@ enox done <task-id>   # mark the task complete
 
 ---
 
+## Shared Folder Usage
+
+The circle's folder is its **knowledge base and index**, not a place to build
+software.
+
+| Keep here | Keep out |
+|-----------|----------|
+| Notes, working text, decisions | Repositories: no `git clone`, `git init`, or scaffolding |
+| Hand-offs between devices and agents | Build output and dependency directories |
+| What each device is, what it runs | Large binaries and generated files |
+| Where things live: device, path, branch | Anything that belongs to only one device |
+
+Every file here syncs to every member and becomes a proposal someone has to
+review, so a checkout floods the circle. Work on code in a checkout on your own
+device's disk and record its location here.
+
+If the folder has an `AGENTS.md` at its root, read it first: that is where the
+circle writes its own layout and conventions.
+
+---
+
 ## Lock Rules
 
 | Situation | Action |

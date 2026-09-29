@@ -341,10 +341,35 @@ session enoxian prepends a standing brief to the prompt:
 - the member roster (owners, devices, their agents)
 - that its file changes become reviewable proposals
 - that its text reply goes to the circle chat
+- what the shared folder is for (below)
 - the recent conversation in the room
 
 On a **resumed** session the agent already has that history, so it gets only a
 lean per-turn header (`{sender} mentioned you …`) plus the task.
+
+### What the shared folder is for
+
+The brief tells every agent that the circle's folder is a knowledge base and
+index, not a place to build software. It holds notes and working text,
+decisions, hand-offs, what each device is and can do, and where things live.
+Repositories, build output, dependencies and large binaries stay out: every
+file syncs to every member and becomes a proposal to review. Code lives in a
+checkout on a device's own disk, and the folder records where (device, path,
+branch).
+
+A circle's own layout goes in an `AGENTS.md` at the folder's root, which the
+brief tells agents to read first. Members edit it like any other file. Tools
+that read `AGENTS.md` from their working directory by themselves pick it up
+even when they are not run by enoxian. For example:
+
+```markdown
+# AGENTS.md — <circle name>
+
+- `devices/<device>.md` — one per device: what it is, what it runs, where its
+  checkouts are
+- `notes/` — shared working text and meeting notes
+- `handoffs/` — work passed between devices or agents
+```
 
 ---
 
