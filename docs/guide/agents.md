@@ -358,18 +358,12 @@ checkout on a device's own disk, and the folder records where (device, path,
 branch).
 
 A circle's own layout goes in an `AGENTS.md` at the folder's root, which the
-brief tells agents to read first. Members edit it like any other file. Tools
-that read `AGENTS.md` from their working directory by themselves pick it up
-even when they are not run by enoxian. For example:
-
-```markdown
-# AGENTS.md — <circle name>
-
-- `devices/<device>.md` — one per device: what it is, what it runs, where its
-  checkouts are
-- `notes/` — shared working text and meeting notes
-- `handoffs/` — work passed between devices or agents
-```
+brief tells agents to read first. `enox init` writes a minimal one when the
+circle is created, if the folder has none: a line on what the folder is for and
+a suggested layout (`devices/<device>.md`, `notes/`, `handoffs/`). From then on
+it belongs to the members. They edit it like any other file, and enoxian never
+rewrites it. Tools that read `AGENTS.md` from their working directory by
+themselves pick it up even when they are not run by enoxian.
 
 ---
 
