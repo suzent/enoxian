@@ -99,6 +99,9 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- A resumed agent session is no longer sent the standing circle brief again on
+  every turn, and an agent whose session could not be restored no longer gets
+  it twice.
 - A full agent queue no longer drops a request you made to keep one nobody
   made. When an agent had four requests waiting, the next one pushed out the
   oldest, even if that was an addressed request and a newer one was only the

@@ -226,8 +226,9 @@ pub fn build_delivery(
         }
         parent = message.reply_to.clone();
     }
-    // Keep the brief available even when session/load falls back to session/new.
-    let brief = standing_brief(state, agent_id, framing);
+    // A resumed session already holds the brief. If session/load falls back to
+    // session/new, the driver prepends `recovery_context`, which carries it.
+    let brief = (!resumed).then(|| standing_brief(state, agent_id, framing));
     let attachments = all
         .iter()
         .find(|m| m.id == trigger_id)
@@ -238,7 +239,7 @@ pub fn build_delivery(
             &state.circle_name,
             sender,
             task,
-            Some(&brief),
+            brief.as_deref(),
             (!recent.trim().is_empty()).then_some(recent.as_str()),
             if resumed {
                 DELTA_CHAT_HEADING
@@ -902,5 +903,35 @@ mod tests {
             assert!(brief.contains("Do not clone"));
             assert!(brief.contains("AGENTS.md at its root, read it first"));
         }
+
+        // The brief goes to a fresh session only. A resumed one already holds
+        // it, and a failed resume gets it back through `recovery_context`.
+        let fresh = build_delivery(
+            &state,
+            "claude",
+            "suzy",
+            "do it",
+            None,
+            "m1",
+            Framing::Addressed,
+        );
+        assert!(fresh.prompt.contains("knowledge base and index"));
+        let record = super::super::memory::Record {
+            session_id: "session".into(),
+            last_seen_message: "m0".into(),
+            ..Default::default()
+        };
+        let resumed = build_delivery(
+            &state,
+            "claude",
+            "suzy",
+            "do it",
+            Some(&record),
+            "m1",
+            Framing::Addressed,
+        );
+        assert!(!resumed.prompt.contains("knowledge base and index"));
+        assert!(recovery_context(&state, "claude", &resumed.withheld)
+            .contains("knowledge base and index"));
     }
 }
