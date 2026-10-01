@@ -178,7 +178,7 @@ pub fn spoke_recently(history: &[ChatMessage], agent: &str, now: i64) -> bool {
 /// undo the `REQUEST from <sender> (@mention)` header the prompt had already
 /// asserted above it; now that an unaddressed turn is framed as overheard from
 /// the start, repeating the denial here would be the contradiction in the other
-/// direction. See `docs/concepts/internals.md`, "Agent Runtime".
+/// direction. See `docs/development/architecture/internals.md`, "Agent Runtime".
 ///
 /// `co_listeners` is every agent shown this message, `self_id` included. What it
 /// buys is a reason to pass that is not self-deprecation: an agent with nothing

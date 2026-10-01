@@ -5,7 +5,7 @@ and renames stop being special cases. Forward-looking: none of this is built.
 
 Background reading, not restated here:
 [reference/p2p-protocols.md](../reference/p2p-protocols.md) for the sync
-protocols and frame formats, and [concepts/proposals.md](../concepts/proposals.md)
+protocols and frame formats, and [concepts/proposals.md](../architecture/proposals.md)
 for how file changes become reviewable.
 
 ## The problem

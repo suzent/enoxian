@@ -3,7 +3,7 @@
 > A Circle with no rendezvous or relay address configured falls back to the
 > project-operated default (`relay.enoxian.com`). Running your own server as
 > described here, and pointing Circles at it, replaces that default. See
-> [../concepts/security.md](../concepts/security.md#relay-and-rendezvous).
+> [privacy and security](../concepts/security.md#relay-and-rendezvous).
 
 A rendezvous server lets circle members behind NAT find each other without any member having a public IP address. It also acts as a circuit relay — traffic can tunnel through it as a fallback when direct connections fail.
 

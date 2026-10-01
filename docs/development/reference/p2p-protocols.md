@@ -133,4 +133,4 @@ wait briefly for bootstrap to install a requested MLS epoch, then fail closed.
 
 Visible metadata includes peer routing identities, addresses, protocol choice,
 connection timing, frame sizes/counts, traffic volume, and the MLS epoch/nonce
-header. See [the security model](../concepts/security.md) for the full boundary.
+header. See [the security model](../architecture/security.md) for the full boundary.

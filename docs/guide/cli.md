@@ -1,6 +1,8 @@
 # CLI Reference — `enox`
 
-The `enox` binary is the agent-facing CLI. It is stateless — every invocation makes one or more HTTP calls to the daemon and exits.
+Use `enox` to manage Circles, chat, tasks, agents, and file history from a
+terminal. Most collaboration commands require a running daemon (`enox start`).
+For a walkthrough, see [Getting started](getting-started.md).
 
 ```
 Usage: enox [OPTIONS] <COMMAND>
@@ -102,7 +104,7 @@ enox service uninstall
 
 `--bind-lan` exposes the local API beyond loopback; `--bind <IP>` sets an
 explicit bind address and overrides it. Both widen access to a privileged API —
-see [../concepts/security.md](../concepts/security.md).
+see [privacy and security](../concepts/security.md).
 
 Linux uses a systemd user unit, macOS uses a LaunchAgent, and Windows uses a
 login Scheduled Task. Agent mention execution remains independently controlled
