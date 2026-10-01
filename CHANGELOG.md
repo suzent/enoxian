@@ -49,6 +49,13 @@ refuses to publish a version whose section is missing or empty.
   architecture, integration references, and contributor workflows grouped in
   a separate developer section.
 
+### Fixed
+
+- Moving a file or folder to the Trash, or out of the circle's folder, now
+  deletes it for everyone. Before, it stayed listed in the UI and on other
+  devices, and renaming a file left its old name behind. Renaming a folder
+  inside the circle's folder keeps its files under the new name.
+
 ## [0.10.0] — 2026-09-29
 
 ### Added

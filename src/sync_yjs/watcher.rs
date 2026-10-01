@@ -2,7 +2,7 @@ use crate::control::CircleEvent;
 use crate::state::AppState;
 use notify::event::{CreateKind, ModifyKind};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -166,6 +166,7 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
     }
     let is_rename = matches!(event.kind, EventKind::Modify(ModifyKind::Name(_)));
     let is_remove = matches!(event.kind, EventKind::Remove(_));
+    let is_create = matches!(event.kind, EventKind::Create(_));
 
     // Every path is processed, rename sources included. Whether a rename path
     // is the side that moved away or the side that arrived is decided below by
@@ -200,71 +201,131 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
             continue;
         }
 
-        // The path exists, so any tombstone for it is obsolete. Clearing it
-        // here is what makes delete-then-recreate work; otherwise the next
-        // reconcile would delete the new file.
-        if crate::deletions::is_deleted(state, &rel) {
-            crate::deletions::clear(state, &rel);
+        // A directory event stands for its whole tree: a folder renamed or
+        // moved in arrives as one event for the folder, and a folder removed
+        // and created again may hold only some of what was tracked under it.
+        // Data and attribute changes on a directory say nothing about its
+        // contents, so those are not rescanned.
+        if (is_remove || is_rename || is_create)
+            && tokio::fs::metadata(path)
+                .await
+                .map(|m| m.is_dir())
+                .unwrap_or(false)
+        {
+            sync_directory(state, workspace, path, &rel).await;
+            continue;
         }
 
-        // Check the shared self_write_flag. If flush_to_disk set it, this event
-        // was caused by a P2P or WS write — skip it to avoid a re-entrancy loop.
-        let flag = state
-            .self_write_flags
-            .entry(rel.clone())
-            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
-            .clone();
+        ingest_file(state, path, rel).await;
+    }
+}
 
-        if flag.swap(false, Ordering::SeqCst) {
-            continue; // self-write — ignore
+/// Bring the tracked documents under directory `rel` in line with its contents
+/// on disk: untrack what is no longer there, and load every file that is.
+async fn sync_directory(state: &AppState, workspace: &Path, dir: &Path, rel: &str) {
+    // A tombstone on the directory itself would delete everything loaded below
+    // on the next reconcile; the directory exists again, so it is obsolete.
+    if crate::deletions::get(state, rel).is_some() {
+        crate::deletions::clear(state, rel);
+    }
+
+    for tracked in crate::deletions::docs_under(state, rel) {
+        let full = workspace.join(tracked.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if !tokio::fs::try_exists(&full).await.unwrap_or(true) {
+            record_removal(state, &tracked).await;
         }
+    }
 
-        let contents = match tokio::fs::read_to_string(path).await {
-            Ok(c) => c,
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let mut rd = match tokio::fs::read_dir(&dir).await {
+            Ok(r) => r,
             Err(_) => continue,
         };
-
-        // Apply to Y.Text (full replace — last external writer wins).
-        // The observer fires on TransactionMut drop → broadcasts to doc_updates + all_updates.
-        let doc = state.get_or_create_doc(&rel);
-        let changed = {
-            let mut txn = match doc.try_transact_mut() {
-                Ok(txn) => txn,
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let path = entry.path();
+            let rel = match path.strip_prefix(workspace) {
+                Ok(r) => r.to_string_lossy().replace('\\', "/"),
                 Err(_) => continue,
             };
-            let text = txn.get_or_insert_text(rel.as_str());
-            let current = text.get_string(&txn);
-            if current != contents {
-                let len = text.len(&txn);
-                if len > 0 {
-                    text.remove_range(&mut txn, 0, len);
-                }
-                if !contents.is_empty() {
-                    text.insert(&mut txn, 0, &contents);
-                }
-                true
-            } else {
-                false
+            if state.is_ignored(&rel) {
+                continue;
             }
-        };
-
-        // Save CRDT state after a local edit so restarts see the correct state.
-        if changed {
-            crate::store::crdt::save(&state.workspace, &rel, &doc).await;
-            if let Some(holder) =
-                crate::control::arbitration::holder_elsewhere(&state.control, &rel, &state.peer_id)
-            {
-                let _ = state.events.send(CircleEvent::LockViolated {
-                    path: rel.clone(),
-                    held_by: holder.agent_id,
-                    held_by_peer_id: holder.peer_id,
-                    edited_by_peer_id: state.peer_id.clone(),
-                });
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                ingest_file(state, &path, rel).await;
             }
         }
-
-        let _ = state.events.send(CircleEvent::FileUpdated { path: rel });
     }
+}
+
+/// Load the file at `path` into its document, replacing the text if it changed.
+async fn ingest_file(state: &AppState, path: &Path, rel: String) {
+    // The path exists, so any tombstone for it is obsolete. Clearing it
+    // here is what makes delete-then-recreate work; otherwise the next
+    // reconcile would delete the new file.
+    if crate::deletions::is_deleted(state, &rel) {
+        crate::deletions::clear(state, &rel);
+    }
+
+    // Check the shared self_write_flag. If flush_to_disk set it, this event
+    // was caused by a P2P or WS write — skip it to avoid a re-entrancy loop.
+    let flag = state
+        .self_write_flags
+        .entry(rel.clone())
+        .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+        .clone();
+
+    if flag.swap(false, Ordering::SeqCst) {
+        return; // self-write — ignore
+    }
+
+    let contents = match tokio::fs::read_to_string(path).await {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    // Apply to Y.Text (full replace — last external writer wins).
+    // The observer fires on TransactionMut drop → broadcasts to doc_updates + all_updates.
+    let doc = state.get_or_create_doc(&rel);
+    let changed = {
+        let mut txn = match doc.try_transact_mut() {
+            Ok(txn) => txn,
+            Err(_) => return,
+        };
+        let text = txn.get_or_insert_text(rel.as_str());
+        let current = text.get_string(&txn);
+        if current != contents {
+            let len = text.len(&txn);
+            if len > 0 {
+                text.remove_range(&mut txn, 0, len);
+            }
+            if !contents.is_empty() {
+                text.insert(&mut txn, 0, &contents);
+            }
+            true
+        } else {
+            false
+        }
+    };
+
+    // Save CRDT state after a local edit so restarts see the correct state.
+    if changed {
+        crate::store::crdt::save(&state.workspace, &rel, &doc).await;
+        if let Some(holder) =
+            crate::control::arbitration::holder_elsewhere(&state.control, &rel, &state.peer_id)
+        {
+            let _ = state.events.send(CircleEvent::LockViolated {
+                path: rel.clone(),
+                held_by: holder.agent_id,
+                held_by_peer_id: holder.peer_id,
+                edited_by_peer_id: state.peer_id.clone(),
+            });
+        }
+    }
+
+    let _ = state.events.send(CircleEvent::FileUpdated { path: rel });
 }
 
 /// Untrack `rel` and everything beneath it, and tell peers it is gone.
@@ -449,5 +510,61 @@ mod tests {
 
         assert!(state.docs.contains_key("a.md"));
         assert!(!crate::deletions::is_deleted(&state, "a.md"));
+    }
+
+    #[tokio::test]
+    async fn renaming_a_folder_keeps_its_files_under_the_new_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        state.get_or_create_doc("old/a.md");
+        state.get_or_create_doc("old/sub/b.md");
+        std::fs::create_dir_all(workspace.join("new/sub")).unwrap();
+        std::fs::write(workspace.join("new/a.md"), "a").unwrap();
+        std::fs::write(workspace.join("new/sub/b.md"), "b").unwrap();
+
+        handle_event(
+            &state,
+            &workspace,
+            event(
+                EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+                vec![workspace.join("old"), workspace.join("new")],
+            ),
+        )
+        .await;
+
+        assert!(!state.docs.contains_key("old/a.md"));
+        assert!(!state.docs.contains_key("old/sub/b.md"));
+        assert!(state.docs.contains_key("new/a.md"));
+        assert!(state.docs.contains_key("new/sub/b.md"));
+        assert!(!crate::deletions::is_deleted(&state, "new/sub/b.md"));
+    }
+
+    /// A Remove(Folder) handled after the folder was created again must still
+    /// untrack whatever the new folder no longer holds.
+    #[tokio::test]
+    async fn a_recreated_folder_untracks_files_it_no_longer_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        state.get_or_create_doc("repo/gone.md");
+        state.get_or_create_doc("repo/kept.md");
+        std::fs::create_dir_all(workspace.join("repo")).unwrap();
+        std::fs::write(workspace.join("repo/kept.md"), "kept").unwrap();
+
+        handle_event(
+            &state,
+            &workspace,
+            event(
+                EventKind::Remove(RemoveKind::Folder),
+                vec![workspace.join("repo")],
+            ),
+        )
+        .await;
+
+        assert!(!state.docs.contains_key("repo/gone.md"));
+        assert!(crate::deletions::is_deleted(&state, "repo/gone.md"));
+        assert!(state.docs.contains_key("repo/kept.md"));
+        assert!(!crate::deletions::is_deleted(&state, "repo/kept.md"));
     }
 }
