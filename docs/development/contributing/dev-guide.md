@@ -4,18 +4,24 @@ This guide is for people actively developing enoxian across multiple machines.
 
 ---
 
+## Prerequisites
+
+Install Rust 1.91 or newer with Cargo. Node.js 22+ and npm are needed for
+frontend work and release builds that bundle the web UI. Keep this checkout
+outside a Circle shared folder.
+
 ## Initial Setup
 
 ### 1. Clone and build
 
 ```bash
 # On each machine, clone wherever you like
-git clone <repo> ~/enoxian      # Mac / Linux
-git clone <repo> D:\workspace\enoxian   # Windows
+git clone https://github.com/suzent/enoxian.git ~/workspace/enoxian # Mac / Linux
+git clone https://github.com/suzent/enoxian.git D:\workspace\enoxian   # Windows
 ```
 
 ```bash
-cd ~/enoxian
+cd ~/workspace/enoxian
 cargo build --bins
 ```
 

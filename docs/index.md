@@ -1,51 +1,32 @@
-# enoxian Documentation
+# enoxian documentation
 
-enoxian is a P2P collaboration layer for humans and AI agents working inside a
-shared Circle. Start with the practical guides, then use the reference pages for
-exact CLI/API behavior.
+Start with a Circle, invite your collaborators, and bring your shared context
+and agents into one place.
 
-## Start Here
+## Get started
 
-| File | Description |
-|------|-------------|
-| [guide/getting-started.md](guide/getting-started.md) | Build from source, create a Circle, start the daemon, join another device |
-| [guide/cli.md](guide/cli.md) | Complete `enox` command reference |
-| [guide/invite.md](guide/invite.md) | Invite URI format, TTLs, relay/rendezvous addresses, security notes |
-| [guide/link.md](guide/link.md) | Putting your identity on a second device with `enox link` |
-| [guide/agents.md](guide/agents.md) | Configuring local agents, mention reactions, ACP/argv drivers |
-| [guide/dev-guide.md](guide/dev-guide.md) | Developer workflow: multi-machine setup, `enox update`, cargo-watch |
-| [guide/releasing.md](guide/releasing.md) | CI jobs, release gates, checksummed installers, and Homebrew automation |
+- [Install and create a Circle](guide/getting-started.md)
+- [Understand Circles and shared files](concepts/overview.md)
+- [Invite someone to join](guide/invite.md)
+- [Link your own second device](guide/link.md)
 
-## Reference
+## Work together
 
-| File | Description |
-|------|-------------|
-| [reference/api.md](reference/api.md) | Local REST/SSE/WebSocket API exposed by Enoxian |
-| [reference/daemon.md](reference/daemon.md) | Daemon/service startup, config files, routes, and environment variables |
-| [reference/protocol.md](reference/protocol.md) | Yjs sync WebSocket and event-stream protocol details |
-| [reference/p2p-protocols.md](reference/p2p-protocols.md) | Versioned peer wire formats, encryption, and limits |
-| [reference/rendezvous-setup.md](reference/rendezvous-setup.md) | Deploying and using a bootstrap rendezvous/relay server |
-| [reference/execution-inbox.md](reference/execution-inbox.md) | Per-device agent execution inbox: admission, lifecycle, recovery, and limits |
+- [Everyday collaboration](guide/collaboration.md) — shared folders, chat, tasks, and file locks
+- [Using agents](guide/agents.md) — setup, mentions, replies, and activity
+- [Reviewing changes](concepts/proposals.md) — inspect history and undo edits
+- [Privacy and security](concepts/security.md) — sharing, agent access, and local data
+- [Glossary](concepts/concepts.md) — the terms used in the app and CLI
 
-## Concepts
+## Look something up
 
-| File | Description |
-|------|-------------|
-| [concepts/overview.md](concepts/overview.md) | High-level tour of enoxian |
-| [concepts/concepts.md](concepts/concepts.md) | Circle, identity, CRDT, proposal, event, and coordination vocabulary |
-| [concepts/architecture.md](concepts/architecture.md) | Runtime components, state surfaces, and data flow |
-| [concepts/internals.md](concepts/internals.md) | Watcher, persistence, peer-session, and agent mechanics |
-| [concepts/proposals.md](concepts/proposals.md) | File capture, accepted history, pending compatibility, diff, merge, and revert |
-| [concepts/storage.md](concepts/storage.md) | Workspace and circle persistence, retention, and at-rest limitations |
-| [concepts/security.md](concepts/security.md) | Trust model, identity, PSK, Noise, and MLS content protection |
+- [CLI reference](guide/cli.md)
+- [Agent configuration example](examples/agents.toml)
+- [Host your own relay](guide/rendezvous-setup.md) — optional advanced setup
+- [Release notes](../CHANGELOG.md)
 
-## Development
+## Develop or integrate
 
-| File | Description |
-|------|-------------|
-| [development/](development/) | Design specs for work not yet built — the one part of these docs that describes things that do not exist |
-
-Everything outside `development/` describes current behavior. Completed design
-plans and old roadmaps are retained in Git history rather than kept as a
-second, stale source of truth; a spec is folded into the guides and deleted
-once it ships.
+[Developer documentation](development/README.md) contains source builds,
+contributing, release procedures, architecture, API and protocol references,
+and design proposals. These are separate from the user guides.

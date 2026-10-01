@@ -25,6 +25,10 @@ cargo test --locked --all-targets
 If frontend dependencies or source changed, also run `npm audit` and
 `npm run build` in `frontend/`.
 
+For local builds and multi-device development, see the
+[developer guide](docs/development/contributing/dev-guide.md). Documentation layout and
+audience conventions are in the [developer index](docs/development/README.md).
+
 ## Pull requests
 
 - Keep each pull request focused and explain the user-visible behavior.
@@ -35,6 +39,6 @@ If frontend dependencies or source changed, also run `npm audit` and
 - Do not commit credentials, Circle secrets, invite URLs, local state under
   `~/.enoxian`, build output, or generated frontend assets.
 
-The release process is documented in
-[docs/guide/releasing.md](docs/guide/releasing.md). Security issues follow
+The release process is documented in the
+[release guide](docs/development/contributing/releasing.md). Security issues follow
 [SECURITY.md](SECURITY.md), not the public issue tracker.

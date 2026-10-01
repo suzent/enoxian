@@ -39,6 +39,12 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Changed
+
+- Documentation now starts with installation and everyday collaboration, with
+  architecture, integration references, and contributor workflows grouped in
+  a separate developer section.
+
 ## [0.10.0] — 2026-09-29
 
 ### Added

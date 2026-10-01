@@ -1,6 +1,6 @@
 # Implementation Internals
 
-This document covers mechanics that are useful when changing the daemon. For the public model, start with [Architecture](architecture.md).
+This document covers mechanics that are useful when changing the daemon. For a component overview, start with [Architecture](architecture.md). For user-facing behavior, see [Circles and shared files](../../concepts/overview.md).
 
 ## Workspace Documents
 

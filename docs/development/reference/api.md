@@ -403,7 +403,7 @@ Post a message. `@mentions` in the text are parsed and each mentioned agent rece
 Posts through this route are human-authored: they mint a fresh delegation
 budget and fire every mention. An agent's own reply is posted internally and
 fires at most one mention, never itself, and only while its cascade's budget
-holds — see [guide/agents.md](../guide/agents.md).
+holds — see [guide/agents.md](../../guide/agents.md).
 
 **Request:**
 ```json

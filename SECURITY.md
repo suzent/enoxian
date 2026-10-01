@@ -21,6 +21,6 @@ available. These are targets rather than guarantees.
 ## Scope notes
 
 enoxian is local-first peer-to-peer software. Its transport and local API
-security model, trust boundaries, and current limitations are documented in
-[docs/concepts/security.md](docs/concepts/security.md). In particular, read
+security model, trust boundaries, and current limitations are documented in the
+[technical security model](docs/development/architecture/security.md). In particular, read
 that document before relying on enoxian for sensitive data.

@@ -1,8 +1,8 @@
 # Read the room: what is still open
 
 Nothing here is built. Shipped behaviour lives in
-[guide/agents.md](../guide/agents.md) (what it does) and
-[concepts/internals.md](../concepts/internals.md) (how and why).
+[guide/agents.md](../../guide/agents.md) (what it does) and
+[concepts/internals.md](../architecture/internals.md) (how and why).
 
 This replaces `ambient-reliability.md` and `engagement.md`, both retired once
 their designs shipped. Git history keeps them; this keeps only the parts that

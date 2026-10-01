@@ -1,4 +1,4 @@
-# Driving Agents
+# Using agents
 
 How enoxian runs AI coding agents — Claude Code, Codex, and any other tool —
 against a circle's shared workspace, and turns their work into reviewable
@@ -11,38 +11,30 @@ given device is that device's own local decision.
 
 ---
 
-## The big picture
+## Set up your first agent
 
-```text
-@mention in circle chat
-      │  (ordinary replicated chat message — not a command)
-      ▼
-this device's reaction policy   ── pull ─▶  do nothing (agent must act on its own)
-      │  push
-      ▼
-allowlist check (agents.toml)   ── no match ─▶  ignore
-      │  match
-      ▼
-local execution layer
-      ├── acp driver   ── ACP over stdio: session, streaming reply, memory
-      └── argv driver  ── spawn command, capture whatever it writes
-      │
-      ▼
-results
-      ├── file changes  ─▶  a reviewable proposal (HISTORY tab / `enox proposal list`)
-      └── text reply     ─▶  posted back into circle chat as the agent
+For Claude Code, install and authenticate the official Claude CLI first
+(`claude auth login`), and have Node.js 22+ with npm available. Then:
+
+```sh
+enox agent install claude
+enox agent reaction push
+enox say "@claude summarize the shared notes and suggest next steps"
 ```
 
-Two things are deliberately separate:
+`push` enables automatic runs for configured agents mentioned in Circle chat.
+Any member can make those requests. To disable automatic mention execution on
+this device:
 
-- **Who can ask** — any circle member can mention an agent. That is just chat.
-- **Who runs it** — only the target device's local daemon, under its own
-  policy. A remote member can never force execution on your machine.
+```sh
+enox agent reaction pull
+```
 
-See [Proposals and file history](../concepts/proposals.md) for how native agent
-writes become accepted, revertible history.
+Use the activity panel or `enox runs` to follow a run. Its reply appears in chat;
+file edits appear in **HISTORY**. See [reviewing changes](../concepts/proposals.md)
+for the difference between live edits and review status.
 
----
+The following sections cover other agents and optional configuration.
 
 ## Configuration: `~/.enoxian/agents.toml`
 
@@ -133,34 +125,13 @@ Every agent is launched through one of two drivers, chosen per agent in config.
 
 ### `acp` — Agent Client Protocol (recommended)
 
-For agents that speak [ACP](https://agentclientprotocol.com/). enoxian is the
-**client**; the agent is the **agent**, over newline-delimited JSON-RPC on the
-child's stdio. This is the rich path.
+ACP agents support streamed chat replies, conversation memory, and permission
+requests. You can follow their progress in the activity panel or with `enox runs`.
+Agent permissions depend on the configured agent and execution path; review them
+before enabling automatic reactions. File history is not an approval barrier
+before a tool runs.
 
-The handshake per run:
-
-```text
-initialize        advertise fs capabilities; read the agent's capabilities
-session/new       open a session with cwd = the circle workspace
-   (or)
-session/load      resume a prior session id — restores conversation memory
-session/prompt    send the task; the agent works until it returns a stop reason
-```
-
-During the prompt turn the agent may call back to enoxian:
-
-| Agent → enoxian call    | enoxian's behavior                                         |
-|-------------------------|------------------------------------------------------------|
-| `fs/read_text_file`     | read a workspace file (confined to the workspace)          |
-| `fs/write_text_file`    | write a workspace file (confined; captured as proposal)    |
-| `session/request_permission` | always allow the agent to act *in the workspace* — safety is enforced later, at the proposal-acceptance layer, not by crippling the turn |
-| `session/update`        | streamed output; the agent's message text is collected for the chat reply |
-
-What the acp driver gives you that argv does not: a real completion signal
-(stop reason), a **text reply** posted to chat, and **conversation memory** via
-session resume.
-
-#### How long a turn may run
+#### Follow or stop a run
 
 As long as it needs. ACP has no heartbeat, and a turn that says nothing for
 minutes is usually a long tool call (a build, a test suite), which is work. So
@@ -245,27 +216,9 @@ no adapter to install, nothing to pin, and no Node.js:
   enox agent install openclaw
   ```
 
-Plugin manifests are TOML files in `~/.enoxian/plugins/`. A manifest declares
-an id, exact package version, executable name, agent name, and driver. Packages
-are installed under `~/.enoxian/adapters/<id>/<version>/`. Version ranges are
-rejected, and plugin installation never happens while processing an `@mention`.
+For custom adapter or native plugin manifests, see
+[agent integration details](../development/reference/agent-integration.md#plugin-manifests).
 
-A manifest may set `kind = "native"` for a CLI that speaks ACP itself. Enoxian
-then installs nothing: `binary` is resolved on `PATH`, `args` carries the
-subcommand that speaks the protocol, `install_url` says where to get the CLI,
-and `package`/`version` must be omitted — there is nothing to fetch and nothing
-to pin. A native handle stays by-name in `agents.toml`, so reinstalling the CLI
-somewhere else cannot strand it.
-
-```toml
-id = "mytool"
-agent = "mytool"
-kind = "native"
-binary = "mytool"
-args = ["acp"]
-install_url = "https://example.com/install"
-about = "My tool, speaking ACP directly."
-```
 Legacy `npx`/`npm` agent commands are shown as **runtime download** in Device
 Settings so they can be migrated with one click.
 
@@ -302,8 +255,8 @@ A run produces up to two independent results:
    already land in the live workspace, so enoxian records the resulting diff as
    accepted rather than presenting a misleading approval gate. Inspect it in the
    frontend **HISTORY** tab or with `enox proposal list` / `show`, and undo it at
-   any time with `enox proposal revert`. The pending status remains supported for
-   historical records and future isolated/staged workflows.
+   any time with `enox proposal revert`. Unaddressed agent activity can instead
+   produce pending proposals for review; those writes also reach the live folder.
 
 2. **A chat reply** — for acp agents, the agent's streamed text is posted back
    into the circle chat under the agent's name, so `@claude …` reads like a
@@ -313,59 +266,21 @@ A run produces up to two independent results:
 
 ## Conversation memory
 
-acp agents get continuity per **(circle, agent)**. After each run, enoxian
-persists the ACP `sessionId` at:
-
-```text
-~/.enoxian/circles/<circle-id>/agent_sessions/<agent>.session
-```
-
-On the next mention of that agent in the same circle, enoxian passes the id to
-`session/load` so the agent resumes with its prior history. All mentions of
-`@claude` in a circle share one evolving conversation — "claude is a participant
-in this room."
-
-This is **best-effort**: the ACP spec does not guarantee an agent retains
-session state across its own process restarts, so a stored id can fail to load.
-When that happens enoxian falls back to a fresh `session/new` — you lose
-continuity, never the run.
+ACP agents can resume their conversation in the same Circle. Follow-up messages
+can build on earlier work without repeating the whole context. This is best
+effort: if the agent cannot restore its session, enoxian starts a fresh one.
 
 ---
 
-## World context
+## Shared context
 
-Beyond its own memory, an agent needs to know *where it is*. On a **fresh**
-session enoxian prepends a standing brief to the prompt:
+Agents receive information about the Circle, its members, and recent chat.
+Keep durable instructions and folder conventions in the shared `AGENTS.md`,
+and use notes and hand-offs for context another device will need.
 
-- what enoxian is and which circle it is in
-- the member roster (owners, devices, their agents)
-- that its file changes become reviewable proposals
-- that its text reply goes to the circle chat
-- what the shared folder is for (below)
-- the recent conversation in the room
-
-On a **resumed** session the agent already has that history, so it gets only a
-lean per-turn header (`{sender} mentioned you …`) plus the task.
-
-### What the shared folder is for
-
-The brief tells every agent that the circle's folder is a knowledge base and
-index, not a place to build software. It holds notes and working text,
-decisions, hand-offs, what each device is and can do, and where things live.
-Repositories, build output, dependencies and large binaries stay out: every
-file syncs to every member and becomes a proposal to review. Code lives in a
-checkout on a device's own disk, and the folder records where (device, path,
-branch).
-
-A circle's own layout goes in an `AGENTS.md` at the folder's root, which the
-brief tells agents to read first. `enox init` writes a minimal one when the
-circle is created, if the folder has none: a line on what the folder is for and
-a suggested layout (`devices/<device>.md`, `notes/`, `handoffs/`). From then on
-it belongs to the members. They edit it like any other file, and enoxian never
-rewrites it. Tools that read `AGENTS.md` from their working directory by
-themselves pick it up even when they are not run by enoxian.
-
----
+The shared folder is for knowledge and coordination. Keep code repositories
+and build output in separate local checkouts, and record their locations in
+the Circle. See [everyday collaboration](collaboration.md).
 
 ## Mentions and targeting
 
@@ -594,16 +509,11 @@ It resumes the agent's remembered session, prints the reply, and the file
 changes become a proposal exactly as a mention would. (It does not inject the
 full world context, since it runs standalone without the live circle state.)
 
-Before launch, Enoxian registers the configured agent label with the local
-Circle daemon. Native file writes are correlated with the persisted managed
-session, while coordination CLI calls inherit a short-lived actor token through
-the process environment. The token is never added to the agent prompt.
-
 ---
 
 ## Reference
 
 - Config example: [examples/agents.toml](../examples/agents.toml)
-- File history model: [proposals.md](../concepts/proposals.md)
+- File history model: [Reviewing changes](../concepts/proposals.md)
 - Proposal review: [cli.md](cli.md) (`enox proposal …`)
-- Security model: [security.md](../concepts/security.md)
+- Security model: [Privacy and security](../concepts/security.md)

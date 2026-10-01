@@ -1,285 +1,128 @@
-# Getting Started
+# Getting started
 
-## Install (prebuilt binaries)
+Install enoxian, create a Circle, and share your first note across devices.
+You can use the web UI or the `enox` CLI throughout.
 
-The quickest path downloads the latest release for your platform and installs
-the unified `enox` binary.
+## 1. Install
 
-**Linux / macOS:**
+**macOS / Linux**
 
 ```sh
 curl -fsSL https://github.com/suzent/enoxian/releases/latest/download/install.sh | sh
 ```
 
-**Windows:**
+**Windows PowerShell**
 
 ```powershell
 irm https://github.com/suzent/enoxian/releases/latest/download/install.ps1 | iex
 ```
 
-Every release includes `SHA256SUMS`, which the installers verify before
-installation.
+The installers choose the release for your platform and verify its checksum.
+On Windows the install directory is `%LOCALAPPDATA%\enoxian\bin`; reopen your
+terminal if `enox` is not yet on `PATH`.
 
-**Homebrew** (once the tap is published):
+To choose a version or installation directory on macOS / Linux:
 
 ```sh
-brew install suzent/tap/enoxian
+curl -fsSL https://github.com/suzent/enoxian/releases/latest/download/install.sh | \
+  sh -s -- --version <release-tag> --bin-dir "$HOME/.local/bin"
 ```
 
-Pin a version with `ENOXIAN_VERSION=v0.3.0` (or `$env:ENOXIAN_VERSION`), or set
-`ENOXIAN_BIN_DIR` to change the install directory. To build from source instead,
-see below.
+On Windows, set `$env:ENOXIAN_VERSION` to the release tag before running the
+installer. Source builds are covered in the
+[developer guide](../development/contributing/dev-guide.md).
 
-## Prerequisites (build from source)
+## 2. Create a Circle
 
-- Rust 1.91 or newer
-- Cargo
-- Node.js (only for building the frontend in release mode)
-
-## Build
-
-```bash
-git clone <repo>
-cd enoxian
-cargo build
-```
-
-Binaries are placed at:
-
-```
-target/debug/enox     # CLI and daemon/service runtime
-```
-
-For production use:
-
-```bash
-cargo build --release
-# target/release/enox
-```
-
-### Install to PATH
-
-To use `enox` as a plain command without a path prefix, install it from source:
-
-```bash
-cargo install --path . --bins
-```
-
-After that, rebuild and reinstall in one step:
-
-```bash
-enox update --dev --src .
-```
-
-On subsequent runs the `--src` path is remembered, so `enox update --dev` is
-enough. On Windows, the running `enox.exe` is replaced via a deferred PowerShell
-script after the process exits; Enoxian is restarted automatically.
-
----
-
-## Step 1 — Create a Circle
-
-A Circle is the shared workspace. Run this once on any machine:
-
-```bash
-./target/debug/enox init --name MyCircle
-```
-
-```
-✦ Circle cast: MyCircle
-  circle-id : 8e563c41-f0ec-4225-9764-064f1fb04341
-  peer-id   : 12D3KooW...
-  workspace : /Users/suzy/enoxian/MyCircle
-
-  invite    : enoxian://v2/CRxkUjpNaBcDeFgH...
-
-  Share the invite link to let peers join (valid for 7d).
-  Generate a new link anytime: enox invite "MyCircle"
-```
-
-The workspace directory (`~/enoxian/MyCircle`) is created automatically. This is
-where shared files live. The invite link encodes the circle ID, PSK, expiry, and
-optional connectivity hints; share it over a trusted channel.
-
-To use a different workspace directory:
-
-```bash
-enox init --name "MyCircle" --dir ~/projects/myapp
-```
-
----
-
-## Step 2 — Start the Daemon
-
-The daemon loads all enabled circles from `~/.enoxian/circles/` and serves them over
-one local HTTP/WebSocket API port:
-
-```bash
-# bash / MSYS2
-RUST_LOG=info ./target/debug/enox daemon run
-
-# PowerShell
-$env:RUST_LOG = "info"
-.\target\debug\enox.exe daemon run
-```
-
-You can also start it in the background:
-
-```bash
+```sh
+enox init --name MyCircle
 enox start
-```
-
-By default the daemon names its local editor/user presence after the device
-identity — your user handle if set, otherwise the device label, otherwise the
-system hostname — with a short peer suffix appended so two machines sharing a
-name stay distinct (`macbook-pro-Kj4R`). To run multiple agents from the same
-machine or give the local user a stable custom name, set `ENOXIAN_AGENT_ID`
-before starting the daemon:
-
-```bash
-ENOXIAN_AGENT_ID=codex ./target/debug/enox daemon run
-```
-
-```powershell
-$env:ENOXIAN_AGENT_ID = "codex"
-.\target\debug\enox.exe daemon run
-```
-
-The displayed ID becomes `codex-<peer-suffix>`, so `human`, `codex`, `cursor`,
-or any other custom name can coexist on the same peer.
-
-Expected output:
-
-```
-INFO  Starting Enoxian — 1 circle(s) found
-INFO    Circle 'MyCircle' (8e563c41-...) — PeerID: 12D3KooW... — Workspace: /Users/suzy/enoxian/MyCircle
-INFO  HTTP/WS listening on 127.0.0.1:36521
-INFO  [8e563c41-...] P2P listening on /ip4/192.168.1.x/tcp/<random>
-```
-
-All circles share one HTTP port. Each enabled circle gets its own P2P swarm on a
-random port.
-
-> **After any `cargo build`** run `enox service restart` to pick up the new binary.
-
----
-
-## Step 3 — Use the CLI
-
-Open a second terminal. With one circle, `enox` selects it automatically:
-
-```bash
-./target/debug/enox status
-```
-
-```
-◆ Circle:    MyCircle
-  ID:        8e563c41-...
-  Workspace: /Users/suzy/enoxian/MyCircle
-  Docs:      0
-```
-
-With multiple circles, specify by name:
-
-```bash
-./target/debug/enox --circle MyCircle status
-# or via env var
-export ENOXIAN_CIRCLE=MyCircle
-./target/debug/enox status
-```
-
-List all known circles:
-
-```bash
-./target/debug/enox circles
-```
-
----
-
-## Step 4 — Basic Commands
-
-```bash
-# Circle overview
-enox status
-
-# Create a task
-enox task-create "Write integration tests" --description "Cover lock arbitration"
-
-# List tasks
-enox tasks
-
-# Claim and complete a task
-enox claim <task-id>
-enox done <task-id>
-
-# Acquire and release a file lock (path relative to workspace)
-enox bind src/main.rs
-enox release src/main.rs
-
-# Watch live events
-enox watch
-
-# Open the local web UI
 enox open
 ```
 
----
+`init` prints the location of your shared folder, normally
+`~/enoxian/MyCircle`, and an invite. `start` runs enoxian in the background;
+`open` opens the local web UI.
 
-## Step 5 — Second Agent (same LAN)
+Add a note inside that folder using your usual editor. This is where shared
+notes, decisions, and hand-offs live. Keep repositories, dependencies, and
+build output elsewhere; record their device and path in a shared note.
 
-On another machine, join using the invite link (no quotes needed):
+To choose a different shared folder at creation time:
 
-```bash
-enox enter enoxian://v2/CRxkUjpNaBcDeFgH...
+```sh
+enox init --name MyCircle --dir ~/shared/MyCircle
 ```
 
-```
-✦ Joining circle: MyCircle (8e563c41-...)
-  Workspace : /Users/bob/enoxian/MyCircle
-  Config    → ~/.enoxian/circles/8e563c41-.../config.toml
-  ✦ Verified peer 12D3KooW... via /ip4/192.168.1.192/tcp/4494
+## 3. Connect another device
 
-  Start the daemon: enox start
-  Then: enox --circle "MyCircle" status
+On the first device:
+
+```sh
+enox invite MyCircle
 ```
 
-Then run `enox start` on the second machine. It picks up the saved circle and
-connects over mDNS on the same LAN.
+Share the resulting link privately. On the other device, install enoxian and run:
 
-**Name conflict:** if you already have a local circle named `MyCircle` with a different ID, the workspace is auto-disambiguated:
-```
-⚠ A circle named 'MyCircle' already exists locally.
-  Workspace → /Users/bob/enoxian/MyCircle-d4e2e7
-```
-
-**Re-joining:** if you already have this exact circle, `enter` exits cleanly:
-```
-✦ Already a member of 'MyCircle' — nothing to do.
+```sh
+enox enter "<invite-link>"
+enox start
+enox open
 ```
 
-**WAN:** current invites try to embed relay/rendezvous addresses automatically
-when available. You can also pass an explicit peer, relay, or rendezvous address:
+Admission follows the Circle's membership policy; a request may need an admin's
+approval. Once connected, your shared note should appear on the other device.
 
-```bash
-enox invite MyCircle --peer /ip4/1.2.3.4/tcp/9091
-enox invite MyCircle --rendezvous enox.yourdomain.com
-enox enter enoxian://v2/...
+Use [device linking](link.md) instead when adding another device under your own
+identity. See [invites](invite.md) for expiry and connection options.
+
+## 4. Find your way around
+
+Use the web UI for chat, tasks, files, and history. From a terminal:
+
+```sh
+enox status
+enox who
+enox tasks
 ```
 
-A Circle with no rendezvous or relay configured falls back to a
-project-operated default server (`relay.enoxian.com`) for discovery and relay,
-contacted on daemon start. It never holds your Circle's key and cannot read
-content, but it does see peer IDs, addresses, and connection timing. Configure
-your own addresses — or run `enox bootstrap serve` — to avoid it; see
-[../concepts/security.md](../concepts/security.md#relay-and-rendezvous).
+With multiple Circles, specify which one you want:
 
-See [invite.md](invite.md) and
-[rendezvous-setup.md](../reference/rendezvous-setup.md) for WAN setup.
+```sh
+enox circles
+enox --circle MyCircle status
+enox --circle MyCircle open
+```
 
----
+You can also set `ENOXIAN_CIRCLE` in your shell. One background daemon handles
+all enabled Circles on this device.
 
-## Next Steps
+## Keep enoxian running after login
 
-- [concepts.md](../concepts/concepts.md) — Circles, Documents, and the Control Doc
-- [cli.md](cli.md) — full command reference
-- [api.md](../reference/api.md) — REST API for agent automation
+```sh
+enox service install
+enox service status
+```
+
+The login service restarts enoxian if it exits unexpectedly. Installing a
+service does not enable agent execution; that is a separate setting in the
+[agent guide](agents.md).
+
+## If something does not connect
+
+- **Cannot reach the daemon:** run `enox start`, then `enox status`.
+- **Unsure which Circle is selected:** run `enox circles` and pass `--circle`.
+- **Invite expired:** ask the sender to generate a new link.
+- **Waiting for admission:** ask a Circle admin to check `enox member pending`.
+- **Peer missing:** check `enox who` on both devices and confirm both are running.
+  Devices on different networks may need a relay; see [invites](invite.md).
+
+By default, enoxian can use the project-operated relay to help devices connect.
+Read [privacy and security](../concepts/security.md) for what that service sees.
+
+## Next steps
+
+- [Everyday collaboration](collaboration.md)
+- [Set up an agent](agents.md)
+- [Review file changes](../concepts/proposals.md)
+- [Find a command](cli.md)
