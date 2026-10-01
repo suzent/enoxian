@@ -251,6 +251,10 @@ type Unloadable = HashMap<String, (u64, std::time::SystemTime)>;
 /// restarts, invisible to every peer. Only adds: a tracked file missing from
 /// disk may be a peer's write not yet flushed, so removals stay event-driven.
 async fn sweep_untracked(state: &AppState, workspace: &Path, unloadable: &mut Unloadable) {
+    // A dropped batch may have carried an ignore file change; this sweep is
+    // the only place it would be seen, and the rest of the batch must be
+    // judged by the new rules.
+    state.reload_ignore_rules();
     let now = std::time::SystemTime::now();
     let mut picked_up = 0usize;
     let mut stack = vec![workspace.to_path_buf()];
@@ -282,18 +286,23 @@ async fn sweep_untracked(state: &AppState, workspace: &Path, unloadable: &mut Un
             let Ok(modified) = meta.modified() else {
                 continue;
             };
-            if now.duration_since(modified).unwrap_or_default() < SWEEP_SETTLE {
+            // A future mtime (clock skew, or preserved by a copy) says nothing
+            // about a write in progress, so only a recent past one waits.
+            if matches!(now.duration_since(modified), Ok(age) if age < SWEEP_SETTLE) {
                 continue;
             }
             let seen = (meta.len(), modified);
             if unloadable.get(&rel) == Some(&seen) {
                 continue;
             }
-            ingest_file(state, &path, rel.clone()).await;
+            let read_error = ingest_file(state, &path, rel.clone()).await;
             if state.docs.contains_key(&rel) {
                 unloadable.remove(&rel);
                 picked_up += 1;
-            } else {
+            } else if read_error == Some(std::io::ErrorKind::InvalidData) {
+                // Not text. A lock or sharing violation is not remembered:
+                // releasing it changes neither size nor mtime, so caching it
+                // would hide the file the sweep exists to find.
                 unloadable.insert(rel, seen);
             }
         }
@@ -344,7 +353,9 @@ async fn sync_directory(state: &AppState, workspace: &Path, dir: &Path, rel: &st
 }
 
 /// Load the file at `path` into its document, replacing the text if it changed.
-async fn ingest_file(state: &AppState, path: &Path, rel: String) {
+/// Returns the read error if the file could not be read, so a sweep can tell
+/// a binary file (`InvalidData`) from a transient failure worth retrying.
+async fn ingest_file(state: &AppState, path: &Path, rel: String) -> Option<std::io::ErrorKind> {
     // The path exists, so any tombstone for it is obsolete. Clearing it
     // here is what makes delete-then-recreate work; otherwise the next
     // reconcile would delete the new file.
@@ -361,12 +372,12 @@ async fn ingest_file(state: &AppState, path: &Path, rel: String) {
         .clone();
 
     if flag.swap(false, Ordering::SeqCst) {
-        return; // self-write — ignore
+        return None; // self-write — ignore
     }
 
     let contents = match tokio::fs::read_to_string(path).await {
         Ok(c) => c,
-        Err(_) => return,
+        Err(e) => return Some(e.kind()),
     };
 
     // Apply to Y.Text (full replace — last external writer wins).
@@ -375,7 +386,7 @@ async fn ingest_file(state: &AppState, path: &Path, rel: String) {
     let changed = {
         let mut txn = match doc.try_transact_mut() {
             Ok(txn) => txn,
-            Err(_) => return,
+            Err(_) => return None,
         };
         let text = txn.get_or_insert_text(rel.as_str());
         let current = text.get_string(&txn);
@@ -409,6 +420,7 @@ async fn ingest_file(state: &AppState, path: &Path, rel: String) {
     }
 
     let _ = state.events.send(CircleEvent::FileUpdated { path: rel });
+    None
 }
 
 /// Untrack `rel` and everything beneath it, and tell peers it is gone.
@@ -720,5 +732,69 @@ mod tests {
         sweep_untracked(&state, &workspace, &mut unloadable).await;
         assert!(state.docs.contains_key("image.bin"));
         assert!(!unloadable.contains_key("image.bin"));
+    }
+
+    /// A file still locked by a copier fails to read; once the lock is gone
+    /// its size and mtime are unchanged, so it must not have been cached.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_file_that_fails_to_read_is_retried() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        let path = workspace.join("locked.md");
+        write_settled(&path, b"text");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&path).is_ok() {
+            return; // running as root: permissions do not block the read
+        }
+
+        let mut unloadable = Unloadable::new();
+        sweep_untracked(&state, &workspace, &mut unloadable).await;
+        assert!(!state.docs.contains_key("locked.md"));
+        assert!(!unloadable.contains_key("locked.md"));
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        sweep_untracked(&state, &workspace, &mut unloadable).await;
+        assert!(state.docs.contains_key("locked.md"));
+    }
+
+    #[tokio::test]
+    async fn a_future_mtime_does_not_count_as_mid_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        let path = workspace.join("skewed.md");
+        std::fs::write(&path, b"from a fast clock").unwrap();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(future)
+            .unwrap();
+
+        let mut unloadable = Unloadable::new();
+        sweep_untracked(&state, &workspace, &mut unloadable).await;
+        assert!(state.docs.contains_key("skewed.md"));
+    }
+
+    /// The ignore file can be part of the dropped batch; its rules must apply
+    /// to the rest of what the sweep finds.
+    #[tokio::test]
+    async fn a_sweep_applies_an_ignore_file_no_event_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        state.reload_ignore_rules();
+        write_settled(&workspace.join(".gitignore"), b"secret.md\n");
+        write_settled(&workspace.join("secret.md"), b"keep local");
+        write_settled(&workspace.join("notes.md"), b"share");
+
+        let mut unloadable = Unloadable::new();
+        sweep_untracked(&state, &workspace, &mut unloadable).await;
+        assert!(!state.docs.contains_key("secret.md"));
+        assert!(state.docs.contains_key("notes.md"));
     }
 }
