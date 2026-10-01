@@ -1,6 +1,6 @@
 use crate::control::CircleEvent;
 use crate::state::AppState;
-use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
+use notify::event::{CreateKind, ModifyKind};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -159,25 +159,20 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
             | EventKind::Modify(ModifyKind::Name(_))  // To, From, Both, Any — covers macOS atomic renames
             | EventKind::Create(CreateKind::File)
             | EventKind::Create(CreateKind::Any)
-            | EventKind::Remove(RemoveKind::File)
-            | EventKind::Remove(RemoveKind::Any)
+            | EventKind::Remove(_)
     );
     if !relevant {
         return;
     }
+    let is_rename = matches!(event.kind, EventKind::Modify(ModifyKind::Name(_)));
+    let is_remove = matches!(event.kind, EventKind::Remove(_));
 
-    // For rename events, only process the destination (last path).
-    // Name(From) carries the source that moved away — skip it.
-    // Name(Both) carries [source, destination] — we only want the destination.
-    let paths: &[_] = match event.kind {
-        EventKind::Modify(ModifyKind::Name(RenameMode::From)) => &[],
-        EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
-            event.paths.last().map(std::slice::from_ref).unwrap_or(&[])
-        }
-        _ => &event.paths,
-    };
-
-    for path in paths {
+    // Every path is processed, rename sources included. Whether a rename path
+    // is the side that moved away or the side that arrived is decided below by
+    // whether it still exists: the mode is not enough, because macOS reports
+    // both sides as Name(Any), and moving a folder to the Trash or out of the
+    // workspace reports only the side that left.
+    for path in &event.paths {
         let rel = match path.strip_prefix(workspace) {
             Ok(r) => r.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
@@ -194,33 +189,14 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
             continue;
         }
 
-        if matches!(event.kind, EventKind::Remove(_)) {
-            // One event can stand for a whole tree. Deleting a folder is
-            // reported per-file on some platforms and as a single event for the
-            // directory on others (moving a folder to the Trash is one rename
-            // of the folder). Expanding to the documents beneath the path makes
-            // both shapes produce the same durable result, instead of a
-            // tombstone keyed `repo` that matches none of the 1713 documents
-            // keyed `repo/...`.
-            let mut paths = crate::deletions::docs_under(state, &rel);
-            if !paths.contains(&rel) {
-                paths.push(rel.clone());
+        if (is_remove || is_rename) && !tokio::fs::try_exists(path).await.unwrap_or(true) {
+            // A rename away from a path nothing tracks is an editor's temp
+            // file after an atomic save; tombstoning those would only grow the
+            // control doc.
+            if is_rename && crate::deletions::docs_under(state, &rel).is_empty() {
+                continue;
             }
-
-            // Durable record first: the live frame below only reaches peers
-            // connected at this instant, and a bulk delete overflows its
-            // broadcast buffer. The tombstone is what makes the deletion
-            // survive a disconnect and stop the file being re-created here on
-            // the next handshake.
-            crate::deletions::record(state, &rel);
-
-            for path in paths {
-                state.remove_doc(&path);
-                crate::store::crdt::delete(&state.workspace, &path).await;
-                crate::deletions::record(state, &path);
-                let _ = state.all_deletes.send(path.clone());
-                let _ = state.events.send(CircleEvent::FileDeleted { path });
-            }
+            record_removal(state, &rel).await;
             continue;
         }
 
@@ -288,5 +264,190 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
         }
 
         let _ = state.events.send(CircleEvent::FileUpdated { path: rel });
+    }
+}
+
+/// Untrack `rel` and everything beneath it, and tell peers it is gone.
+async fn record_removal(state: &AppState, rel: &str) {
+    // One event can stand for a whole tree. Deleting a folder is reported
+    // per-file on some platforms and as a single event for the directory on
+    // others (moving a folder to the Trash is one rename of the folder).
+    // Expanding to the documents beneath the path makes both shapes produce the
+    // same durable result, instead of a tombstone keyed `repo` that matches
+    // none of the 1713 documents keyed `repo/...`.
+    let mut paths = crate::deletions::docs_under(state, rel);
+    if !paths.iter().any(|p| p == rel) {
+        paths.push(rel.to_string());
+    }
+
+    // Durable record first: the live frame below only reaches peers connected
+    // at this instant, and a bulk delete overflows its broadcast buffer. The
+    // tombstone is what makes the deletion survive a disconnect and stop the
+    // file being re-created here on the next handshake.
+    crate::deletions::record(state, rel);
+
+    for path in paths {
+        state.remove_doc(&path);
+        crate::store::crdt::delete(&state.workspace, &path).await;
+        crate::deletions::record(state, &path);
+        let _ = state.all_deletes.send(path.clone());
+        let _ = state.events.send(CircleEvent::FileDeleted { path });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{config::JoinPolicy, mls};
+    use notify::event::{RemoveKind, RenameMode};
+
+    fn test_state(workspace: PathBuf) -> AppState {
+        AppState::new(
+            "circle".into(),
+            "Circle".into(),
+            workspace,
+            PathBuf::new(),
+            String::new(),
+            "agent".into(),
+            1,
+            "peer-local".into(),
+            JoinPolicy::Manual,
+            "owner".into(),
+            mls::new_mls_state(mls::MlsIdentity::generate("peer-local").unwrap(), None),
+        )
+    }
+
+    fn event(kind: EventKind, paths: Vec<PathBuf>) -> Event {
+        Event {
+            kind,
+            paths,
+            attrs: Default::default(),
+        }
+    }
+
+    /// macOS reports moving a folder to the Trash as one Name(Any) for the
+    /// folder, and nothing for the files inside it.
+    #[tokio::test]
+    async fn moving_a_folder_out_deletes_every_file_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        for p in ["source/a.rs", "source/src/b.rs", "sourced.rs"] {
+            state.get_or_create_doc(p);
+        }
+        std::fs::write(workspace.join("sourced.rs"), "keep").unwrap();
+
+        let mut deletes = state.all_deletes.subscribe();
+        handle_event(
+            &state,
+            &workspace,
+            event(
+                EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+                vec![workspace.join("source")],
+            ),
+        )
+        .await;
+
+        assert!(!state.docs.contains_key("source/a.rs"));
+        assert!(!state.docs.contains_key("source/src/b.rs"));
+        assert!(state.docs.contains_key("sourced.rs"));
+        assert!(crate::deletions::is_deleted(&state, "source/src/b.rs"));
+        assert!(!crate::deletions::is_deleted(&state, "sourced.rs"));
+
+        let mut sent = Vec::new();
+        while let Ok(p) = deletes.try_recv() {
+            sent.push(p);
+        }
+        sent.sort();
+        assert_eq!(sent, vec!["source", "source/a.rs", "source/src/b.rs"]);
+    }
+
+    #[tokio::test]
+    async fn a_rename_within_the_workspace_untracks_the_old_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        state.get_or_create_doc("old.md");
+        std::fs::write(workspace.join("new.md"), "body").unwrap();
+
+        handle_event(
+            &state,
+            &workspace,
+            event(
+                EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+                vec![workspace.join("old.md"), workspace.join("new.md")],
+            ),
+        )
+        .await;
+
+        assert!(!state.docs.contains_key("old.md"));
+        assert!(crate::deletions::is_deleted(&state, "old.md"));
+        assert!(state.docs.contains_key("new.md"));
+    }
+
+    /// An editor's atomic save renames a temp file over the real one. The
+    /// temp file was never tracked, so it must not leave a tombstone behind.
+    #[tokio::test]
+    async fn renaming_away_an_untracked_temp_file_records_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+
+        handle_event(
+            &state,
+            &workspace,
+            event(
+                EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+                vec![workspace.join("notes.md.tmp")],
+            ),
+        )
+        .await;
+
+        assert!(!crate::deletions::is_deleted(&state, "notes.md.tmp"));
+    }
+
+    #[tokio::test]
+    async fn removing_a_folder_deletes_every_file_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        state.get_or_create_doc("repo/a.rs");
+
+        handle_event(
+            &state,
+            &workspace,
+            event(
+                EventKind::Remove(RemoveKind::Folder),
+                vec![workspace.join("repo")],
+            ),
+        )
+        .await;
+
+        assert!(!state.docs.contains_key("repo/a.rs"));
+        assert!(crate::deletions::is_deleted(&state, "repo/a.rs"));
+    }
+
+    /// Coalesced events can report a removal for a path that has since been
+    /// written again; the file on disk is the truth.
+    #[tokio::test]
+    async fn a_remove_event_for_a_path_that_exists_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        std::fs::write(workspace.join("a.md"), "still here").unwrap();
+        state.get_or_create_doc("a.md");
+
+        handle_event(
+            &state,
+            &workspace,
+            event(
+                EventKind::Remove(RemoveKind::File),
+                vec![workspace.join("a.md")],
+            ),
+        )
+        .await;
+
+        assert!(state.docs.contains_key("a.md"));
+        assert!(!crate::deletions::is_deleted(&state, "a.md"));
     }
 }
