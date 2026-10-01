@@ -673,10 +673,18 @@ pub async fn run_sync(peer_id: PeerId, stream: Stream, state: AppState, is_initi
         // The sync stream is opened once per connection, and other streams
         // keep the connection from going idle, so without this a dead session
         // leaves the peer connected and silent until something else drops it.
-        if last {
+        if should_reconnect(&state, last) {
             let _ = state.sync_ended.send(peer_id);
         }
     }
+}
+
+/// Whether a failed session should close the connection so it is redialed.
+/// Not while another session with the peer still syncs, and never on a
+/// device removed from the circle: nobody will sync with it again, so a
+/// redial would only churn rejected connections.
+fn should_reconnect(state: &AppState, last_session: bool) -> bool {
+    last_session && !state.is_self_removed()
 }
 
 async fn sync_inner(
@@ -1492,5 +1500,17 @@ mod tests {
         assert!(state.sync_sessions.get("peer").is_none());
         // An end without a recorded start must not underflow.
         assert!(state.sync_session_ended("peer"));
+    }
+
+    #[test]
+    fn a_removed_device_does_not_ask_to_reconnect() {
+        let state = test_state();
+        assert!(should_reconnect(&state, true));
+        assert!(
+            !should_reconnect(&state, false),
+            "another session still runs"
+        );
+        mark_self_removed(&state);
+        assert!(!should_reconnect(&state, true));
     }
 }

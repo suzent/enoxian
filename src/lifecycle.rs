@@ -1105,7 +1105,19 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                             let _ = swarm.disconnect_peer_id(peer_id);
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    // Notifications were dropped, so the peers they named are
+                    // unknown. Close every member connection with no live
+                    // session; rendezvous and relay nodes are not members.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        for peer_id in member_peer_ids(&state_for_swarm) {
+                            if swarm.is_connected(&peer_id)
+                                && state_for_swarm.sync_sessions.get(&peer_id.to_string()).is_none()
+                            {
+                                info!("[{}] closing connection to {peer_id}: no sync session", circle_id);
+                                let _ = swarm.disconnect_peer_id(peer_id);
+                            }
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => sync_ended_open = false,
                 },
                 // Background-resolved rendezvous address arrived (e.g. default server).
