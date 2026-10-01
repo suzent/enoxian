@@ -2,6 +2,7 @@ use crate::control::CircleEvent;
 use crate::state::AppState;
 use notify::event::{CreateKind, ModifyKind};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -136,13 +137,24 @@ pub async fn spawn_watcher(
 
     tokio::spawn(async move {
         let _watcher = watcher; // keep alive inside task
+        let mut sweep = tokio::time::interval(SWEEP_INTERVAL);
+        sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        sweep.tick().await; // the first tick is immediate; preload just ran
+        let mut unloadable = Unloadable::new();
         loop {
             tokio::select! {
                 _ = token.cancelled() => break,
                 result = tokio_rx.recv() => match result {
+                    Some(Ok(event)) if event.need_rescan() => {
+                        tracing::warn!("[watcher] events were dropped; rescanning the workspace");
+                        sweep_untracked(&state, &workspace, &mut unloadable).await;
+                    }
                     Some(Ok(event)) => handle_event(&state, &workspace, event).await,
                     Some(Err(e)) => tracing::warn!("watcher error: {e}"),
                     None => break,
+                },
+                _ = sweep.tick() => {
+                    sweep_untracked(&state, &workspace, &mut unloadable).await;
                 }
             }
         }
@@ -220,6 +232,86 @@ async fn handle_event(state: &AppState, workspace: &PathBuf, event: Event) {
     }
 }
 
+/// How often the workspace is checked for files no event ever reported.
+const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A file this recent may still be mid-copy; the next sweep takes it whole.
+const SWEEP_SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Files a sweep could not load (binary, or unreadable), with the size and
+/// mtime seen, so an unchanged one is not read again on every sweep.
+type Unloadable = HashMap<String, (u64, std::time::SystemTime)>;
+
+/// Start tracking files that are on disk but were never reported.
+///
+/// File events are not guaranteed. On Windows, notify drops a whole batch
+/// without any signal when the change buffer overflows (a large copy), and a
+/// file still locked by the copier fails to read on the one event it gets.
+/// Without this, a file missed that way stays untracked until the daemon
+/// restarts, invisible to every peer. Only adds: a tracked file missing from
+/// disk may be a peer's write not yet flushed, so removals stay event-driven.
+async fn sweep_untracked(state: &AppState, workspace: &Path, unloadable: &mut Unloadable) {
+    // A dropped batch may have carried an ignore file change; this sweep is
+    // the only place it would be seen, and the rest of the batch must be
+    // judged by the new rules.
+    state.reload_ignore_rules();
+    let now = std::time::SystemTime::now();
+    let mut picked_up = 0usize;
+    let mut stack = vec![workspace.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let mut rd = match tokio::fs::read_dir(&dir).await {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let path = entry.path();
+            let rel = match path.strip_prefix(workspace) {
+                Ok(r) => r.to_string_lossy().replace('\\', "/"),
+                Err(_) => continue,
+            };
+            if state.is_ignored(&rel) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata().await else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            // A tombstoned file is the deletion reconcile's to decide.
+            if state.docs.contains_key(&rel) || crate::deletions::is_deleted(state, &rel) {
+                continue;
+            }
+            let Ok(modified) = meta.modified() else {
+                continue;
+            };
+            // A future mtime (clock skew, or preserved by a copy) says nothing
+            // about a write in progress, so only a recent past one waits.
+            if matches!(now.duration_since(modified), Ok(age) if age < SWEEP_SETTLE) {
+                continue;
+            }
+            let seen = (meta.len(), modified);
+            if unloadable.get(&rel) == Some(&seen) {
+                continue;
+            }
+            let read_error = ingest_file(state, &path, rel.clone()).await;
+            if state.docs.contains_key(&rel) {
+                unloadable.remove(&rel);
+                picked_up += 1;
+            } else if read_error == Some(std::io::ErrorKind::InvalidData) {
+                // Not text. A lock or sharing violation is not remembered:
+                // releasing it changes neither size nor mtime, so caching it
+                // would hide the file the sweep exists to find.
+                unloadable.insert(rel, seen);
+            }
+        }
+    }
+    if picked_up > 0 {
+        tracing::info!("[watcher] picked up {picked_up} file(s) no event reported");
+    }
+}
+
 /// Bring the tracked documents under directory `rel` in line with its contents
 /// on disk: untrack what is no longer there, and load every file that is.
 async fn sync_directory(state: &AppState, workspace: &Path, dir: &Path, rel: &str) {
@@ -261,7 +353,9 @@ async fn sync_directory(state: &AppState, workspace: &Path, dir: &Path, rel: &st
 }
 
 /// Load the file at `path` into its document, replacing the text if it changed.
-async fn ingest_file(state: &AppState, path: &Path, rel: String) {
+/// Returns the read error if the file could not be read, so a sweep can tell
+/// a binary file (`InvalidData`) from a transient failure worth retrying.
+async fn ingest_file(state: &AppState, path: &Path, rel: String) -> Option<std::io::ErrorKind> {
     // The path exists, so any tombstone for it is obsolete. Clearing it
     // here is what makes delete-then-recreate work; otherwise the next
     // reconcile would delete the new file.
@@ -278,12 +372,12 @@ async fn ingest_file(state: &AppState, path: &Path, rel: String) {
         .clone();
 
     if flag.swap(false, Ordering::SeqCst) {
-        return; // self-write — ignore
+        return None; // self-write — ignore
     }
 
     let contents = match tokio::fs::read_to_string(path).await {
         Ok(c) => c,
-        Err(_) => return,
+        Err(e) => return Some(e.kind()),
     };
 
     // Apply to Y.Text (full replace — last external writer wins).
@@ -292,7 +386,7 @@ async fn ingest_file(state: &AppState, path: &Path, rel: String) {
     let changed = {
         let mut txn = match doc.try_transact_mut() {
             Ok(txn) => txn,
-            Err(_) => return,
+            Err(_) => return None,
         };
         let text = txn.get_or_insert_text(rel.as_str());
         let current = text.get_string(&txn);
@@ -326,6 +420,7 @@ async fn ingest_file(state: &AppState, path: &Path, rel: String) {
     }
 
     let _ = state.events.send(CircleEvent::FileUpdated { path: rel });
+    None
 }
 
 /// Untrack `rel` and everything beneath it, and tell peers it is gone.
@@ -566,5 +661,140 @@ mod tests {
         assert!(crate::deletions::is_deleted(&state, "repo/gone.md"));
         assert!(state.docs.contains_key("repo/kept.md"));
         assert!(!crate::deletions::is_deleted(&state, "repo/kept.md"));
+    }
+
+    fn write_settled(path: &Path, bytes: &[u8]) {
+        std::fs::write(path, bytes).unwrap();
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+    }
+
+    /// The files in this test were never reported by any event, which is what
+    /// a dropped Windows batch looks like.
+    #[tokio::test]
+    async fn a_sweep_tracks_files_no_event_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        std::fs::create_dir_all(workspace.join("notes")).unwrap();
+        write_settled(&workspace.join("plan.md"), b"plan");
+        write_settled(&workspace.join("notes/review.md"), b"review");
+        state.get_or_create_doc("tracked.md");
+
+        let mut unloadable = Unloadable::new();
+        sweep_untracked(&state, &workspace, &mut unloadable).await;
+
+        assert!(state.docs.contains_key("plan.md"));
+        assert!(state.docs.contains_key("notes/review.md"));
+        assert!(state.docs.contains_key("tracked.md"));
+    }
+
+    #[tokio::test]
+    async fn a_sweep_leaves_fresh_tombstoned_and_ignored_files_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        // Still being written, as far as the sweep can tell.
+        std::fs::write(workspace.join("copying.md"), b"partial").unwrap();
+        write_settled(&workspace.join("gone.md"), b"deleted by a peer");
+        crate::deletions::record(&state, "gone.md");
+        std::fs::create_dir_all(workspace.join("node_modules/x")).unwrap();
+        write_settled(&workspace.join("node_modules/x/index.js"), b"build");
+
+        let mut unloadable = Unloadable::new();
+        sweep_untracked(&state, &workspace, &mut unloadable).await;
+
+        assert!(!state.docs.contains_key("copying.md"));
+        assert!(!state.docs.contains_key("gone.md"));
+        assert!(crate::deletions::is_deleted(&state, "gone.md"));
+        assert!(!state.docs.contains_key("node_modules/x/index.js"));
+    }
+
+    #[tokio::test]
+    async fn a_binary_file_is_not_reread_until_it_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        write_settled(&workspace.join("image.bin"), &[0xff, 0xfe, 0x00, 0x80]);
+
+        let mut unloadable = Unloadable::new();
+        sweep_untracked(&state, &workspace, &mut unloadable).await;
+        assert!(!state.docs.contains_key("image.bin"));
+        assert!(unloadable.contains_key("image.bin"));
+
+        // Rewritten as text: the size and mtime change, so it is read again.
+        write_settled(&workspace.join("image.bin"), b"now text");
+        sweep_untracked(&state, &workspace, &mut unloadable).await;
+        assert!(state.docs.contains_key("image.bin"));
+        assert!(!unloadable.contains_key("image.bin"));
+    }
+
+    /// A file still locked by a copier fails to read; once the lock is gone
+    /// its size and mtime are unchanged, so it must not have been cached.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_file_that_fails_to_read_is_retried() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        let path = workspace.join("locked.md");
+        write_settled(&path, b"text");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&path).is_ok() {
+            return; // running as root: permissions do not block the read
+        }
+
+        let mut unloadable = Unloadable::new();
+        sweep_untracked(&state, &workspace, &mut unloadable).await;
+        assert!(!state.docs.contains_key("locked.md"));
+        assert!(!unloadable.contains_key("locked.md"));
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        sweep_untracked(&state, &workspace, &mut unloadable).await;
+        assert!(state.docs.contains_key("locked.md"));
+    }
+
+    #[tokio::test]
+    async fn a_future_mtime_does_not_count_as_mid_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        let path = workspace.join("skewed.md");
+        std::fs::write(&path, b"from a fast clock").unwrap();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(future)
+            .unwrap();
+
+        let mut unloadable = Unloadable::new();
+        sweep_untracked(&state, &workspace, &mut unloadable).await;
+        assert!(state.docs.contains_key("skewed.md"));
+    }
+
+    /// The ignore file can be part of the dropped batch; its rules must apply
+    /// to the rest of what the sweep finds.
+    #[tokio::test]
+    async fn a_sweep_applies_an_ignore_file_no_event_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = test_state(workspace.clone());
+        state.reload_ignore_rules();
+        write_settled(&workspace.join(".gitignore"), b"secret.md\n");
+        write_settled(&workspace.join("secret.md"), b"keep local");
+        write_settled(&workspace.join("notes.md"), b"share");
+
+        let mut unloadable = Unloadable::new();
+        sweep_untracked(&state, &workspace, &mut unloadable).await;
+        assert!(!state.docs.contains_key("secret.md"));
+        assert!(state.docs.contains_key("notes.md"));
     }
 }
