@@ -39,6 +39,10 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Security
+
+- Update DOMPurify to 3.4.16 to fix GHSA-p98j-92pf-mc4p.
+
 ### Changed
 
 - Documentation now starts with installation and everyday collaboration, with

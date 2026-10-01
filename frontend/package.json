@@ -21,7 +21,7 @@
     "@codemirror/state": "^6.7.4",
     "@codemirror/theme-one-dark": "^6.1.2",
     "@codemirror/view": "^6.43.11",
-    "dompurify": "^3.4.15",
+    "dompurify": "^3.4.16",
     "lib0": "^0.2.99",
     "lucide-react": "^1.44.0",
     "marked": "^18.0.12",
