@@ -289,8 +289,10 @@ enum IncomingEvent {
     BlobData { hash: String, bytes: Vec<u8> },
     /// The remote peer has revoked this device's Circle membership.
     Revoked,
-    /// Stream closed
-    Closed,
+    /// A frame this version does not understand.
+    Unrecognized { path: String },
+    /// The stream ended or could not be read; carries the reason.
+    Closed(String),
 }
 
 fn parse_frame(path: String, data: &[u8]) -> IncomingEvent {
@@ -333,7 +335,7 @@ fn parse_frame(path: String, data: &[u8]) -> IncomingEvent {
             path,
             raw_update: raw,
         },
-        _ => IncomingEvent::Closed,
+        _ => IncomingEvent::Unrecognized { path },
     }
 }
 
@@ -658,12 +660,22 @@ fn mark_self_removed(state: &AppState) {
 }
 
 pub async fn run_sync(peer_id: PeerId, stream: Stream, state: AppState, is_initiator: bool) {
-    if let Err(e) = sync_inner(peer_id, stream, &state, is_initiator).await {
+    let peer = peer_id.to_string();
+    state.sync_session_started(&peer);
+    let result = sync_inner(peer_id, stream, &state, is_initiator).await;
+    let last = state.sync_session_ended(&peer);
+    if let Err(e) = result {
         // Deliberately `warn`, not `debug`. Every reason a sync ends early —
         // circle mismatch, revocation, lock contention, a torn stream — used to
         // land below the daemon's default level, so a circle that had silently
         // stopped syncing looked identical in the log to one that was healthy.
         warn!("[sync] {peer_id}: sync ended: {e}");
+        // The sync stream is opened once per connection, and other streams
+        // keep the connection from going idle, so without this a dead session
+        // leaves the peer connected and silent until something else drops it.
+        if last {
+            let _ = state.sync_ended.send(peer_id);
+        }
     }
 }
 
@@ -1060,7 +1072,7 @@ async fn sync_inner(
                 }
                 Err(e) => {
                     debug!("[sync] reader closed ({peer_str}): {e}");
-                    let _ = evt_tx.send(IncomingEvent::Closed).await;
+                    let _ = evt_tx.send(IncomingEvent::Closed(e.to_string())).await;
                     break;
                 }
             }
@@ -1147,7 +1159,19 @@ async fn sync_inner(
                         warn!("[sync] membership revoked by {peer_id}");
                         break;
                     }
-                    IncomingEvent::Closed => break,
+                    IncomingEvent::Unrecognized { path } => {
+                        // Skipping is safe: the next catch-up resends real
+                        // state. Ending the session here would stop all sync
+                        // with a peer one frame type ahead or behind.
+                        warn!("[sync] {peer_id}: skipped unrecognized frame for {path}");
+                    }
+                    // A session that ends while the connection stays up stops
+                    // syncing for good, since streams open once per
+                    // connection. Report it as a failure so `run_sync` can
+                    // close the connection and the redial starts a new one.
+                    IncomingEvent::Closed(reason) => {
+                        return Err(anyhow::anyhow!("sync stream closed: {reason}"));
+                    }
                 }
             }
 
@@ -1446,5 +1470,27 @@ mod tests {
             parse_frame(REVOKED_PATH.to_string(), &[]),
             IncomingEvent::Revoked
         ));
+    }
+
+    /// A frame from a peer one version ahead or behind must not end the
+    /// session: that used to stop all sync with the peer, silently.
+    #[test]
+    fn an_undecodable_frame_is_skipped_not_fatal() {
+        assert!(matches!(
+            parse_frame("notes.md".to_string(), &[0xff, 0xff, 0xff]),
+            IncomingEvent::Unrecognized { path } if path == "notes.md"
+        ));
+    }
+
+    #[test]
+    fn only_the_last_session_with_a_peer_reports_the_end() {
+        let state = test_state();
+        state.sync_session_started("peer");
+        state.sync_session_started("peer");
+        assert!(!state.sync_session_ended("peer"), "one session still runs");
+        assert!(state.sync_session_ended("peer"));
+        assert!(state.sync_sessions.get("peer").is_none());
+        // An end without a recorded start must not underflow.
+        assert!(state.sync_session_ended("peer"));
     }
 }
