@@ -1081,6 +1081,8 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         // Disable each branch the first time its channel closes.
         let mut rdvz_open = true;
         let mut relay_open = true;
+        let mut sync_ended_open = true;
+        let mut sync_ended_rx = state_for_swarm.sync_ended.subscribe();
 
         loop {
             tokio::select! {
@@ -1091,6 +1093,33 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     presence::write_offline(&state_for_swarm, &state_for_swarm.agent_id);
                     break;
                 }
+                // A sync session failed while its connection stayed up. Close
+                // the connection so the redial starts a new session; left
+                // open, the peer looks connected and nothing syncs.
+                ended = sync_ended_rx.recv(), if sync_ended_open => match ended {
+                    Ok(peer_id) => {
+                        if swarm.is_connected(&peer_id)
+                            && state_for_swarm.sync_sessions.get(&peer_id.to_string()).is_none()
+                        {
+                            info!("[{}] closing connection to {peer_id}: its sync session ended", circle_id);
+                            let _ = swarm.disconnect_peer_id(peer_id);
+                        }
+                    }
+                    // Notifications were dropped, so the peers they named are
+                    // unknown. Close every member connection with no live
+                    // session; rendezvous and relay nodes are not members.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        for peer_id in member_peer_ids(&state_for_swarm) {
+                            if swarm.is_connected(&peer_id)
+                                && state_for_swarm.sync_sessions.get(&peer_id.to_string()).is_none()
+                            {
+                                info!("[{}] closing connection to {peer_id}: no sync session", circle_id);
+                                let _ = swarm.disconnect_peer_id(peer_id);
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => sync_ended_open = false,
+                },
                 // Background-resolved rendezvous address arrived (e.g. default server).
                 item = rdvz_rx.recv(), if rdvz_open => match item {
                     Some((addr, peer_id)) => {

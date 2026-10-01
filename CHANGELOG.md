@@ -51,6 +51,9 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Two devices that stayed connected but stopped syncing (no files, chat or
+  presence getting through, and nothing in the log) now reconnect on their
+  own, and the log says why the sync stopped.
 - Moving a file or folder to the Trash, or out of the circle's folder, now
   deletes it for everyone. Before, it stayed listed in the UI and on other
   devices, and renaming a file left its old name behind. Renaming a folder
