@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -486,7 +486,7 @@ pub fn write_secret(path: &std::path::Path, contents: impl AsRef<[u8]>) -> Resul
                 .mode()
                 & 0o777;
             if mode & 0o077 != 0 {
-                bail!(
+                anyhow::bail!(
                     "refusing to write key material to {}: it is readable by others \
                      (mode {mode:o}) and this filesystem will not restrict it",
                     path.display()
