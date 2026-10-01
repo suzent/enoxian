@@ -114,6 +114,13 @@ pub struct AppState {
     /// subscribe and forward each want to their peer, so an attachment posted
     /// mid-session is fetched immediately instead of on the next reconnect.
     pub blob_wants: broadcast::Sender<String>,
+    /// Peers whose last sync session ended in failure. The swarm loop closes
+    /// the connection, so the redial opens a fresh session instead of the peer
+    /// staying connected with nothing syncing.
+    pub sync_ended: broadcast::Sender<libp2p::PeerId>,
+    /// Live sync sessions per peer. A peer can hold more than one connection,
+    /// and closing the connection is only right when none of them still syncs.
+    pub sync_sessions: Arc<DashMap<String, usize>>,
     /// Local admission failures, exposed to the UI without syncing diagnostic state.
     pub approval_errors: Arc<DashMap<String, String>>,
     /// Opens outbound streams on this circle's swarm, for requests that start
@@ -237,6 +244,7 @@ impl AppState {
         let (all_awareness_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (all_deletes_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let (blob_wants_tx, _) = broadcast::channel(EVENT_CAPACITY);
+        let (sync_ended_tx, _) = broadcast::channel(EVENT_CAPACITY);
         let control = Arc::new(Doc::new());
         let docs: Arc<DashMap<String, Arc<Doc>>> = Arc::new(DashMap::new());
 
@@ -569,6 +577,8 @@ impl AppState {
             ))),
             blobs: Arc::new(std::sync::OnceLock::new()),
             blob_wants: blob_wants_tx,
+            sync_ended: sync_ended_tx,
+            sync_sessions: Arc::new(DashMap::new()),
             approval_errors: Arc::new(DashMap::new()),
             stream_control: Arc::new(std::sync::OnceLock::new()),
             live_runs: Default::default(),
@@ -825,6 +835,27 @@ impl AppState {
         });
         connections.dedup_by_key(|connection| connection.kind);
         connections
+    }
+
+    pub fn sync_session_started(&self, peer_id: &str) {
+        *self.sync_sessions.entry(peer_id.to_string()).or_insert(0) += 1;
+    }
+
+    /// Record that a sync session with `peer_id` ended. Returns true if it was
+    /// the last one.
+    pub fn sync_session_ended(&self, peer_id: &str) -> bool {
+        let remaining = match self.sync_sessions.get_mut(peer_id) {
+            Some(mut count) => {
+                *count = count.saturating_sub(1);
+                *count
+            }
+            None => 0,
+        };
+        if remaining == 0 {
+            self.sync_sessions
+                .remove_if(peer_id, |_, count| *count == 0);
+        }
+        remaining == 0
     }
 
     pub fn remove_doc(&self, rel_path: &str) {

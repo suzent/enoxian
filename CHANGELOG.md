@@ -54,6 +54,9 @@ refuses to publish a version whose section is missing or empty.
 - Files that land in the circle's folder without the daemon noticing (a large
   copy on Windows can drop the change events) are picked up within a minute.
   Before, they stayed invisible to every other device until a restart.
+- Two devices that stayed connected but stopped syncing (no files, chat or
+  presence getting through, and nothing in the log) now reconnect on their
+  own, and the log says why the sync stopped.
 - Moving a file or folder to the Trash, or out of the circle's folder, now
   deletes it for everyone. Before, it stayed listed in the UI and on other
   devices, and renaming a file left its old name behind. Renaming a folder
