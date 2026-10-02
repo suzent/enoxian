@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Bot, RadioTower, Laptop } from 'lucide-react'
+import { useState, useEffect, useCallback, type ReactNode } from 'react'
+import { Bot, RadioTower, Laptop, Users } from 'lucide-react'
 import type { AgentConfigView, AgentPlugin, ConnectivitySettings, DiscoveredAgent } from '../types'
 import type { IdentityInfo } from '../api'
 import { getAgentConfigFor, getAgentPlugins, discoverAgents, installAgentPlugin, setEngagement, addAgent, removeAgent, getConnectivitySettings, setForceRelay, getIdentity, setIdentity } from '../api'
@@ -7,19 +7,21 @@ import { useApp } from '../context/AppContext'
 import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
 import EngagementSettings, { type Patch } from './EngagementSettings'
 import DeviceIdentity from './DeviceIdentity'
-import Select from './ui/Select'
 
-type SettingsTab = 'device' | 'agents' | 'behaviour' | 'connectivity'
+type SettingsTab = 'device' | 'agents' | 'behaviour' | 'connectivity' | 'membership'
 
 const SETTINGS_TABS: readonly SegmentedTabOption<SettingsTab>[] = [
   { value: 'device', content: <><Laptop size={14} aria-hidden="true" />DEVICE</> },
   { value: 'agents', content: <><Bot size={14} aria-hidden="true" />AGENTS</> },
   { value: 'behaviour', content: <><Bot size={14} aria-hidden="true" />BEHAVIOUR</> },
+  { value: 'membership', content: <><Users size={14} aria-hidden="true" />MEMBERSHIP</> },
   { value: 'connectivity', content: <><RadioTower size={14} aria-hidden="true" />CONNECTIVITY</> },
 ]
 
 interface Props {
   onClose: () => void
+  circleId?: string
+  membership?: ReactNode
 }
 
 /**
@@ -29,10 +31,10 @@ interface Props {
  * a local process) is gated behind a confirm; adding/removing agents is
  * ordinary launcher config. See docs/concepts/proposals.md.
  */
-export default function DeviceSettings({ onClose }: Props) {
-  const { activeCircleId: chatCircleId, circles } = useApp()
-  // Settings selection is independent of the active chat.
-  const [activeCircleId, setSettingsCircleId] = useState(chatCircleId)
+export default function DeviceSettings({ onClose, circleId, membership }: Props) {
+  const { circles } = useApp()
+  const activeCircleId = circleId ?? null
+  const scope = circleId ? 'circle' : 'global'
   const [activeTab, setActiveTab] = useState<SettingsTab>('behaviour')
   const [cfg, setCfg] = useState<AgentConfigView | null>(null)
   const [plugins, setPlugins] = useState<AgentPlugin[] | null>(null)
@@ -118,10 +120,6 @@ export default function DeviceSettings({ onClose }: Props) {
     })
   }
 
-  // Which scope the engagement controls edit. Global is the default because
-  // most people have one answer for every Circle; the tab is there for when
-  // they do not.
-  const [scope, setScope] = useState<'global' | 'circle'>('global')
   const applyEngagement = (patch: Patch) =>
     run(() => setEngagement({
       ...(scope === 'circle' && activeCircleId ? { circle_id: activeCircleId } : {}),
@@ -136,42 +134,30 @@ export default function DeviceSettings({ onClose }: Props) {
     <div className="ritual-modal-backdrop" onClick={onClose}>
       <div className="ritual-panel sys-window device-settings-panel" onClick={e => e.stopPropagation()}>
         <button onClick={onClose} className="ritual-panel__close" aria-label="Close">×</button>
-        <div className="ritual-panel__header">SETTINGS</div>
+        <div className="ritual-panel__header">{scope === 'global' ? 'GLOBAL SETTINGS' : `${activeCircle?.circle_name ?? 'Circle'} · SETTINGS`}</div>
         <div className="settings-layout">
           <aside className="settings-sidebar">
-                  <label className="settings-scope-picker">
-                    <span>Settings for</span>
-                    <Select
-                      aria-label="Settings scope"
-                      value={scope === 'global' ? '' : activeCircleId ?? ''}
-                      disabled={busy}
-                      onChange={id => {
-                        setScope(id ? 'circle' : 'global')
-                        if ((id && (activeTab === 'device' || activeTab === 'agents')) || (!id && activeTab === 'connectivity')) setActiveTab('behaviour')
-                        if (id) setSettingsCircleId(id)
-                      }}
-                      options={[
-                        { value: '', label: 'Global settings' },
-                        ...circles.map(circle => ({ value: circle.circle_id, label: circle.circle_name, group: 'Circles' })),
-                      ]}
-                    />
-                  </label>
+            <div className="settings-context">
+              <span>{scope === 'global' ? 'GLOBAL SETTINGS' : 'CIRCLE SETTINGS'}</span>
+              <strong>{scope === 'global' ? 'This device' : activeCircle?.circle_name ?? 'Circle'}</strong>
+            </div>
           <SegmentedTabs
             className="settings-tabs"
             ariaLabel="Settings sections"
             orientation="vertical"
             value={activeTab}
             onChange={setActiveTab}
-            options={SETTINGS_TABS.filter(tab => scope === 'global' ? tab.value !== 'connectivity' : tab.value === 'behaviour' || tab.value === 'connectivity')}
+            options={SETTINGS_TABS.filter(tab => scope === 'global' ? tab.value !== 'connectivity' && tab.value !== 'membership' : tab.value === 'behaviour' || tab.value === 'connectivity' || (tab.value === 'membership' && !!membership))}
           />
-          <p className="settings-sidebar__note">{scope === 'global' ? 'Defaults for this device across all Circles.' : 'This device’s preferences in the selected Circle.'}</p>
+          <p className="settings-sidebar__note">{scope === 'global' ? 'Defaults for this device across all Circles.' : activeTab === 'membership' ? 'Your participation in this Circle on this device.' : 'This device’s preferences in this Circle.'}</p>
           </aside>
           <div className="ritual-panel__body settings-panel-body flex flex-col gap-4">
           <header className="settings-section-heading">
             <span className="settings-section-heading__scope">{scope === 'global' ? 'THIS DEVICE · GLOBAL' : `THIS DEVICE IN ${activeCircle?.circle_name ?? 'CIRCLE'}`}</span>
-            <h2>{{ device: 'Device identity', agents: 'Your agents', behaviour: 'Agent behaviour', connectivity: 'Connectivity' }[activeTab]}</h2>
-            <p>{{ device: 'How you and this machine appear to others.', agents: 'Connect the agents available on this machine. Used across all Circles.', behaviour: 'Set defaults for all Circles, or tailor how agents respond in one Circle.', connectivity: 'Manage how this device connects to the current Circle.' }[activeTab]}</p>
+            <h2>{{ device: 'Device identity', agents: 'Your agents', behaviour: 'Agent behaviour', membership: 'Circle membership', connectivity: 'Connectivity' }[activeTab]}</h2>
+            <p>{{ device: 'How you and this machine appear to others.', agents: 'Connect the agents available on this machine. Used across all Circles.', behaviour: scope === 'global' ? 'Set how agents respond across all Circles.' : 'Tailor how agents respond in this Circle.', membership: 'Pause participation or leave this Circle on this device.', connectivity: 'Manage how this device connects to the current Circle.' }[activeTab]}</p>
           </header>
+          {activeTab === 'membership' && membership}
           {error && (
             <div className="file-error">
               <div>{error}</div>
