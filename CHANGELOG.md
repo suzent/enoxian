@@ -45,12 +45,17 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
+- Global settings and Circle settings now have separate footer entrances, with
+  enable/disable and leave actions grouped in Circle settings. Invitations and
+  member management remain in the Members panel.
 - Documentation now starts with installation and everyday collaboration, with
   architecture, integration references, and contributor workflows grouped in
   a separate developer section.
 
 ### Fixed
 
+- Scrollable panels, including Activity, reserve scrollbar space so content
+  no longer shifts when a scrollbar appears.
 - Files that land in the circle's folder without the daemon noticing (a large
   copy on Windows can drop the change events) are picked up within a minute.
   Before, they stayed invisible to every other device until a restart.
