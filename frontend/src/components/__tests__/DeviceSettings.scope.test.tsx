@@ -6,7 +6,7 @@
  * this device's own answer about that Circle. The panel has to say so.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 const getAgentConfigFor = vi.fn()
@@ -57,52 +57,61 @@ const CONFIG = {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks()
   getAgentConfigFor.mockReset()
   getAgentConfigFor.mockResolvedValue(CONFIG)
 })
 
-describe('per-Circle settings', () => {
-  it('are reachable from the same panel, under a named scope', async () => {
-    render(<DeviceSettings onClose={vi.fn()} />)
-    await userEvent.click(screen.getByRole('combobox', { name: 'Settings scope' }))
-    // The Circle is named on the tab, not called "this Circle" — you can only
-    // tell which one you are editing if it says.
-    expect(await screen.findByRole('option', { name: 'group' })).toBeTruthy()
-    expect(screen.getByRole('option', { name: 'Global settings' })).toBeTruthy()
-  })
-
-  it('open on the global scope, since most people have one answer', async () => {
+describe('separate settings entry points', () => {
+  it('opens global settings without a scope picker', async () => {
     render(<DeviceSettings onClose={vi.fn()} />)
     expect(await screen.findByText(/Applies in every Circle/)).toBeTruthy()
-  })
-
-  it('say plainly that a per-Circle setting is not shared with the Circle', async () => {
-    render(<DeviceSettings onClose={vi.fn()} />)
-    await userEvent.click(screen.getByRole('combobox', { name: 'Settings scope' }))
-    await userEvent.click(screen.getByRole('option', { name: 'group' }))
-    await waitFor(() => expect(screen.getByText(/Applies in/)).toBeTruthy())
-    expect(screen.getByText(/never shared with the Circle/)).toBeTruthy()
-  })
-
-  it('uses the sidebar scope to show only relevant sections', async () => {
-    render(<DeviceSettings onClose={vi.fn()} />)
+    expect(screen.queryByRole('combobox', { name: 'Settings scope' })).toBeNull()
     expect(screen.getByRole('tab', { name: 'DEVICE' })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'AGENTS' })).toBeTruthy()
     expect(screen.queryByRole('tab', { name: 'CONNECTIVITY' })).toBeNull()
-    await userEvent.click(screen.getByRole('tab', { name: 'DEVICE' }))
-    await userEvent.click(screen.getByRole('combobox', { name: 'Settings scope' }))
-    await userEvent.click(screen.getByRole('option', { name: 'group' }))
+    expect(getAgentConfigFor).toHaveBeenCalledWith(null)
+  })
+
+  it('loads the requested Circle independently of the active chat', async () => {
+    render(<DeviceSettings circleId="c2" onClose={vi.fn()} />)
+    await waitFor(() => expect(getAgentConfigFor).toHaveBeenCalledWith('c2'))
     expect(screen.queryByRole('tab', { name: 'DEVICE' })).toBeNull()
     expect(screen.queryByRole('tab', { name: 'AGENTS' })).toBeNull()
-    expect(screen.getByRole('tab', { name: 'BEHAVIOUR' })).toHaveAttribute('aria-selected', 'true')
-    await userEvent.click(screen.getByRole('tab', { name: 'CONNECTIVITY' }))
-    await userEvent.click(screen.getByRole('combobox', { name: 'Settings scope' }))
-    await userEvent.click(screen.getByRole('option', { name: 'Global settings' }))
-    expect(screen.getByRole('tab', { name: 'BEHAVIOUR' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.queryByRole('tab', { name: 'CONNECTIVITY' })).toBeNull()
+    expect(screen.getByRole('tab', { name: 'CONNECTIVITY' })).toBeTruthy()
   })
 
-  it('ask the daemon for the active Circle, so overrides can be shown at all', async () => {
-    render(<DeviceSettings onClose={vi.fn()} />)
-    await waitFor(() => expect(getAgentConfigFor).toHaveBeenCalledWith('c1'))
+  it('names the Circle and explains its settings are private', async () => {
+    render(<DeviceSettings circleId="c1" onClose={vi.fn()} />)
+    expect(await screen.findByText(/Applies in/)).toHaveTextContent('group')
+    expect(screen.getByText(/never shared with the Circle/)).toBeTruthy()
+    expect(screen.getByText('group · SETTINGS')).toBeTruthy()
+    expect(screen.queryByRole('combobox', { name: 'Settings scope' })).toBeNull()
   })
+
+  it('offers connectivity directly in Circle settings', async () => {
+    render(<DeviceSettings circleId="c1" onClose={vi.fn()} />)
+    await screen.findByText(/Applies in/)
+    await userEvent.click(screen.getByRole('tab', { name: 'CONNECTIVITY' }))
+    expect(await screen.findByText('Connectivity', { selector: 'h2' })).toBeTruthy()
+  })
+  it.each([undefined, 'c1'])('saves behaviour to the scope opened by the entry point (%s)', async circleId => {
+    const { setEngagement } = await import('../../api')
+    render(<DeviceSettings circleId={circleId} onClose={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Run agents when mentioned' }))
+    await waitFor(() => expect(setEngagement).toHaveBeenCalledWith(
+      circleId ? { circle_id: circleId, reaction: 'pull' } : { reaction: 'pull' },
+    ))
+  })
+
+  it('groups Circle membership controls under a dedicated settings section', async () => {
+    const leave = vi.fn()
+    render(<DeviceSettings circleId="c1" onClose={vi.fn()} membership={<button onClick={leave}>Leave Circle…</button>} />)
+    expect(screen.queryByRole('button', { name: 'Leave Circle…' })).toBeNull()
+    await userEvent.click(screen.getByRole('tab', { name: 'MEMBERSHIP' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Leave Circle…' }))
+    expect(leave).toHaveBeenCalledOnce()
+    expect(screen.getByRole('heading', { name: 'Circle membership' })).toBeTruthy()
+  })
+
 })

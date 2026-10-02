@@ -1,4 +1,6 @@
-import { X, UserPlus, FilePlus, ListPlus, ChevronDown } from 'lucide-react'
+import { X, UserPlus, FilePlus, ListPlus } from 'lucide-react'
+import CircleMembership from './CircleMembership'
+import DeviceSettings from './DeviceSettings'
 import InviteLink from './InviteLink'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Presence, Task, Member, PendingEntry, Proposal } from '../types'
@@ -37,6 +39,7 @@ const CONNECTION_BADGE: Record<NonNullable<Presence['connections']>[number]['kin
 
 export default function RightPanel({ activityRef, onFileSelect, selectedFile, activeTab, onClose }: Props) {
   const { activeCircleId, circles, reloadCircles, status } = useApp()
+  const [settingsCircleId, setSettingsCircleId] = useState<string | null>(null)
   const [presence, setPresence] = useState<Presence[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [files, setFiles] = useState<string[]>([])
@@ -74,6 +77,7 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
   }, [selectedFile])
 
   useEffect(() => {
+    setSettingsCircleId(null)
     setInviteUri(null)
     setLongInviteUri(undefined)
     setInviteNote(null)
@@ -475,19 +479,7 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
     },
   ]
 
-  return (
-    <>
-    <aside className="app-right-panel sys-window flex min-h-0 flex-col z-10 overflow-hidden">
-
-      <div className="section-header right-panel-title">
-        <span>{activeTab}</span>
-        <button type="button" className="context-close" onClick={onClose} aria-label="Close circle details"><X size={16} /></button>
-      </div>
-      <div className="right-panel-body">
-        <div className="right-panel-content">
-
-      {/* ── MEMBERS tab ─────────────────────────────────────────────────── */}
-      {activeTab === 'members' && (
+  const renderMembers = () => (
         <div className="sidebar-members flex flex-col min-h-0 overflow-hidden">
           <div className="context-intro">
             <p>People, devices and agents in this Circle.</p>
@@ -610,17 +602,24 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
               )
             })}
           </div>
-          {activeCircle && <details className="member-circle-settings">
-            <summary>Circle settings <ChevronDown size={14} /></summary>
-            <div>
-              <strong>{activeCircle.disabled ? 'Circle disabled' : 'Circle enabled'}</strong>
-              <p>{activeCircle.disabled ? 'Enable to resume participation on this device.' : 'Disable to pause participation on this device.'}</p>
-              <button type="button" onClick={handleToggleCircleEnabled}>{activeCircle.disabled ? 'Enable circle' : 'Disable circle'}</button>
-              <p>Leaving removes the local configuration. Workspace files stay on this device.</p>
-              <button type="button" onClick={handleLeaveCircle}>Leave circle…</button>
-            </div>
-          </details>}
+
         </div>
+  )
+
+  return (
+    <>
+    <aside className="app-right-panel sys-window flex min-h-0 flex-col z-10 overflow-hidden">
+
+      <div className="section-header right-panel-title">
+        <span>{activeTab}</span>
+        <button type="button" className="context-close" onClick={onClose} aria-label="Close circle details"><X size={16} /></button>
+      </div>
+      <div className="right-panel-body">
+        <div className="right-panel-content">
+
+      {/* ── MEMBERS tab ─────────────────────────────────────────────────── */}
+      {activeTab === 'members' && (
+        renderMembers()
       )}
 
       <div ref={activityRef} className="sidebar-agent-activity" hidden={activeTab !== 'activity'} />
@@ -800,7 +799,13 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
 
         </div>
       </div>
+      {activeCircleId && <button className="circle-panel-settings" onClick={() => setSettingsCircleId(activeCircleId)}
+        aria-label={`Settings for ${activeCircle?.circle_name ?? 'Circle'}`}>
+        <span>Circle settings</span><span className="circle-panel-settings__arrow" aria-hidden="true">→</span>
+      </button>}
     </aside>
+    {settingsCircleId && <DeviceSettings key={settingsCircleId} circleId={settingsCircleId} membership={activeCircle && <CircleMembership disabled={!!activeCircle.disabled} onToggle={handleToggleCircleEnabled} onLeave={handleLeaveCircle} />} onClose={() => setSettingsCircleId(null)} />}
+
 
     {/* ── Confirm modal (leave / delete) ──────────────────────────────── */}
     {confirmModal && (
