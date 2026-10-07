@@ -480,7 +480,20 @@ async fn listen(args: &[String]) -> Result<()> {
                 });
                 while let Ok((mut send, mut recv)) = conn.accept_bi().await {
                     tokio::spawn(async move {
-                        let _ = tokio::io::copy(&mut recv, &mut send).await;
+                        let mut first = [0u8; 1];
+                        if recv.read_exact(&mut first).await.is_err() {
+                            return;
+                        }
+                        if first[0] == b'S' {
+                            // Upload sink: count what arrives, reply with the total.
+                            let n = tokio::io::copy(&mut recv, &mut tokio::io::sink())
+                                .await
+                                .unwrap_or(0);
+                            let _ = send.write_all(&n.to_be_bytes()).await;
+                        } else {
+                            let _ = send.write_all(&first).await;
+                            let _ = tokio::io::copy(&mut recv, &mut send).await;
+                        }
                         let _ = send.finish();
                     });
                 }
@@ -533,12 +546,33 @@ async fn dial(args: &[String]) -> Result<()> {
         .find(|p| p.is_selected())
         .map(|p| format!("{:?} rtt {:?}", p.remote_addr(), p.rtt()));
     let bulk = echo(&conn, mib * 1024 * 1024).await?;
+    let up = upload(&conn, mib * 1024 * 1024).await?;
     println!(
         "SUMMARY connect={connected:?} direct_after={first_direct:?} selected={selected:?} \
-         echo_{mib}MiB={bulk:?} (~{:.1} MiB/s each way)",
-        mib as f64 / bulk.as_secs_f64()
+         echo_{mib}MiB={bulk:?} (~{:.1} MiB/s each way) upload_{mib}MiB={up:?} (~{:.1} MiB/s)",
+        mib as f64 / bulk.as_secs_f64(),
+        mib as f64 / up.as_secs_f64()
     );
     conn.close(0u32.into(), b"done");
     ep.close().await;
     Ok(())
+}
+
+/// One-way upload to a listener's sink, timed until it confirms the total.
+async fn upload(conn: &Connection, bytes: usize) -> Result<Duration> {
+    let start = Instant::now();
+    let (mut send, mut recv) = conn.open_bi().await?;
+    send.write_all(b"S").await?;
+    let chunk = vec![7u8; 1024 * 1024];
+    let mut left = bytes;
+    while left > 0 {
+        let n = left.min(chunk.len());
+        send.write_all(&chunk[..n]).await?;
+        left -= n;
+    }
+    send.finish()?;
+    let reply = recv.read_to_end(8).await?;
+    let got = u64::from_be_bytes(reply.as_slice().try_into()?);
+    anyhow::ensure!(got as usize == bytes, "sink got {got} of {bytes}");
+    Ok(start.elapsed())
 }
