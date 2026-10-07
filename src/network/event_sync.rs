@@ -6,20 +6,19 @@
 //! with the decision instead of waiting for a reconnect.
 
 use anyhow::{Context, Result};
-use libp2p::{PeerId, Stream, StreamProtocol};
+use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{debug, warn};
 
 use crate::control::CircleEvent;
+use crate::network::net::PeerStream;
 use crate::proposal::store::ProposalStore;
 use crate::proposal::sync::ProposalBundle;
 use crate::state::AppState;
 use crate::workspace_event::{EventStore, WorkspaceEvent};
 
-pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/events/2.0.0");
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
@@ -222,7 +221,7 @@ fn ensure_peer_authorized(state: &AppState, peer_id: &PeerId) -> Result<()> {
     Ok(())
 }
 
-pub async fn run(peer_id: PeerId, stream: Stream, state: AppState, is_initiator: bool) {
+pub async fn run(peer_id: PeerId, stream: PeerStream, state: AppState, is_initiator: bool) {
     if let Err(error) = run_inner(peer_id, stream, &state, is_initiator).await {
         debug!("[event-sync] {peer_id}: {error}");
     }
@@ -230,14 +229,14 @@ pub async fn run(peer_id: PeerId, stream: Stream, state: AppState, is_initiator:
 
 async fn run_inner(
     peer_id: PeerId,
-    stream: Stream,
+    stream: PeerStream,
     state: &AppState,
     is_initiator: bool,
 ) -> Result<()> {
     ensure_peer_authorized(state, &peer_id)?;
     let events = EventStore::open(&state.workspace, state.circle_id.clone())?;
     let proposals = ProposalStore::open(&state.workspace)?;
-    let (mut reader, mut writer) = tokio::io::split(stream.compat());
+    let (mut reader, mut writer) = tokio::io::split(stream);
     // Subscribe before taking the HAVE snapshot so events appended during the
     // initial handshake remain queued for the live phase.
     let mut local_events = state.events.subscribe();

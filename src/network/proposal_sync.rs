@@ -21,19 +21,18 @@
 //! source of truth; `ProposalBundle` is the transfer unit, reused unchanged.
 
 use anyhow::{Context, Result};
-use libp2p::{PeerId, Stream, StreamProtocol};
+use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast;
-use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{debug, warn};
 
+use crate::network::net::PeerStream;
 use crate::proposal::store::ProposalStore;
 use crate::proposal::sync::ProposalBundle;
 use crate::state::AppState;
 
-pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/proposals/2.0.0");
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 /// One advertised proposal: its id and a fingerprint of its mutable state.
@@ -199,7 +198,7 @@ async fn read_msg<R: AsyncReadExt + Unpin>(r: &mut R, state: &AppState) -> Resul
 
 // ── Entry points (mirror sync::run_sync) ─────────────────────────────────────
 
-pub async fn run(peer_id: PeerId, stream: Stream, state: AppState, is_initiator: bool) {
+pub async fn run(peer_id: PeerId, stream: PeerStream, state: AppState, is_initiator: bool) {
     let mut events = state.events.subscribe();
     let sync_peer = peer_id;
     let result = tokio::select! {
@@ -249,7 +248,7 @@ fn ensure_peer_authorized(state: &AppState, peer_id: &PeerId) -> Result<()> {
 
 async fn run_inner(
     peer_id: PeerId,
-    stream: Stream,
+    stream: PeerStream,
     state: &AppState,
     is_initiator: bool,
 ) -> Result<()> {
@@ -258,8 +257,7 @@ async fn run_inner(
     ensure_peer_authorized(state, &peer_id)?;
 
     let store = ProposalStore::open(&state.workspace)?;
-    let compat = stream.compat();
-    let (mut rx, mut tx) = tokio::io::split(compat);
+    let (mut rx, mut tx) = tokio::io::split(stream);
 
     // Exchange HAVE. Initiator writes first, responder reads first — symmetric,
     // deadlock-free (same ordering discipline as the CRDT sync handshake).
