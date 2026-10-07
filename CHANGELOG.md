@@ -42,6 +42,10 @@ refuses to publish a version whose section is missing or empty.
 ### Security
 
 - Update DOMPurify to 3.4.16 to fix GHSA-p98j-92pf-mc4p.
+- A device that is not a member of a Circle no longer receives its member list,
+  pending join requests or owner claims, and can no longer add entries about
+  other devices. Connections over QUIC or a relay skip the Circle secret, so
+  any device that could reach a member could do both before.
 
 ### Added
 
