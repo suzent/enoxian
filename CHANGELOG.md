@@ -43,6 +43,12 @@ refuses to publish a version whose section is missing or empty.
 
 - Update DOMPurify to 3.4.16 to fix GHSA-p98j-92pf-mc4p.
 
+### Added
+
+- When a Circle's bootstrap server stops serving this version of enox, the
+  app says so above the chat box, in `enox status` and in the daemon log, and
+  asks you to run `enox update`, instead of just failing to connect.
+
 ### Changed
 
 - Global settings and Circle settings now have separate footer entrances, with
