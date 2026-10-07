@@ -140,6 +140,9 @@ pub struct AppState {
     /// Recent P2P connection failures (unix_ts, message). Surfaced by the status
     /// API so silent handshake failures (e.g. PSK mismatch) are diagnosable.
     pub recent_conn_errors: Arc<RwLock<std::collections::VecDeque<(i64, String)>>>,
+    /// Set when this Circle's bootstrap server no longer serves this client
+    /// version. Surfaced by the status API so the user is told to upgrade.
+    pub upgrade_notice: Arc<RwLock<Option<crate::upgrade_check::UpgradeNotice>>>,
     /// Peers that identified themselves as belonging to a *different* circle
     /// during the sync handshake.
     ///
@@ -587,6 +590,7 @@ impl AppState {
             owner,
             mls,
             recent_conn_errors: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            upgrade_notice: Arc::new(RwLock::new(None)),
             foreign_peers: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
     }

@@ -30,9 +30,43 @@ pub const LONG_VERSION: &str = concat!(
     ")"
 );
 
+/// Whether `version` is strictly older than `minimum`, comparing the numeric
+/// `major.minor.patch` core. A pre-release counts as its core version.
+///
+/// `None` when either side does not parse: a server that sends something odd
+/// must not tell every client to upgrade.
+pub fn older_than(version: &str, minimum: &str) -> Option<bool> {
+    Some(core(version)? < core(minimum)?)
+}
+
+fn core(version: &str) -> Option<(u64, u64, u64)> {
+    let version = version.trim().trim_start_matches('v');
+    let version = version.split(['-', '+']).next()?;
+    let mut parts = version.split('.').map(|p| p.parse::<u64>().ok());
+    let core = (parts.next()??, parts.next()??, parts.next()??);
+    parts.next().is_none().then_some(core)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn older_than_compares_the_numeric_core() {
+        assert_eq!(older_than("0.10.0", "0.11.0"), Some(true));
+        assert_eq!(older_than("0.9.9", "0.10.0"), Some(true));
+        assert_eq!(older_than("0.11.0", "0.11.0"), Some(false));
+        assert_eq!(older_than("1.0.0", "0.11.0"), Some(false));
+        assert_eq!(older_than("v0.10.0", "0.10.1"), Some(true));
+        assert_eq!(older_than("0.11.0-rc.1", "0.11.0"), Some(false));
+    }
+
+    #[test]
+    fn older_than_refuses_what_it_cannot_parse() {
+        assert_eq!(older_than("0.10.0", "latest"), None);
+        assert_eq!(older_than("0.10", "0.11.0"), None);
+        assert_eq!(older_than("0.10.0.1", "0.11.0"), None);
+    }
 
     /// `update::version_of` reads the semver back out of `enox --version`, and
     /// the release smoke test greps the plain version out of the same line.

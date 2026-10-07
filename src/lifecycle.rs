@@ -505,6 +505,35 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         });
     }
 
+    // ── Upgrade check ────────────────────────────────────────────────────────
+    // Ask the Circle's bootstrap server whether it still serves this version,
+    // so a transport change old clients cannot follow is reported, not silent.
+    {
+        let notice_state = state.clone();
+        let notice_token = token.clone();
+        let hosts = crate::upgrade_check::hosts(&config.rendezvous_addrs);
+        let cid = config.circle_id.clone();
+        tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(crate::upgrade_check::INTERVAL);
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = notice_token.cancelled() => break,
+                    _ = ticks.tick() => {
+                        let notice = crate::upgrade_check::check(&hosts).await;
+                        if let Some(n) = &notice {
+                            warn!(
+                                "[{cid}] {} requires enox {} or newer (this is {}); upgrade with `enox update`",
+                                n.server, n.min_version, crate::version::VERSION
+                            );
+                        }
+                        *notice_state.upgrade_notice.write().unwrap() = notice;
+                    }
+                }
+            }
+        });
+    }
+
     // ── Welcome consumer ─────────────────────────────────────────────────────
     // Joiner: watch mls_welcomes for our own peer_id appearing (P2P-delivered).
     // Also handles the offline-approval case — initial full P2P sync fires the
