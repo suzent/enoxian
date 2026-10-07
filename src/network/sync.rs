@@ -1,4 +1,4 @@
-/// P2P sync handler — runs the y-sync protocol over a libp2p Stream.
+/// P2P sync handler — runs the y-sync protocol over a peer stream.
 ///
 /// Protocol (deadlock-free):
 ///   Initiator: sends [count][SyncStep1...] → reads [SyncStep2...][count_r][SyncStep1_r...] → sends [SyncStep2_r...]
@@ -7,12 +7,11 @@
 ///
 /// Framing: [4-byte path len][path UTF-8][4-byte data len][y-sync bytes]
 use anyhow::{Context, Result};
-use libp2p::{PeerId, Stream, StreamProtocol};
+use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
-use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{debug, info, warn};
 use yrs::sync::protocol::{Message, SyncMessage};
 use yrs::updates::decoder::{Decode, DecoderV1};
@@ -22,9 +21,9 @@ use yrs::{
 };
 
 use crate::control::MLS_REMOVED_KEY;
+use crate::network::net::PeerStream;
 use crate::state::AppState;
 
-pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/sync/2.0.0");
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 const AWARENESS_PATH_PREFIX: &str = "\0awareness/";
@@ -659,7 +658,7 @@ fn mark_self_removed(state: &AppState) {
     });
 }
 
-pub async fn run_sync(peer_id: PeerId, stream: Stream, state: AppState, is_initiator: bool) {
+pub async fn run_sync(peer_id: PeerId, stream: PeerStream, state: AppState, is_initiator: bool) {
     let peer = peer_id.to_string();
     state.sync_session_started(&peer);
     let result = sync_inner(peer_id, stream, &state, is_initiator).await;
@@ -689,7 +688,7 @@ fn should_reconnect(state: &AppState, last_session: bool) -> bool {
 
 async fn sync_inner(
     peer_id: PeerId,
-    stream: Stream,
+    stream: PeerStream,
     state: &AppState,
     is_initiator: bool,
 ) -> Result<()> {
@@ -712,8 +711,7 @@ async fn sync_inner(
     // The transport PSK stays stable, so this persisted tombstone is the
     // authorization boundary. It is checked again during continuous exchange
     // so removal also closes streams that were already established.
-    let compat = stream.compat();
-    let (mut rx, mut tx) = tokio::io::split(compat);
+    let (mut rx, mut tx) = tokio::io::split(stream);
     let remote_is_removed = state.is_peer_removed(&peer_id.to_string());
 
     let my_paths = all_doc_paths(state);

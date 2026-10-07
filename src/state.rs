@@ -4,7 +4,6 @@ use crate::control::{
     TASKS_KEY,
 };
 use dashmap::DashMap;
-use libp2p::{multiaddr::Protocol, swarm::ConnectionId, Multiaddr};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -68,7 +67,8 @@ pub struct AppState {
     pub p2p_listen_addrs: Arc<RwLock<Vec<String>>>,
     /// Connections observed by this daemon. This stays local because each peer
     /// can see a different route to the same member.
-    peer_connections: Arc<RwLock<HashMap<String, HashMap<ConnectionId, PeerConnection>>>>,
+    /// Live connections per peer, keyed by the transport's connection id.
+    peer_connections: Arc<RwLock<HashMap<String, HashMap<String, PeerConnection>>>>,
     /// File docs. Key = relative path with forward slashes.
     pub docs: Arc<DashMap<String, Arc<Doc>>>,
     /// __control__ coordination document
@@ -123,10 +123,10 @@ pub struct AppState {
     pub sync_sessions: Arc<DashMap<String, usize>>,
     /// Local admission failures, exposed to the UI without syncing diagnostic state.
     pub approval_errors: Arc<DashMap<String, String>>,
-    /// Opens outbound streams on this circle's swarm, for requests that start
-    /// outside the swarm loop — handing the admin key over on leave. Set once
-    /// the swarm is built; absent in tests and before start.
-    stream_control: Arc<std::sync::OnceLock<libp2p_stream::Control>>,
+    /// Opens outbound streams on this circle's transport, for requests that
+    /// start outside the connection loop — handing the admin key over on
+    /// leave. Set once the transport is up; absent in tests and before start.
+    net: Arc<std::sync::OnceLock<Arc<dyn crate::network::net::NetHandle>>>,
     /// Agent turns running in this Circle on this device: what each is doing,
     /// and a way to stop it. Local and in memory; no peer needs it.
     pub live_runs: crate::agent::liveness::LiveRuns,
@@ -583,7 +583,7 @@ impl AppState {
             sync_ended: sync_ended_tx,
             sync_sessions: Arc::new(DashMap::new()),
             approval_errors: Arc::new(DashMap::new()),
-            stream_control: Arc::new(std::sync::OnceLock::new()),
+            net: Arc::new(std::sync::OnceLock::new()),
             live_runs: Default::default(),
             admission_log: Arc::new(crate::agent::decisions::AdmissionLog::new()),
             join_policy,
@@ -772,13 +772,13 @@ impl AppState {
             .unwrap_or(false)
     }
 
-    pub fn set_stream_control(&self, control: libp2p_stream::Control) {
-        let _ = self.stream_control.set(control);
+    pub fn set_net(&self, net: Arc<dyn crate::network::net::NetHandle>) {
+        let _ = self.net.set(net);
     }
 
-    /// A handle for opening streams to connected peers, once the swarm runs.
-    pub fn stream_control(&self) -> Option<libp2p_stream::Control> {
-        self.stream_control.get().cloned()
+    /// A handle for opening streams to connected peers, once the transport runs.
+    pub fn net(&self) -> Option<Arc<dyn crate::network::net::NetHandle>> {
+        self.net.get().cloned()
     }
 
     /// Whether this device holds at least one live connection to `peer_id`.
@@ -794,16 +794,16 @@ impl AppState {
         self.is_peer_removed(&self.peer_id)
     }
 
+    /// Note a live connection. `connection_id` is the transport's own id for
+    /// it, so the matching close can be told apart from the peer's other ones.
     pub fn record_peer_connection(
         &self,
         peer_id: String,
-        connection_id: ConnectionId,
-        address: &Multiaddr,
+        connection_id: String,
+        kind: ConnectionKind,
+        address: String,
     ) {
-        let connection = PeerConnection {
-            kind: classify_connection_address(address),
-            address: address.to_string(),
-        };
+        let connection = PeerConnection { kind, address };
         self.peer_connections
             .write()
             .unwrap()
@@ -812,10 +812,10 @@ impl AppState {
             .insert(connection_id, connection);
     }
 
-    pub fn remove_peer_connection(&self, peer_id: &str, connection_id: ConnectionId) {
+    pub fn remove_peer_connection(&self, peer_id: &str, connection_id: &str) {
         let mut peers = self.peer_connections.write().unwrap();
         if let Some(connections) = peers.get_mut(peer_id) {
-            connections.remove(&connection_id);
+            connections.remove(connection_id);
             if connections.is_empty() {
                 peers.remove(peer_id);
             }
@@ -878,48 +878,36 @@ impl AppState {
     }
 }
 
-fn classify_connection_address(address: &Multiaddr) -> ConnectionKind {
-    if address
-        .iter()
-        .any(|protocol| matches!(protocol, Protocol::P2pCircuit))
-    {
-        return ConnectionKind::Relay;
-    }
-
-    for protocol in address.iter() {
-        match protocol {
-            Protocol::Ip4(ip) => {
-                let octets = ip.octets();
-                if octets[0] == 100 && (64..=127).contains(&octets[1]) {
-                    return ConnectionKind::Tailscale;
-                }
-                if ip.is_private() || ip.is_loopback() || ip.is_link_local() {
-                    return ConnectionKind::Lan;
-                }
-                return ConnectionKind::Public;
+/// The route a direct connection to `ip` takes. Relayed connections are told
+/// apart by the transport before it gets here.
+pub fn classify_ip(ip: std::net::IpAddr) -> ConnectionKind {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            if octets[0] == 100 && (64..=127).contains(&octets[1]) {
+                return ConnectionKind::Tailscale;
             }
-            Protocol::Ip6(ip) => {
-                let segments = ip.segments();
-                if segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0 {
-                    return ConnectionKind::Tailscale;
-                }
-                if ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local() {
-                    return ConnectionKind::Lan;
-                }
-                return ConnectionKind::Public;
+            if ip.is_private() || ip.is_loopback() || ip.is_link_local() {
+                return ConnectionKind::Lan;
             }
-            _ => {}
+            ConnectionKind::Public
+        }
+        std::net::IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            if segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0 {
+                return ConnectionKind::Tailscale;
+            }
+            if ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local() {
+                return ConnectionKind::Lan;
+            }
+            ConnectionKind::Public
         }
     }
-
-    // A direct DNS address is externally routable unless the circuit marker
-    // above identifies it as a relayed connection.
-    ConnectionKind::Public
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_connection_address, AppState, ConnectionKind};
+    use super::{AppState, ConnectionKind};
     use crate::control::{
         AgentStatus, CircleEvent, MemberEntry, MemberRole, Presence, MEMBER_LIST_KEY, PRESENCE_KEY,
     };
@@ -928,7 +916,7 @@ mod tests {
     use yrs::{Any, Map, Transact, WriteTxn};
 
     fn kind(address: &str) -> ConnectionKind {
-        classify_connection_address(&address.parse().unwrap())
+        crate::network::libp2p_net::classify_address(&address.parse().unwrap())
     }
 
     fn test_state() -> AppState {

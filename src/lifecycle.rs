@@ -43,9 +43,9 @@ use crate::{
     daemon::DaemonState,
     mls::{MlsGroupManager, MlsIdentity, SharedMlsState},
     network::{
-        admin_handover,
         behaviour::{EnochBehaviour, EnochEvent},
-        event_sync, mls_bootstrap, proposal_sync, sync,
+        libp2p_net::{self, Libp2pNet},
+        net::{self, NetHandle, Proto},
     },
     presence,
     state::AppState,
@@ -945,140 +945,42 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         });
     }
 
-    // ── Accept the narrow MLS membership bootstrap stream ────────────────────
-    let mut bootstrap_control = swarm.behaviour().stream.new_control();
-    let state_for_bootstrap = state.clone();
-    let bootstrap_token = token.clone();
-    tokio::spawn(async move {
-        let mut incoming = match bootstrap_control.accept(mls_bootstrap::PROTOCOL) {
-            Ok(streams) => streams,
-            Err(error) => {
-                warn!("[mls-bootstrap] accept failed: {error}");
-                return;
-            }
-        };
-        loop {
-            tokio::select! {
-                _ = bootstrap_token.cancelled() => break,
-                item = incoming.next() => match item {
-                    Some((peer_id, stream)) => {
-                        let state = state_for_bootstrap.clone();
-                        tokio::spawn(mls_bootstrap::run(peer_id, stream, state, false));
+    // ── Accept each protocol's incoming streams ──────────────────────────────
+    // MLS bootstrap is the narrow plaintext membership stream; admin handover
+    // takes a key from a leaving admin; sync, proposals and events are the
+    // encrypted content streams. Each runs on the accepting side as responder.
+    state.set_net(std::sync::Arc::new(Libp2pNet::new(
+        swarm.behaviour().stream.new_control(),
+    )));
+    for proto in Proto::ALL {
+        let mut control = swarm.behaviour().stream.new_control();
+        let state = state.clone();
+        let token = token.clone();
+        tokio::spawn(async move {
+            let mut incoming = match libp2p_net::accept(&mut control, proto) {
+                Ok(streams) => Box::pin(streams),
+                Err(error) => {
+                    warn!("[{}] accept failed: {error}", proto.name());
+                    return;
+                }
+            };
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    item = incoming.next() => match item {
+                        Some((peer_id, stream)) => {
+                            tokio::spawn(net::serve(proto, peer_id, stream, state.clone(), false));
+                        }
+                        None => break,
                     }
-                    None => break,
                 }
             }
-        }
-    });
-
-    // ── Accept an admin key handed over by a leaving admin ───────────────────
-    state.set_stream_control(swarm.behaviour().stream.new_control());
-    let mut handover_control = swarm.behaviour().stream.new_control();
-    let state_for_handover = state.clone();
-    let handover_token = token.clone();
-    tokio::spawn(async move {
-        let mut incoming = match handover_control.accept(admin_handover::PROTOCOL) {
-            Ok(streams) => streams,
-            Err(error) => {
-                warn!("[admin-handover] accept failed: {error}");
-                return;
-            }
-        };
-        loop {
-            tokio::select! {
-                _ = handover_token.cancelled() => break,
-                item = incoming.next() => match item {
-                    Some((peer_id, stream)) => {
-                        let state = state_for_handover.clone();
-                        tokio::spawn(admin_handover::accept(peer_id, stream, state));
-                    }
-                    None => break,
-                }
-            }
-        }
-    });
-
-    // ── Accept incoming encrypted sync streams ────────────────────────────────
-    let mut stream_control = swarm.behaviour().stream.new_control();
-    let state_for_accept = state.clone();
-    let accept_token = token.clone();
-    tokio::spawn(async move {
-        let mut incoming = match stream_control.accept(sync::PROTOCOL) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("[stream] accept failed: {e}");
-                return;
-            }
-        };
-        loop {
-            tokio::select! {
-                _ = accept_token.cancelled() => break,
-                item = incoming.next() => match item {
-                    Some((peer_id, stream)) => {
-                        let s = state_for_accept.clone();
-                        tokio::spawn(sync::run_sync(peer_id, stream, s, false));
-                    }
-                    None => break,
-                }
-            }
-        }
-    });
-
-    // ── Accept incoming proposal-sync streams ─────────────────────────────────
-    let mut proposal_accept_ctrl = swarm.behaviour().stream.new_control();
-    let state_for_proposals = state.clone();
-    let proposal_accept_token = token.clone();
-    tokio::spawn(async move {
-        let mut incoming = match proposal_accept_ctrl.accept(proposal_sync::PROTOCOL) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("[proposal-sync] accept failed: {e}");
-                return;
-            }
-        };
-        loop {
-            tokio::select! {
-                _ = proposal_accept_token.cancelled() => break,
-                item = incoming.next() => match item {
-                    Some((peer_id, stream)) => {
-                        let s = state_for_proposals.clone();
-                        tokio::spawn(proposal_sync::run(peer_id, stream, s, false));
-                    }
-                    None => break,
-                }
-            }
-        }
-    });
-
-    // ── Accept persistent workspace-event streams ────────────────────────────
-    let mut event_accept_ctrl = swarm.behaviour().stream.new_control();
-    let state_for_events = state.clone();
-    let event_accept_token = token.clone();
-    tokio::spawn(async move {
-        let mut incoming = match event_accept_ctrl.accept(event_sync::PROTOCOL) {
-            Ok(streams) => streams,
-            Err(error) => {
-                warn!("[event-sync] accept failed: {error}");
-                return;
-            }
-        };
-        loop {
-            tokio::select! {
-                _ = event_accept_token.cancelled() => break,
-                item = incoming.next() => match item {
-                    Some((peer_id, stream)) => {
-                        let state = state_for_events.clone();
-                        tokio::spawn(event_sync::run(peer_id, stream, state, false));
-                    }
-                    None => break,
-                }
-            }
-        }
-    });
+        });
+    }
 
     // ── Swarm event loop ──────────────────────────────────────────────────────
     let circle_id = config.circle_id.clone();
-    let open_ctrl = swarm.behaviour().stream.new_control();
+    let open_net = Libp2pNet::new(swarm.behaviour().stream.new_control());
     let swarm_token = token.clone();
     let state_for_swarm = state.clone();
     let rendezvous_namespace = rendezvous::Namespace::new(circle_id.clone())
@@ -1307,8 +1209,9 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         info!("[{}] P2P connected: {peer_id} via {route_addr}", circle_id);
                         state_for_swarm.record_peer_connection(
                             peer_id.to_string(),
-                            connection_id,
-                            route_addr,
+                            connection_id.to_string(),
+                            libp2p_net::classify_address(route_addr),
+                            route_addr.to_string(),
                         );
                         redials.connected(peer_id, std::time::Instant::now());
                         // If this is a rendezvous server, register + discover immediately.
@@ -1325,41 +1228,16 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         if endpoint.is_dialer() {
                             // Don't open sync stream to rendezvous-only servers.
                             if !rendezvous_peers.read().unwrap().contains(&peer_id) {
-                                let mut bootstrap_ctrl = open_ctrl.clone();
-                                let bootstrap_state = state_for_swarm.clone();
-                                tokio::spawn(async move {
-                                    match bootstrap_ctrl.open_stream(peer_id, mls_bootstrap::PROTOCOL).await {
-                                        Ok(stream) => mls_bootstrap::run(peer_id, stream, bootstrap_state, true).await,
-                                        Err(error) => warn!("[mls-bootstrap] open_stream to {peer_id}: {error}"),
-                                    }
-                                });
-                                let mut ctrl = open_ctrl.clone();
-                                let s = state_for_swarm.clone();
-                                tokio::spawn(async move {
-                                    match ctrl.open_stream(peer_id, sync::PROTOCOL).await {
-                                        Ok(stream) => sync::run_sync(peer_id, stream, s, true).await,
-                                        Err(e) => warn!("[sync] open_stream to {peer_id}: {e}"),
-                                    }
-                                });
-                                // Reconcile proposal history once per connection.
-                                let mut pctrl = open_ctrl.clone();
-                                let ps = state_for_swarm.clone();
-                                tokio::spawn(async move {
-                                    match pctrl.open_stream(peer_id, proposal_sync::PROTOCOL).await {
-                                        Ok(stream) => proposal_sync::run(peer_id, stream, ps, true).await,
-                                        Err(e) => warn!("[proposal-sync] open_stream to {peer_id}: {e}"),
-                                    }
-                                });
-                                // Reconcile once, then keep the append-only M15
-                                // event stream open for live decisions/conflicts.
-                                let mut ectrl = open_ctrl.clone();
-                                let es = state_for_swarm.clone();
-                                tokio::spawn(async move {
-                                    match ectrl.open_stream(peer_id, event_sync::PROTOCOL).await {
-                                        Ok(stream) => event_sync::run(peer_id, stream, es, true).await,
-                                        Err(e) => warn!("[event-sync] open_stream to {peer_id}: {e}"),
-                                    }
-                                });
+                                for proto in Proto::ON_CONNECT {
+                                    let open = open_net.open(peer_id, proto);
+                                    let state = state_for_swarm.clone();
+                                    tokio::spawn(async move {
+                                        match open.await {
+                                            Ok(stream) => net::serve(proto, peer_id, stream, state, true).await,
+                                            Err(error) => warn!("[{}] open_stream to {peer_id}: {error}", proto.name()),
+                                        }
+                                    });
+                                }
                             }
                         }
                     }
@@ -1379,7 +1257,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         }
                         state_for_swarm.remove_peer_connection(
                             peer_id.to_string().as_str(),
-                            connection_id,
+                            &connection_id.to_string(),
                         );
                         // When the last connection to this peer closes, immediately mark
                         // them offline in the shared presence CRDT so all peers see it

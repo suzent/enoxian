@@ -8,10 +8,9 @@
 //! removal. Workspace/control content uses the MLS-encrypted v2 protocols.
 
 use anyhow::{Context, Result};
-use libp2p::{PeerId, Stream, StreamProtocol};
+use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::warn;
 use yrs::{Array, Map, Out, ReadTxn, Transact, WriteTxn};
 
@@ -20,9 +19,9 @@ use crate::control::{
     MLS_KEY_PACKAGE_BINDINGS_KEY, MLS_OWNER_CLAIMS_KEY, MLS_PENDING_KEY, MLS_REMOVED_KEY,
     MLS_WELCOMES_KEY,
 };
+use crate::network::net::PeerStream;
 use crate::state::AppState;
 
-pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/mls-bootstrap/1.0.0");
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -340,14 +339,19 @@ impl Drop for SnapshotReader {
     }
 }
 
-pub async fn run(peer: PeerId, stream: Stream, state: AppState, initiator: bool) {
+pub async fn run(peer: PeerId, stream: PeerStream, state: AppState, initiator: bool) {
     if let Err(error) = run_inner(peer, stream, &state, initiator).await {
         warn!("[mls-bootstrap] {peer}: bootstrap ended: {error}");
     }
 }
 
-async fn run_inner(peer: PeerId, stream: Stream, state: &AppState, initiator: bool) -> Result<()> {
-    let (mut reader, mut writer) = tokio::io::split(stream.compat());
+async fn run_inner(
+    peer: PeerId,
+    stream: PeerStream,
+    state: &AppState,
+    initiator: bool,
+) -> Result<()> {
+    let (mut reader, mut writer) = tokio::io::split(stream);
     let first = snapshot(state, &peer).await?;
     let remote = if initiator {
         write_snapshot(&mut writer, &first).await?;

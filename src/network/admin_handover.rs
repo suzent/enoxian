@@ -16,11 +16,10 @@
 //! did not already trust. The leaver deletes nothing until the ACK arrives.
 
 use anyhow::{Context, Result};
-use libp2p::{PeerId, Stream, StreamProtocol};
+use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{info, warn};
 use yrs::{Map, Out, ReadTxn, Transact, WriteTxn};
 
@@ -29,9 +28,9 @@ use crate::control::{
     MLS_OWNER_CLAIMS_KEY,
 };
 use crate::network::content_crypto::{self, FrameKind};
+use crate::network::net::{PeerStream, Proto};
 use crate::state::AppState;
 
-pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/enoxian/admin-handover/1.0.0");
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 /// Covers opening the stream, both frames, and the successor writing the key.
 const HANDOVER_TIMEOUT: Duration = Duration::from_secs(30);
@@ -184,15 +183,15 @@ pub async fn candidates(state: &AppState) -> Result<Vec<Candidate>> {
 /// Hand `admin_key_hex` to `successor` and wait until it has stored it.
 pub async fn hand_over(state: &AppState, successor: &str, admin_key_hex: &str) -> Result<()> {
     let peer: PeerId = successor.parse().context("invalid successor peer id")?;
-    let mut control = state
-        .stream_control()
+    let net = state
+        .net()
         .context("circle is not running, so the admin key cannot be handed over")?;
     tokio::time::timeout(HANDOVER_TIMEOUT, async {
-        let stream = control
-            .open_stream(peer, PROTOCOL)
+        let stream = net
+            .open(peer, Proto::AdminHandover)
             .await
             .map_err(|e| anyhow::anyhow!("could not reach {successor}: {e}"))?;
-        offer(state, stream.compat(), admin_key_hex)
+        offer(state, stream, admin_key_hex)
             .await
             .map_err(|e| anyhow::anyhow!("{successor}: {e}"))
     })
@@ -221,8 +220,8 @@ async fn offer<S: AsyncRead + AsyncWrite>(
 
 // ── Successor ────────────────────────────────────────────────────────────────
 
-pub async fn accept(peer: PeerId, stream: Stream, state: AppState) {
-    serve(&state, &peer, stream.compat()).await;
+pub async fn accept(peer: PeerId, stream: PeerStream, state: AppState) {
+    serve(&state, &peer, stream).await;
 }
 
 async fn serve<S: AsyncRead + AsyncWrite>(state: &AppState, peer: &PeerId, stream: S) {
