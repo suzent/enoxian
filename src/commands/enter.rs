@@ -276,6 +276,8 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
                 .map(|(label, handle)| handle.unwrap_or(label))
                 .unwrap_or_default()
         }),
+        transport: Default::default(),
+        iroh_relays: vec![],
     };
     config::save(&circle_config).context("failed to save circle config")?;
 

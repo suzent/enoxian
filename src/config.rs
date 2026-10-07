@@ -59,6 +59,34 @@ pub struct CircleConfig {
     pub join_policy: JoinPolicy,
     #[serde(default)]
     pub owner: String,
+    /// Which network stack carries this Circle. Every device in a Circle must
+    /// use the same one; Iroh is for development until the switch to it.
+    #[serde(default)]
+    pub transport: Transport,
+    /// Relay URLs for the Iroh transport. Empty means Iroh's public relays,
+    /// which are rate limited and see who connects to whom: fine for testing.
+    #[serde(default)]
+    pub iroh_relays: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Transport {
+    #[default]
+    Libp2p,
+    Iroh,
+}
+
+impl CircleConfig {
+    /// The transport this Circle runs on. `ENOXIAN_TRANSPORT=iroh` overrides
+    /// the config for every Circle, so a test can switch a whole daemon.
+    pub fn effective_transport(&self) -> Transport {
+        match std::env::var("ENOXIAN_TRANSPORT").as_deref() {
+            Ok("iroh") => Transport::Iroh,
+            Ok("libp2p") => Transport::Libp2p,
+            _ => self.transport,
+        }
+    }
 }
 
 pub fn enoxian_dir() -> Result<PathBuf> {
@@ -357,6 +385,8 @@ mod workspace_tests {
             rendezvous_addrs: vec![],
             join_policy: JoinPolicy::Auto,
             owner: String::new(),
+            transport: Default::default(),
+            iroh_relays: vec![],
         }
     }
 
