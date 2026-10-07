@@ -47,6 +47,12 @@ refuses to publish a version whose section is missing or empty.
   other devices. Connections over QUIC or a relay skip the Circle secret, so
   any device that could reach a member could do both before.
 
+### Added
+
+- When a Circle's bootstrap server stops serving this version of enox, the
+  app says so above the chat box, in `enox status` and in the daemon log, and
+  asks you to run `enox update`, instead of just failing to connect.
+
 ### Changed
 
 - Global settings and Circle settings now have separate footer entrances, with

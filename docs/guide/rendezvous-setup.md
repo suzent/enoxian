@@ -247,7 +247,7 @@ curl http://your-vps:36521/peer-id
 
 # Query the running relay binary's version and capabilities
 curl http://your-vps:36521/version
-# {"version":"<package-version>","capabilities":{"short_invites":true,"device_linking":true}}
+# {"version":"<package-version>","min_client_version":null,"capabilities":{"short_invites":true,"device_linking":true}}
 
 # Check service status on the VPS
 systemctl status enoxian-bootstrap
@@ -267,6 +267,13 @@ version numbers. These flags describe supported endpoints, not current storage
 capacity or successful end-to-end P2P connectivity. Older relays return 404 for
 this endpoint; treat that as unknown capability and retain full-invite fallback.
 An upgraded relay must be restarted before the endpoint becomes available.
+
+`min_client_version` is the oldest client this server still serves, or `null`
+while every client release is. A running Circle asks its rendezvous servers at
+start and every six hours; a client older than the minimum reports
+`upgrade_required` in its status and asks its user to run `enox update`. It is
+set at build time (`MIN_CLIENT_VERSION` in `src/defaults.rs`) and raised only by
+a release that old clients can no longer connect to.
 
 ## How it works
 

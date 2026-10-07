@@ -56,6 +56,7 @@ Circle overview.
   "device_label": "mymac",
   "user_handle": "alice",
   "docs":        3,
+  "upgrade_required": null,
   "conflicts":   [],
   "locks": [
     { "path": "src/main.rs", "agent_id": "mymac-KRhAf4ug", "peer_id": "12D3KooW...", "run_id": null,
@@ -73,6 +74,9 @@ Circle overview.
 ```
 
 `locks` lists every path currently held through `bind`, sorted by path.
+
+`upgrade_required` is `null`, or `{ "min_version": "0.11.0", "server": "relay.enoxian.com" }`
+when one of the Circle's bootstrap servers no longer serves this client version.
 
 ---
 

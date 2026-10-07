@@ -7,6 +7,11 @@
 # `cargo tree --target all`. The SHA3/secrets entries come from HPKE's
 # experimental suite support; enoxian selects only X25519/AES128-GCM/SHA256.
 # Remove these exceptions when stable OpenMLS adopts hpke-rs 0.7.
+#
+# RUSTSEC-2026-0330/0331 are in libcrux-kem 0.0.9, pinned by hpke-rs-libcrux
+# 0.7.0 behind hpke-rs's optional libcrux backend. openmls_rust_crypto 0.6 uses
+# the RustCrypto backend, so libcrux-kem is never compiled. The fix (0.0.10)
+# needs hpke-rs 0.8; remove both once openmls_rust_crypto moves to it.
 ignore = [
   "RUSTSEC-2026-0118",
   "RUSTSEC-2026-0119",
@@ -16,6 +21,8 @@ ignore = [
   "RUSTSEC-2026-0209",
   "RUSTSEC-2026-0211",
   "RUSTSEC-2026-0212",
+  "RUSTSEC-2026-0330",
+  "RUSTSEC-2026-0331",
 ]
 informational_warnings = ["unmaintained"]
 

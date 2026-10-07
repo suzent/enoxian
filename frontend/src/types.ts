@@ -11,6 +11,12 @@ export interface Status {
   workspace: string
   docs: number
   removed: boolean
+  upgrade_required?: UpgradeNotice | null
+}
+
+export interface UpgradeNotice {
+  min_version: string
+  server: string
 }
 
 export interface ConnectivitySettings {

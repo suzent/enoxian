@@ -292,6 +292,11 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
   const activeCircle = circles.find(c => c.circle_id === activeCircleId)
   const [unread, setUnread] = useState(false)
   const selfAgentRef = useRef(status?.agent_id)
+  // Which upgrade notice was dismissed, as `<circle>:<min version>`, so a newer
+  // minimum or another Circle's notice still shows.
+  const [dismissedUpgrade, setDismissedUpgrade] = useState<string | null>(null)
+  const upgrade = status?.upgrade_required
+  const upgradeKey = upgrade ? `${status?.circle_id}:${upgrade.min_version}` : null
   selfAgentRef.current = status?.agent_id
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [chatLoaded, setChatLoaded] = useState(false)
@@ -982,6 +987,16 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
             onSelect={applyMention}
             onHover={setMentionIndex}
           />
+        )}
+        {upgrade && upgradeKey !== dismissedUpgrade && (
+          <div className="chat-engagement" role="status">
+            <span>
+              <strong>upgrade required</strong> · {upgrade.server} needs enox {upgrade.min_version} or newer, run <code>enox update</code>
+            </span>
+            <button type="button" onClick={() => setDismissedUpgrade(upgradeKey)} title="Hide until the next restart">
+              dismiss
+            </button>
+          </div>
         )}
         {replyTo && (
           <div className="chat-engagement" role="status" aria-live="polite">
