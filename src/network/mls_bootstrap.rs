@@ -1,8 +1,11 @@
 //! Minimal MLS delivery stream used before content encryption is available.
 //!
 //! Only public membership material, Welcomes and MLS commits cross this stream.
-//! The stream is still protected by libp2p Noise and the circle transport PSK.
-//! Workspace/control content uses the MLS-encrypted v2 protocols instead.
+//! It is protected by libp2p Noise, but the circle PSK guards direct TCP only:
+//! QUIC and relayed connections reach it without one. So what a peer gets, and
+//! what it may write, depends on whether it holds a leaf in our MLS group. A
+//! peer without one exchanges only its own entries, plus its own Welcome and
+//! removal. Workspace/control content uses the MLS-encrypted v2 protocols.
 
 use anyhow::{Context, Result};
 use libp2p::{PeerId, Stream, StreamProtocol};
@@ -99,10 +102,52 @@ fn try_snapshot(state: &AppState, receiver: &PeerId) -> Option<Snapshot> {
     })
 }
 
+/// Whether `peer` holds a leaf in our MLS group.
+///
+/// The only membership a peer cannot claim for itself: a leaf is added by an
+/// admin's commit. The member list is no proof — this stream merges entries a
+/// joiner writes about itself into it, before anyone has approved it.
+async fn is_group_member(state: &AppState, peer: &str) -> bool {
+    state
+        .mls
+        .lock()
+        .await
+        .group
+        .as_ref()
+        .is_some_and(|group| group.leaf_index_for_peer(peer).is_some())
+}
+
+impl Snapshot {
+    /// What a peer outside the group may see: our own entries, which a joiner
+    /// needs the admin to receive, and its own Welcome and removal. Not the
+    /// member list, other join requests, owner claims or commits.
+    fn for_non_member(mut self, receiver: &str) -> Self {
+        let sender = self.sender_peer_id.clone();
+        let keep = |entries: &mut Vec<(String, String)>, peer: &str| {
+            entries.retain(|(key, _)| key == peer);
+        };
+        keep(&mut self.key_packages, &sender);
+        keep(&mut self.key_package_bindings, &sender);
+        keep(&mut self.owner_claims, &sender);
+        keep(&mut self.pending, &sender);
+        keep(&mut self.members, &sender);
+        keep(&mut self.removed, receiver);
+        self.commits.clear();
+        self
+    }
+}
+
 async fn snapshot(state: &AppState, receiver: &PeerId) -> Result<Snapshot> {
+    let receiver_id = receiver.to_string();
+    // Judged per snapshot, so the first one after admission is complete.
+    let member = is_group_member(state, &receiver_id).await;
     for attempt in 0..CONTENTION_RETRIES {
         if let Some(snapshot) = try_snapshot(state, receiver) {
-            return Ok(snapshot);
+            return Ok(if member {
+                snapshot
+            } else {
+                snapshot.for_non_member(&receiver_id)
+            });
         }
         tokio::time::sleep(CONTENTION_BACKOFF * (attempt + 1)).await;
     }
@@ -167,15 +212,37 @@ async fn apply_snapshot(state: &AppState, peer: PeerId, incoming: Snapshot) -> R
     };
     let key_packages = own(&incoming.key_packages);
     let key_package_bindings = own(&incoming.key_package_bindings);
+    // A peer outside the group speaks for itself alone: its join request,
+    // self-entry and owner claim. Otherwise anyone who reached this stream
+    // could list itself as a member, file requests for others, or tombstone a
+    // real member. Commits still apply below: MLS verifies those itself, and a
+    // member we only think is outside because we are behind is exactly who
+    // carries the commits we lack.
+    let member = is_group_member(state, &incoming.sender_peer_id).await;
+    let (owner_claims, pending, members, removed) = if member {
+        (
+            incoming.owner_claims.clone(),
+            incoming.pending.clone(),
+            incoming.members.clone(),
+            incoming.removed.clone(),
+        )
+    } else {
+        (
+            own(&incoming.owner_claims),
+            own(&incoming.pending),
+            own(&incoming.members),
+            Vec::new(),
+        )
+    };
     merge_maps(
         state,
         &[
             (MLS_KEY_PACKAGES_KEY, &key_packages),
             (MLS_KEY_PACKAGE_BINDINGS_KEY, &key_package_bindings),
-            (MLS_OWNER_CLAIMS_KEY, &incoming.owner_claims),
-            (MLS_PENDING_KEY, &incoming.pending),
-            (MEMBER_LIST_KEY, &incoming.members),
-            (MLS_REMOVED_KEY, &incoming.removed),
+            (MLS_OWNER_CLAIMS_KEY, &owner_claims),
+            (MLS_PENDING_KEY, &pending),
+            (MEMBER_LIST_KEY, &members),
+            (MLS_REMOVED_KEY, &removed),
         ],
     )
     .await?;
@@ -514,5 +581,180 @@ mod tests {
             Some("victims-own")
         );
         assert_eq!(get(MLS_KEY_PACKAGE_BINDINGS_KEY, "victim"), None);
+    }
+
+    fn peer() -> PeerId {
+        libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id()
+    }
+
+    /// A state whose MLS group holds this device and, when given, `member`.
+    async fn group_state(dir: &std::path::Path, member: Option<&PeerId>) -> AppState {
+        let local = peer().to_string();
+        let identity = crate::mls::MlsIdentity::generate(&local).unwrap();
+        let mut group = crate::mls::MlsGroupManager::create(&identity).unwrap();
+        if let Some(member) = member {
+            let theirs = crate::mls::MlsIdentity::generate(&member.to_string()).unwrap();
+            group
+                .add_member(&identity, &theirs.generate_key_package().unwrap())
+                .unwrap();
+        }
+        AppState::new(
+            "circle".into(),
+            "test".into(),
+            dir.into(),
+            dir.into(),
+            String::new(),
+            "agent".into(),
+            1,
+            local,
+            crate::config::JoinPolicy::Auto,
+            "owner".into(),
+            crate::mls::new_mls_state(identity, Some(group)),
+        )
+    }
+
+    fn seed(state: &AppState, entries: &[(&str, &str)]) {
+        let mut txn = state.control.transact_mut();
+        for (key, peer) in entries {
+            let map = txn.get_or_insert_map(*key);
+            map.insert(&mut txn, *peer, format!("{key}:{peer}"));
+        }
+        let commit = MlsCommitEntry {
+            epoch: 1,
+            data_hex: String::new(),
+            sender_peer_id: state.peer_id.clone(),
+            ratchet_tree_hex: String::new(),
+        };
+        txn.get_or_insert_array(MLS_COMMITS_KEY)
+            .push_back(&mut txn, serde_json::to_string(&commit).unwrap());
+    }
+
+    fn keys(entries: &[(String, String)]) -> Vec<&str> {
+        entries.iter().map(|(key, _)| key.as_str()).collect()
+    }
+
+    /// QUIC and relayed connections carry no circle PSK, so anyone who can
+    /// reach a member opens this stream. Outside the group it learns nothing
+    /// about the Circle beyond what concerns it.
+    #[tokio::test]
+    async fn a_peer_outside_the_group_sees_only_our_entries_and_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = group_state(dir.path(), None).await;
+        let me = state.peer_id.clone();
+        let (joiner, other) = (peer(), peer().to_string());
+        let joiner_id = joiner.to_string();
+        seed(
+            &state,
+            &[
+                (MEMBER_LIST_KEY, &me),
+                (MEMBER_LIST_KEY, &other),
+                (MLS_PENDING_KEY, &other),
+                (MLS_OWNER_CLAIMS_KEY, &me),
+                (MLS_OWNER_CLAIMS_KEY, &other),
+                (MLS_KEY_PACKAGES_KEY, &me),
+                (MLS_KEY_PACKAGES_KEY, &other),
+                (MLS_REMOVED_KEY, &other),
+                (MLS_REMOVED_KEY, &joiner_id),
+                (MLS_WELCOMES_KEY, &joiner_id),
+                (MLS_WELCOMES_KEY, &other),
+            ],
+        );
+
+        let sent = snapshot(&state, &joiner).await.unwrap();
+
+        assert_eq!(keys(&sent.members), [me.as_str()]);
+        assert_eq!(keys(&sent.owner_claims), [me.as_str()]);
+        assert_eq!(keys(&sent.key_packages), [me.as_str()]);
+        assert!(sent.pending.is_empty());
+        assert_eq!(keys(&sent.removed), [joiner_id.as_str()]);
+        assert_eq!(
+            sent.welcome.as_deref(),
+            Some(format!("{MLS_WELCOMES_KEY}:{joiner_id}").as_str())
+        );
+        assert!(sent.commits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_group_member_gets_the_whole_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let member = peer();
+        let state = group_state(dir.path(), Some(&member)).await;
+        let other = peer().to_string();
+        seed(
+            &state,
+            &[
+                (MEMBER_LIST_KEY, &other),
+                (MLS_PENDING_KEY, &other),
+                (MLS_REMOVED_KEY, &other),
+            ],
+        );
+
+        let sent = snapshot(&state, &member).await.unwrap();
+
+        assert_eq!(keys(&sent.members), [other.as_str()]);
+        assert_eq!(keys(&sent.pending), [other.as_str()]);
+        assert_eq!(keys(&sent.removed), [other.as_str()]);
+        assert_eq!(sent.commits.len(), 1);
+    }
+
+    /// A joiner's own request, self-entry and owner claim must still reach the
+    /// admin. Anything it says about others must not: listing a stranger as a
+    /// member, or tombstoning a real one.
+    #[tokio::test]
+    async fn a_peer_outside_the_group_writes_only_its_own_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let member = peer();
+        let state = group_state(dir.path(), Some(&member)).await;
+        let victim = peer().to_string();
+        let incoming = |sender: &PeerId| {
+            let sender = sender.to_string();
+            let mut snapshot = snapshot_value("circle");
+            snapshot.sender_peer_id = sender.clone();
+            for (field, key) in [
+                (&mut snapshot.members, MEMBER_LIST_KEY),
+                (&mut snapshot.pending, MLS_PENDING_KEY),
+                (&mut snapshot.owner_claims, MLS_OWNER_CLAIMS_KEY),
+            ] {
+                field.push((sender.clone(), format!("{key}:{sender}")));
+                field.push((victim.clone(), format!("{key}:planted-by-{sender}")));
+            }
+            snapshot.removed = vec![(victim.clone(), format!("removed-by-{sender}"))];
+            snapshot
+        };
+        let stored = |key: &str, peer: &str| {
+            let txn = state.control.transact();
+            txn.get_map(key)
+                .and_then(|m| m.get(&txn, peer))
+                .map(|v| v.to_string(&txn))
+        };
+
+        let joiner = peer();
+        apply_snapshot(&state, joiner, incoming(&joiner))
+            .await
+            .unwrap();
+        for key in [MEMBER_LIST_KEY, MLS_PENDING_KEY, MLS_OWNER_CLAIMS_KEY] {
+            assert_eq!(
+                stored(key, &joiner.to_string()),
+                Some(format!("{key}:{joiner}"))
+            );
+            assert_eq!(stored(key, &victim), None, "{key} planted by outsider");
+        }
+        assert_eq!(stored(MLS_REMOVED_KEY, &victim), None);
+
+        // A member still relays what it knows about others: that is how an
+        // inviter forwards a join request to the admin.
+        apply_snapshot(&state, member, incoming(&member))
+            .await
+            .unwrap();
+        assert_eq!(
+            stored(MLS_PENDING_KEY, &victim),
+            Some(format!("{MLS_PENDING_KEY}:planted-by-{member}"))
+        );
+        assert_eq!(
+            stored(MLS_REMOVED_KEY, &victim),
+            Some(format!("removed-by-{member}"))
+        );
     }
 }

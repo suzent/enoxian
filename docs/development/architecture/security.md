@@ -100,9 +100,14 @@ from being moved between protocol purposes or circles.
 A separate `/enoxian/mls-bootstrap/1.0.0` stream solves the join/offline
 bootstrap cycle. It carries only KeyPackages, signed owner/pending/member
 records, targeted Welcomes, removal tombstones, and MLS commits. It is protected
-by the stable circle PSK and Noise, but not by the content key because a joiner
-does not have that key yet. It never carries workspace files, chat, tasks,
-proposal content, event-log entries, or blobs.
+by Noise but not by the content key, because a joiner does not have that key
+yet. The circle PSK guards direct TCP only; QUIC and relayed connections reach
+the stream without it. So a peer is treated by its MLS group membership: one
+with a leaf in our group exchanges every record, and one without receives only
+our own entries plus its own Welcome and tombstone, and may write only entries
+about itself. MLS commits are applied from anyone, since MLS verifies them. The
+stream never carries workspace files, chat, tasks, proposal content, event-log
+entries, or blobs.
 
 ## Current Attacker Capabilities
 
@@ -124,13 +129,16 @@ proposal content, event-log entries, or blobs.
 | Complete a sync session with peers that have the tombstone | No |
 | Read new CRDT/proposal/event content after the removal epoch | No |
 | Read data already synced to local disk | Yes |
-| Read bootstrap membership records and MLS commits | Yes, after completing the PSK + Noise transport |
+| Read bootstrap membership records and MLS commits | No, only the sender's own records and its own tombstone once out of the MLS group |
 
 ### Outside Peer Without The PSK
 
 | Action | Possible? |
 |--------|-----------|
 | Connect to direct PSK-TCP circle peers | No |
+| Reach members over QUIC or a relay | Yes, these carry no PSK |
+| Read bootstrap membership records | No, only each member's own records |
+| Write membership records about other peers | No, only about itself |
 | Read circle content | No |
 | Discover local peer IDs and addresses via mDNS | Yes, on the same LAN |
 
@@ -196,7 +204,7 @@ Content encryption protects payloads, not traffic shape. A relay or network
 observer can still learn peer IDs used for routing, IP/address information available to the
 transport, connection timing and duration, protocol selection, frame sizes,
 frame counts, and traffic volume. The bootstrap stream additionally exposes
-membership delivery records to a peer that still knows the circle PSK. MLS
+each member's own membership records to any peer that reaches it. MLS
 epochs and nonces are visible in encrypted frame headers. File paths are inside
 the encrypted CRDT frame and proposal/event metadata and blobs are encrypted as
 one authenticated payload.
