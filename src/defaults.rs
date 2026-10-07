@@ -20,3 +20,11 @@ pub const DEFAULT_RENDEZVOUS: Option<&str> = Some("relay.enoxian.com");
 /// both services (the default `enox bootstrap serve` setup does this).
 /// Set to `None` to disable automatic relay reservation.
 pub const DEFAULT_RELAY: Option<&str> = Some("relay.enoxian.com");
+
+/// Oldest client a bootstrap server built from this source still serves.
+///
+/// Published as `min_client_version` on the server's `/version`. Clients older
+/// than this tell their user to upgrade instead of failing to connect without
+/// saying why — the point being a transport change that old and new clients
+/// cannot speak across. `None` while every client release is still served.
+pub const MIN_CLIENT_VERSION: Option<&str> = None;

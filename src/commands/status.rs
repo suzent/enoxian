@@ -12,6 +12,13 @@ pub async fn run(client: &reqwest::Client, base: &str, json: bool) -> Result<()>
         println!("  Workspace: {}", val["workspace"].as_str().unwrap_or("?"));
         println!("  Docs:    {}", val["docs"]);
 
+        if let Some(min) = val["upgrade_required"]["min_version"].as_str() {
+            let server = val["upgrade_required"]["server"].as_str().unwrap_or("?");
+            println!(
+                "  ⚠ Upgrade required: {server} needs enox {min} or newer — run `enox update`"
+            );
+        }
+
         if let Some(conflicts) = val["conflicts"].as_array() {
             if conflicts.is_empty() {
                 println!("  Conflicts: none");

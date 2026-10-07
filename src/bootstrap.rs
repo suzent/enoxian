@@ -331,6 +331,7 @@ async fn version_handler() -> impl axum::response::IntoResponse {
         [(axum::http::header::CACHE_CONTROL, "no-store")],
         Json(serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
+            "min_client_version": crate::defaults::MIN_CLIENT_VERSION,
             "capabilities": {
                 "short_invites": true,
                 "device_linking": true,
@@ -392,6 +393,7 @@ mod tests {
             json,
             serde_json::json!({
                 "version": env!("CARGO_PKG_VERSION"),
+                "min_client_version": crate::defaults::MIN_CLIENT_VERSION,
                 "capabilities": { "short_invites": true, "device_linking": true },
             })
         );

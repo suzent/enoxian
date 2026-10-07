@@ -58,6 +58,12 @@ pub async fn get_status(
         })
         .unwrap_or_default();
 
+    let upgrade_required = state
+        .upgrade_notice
+        .read()
+        .map(|n| n.clone())
+        .unwrap_or_default();
+
     let (device_label, user_handle) =
         crate::identity::read_identity_display().unwrap_or_else(|| (String::new(), None));
     let removed = match state.try_is_peer_removed(&state.peer_id) {
@@ -100,6 +106,7 @@ pub async fn get_status(
         "workspace":    state.workspace.to_string_lossy(),
         "agent_id":     state.agent_id,
         "removed":      removed,
+        "upgrade_required": upgrade_required,
         "device_label": device_label,
         "user_handle":  user_handle,
         "docs":         state.docs.len(),
