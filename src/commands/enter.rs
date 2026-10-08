@@ -276,7 +276,9 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
                 .map(|(label, handle)| handle.unwrap_or(label))
                 .unwrap_or_default()
         }),
-        transport: Default::default(),
+        // Invites do not carry the transport yet (the v3 invite will), so a
+        // device joining an Iroh Circle records what it was started with.
+        transport: CircleConfig::transport_from_env().unwrap_or_default(),
         iroh_relays: vec![],
     };
     config::save(&circle_config).context("failed to save circle config")?;

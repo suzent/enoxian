@@ -81,10 +81,15 @@ impl CircleConfig {
     /// The transport this Circle runs on. `ENOXIAN_TRANSPORT=iroh` overrides
     /// the config for every Circle, so a test can switch a whole daemon.
     pub fn effective_transport(&self) -> Transport {
+        Self::transport_from_env().unwrap_or(self.transport)
+    }
+
+    /// `ENOXIAN_TRANSPORT`, when set to a transport this build knows.
+    pub fn transport_from_env() -> Option<Transport> {
         match std::env::var("ENOXIAN_TRANSPORT").as_deref() {
-            Ok("iroh") => Transport::Iroh,
-            Ok("libp2p") => Transport::Libp2p,
-            _ => self.transport,
+            Ok("iroh") => Some(Transport::Iroh),
+            Ok("libp2p") => Some(Transport::Libp2p),
+            _ => None,
         }
     }
 }
@@ -400,6 +405,26 @@ keypair_proto_hex = ""
 "#;
         let config: CircleConfig = toml::from_str(raw).unwrap();
         assert!(!config.force_relay);
+    }
+
+    #[test]
+    fn old_configs_stay_on_libp2p_and_iroh_is_opt_in() {
+        let raw = r#"
+circle_id = "old-circle"
+circle_name = "Old"
+psk_hex = ""
+keypair_proto_hex = ""
+"#;
+        let config: CircleConfig = toml::from_str(raw).unwrap();
+        assert_eq!(config.transport, Transport::Libp2p);
+        assert!(config.iroh_relays.is_empty());
+
+        let iroh: CircleConfig = toml::from_str(&format!(
+            "{raw}transport = \"iroh\"\niroh_relays = [\"https://relay.example\"]\n"
+        ))
+        .unwrap();
+        assert_eq!(iroh.transport, Transport::Iroh);
+        assert_eq!(iroh.iroh_relays, ["https://relay.example"]);
     }
 
     #[test]

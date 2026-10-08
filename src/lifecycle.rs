@@ -63,6 +63,16 @@ fn spawn_circle_boxed(
 }
 
 pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<()> {
+    // Before anything starts: a Circle this build cannot carry must not leave
+    // watchers and loops running that nothing will ever cancel.
+    #[cfg(not(feature = "iroh-transport"))]
+    if config.effective_transport() == config::Transport::Iroh {
+        anyhow::bail!(
+            "circle {} is set to the Iroh transport, which this build does not include \
+             (build with --features iroh-transport)",
+            config.circle_id
+        );
+    }
     let force_relay = config.force_relay;
     let keypair = keypair_from_hex(&config.keypair_proto_hex)?;
     let peer_id = keypair.public().to_peer_id();
@@ -658,27 +668,25 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     spawn_storage_gc(state.clone(), token.clone());
 
     // ── Iroh instead of libp2p, when this Circle is set to it ───────────────
+    #[cfg(feature = "iroh-transport")]
     if config.effective_transport() == config::Transport::Iroh {
-        #[cfg(feature = "iroh-transport")]
-        {
-            crate::network::iroh_net::spawn(
-                &config,
-                state.clone(),
-                &keypair,
-                psk_bytes,
-                token.clone(),
-            )
-            .await?;
-            daemon.insert_circle(config.circle_id.clone(), state, token);
-            workspace_claim.retain();
-            return Ok(());
+        let started = crate::network::iroh_net::spawn(
+            &config,
+            state.clone(),
+            &keypair,
+            psk_bytes,
+            token.clone(),
+        )
+        .await;
+        if let Err(error) = started {
+            // Everything above is already running; stop it, or the daemon's
+            // retry starts a second copy alongside it.
+            token.cancel();
+            return Err(error);
         }
-        #[cfg(not(feature = "iroh-transport"))]
-        anyhow::bail!(
-            "circle {} is set to the Iroh transport, which this build does not include \
-             (build with --features iroh-transport)",
-            config.circle_id
-        );
+        daemon.insert_circle(config.circle_id.clone(), state, token);
+        workspace_claim.retain();
+        return Ok(());
     }
 
     // ── Build the P2P swarm ───────────────────────────────────────────────────
