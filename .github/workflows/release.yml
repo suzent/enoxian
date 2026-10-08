@@ -287,8 +287,7 @@ jobs:
         if: matrix.target != 'aarch64-unknown-linux-musl'
         env:
           ENOXIAN_RELEASE_BUILD: "1"
-          FEATURES: ${{ contains(matrix.target, 'linux') && '--features iroh-relay-server' || '' }}
-        run: cargo build --release --locked --bins --target ${{ matrix.target }} $FEATURES
+        run: cargo build --release --locked --bins --target ${{ matrix.target }} ${{ contains(matrix.target, 'linux') && '--features iroh-relay-server' || '' }}
 
       - name: Smoke test native Unix binary
         if: runner.os != 'Windows' && matrix.smoke
