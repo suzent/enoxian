@@ -428,10 +428,15 @@ fn value<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> T {
 
 /// n0's production relays, no DNS publishing: peers are dialed by id + relay URL.
 async fn public_endpoint(args: &[String], alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
+    // `--relay URL` uses that relay only, instead of n0's public ones.
+    let relay_mode = match args.iter().position(|a| a == "--relay").and_then(|i| args.get(i + 1)) {
+        Some(url) => RelayMode::custom([url.parse::<RelayUrl>()?]),
+        None => RelayMode::Default,
+    };
     let mut builder = Endpoint::builder(presets::Minimal)
         .secret_key(SecretKey::generate())
         .alpns(alpns)
-        .relay_mode(RelayMode::Default);
+        .relay_mode(relay_mode);
     if !flag(args, "--portmapper") {
         builder = builder.portmapper_config(PortmapperConfig::Disabled);
     }
