@@ -25,7 +25,7 @@ const PENDING_REMOVE_BACKOFF: std::time::Duration = std::time::Duration::from_mi
 /// How often the swarm loop sweeps for connections it needs to rebuild.
 /// Bounds how long a circle stays split after a relayed circuit hits the
 /// relay's duration or byte cap.
-const RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 /// Cap on the backoff exponent, so a peer that stays offline is still retried
 /// every `RECONNECT_INTERVAL * 2^RECONNECT_MAX_BACKOFF_EXP` (30s * 16 = 8 min).
 const RECONNECT_MAX_BACKOFF_EXP: u32 = 4;
@@ -63,6 +63,16 @@ fn spawn_circle_boxed(
 }
 
 pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<()> {
+    // Before anything starts: a Circle this build cannot carry must not leave
+    // watchers and loops running that nothing will ever cancel.
+    #[cfg(not(feature = "iroh-transport"))]
+    if config.effective_transport() == config::Transport::Iroh {
+        anyhow::bail!(
+            "circle {} is set to the Iroh transport, which this build does not include \
+             (build with --features iroh-transport)",
+            config.circle_id
+        );
+    }
     let force_relay = config.force_relay;
     let keypair = keypair_from_hex(&config.keypair_proto_hex)?;
     let peer_id = keypair.public().to_peer_id();
@@ -656,6 +666,28 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     presence::spawn_presence(state.clone(), agent_id, token.clone());
     spawn_control_persist(state.clone(), cdir.clone(), token.clone());
     spawn_storage_gc(state.clone(), token.clone());
+
+    // ── Iroh instead of libp2p, when this Circle is set to it ───────────────
+    #[cfg(feature = "iroh-transport")]
+    if config.effective_transport() == config::Transport::Iroh {
+        let started = crate::network::iroh_net::spawn(
+            &config,
+            state.clone(),
+            &keypair,
+            psk_bytes,
+            token.clone(),
+        )
+        .await;
+        if let Err(error) = started {
+            // Everything above is already running; stop it, or the daemon's
+            // retry starts a second copy alongside it.
+            token.cancel();
+            return Err(error);
+        }
+        daemon.insert_circle(config.circle_id.clone(), state, token);
+        workspace_claim.retain();
+        return Ok(());
+    }
 
     // ── Build the P2P swarm ───────────────────────────────────────────────────
     let pnet_config = pnet::PnetConfig::new(pnet::PreSharedKey::new(psk_bytes));
@@ -1263,18 +1295,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         // them offline in the shared presence CRDT so all peers see it
                         // right away — no need to wait for the heartbeat to time out.
                         if num_established == 0 {
-                            use yrs::{Map, Out, Any, ReadTxn, Transact};
-                            let Ok(txn) = state_for_swarm.control.try_transact() else { continue };
-                            let agent_id_for_peer = txn
-                                .get_map(MEMBER_LIST_KEY)
-                                .and_then(|member_map| member_map.get(&txn, peer_id.to_string().as_str()))
-                                .and_then(|v| if let Out::Any(Any::String(s)) = v {
-                                    serde_json::from_str::<MemberEntry>(&s).ok().map(|m| m.agent_id)
-                                } else { None });
-                            drop(txn);
-                            if let Some(agent_id) = agent_id_for_peer {
-                                presence::write_offline(&state_for_swarm, &agent_id);
-                            }
+                            mark_peer_offline(&state_for_swarm, &peer_id.to_string());
                         }
                     }
                     SwarmEvent::Behaviour(EnochEvent::Mdns(mdns::Event::Discovered(peers))) => {
@@ -2235,7 +2256,7 @@ fn stable_listen_port(circle_id: &str) -> u16 {
 
 /// Peer ids in the circle roster, or an empty list if the control doc is busy
 /// (the next sweep picks it up — never block the swarm loop on a lock).
-fn member_peer_ids(state: &AppState) -> Vec<PeerId> {
+pub(crate) fn member_peer_ids(state: &AppState) -> Vec<PeerId> {
     use yrs::{Map, ReadTxn, Transact};
 
     let Ok(txn) = state.control.try_transact() else {
@@ -2250,17 +2271,39 @@ fn member_peer_ids(state: &AppState) -> Vec<PeerId> {
         .collect()
 }
 
+/// Mark `peer`'s agent offline in presence as soon as its last connection
+/// closes, so every device sees it without waiting for the heartbeat to lapse.
+pub(crate) fn mark_peer_offline(state: &AppState, peer: &str) {
+    use yrs::{Any, Map, Out, ReadTxn, Transact};
+    let Ok(txn) = state.control.try_transact() else {
+        return;
+    };
+    let agent_id = txn
+        .get_map(MEMBER_LIST_KEY)
+        .and_then(|members| members.get(&txn, peer))
+        .and_then(|value| match value {
+            Out::Any(Any::String(s)) => serde_json::from_str::<MemberEntry>(&s)
+                .ok()
+                .map(|m| m.agent_id),
+            _ => None,
+        });
+    drop(txn);
+    if let Some(agent_id) = agent_id {
+        presence::write_offline(state, &agent_id);
+    }
+}
+
 /// One retry budget per peer across explicit discovery and reconnect paths.
 /// Use elapsed time rather than sweep numbers: repeated discovery events must
 /// not create extra attempts between ticks or reset the retry schedule.
 #[derive(Default)]
-struct PeerRedials {
+pub(crate) struct PeerRedials {
     attempts: HashMap<PeerId, (u32, std::time::Instant)>,
     connected_since: HashMap<PeerId, std::time::Instant>,
 }
 
 impl PeerRedials {
-    fn allow(&mut self, peer: PeerId, now: std::time::Instant) -> bool {
+    pub(crate) fn allow(&mut self, peer: PeerId, now: std::time::Instant) -> bool {
         let (failures, deadline) = self.attempts.entry(peer).or_insert((0, now));
         if now < *deadline {
             return false;
@@ -2270,11 +2313,11 @@ impl PeerRedials {
         true
     }
 
-    fn connected(&mut self, peer: PeerId, now: std::time::Instant) {
+    pub(crate) fn connected(&mut self, peer: PeerId, now: std::time::Instant) {
         self.connected_since.entry(peer).or_insert(now);
     }
 
-    fn disconnected(&mut self, peer: PeerId, now: std::time::Instant) {
+    pub(crate) fn disconnected(&mut self, peer: PeerId, now: std::time::Instant) {
         // Brief successes include rejected circle handshakes and duplicate
         // relay circuits. Only a sustained connection earns a fresh budget.
         if let Some(since) = self.connected_since.remove(&peer) {

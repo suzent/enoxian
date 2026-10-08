@@ -3,6 +3,8 @@ pub mod behaviour;
 pub mod bootstrap_behaviour;
 pub mod content_crypto;
 pub mod event_sync;
+#[cfg(feature = "iroh-transport")]
+pub mod iroh_net;
 pub mod libp2p_net;
 pub mod mls_bootstrap;
 pub mod net;

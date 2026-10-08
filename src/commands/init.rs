@@ -109,6 +109,8 @@ pub async fn run(args: InitArgs) -> Result<()> {
         rendezvous_addrs: vec![],
         join_policy,
         owner,
+        transport: Default::default(),
+        iroh_relays: vec![],
     };
     config::save(&config)?;
 

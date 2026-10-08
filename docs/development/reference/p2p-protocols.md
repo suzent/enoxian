@@ -134,3 +134,38 @@ wait briefly for bootstrap to install a requested MLS epoch, then fail closed.
 Visible metadata includes peer routing identities, addresses, protocol choice,
 connection timing, frame sizes/counts, traffic volume, and the MLS epoch/nonce
 header. See [the security model](../architecture/security.md) for the full boundary.
+
+## Iroh Transport (in development)
+
+Builds with `--features iroh-transport` can run a Circle on Iroh instead of
+libp2p. Every device in the Circle must use the same transport. Set it per
+Circle with `transport = "iroh"` in the Circle's `config.toml`, or for every
+Circle of a daemon with `ENOXIAN_TRANSPORT=iroh`. The protocols above run
+unchanged; only how their streams are carried differs.
+
+- **Identity**: the endpoint key is the Circle's Ed25519 key, so a member's
+  EndpointId and PeerId are the same public key and convert both ways.
+- **Connections**: one QUIC connection per pair of peers, ALPN `enoxian/3`.
+  The member with the lower PeerId dials; a joiner also dials the peers its
+  invite names. If two connections appear, the one dialed by the lower PeerId
+  stays.
+- **Streams**: each bidirectional stream starts with a one-byte protocol tag
+  (1 MLS bootstrap, 2 admin handover, 3 sync, 4 proposals, 5 events). Then
+  both sides exchange a 32-byte proof that they hold the Circle secret:
+  HKDF-SHA256 over the PSK, bound to the Circle id and both PeerIds. This
+  replaces libp2p's pnet PSK, and unlike pnet it also covers relayed paths.
+- **Admission**: a removed peer's connection is closed at once. Sync,
+  proposals, events and admin handover also require a leaf in the local MLS
+  group; MLS bootstrap needs only the proof, since that is how a joiner gets
+  its Welcome. A refused stream is retried every 5 seconds while the
+  connection lasts.
+- **Relays**: `iroh_relays` in the Circle config lists relay URLs. When it is
+  empty, Iroh's public relays and address lookup are used. Those are rate
+  limited and can see who connects to whom, so they are for testing only.
+
+Invites do not carry the transport or `iroh_relays` yet; the v3 invite will.
+Until then a joining device keeps the transport it runs `enox enter` with, so
+join an Iroh Circle with `ENOXIAN_TRANSPORT=iroh` set and copy `iroh_relays`
+by hand.
+
+`ENOXIAN_TRANSPORT=iroh scripts/test-sync.sh` runs the two-daemon test on Iroh.

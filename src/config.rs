@@ -59,6 +59,39 @@ pub struct CircleConfig {
     pub join_policy: JoinPolicy,
     #[serde(default)]
     pub owner: String,
+    /// Which network stack carries this Circle. Every device in a Circle must
+    /// use the same one; Iroh is for development until the switch to it.
+    #[serde(default)]
+    pub transport: Transport,
+    /// Relay URLs for the Iroh transport. Empty means Iroh's public relays,
+    /// which are rate limited and see who connects to whom: fine for testing.
+    #[serde(default)]
+    pub iroh_relays: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Transport {
+    #[default]
+    Libp2p,
+    Iroh,
+}
+
+impl CircleConfig {
+    /// The transport this Circle runs on. `ENOXIAN_TRANSPORT=iroh` overrides
+    /// the config for every Circle, so a test can switch a whole daemon.
+    pub fn effective_transport(&self) -> Transport {
+        Self::transport_from_env().unwrap_or(self.transport)
+    }
+
+    /// `ENOXIAN_TRANSPORT`, when set to a transport this build knows.
+    pub fn transport_from_env() -> Option<Transport> {
+        match std::env::var("ENOXIAN_TRANSPORT").as_deref() {
+            Ok("iroh") => Some(Transport::Iroh),
+            Ok("libp2p") => Some(Transport::Libp2p),
+            _ => None,
+        }
+    }
 }
 
 pub fn enoxian_dir() -> Result<PathBuf> {
@@ -357,6 +390,8 @@ mod workspace_tests {
             rendezvous_addrs: vec![],
             join_policy: JoinPolicy::Auto,
             owner: String::new(),
+            transport: Default::default(),
+            iroh_relays: vec![],
         }
     }
 
@@ -370,6 +405,26 @@ keypair_proto_hex = ""
 "#;
         let config: CircleConfig = toml::from_str(raw).unwrap();
         assert!(!config.force_relay);
+    }
+
+    #[test]
+    fn old_configs_stay_on_libp2p_and_iroh_is_opt_in() {
+        let raw = r#"
+circle_id = "old-circle"
+circle_name = "Old"
+psk_hex = ""
+keypair_proto_hex = ""
+"#;
+        let config: CircleConfig = toml::from_str(raw).unwrap();
+        assert_eq!(config.transport, Transport::Libp2p);
+        assert!(config.iroh_relays.is_empty());
+
+        let iroh: CircleConfig = toml::from_str(&format!(
+            "{raw}transport = \"iroh\"\niroh_relays = [\"https://relay.example\"]\n"
+        ))
+        .unwrap();
+        assert_eq!(iroh.transport, Transport::Iroh);
+        assert_eq!(iroh.iroh_relays, ["https://relay.example"]);
     }
 
     #[test]

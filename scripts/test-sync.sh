@@ -112,7 +112,12 @@ d2_has_file()  { curl2 "/circles/$CIRCLE_ID/api/files" 2>/dev/null | grep -q "$1
 d2_content_is() { [[ "$(cat "$D2_WS/$1" 2>/dev/null || true)" == "$2" ]]; }
 
 section "Build"
-cargo build --bins -q && ok "built"
+# ENOXIAN_TRANSPORT=iroh runs both daemons on the Iroh transport.
+if [[ "${ENOXIAN_TRANSPORT:-}" == "iroh" ]]; then
+    cargo build --bins -q --features iroh-transport && ok "built (Iroh transport)"
+else
+    cargo build --bins -q && ok "built"
+fi
 
 section "Start daemon 1 (circle creator)"
 mkdir -p "$D1_STATE" "$D1_WS"
@@ -145,18 +150,34 @@ ok "daemon 2 up on port $D2_PORT"
 # `listen_addrs` never contains 127.0.0.1 — the previous filter for it always
 # came up empty and the join silently dialed nothing. Take the port from any
 # TCP listener and reach it over loopback.
-D1_TCP_PORT=$(curl1 "/circles/$CIRCLE_ID/api/status" | python3 -c "
+# On Iroh the listen addresses are UDP and carry the peer id, which the
+# joiner needs to dial by key.
+if [[ "${ENOXIAN_TRANSPORT:-}" == "iroh" ]]; then
+    d1_has_iroh_addr() { curl1 "/circles/$CIRCLE_ID/api/status" | grep -q quic-v1/p2p; }
+    wait_for "daemon 1 reported no Iroh address" 30 d1_has_iroh_addr
+    D1_PEER=$(curl1 "/circles/$CIRCLE_ID/api/status" | python3 -c "
+import sys, json
+addrs = json.load(sys.stdin)['p2p']['listen_addrs']
+udp = [a for a in addrs if '/udp/' in a and '/p2p/' in a]
+a = udp[0] if udp else ''
+print('/ip4/127.0.0.1/udp/' + a.split('/udp/')[1] if a else '')
+")
+else
+    D1_TCP_PORT=$(curl1 "/circles/$CIRCLE_ID/api/status" | python3 -c "
 import sys, json
 addrs = json.load(sys.stdin)['p2p']['listen_addrs']
 tcp = [a for a in addrs if '/tcp/' in a]
 print(tcp[0].split('/tcp/')[1].split('/')[0] if tcp else '')
 ")
-[[ -n "$D1_TCP_PORT" ]] || fail "daemon 1 reported no TCP listener to dial"
-ok "dialing daemon 1 at 127.0.0.1:$D1_TCP_PORT"
+    [[ -n "$D1_TCP_PORT" ]] || fail "daemon 1 reported no TCP listener to dial"
+    D1_PEER="/ip4/127.0.0.1/tcp/$D1_TCP_PORT"
+fi
+[[ -n "$D1_PEER" ]] || fail "daemon 1 reported no address to dial"
+ok "dialing daemon 1 at $D1_PEER"
 
 # Not `|| true`: a failed join used to be swallowed, so the run continued and
 # failed later somewhere confusing.
-enox2 enter "$INVITE" --dir "$D2_WS" --peer "/ip4/127.0.0.1/tcp/$D1_TCP_PORT" > /dev/null \
+enox2 enter "$INVITE" --dir "$D2_WS" --peer "$D1_PEER" > /dev/null \
     || fail "daemon 2 could not enter the circle"
 ok "daemon 2 entered circle"
 wait_for "daemon 2 never started serving the circle" 30 circle_live_2
@@ -227,6 +248,14 @@ wait_for "daemon 1 never came back after restart" 40 daemon_up "$D1_STATE" $D1_P
 PEER_AFTER=$(curl1 "/circles/$CIRCLE_ID/api/status" | python3 -c "import sys,json;print(json.load(sys.stdin)['p2p']['peer_id'])")
 [[ "$PEER_BEFORE" == "$PEER_AFTER" ]] || fail "peer ID changed after restart: $PEER_BEFORE → $PEER_AFTER"
 ok "peer ID stable across restart"
+
+section "Sync resumes after a restart"
+# The connection from before the restart is gone; daemon 2 has to notice and
+# the two have to reconnect on their own.
+echo "written while daemon 1 was restarting" > "$D2_WS/after-restart.txt"
+d1_has_after_restart() { curl1 "/circles/$CIRCLE_ID/api/files" 2>/dev/null | grep -q "after-restart.txt"; }
+wait_for "after-restart.txt never reached daemon 1 after its restart" 150 d1_has_after_restart
+ok "daemon 1 sees a file written after it restarted"
 
 section "Identity in status API"
 DEVICE_LABEL=$(curl1 "/circles/$CIRCLE_ID/api/status" | python3 -c "import sys,json;print(json.load(sys.stdin).get('device_label',''))")

@@ -85,6 +85,8 @@ mod tests {
             rendezvous_addrs: vec![],
             join_policy: Default::default(),
             owner: String::new(),
+            transport: Default::default(),
+            iroh_relays: vec![],
         }
     }
 
