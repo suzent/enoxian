@@ -1,7 +1,25 @@
 //! `enoxian://` invite URI encoding, decoding, and expiry validation.
 //!
-//! Two wire versions exist. v2 is what we mint; v1 is still decoded so links
-//! already in circulation keep working.
+//! Three wire versions exist. v2 is what a libp2p Circle mints and v3 what an
+//! Iroh Circle mints; v1 is still decoded so links already in circulation keep
+//! working.
+//!
+//! # v3
+//!
+//! v2 with a second flags byte straight after the first, saying the Circle runs
+//! on Iroh and whether a list of Iroh relay URLs follows the grant:
+//!
+//! ```text
+//!   byte   0      flags (as v2)
+//!   byte   1      flags2 (see the FLAG2_* constants)
+//!   bytes  2-53   circle UUID, PSK, expiry (as v2 bytes 1-52)
+//!   then the v2 fields, then, when FLAG2_IROH_RELAYS:
+//!     relay URLs      u8 count + each URL as length + UTF-8
+//! ```
+//!
+//! The peer field is the same binary multiaddr as v2. An Iroh peer is written
+//! `/ip4/…/udp/…/quic-v1/p2p/<peer id>`: the peer id is the Circle key the
+//! joiner dials by, and the address a direct-address hint.
 //!
 //! # v2
 //!
@@ -64,6 +82,7 @@ use uuid::Uuid;
 
 const SCHEME_V1: &str = "enoxian://v1/";
 const SCHEME_V2: &str = "enoxian://v2/";
+const SCHEME_V3: &str = "enoxian://v3/";
 const MIN_LEN_V1: usize = 58; // 16 + 32 + 8 + 1 + 1
 const MIN_LEN_V2: usize = 53; // 1 + 16 + 32 + 4
 
@@ -81,6 +100,13 @@ const FLAG_RENDEZVOUS_ADDR: u8 = 0x20;
 /// The rendezvous server is `defaults::DEFAULT_RENDEZVOUS`; no address is carried.
 const FLAG_RENDEZVOUS_DEFAULT: u8 = 0x40;
 const FLAG_GRANT: u8 = 0x80;
+
+// ── v3 flags2 ─────────────────────────────────────────────────────────────────
+
+/// The Circle runs on Iroh. Always set on a v3 invite.
+const FLAG2_IROH: u8 = 0x01;
+/// A list of Iroh relay URLs follows the grant.
+const FLAG2_IROH_RELAYS: u8 = 0x02;
 
 /// Tag on an address field: libp2p's binary multiaddr encoding.
 const ADDR_BINARY: u8 = 0;
@@ -131,6 +157,11 @@ pub struct InvitePayload {
     /// change to the circle can invalidate it. The grant binds the invite to a
     /// member whose standing is re-checked when it is redeemed.
     pub grant: Option<InviteGrant>,
+    /// The network stack the Circle runs on. Iroh invites are v3; everything
+    /// older decodes as libp2p.
+    pub transport: crate::config::Transport,
+    /// The Circle's Iroh relay URLs, for the joiner's `iroh_relays`.
+    pub iroh_relays: Vec<String>,
 }
 
 /// Issuer, nonce and signature carried by an invite.
@@ -159,6 +190,16 @@ impl InviteGrant {
         libp2p::identity::PublicKey::try_decode_protobuf(&bytes)
             .map_err(|e| anyhow::anyhow!("invalid inviter public key: {e}"))
     }
+}
+
+/// The peer an Iroh invite names when this device has no direct address to
+/// offer: its PeerId alone, which the joiner dials by key through the relays.
+/// libp2p invites leave the peer out instead and rely on rendezvous, which
+/// Iroh does not have.
+pub fn iroh_self_addr(keypair_proto_hex: &str) -> Option<String> {
+    crate::crypto::keypair_from_hex(keypair_proto_hex)
+        .ok()
+        .map(|keypair| format!("/p2p/{}", keypair.public().to_peer_id()))
 }
 
 /// Mint a grant for an invite, signing with this member's per-circle key.
@@ -405,7 +446,7 @@ fn put_addr(out: &mut Vec<u8>, addr: &str) {
     }
 }
 
-/// Encode an invite as an `enoxian://v2/` URI.
+/// Encode an invite: `enoxian://v3/` for an Iroh Circle, `enoxian://v2/` otherwise.
 ///
 /// Fallible rather than panicking: an expiry beyond [`MAX_EXPIRY`] or a grant
 /// whose fields are not hex cannot be represented, and a caller that has
@@ -450,8 +491,16 @@ pub fn encode(payload: &InvitePayload) -> Result<String> {
         flags |= FLAG_GRANT;
     }
 
+    let iroh = payload.transport == crate::config::Transport::Iroh;
     let mut raw = Vec::with_capacity(MIN_LEN_V2 + 128);
     raw.push(flags);
+    if iroh {
+        let mut flags2 = FLAG2_IROH;
+        if !payload.iroh_relays.is_empty() {
+            flags2 |= FLAG2_IROH_RELAYS;
+        }
+        raw.push(flags2);
+    }
     raw.extend_from_slice(uuid.as_bytes());
     raw.extend_from_slice(&payload.psk_bytes);
     raw.extend_from_slice(&ts.to_be_bytes());
@@ -494,7 +543,18 @@ pub fn encode(payload: &InvitePayload) -> Result<String> {
         put_bytes(&mut raw, &sig);
     }
 
-    Ok(format!("{SCHEME_V2}{}", URL_SAFE_NO_PAD.encode(&raw)))
+    if !iroh {
+        return Ok(format!("{SCHEME_V2}{}", URL_SAFE_NO_PAD.encode(&raw)));
+    }
+    if !payload.iroh_relays.is_empty() {
+        let count = u8::try_from(payload.iroh_relays.len())
+            .map_err(|_| anyhow::anyhow!("an invite carries at most 255 relays"))?;
+        raw.push(count);
+        for url in &payload.iroh_relays {
+            put_bytes(&mut raw, url.as_bytes());
+        }
+    }
+    Ok(format!("{SCHEME_V3}{}", URL_SAFE_NO_PAD.encode(&raw)))
 }
 
 // ── Decoding ──────────────────────────────────────────────────────────────────
@@ -573,8 +633,11 @@ pub fn decode(uri: &str) -> Result<InvitePayload> {
     // Strip any query string that old clients might have produced
     let uri_clean = uri.split_once('?').map(|(base, _)| base).unwrap_or(uri);
 
+    if let Some(b64) = uri_clean.strip_prefix(SCHEME_V3) {
+        return decode_v2_or_v3(b64, true);
+    }
     if let Some(b64) = uri_clean.strip_prefix(SCHEME_V2) {
-        return decode_v2(b64);
+        return decode_v2_or_v3(b64, false);
     }
     if let Some(b64) = uri_clean.strip_prefix(SCHEME_V1) {
         return decode_v1(b64);
@@ -582,20 +645,23 @@ pub fn decode(uri: &str) -> Result<InvitePayload> {
     bail!("not a valid enoxian:// URI: {uri}")
 }
 
-fn decode_v2(b64: &str) -> Result<InvitePayload> {
+/// v3 is v2 plus a second flags byte and, optionally, trailing relay URLs.
+fn decode_v2_or_v3(b64: &str, v3: bool) -> Result<InvitePayload> {
     let raw = URL_SAFE_NO_PAD
         .decode(b64)
         .context("invite URI payload is not valid base64url")?;
 
-    if raw.len() < MIN_LEN_V2 {
+    let min = MIN_LEN_V2 + usize::from(v3);
+    if raw.len() < min {
         bail!(
-            "invite payload is {} bytes, expected at least {MIN_LEN_V2}",
+            "invite payload is {} bytes, expected at least {min}",
             raw.len()
         );
     }
 
     let mut r = Reader { raw: &raw, at: 0 };
     let flags = r.byte("flags")?;
+    let flags2 = if v3 { r.byte("flags2")? } else { 0 };
 
     let uuid_bytes: [u8; 16] = r.take(16, "circle id")?.try_into().unwrap();
     let circle_id = Uuid::from_bytes(uuid_bytes).to_string();
@@ -657,6 +723,18 @@ fn decode_v2(b64: &str) -> Result<InvitePayload> {
         None
     };
 
+    let mut iroh_relays = Vec::new();
+    if flags2 & FLAG2_IROH_RELAYS != 0 {
+        for _ in 0..r.byte("relay count")? {
+            iroh_relays.push(r.text("relay url")?);
+        }
+    }
+    let transport = if flags2 & FLAG2_IROH != 0 {
+        crate::config::Transport::Iroh
+    } else {
+        crate::config::Transport::Libp2p
+    };
+
     Ok(InvitePayload {
         circle_id,
         psk_bytes,
@@ -672,6 +750,8 @@ fn decode_v2(b64: &str) -> Result<InvitePayload> {
         rendezvous_addr,
         rendezvous_is_default: rendezvous_addr_is_default(flags),
         grant,
+        transport,
+        iroh_relays,
     })
 }
 
@@ -848,6 +928,8 @@ fn decode_v1(b64: &str) -> Result<InvitePayload> {
         relay_is_default: false,
         rendezvous_is_default: false,
         grant,
+        transport: crate::config::Transport::Libp2p,
+        iroh_relays: Vec::new(),
     })
 }
 
@@ -935,6 +1017,8 @@ mod tests {
             rendezvous_addr: Some("/ip4/9.10.11.12/udp/36521/quic-v1/p2p/12D3KooWrdvz".to_string()),
             relay_is_default: false,
             rendezvous_is_default: false,
+            transport: Default::default(),
+            iroh_relays: vec![],
         };
 
         let uri = encode(&payload).unwrap();
@@ -975,6 +1059,8 @@ mod tests {
             rendezvous_addr: None,
             relay_is_default: false,
             rendezvous_is_default: false,
+            transport: Default::default(),
+            iroh_relays: vec![],
         };
         let uri = encode(&payload).unwrap();
         let decoded = decode(&uri).unwrap();
@@ -997,6 +1083,8 @@ mod tests {
             rendezvous_addr: None,
             relay_is_default: false,
             rendezvous_is_default: false,
+            transport: Default::default(),
+            iroh_relays: vec![],
         };
         let uri = encode(&payload).unwrap();
         let decoded = decode(&uri).unwrap();
@@ -1066,6 +1154,8 @@ mod tests {
             relay_is_default: false,
             rendezvous_is_default: false,
             grant,
+            transport: Default::default(),
+            iroh_relays: vec![],
         }
     }
 
@@ -1482,6 +1572,83 @@ mod tests {
         assert_eq!(parse_ttl("24h").unwrap(), Duration::hours(24));
         assert!(parse_ttl("bad").is_err());
     }
+    // ── v3 (Iroh) ────────────────────────────────────────────────────────────
+
+    fn iroh(relays: &[&str]) -> InvitePayload {
+        InvitePayload {
+            peer_addr: Some(
+                "/ip4/192.168.1.42/udp/51820/quic-v1/p2p/\
+                 12D3KooWGjMkHkMvzGrzGHkPmuvFmbrzBXV9NwYWnYVvbcJRHMo3"
+                    .to_string(),
+            ),
+            transport: crate::config::Transport::Iroh,
+            iroh_relays: relays.iter().map(|r| r.to_string()).collect(),
+            ..realistic(Some(a_grant()))
+        }
+    }
+
+    /// Older clients keep decoding what a libp2p Circle mints: it stays v2.
+    #[test]
+    fn a_libp2p_circle_still_mints_v2() {
+        let uri = encode(&realistic(Some(a_grant()))).unwrap();
+        assert!(uri.starts_with(SCHEME_V2), "{uri}");
+        assert_eq!(
+            decode(&uri).unwrap().transport,
+            crate::config::Transport::Libp2p
+        );
+    }
+
+    #[test]
+    fn an_iroh_invite_is_v3_and_round_trips() {
+        let original = iroh(&["https://relay.example/", "https://relay2.example/"]);
+        let uri = encode(&original).unwrap();
+        assert!(uri.starts_with(SCHEME_V3), "{uri}");
+
+        let decoded = decode(&uri).unwrap();
+        assert_eq!(decoded.transport, crate::config::Transport::Iroh);
+        assert_eq!(decoded.iroh_relays, original.iroh_relays);
+        assert_eq!(decoded.peer_addr, original.peer_addr);
+        assert_eq!(decoded.circle_id, original.circle_id);
+        assert_eq!(decoded.psk_bytes, original.psk_bytes);
+        assert_eq!(decoded.grant, original.grant);
+        assert_eq!(decoded.relay_addr, original.relay_addr);
+        assert_eq!(decoded.rendezvous_addr, original.rendezvous_addr);
+    }
+
+    /// Without relays the Circle uses Iroh's public ones: still v3, no list.
+    #[test]
+    fn an_iroh_invite_without_relays_round_trips() {
+        let uri = encode(&iroh(&[])).unwrap();
+        let decoded = decode(&uri).unwrap();
+        assert_eq!(decoded.transport, crate::config::Transport::Iroh);
+        assert!(decoded.iroh_relays.is_empty());
+    }
+
+    #[test]
+    fn a_truncated_v3_payload_is_rejected() {
+        let uri = encode(&iroh(&["https://relay.example/"])).unwrap();
+        let raw = URL_SAFE_NO_PAD
+            .decode(uri.strip_prefix(SCHEME_V3).unwrap())
+            .unwrap();
+        for cut in [MIN_LEN_V2, raw.len() - 5, raw.len() - 1] {
+            let truncated = format!("{SCHEME_V3}{}", URL_SAFE_NO_PAD.encode(&raw[..cut]));
+            assert!(
+                decode(&truncated).is_err(),
+                "cut to {cut} bytes decoded anyway"
+            );
+        }
+    }
+
+    /// An Iroh peer with no direct address is named by its PeerId alone.
+    #[test]
+    fn the_iroh_fallback_peer_is_this_devices_peer_id() {
+        let keypair = libp2p::identity::Keypair::generate_ed25519();
+        let hex = crate::crypto::keypair_to_hex(&keypair).unwrap();
+        assert_eq!(
+            iroh_self_addr(&hex),
+            Some(format!("/p2p/{}", keypair.public().to_peer_id()))
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1564,6 +1731,8 @@ mod grant_tests {
             relay_is_default: false,
             rendezvous_is_default: false,
             grant: Some(grant),
+            transport: Default::default(),
+            iroh_relays: vec![],
         })
         .unwrap();
         let back = decode(&uri)
@@ -1590,6 +1759,8 @@ mod grant_tests {
             relay_is_default: false,
             rendezvous_is_default: false,
             grant: None,
+            transport: Default::default(),
+            iroh_relays: vec![],
         })
         .unwrap();
         assert!(decode(&uri).unwrap().grant.is_none());

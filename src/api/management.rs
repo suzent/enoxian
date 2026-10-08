@@ -210,6 +210,9 @@ pub async fn generate_invite(
         best_connectable_addr(listen.as_slice()).map(String::from)
     });
 
+    let transport = config.effective_transport();
+    let iroh_relays = config.iroh_relays.clone();
+
     // relay_addr: from saved config, or fall back to the default relay server
     // so invites are usable for WAN NAT traversal even without manual configuration.
     // Resolved first so it can also serve as the peer_addr fallback below.
@@ -222,7 +225,9 @@ pub async fn generate_invite(
     // If no direct/external address is available (NAT'd peer, daemon just started),
     // derive our relay circuit address from relay_addr + our keypair's peer ID.
     // This is deterministic and reachable: the joiner dials us through the relay.
-    let peer_addr = if peer_addr.is_none() {
+    let peer_addr = if peer_addr.is_none() && transport == crate::config::Transport::Iroh {
+        invite::iroh_self_addr(&config.keypair_proto_hex)
+    } else if peer_addr.is_none() {
         relay_addr
             .as_deref()
             .and_then(|relay_str| relay_str.parse::<libp2p::Multiaddr>().ok())
@@ -277,6 +282,8 @@ pub async fn generate_invite(
         relay_is_default,
         rendezvous_is_default,
         grant,
+        transport,
+        iroh_relays,
     }) {
         Ok(uri) => uri,
         Err(e) => {
@@ -548,6 +555,8 @@ mod short_invite_tests {
             relay_is_default: false,
             rendezvous_is_default: false,
             grant: None,
+            transport: Default::default(),
+            iroh_relays: vec![],
         })
         .unwrap();
         let (short, note) = short_or_full(&full, Some(&rdvz)).await;

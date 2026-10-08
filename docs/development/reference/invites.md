@@ -4,7 +4,7 @@ For creating and sharing invites, see the [user guide](../../guide/invite.md).
 
 ## Wire versions
 
-`enox` mints **v2** links and decodes both. A `v1` link that is already in circulation keeps working until its own TTL expires; nothing needs to be reissued.
+`enox` mints **v2** links for libp2p Circles and **v3** links for Circles on the Iroh transport (in development), and decodes all three. A `v1` link that is already in circulation keeps working until its own TTL expires; nothing needs to be reissued.
 
 v2 carries the same fields as v1 in a much smaller space. Measured on the same fully loaded invite:
 
@@ -75,6 +75,23 @@ A **length** is an unsigned LEB128 varint: one byte below 128, which covers ever
 An **address field** is a tag byte — `0` for libp2p's binary multiaddr encoding, `1` for UTF-8 text — followed by a length and the bytes.
 
 A **nonce** is a tag byte — `0` for 16 raw UUID bytes, `1` for UTF-8 text — followed by the bytes. `sign_grant` always produces a UUID; the text form exists so a grant minted elsewhere is not silently corrupted.
+
+---
+
+## Binary format (v3)
+
+v3 is v2 with a second flags byte straight after the first, prefixed with `enoxian://v3/`. It is minted only by a Circle on the Iroh transport, so a libp2p Circle's invite stays v2 and older clients keep reading it.
+
+| Bit | Name | Meaning |
+|-----|------|---------|
+| 0x01 | `FLAG2_IROH` | The Circle runs on Iroh. Always set on v3. |
+| 0x02 | `FLAG2_IROH_RELAYS` | A list of Iroh relay URLs follows the grant |
+
+The header and body are v2's. When `FLAG2_IROH_RELAYS` is set, a `u8` count and that many length-prefixed UTF-8 URLs follow the grant; the joiner stores them as `iroh_relays`. With no list, the Circle uses Iroh's public relays.
+
+The peer address is a v2 address field. An Iroh peer is written `/ip4/…/udp/…/quic-v1/p2p/<peer id>`: the peer id is the Circle key the joiner dials by, and the IP and port a direct-address hint. A device with no address to offer writes `/p2p/<peer id>` alone and is reached through the relays; Iroh has no rendezvous server, so an Iroh invite always names a peer.
+
+`enox enter` saves the joined Circle with `transport = "iroh"` and the relay list. A v2 or v1 invite leaves the transport to `ENOXIAN_TRANSPORT` and otherwise libp2p.
 
 ---
 

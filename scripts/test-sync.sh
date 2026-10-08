@@ -70,7 +70,9 @@ curl1() { curl -sf -H "Authorization: Bearer $(tok1)" "http://127.0.0.1:$D1_PORT
 curl2() { curl -sf -H "Authorization: Bearer $(tok2)" "http://127.0.0.1:$D2_PORT$1"; }
 
 enox1() { ENOXIAN_HOME="$D1_STATE" ENOXIAN_API="http://127.0.0.1:$D1_PORT" "$ENOX" "$@"; }
-enox2() { ENOXIAN_HOME="$D2_STATE" ENOXIAN_API="http://127.0.0.1:$D2_PORT" "$ENOX" "$@"; }
+# Device two never sees ENOXIAN_TRANSPORT: on an Iroh run it has to learn the
+# transport from the invite, as a real joiner would.
+enox2() { env -u ENOXIAN_TRANSPORT ENOXIAN_HOME="$D2_STATE" ENOXIAN_API="http://127.0.0.1:$D2_PORT" "$ENOX" "$@"; }
 
 # Poll until a predicate holds. Fixed sleeps were the main source of both
 # flakiness and slowness here: too short and a healthy run fails, too long and
@@ -141,7 +143,7 @@ ok "circle active on daemon 1"
 
 section "Start daemon 2 and enter circle"
 mkdir -p "$D2_STATE" "$D2_WS"
-ENOXIAN_DEVICE_LABEL="device-two" ENOXIAN_HOME="$D2_STATE" \
+env -u ENOXIAN_TRANSPORT ENOXIAN_DEVICE_LABEL="device-two" ENOXIAN_HOME="$D2_STATE" \
     "$ENOX" daemon run --port $D2_PORT > "$TMPDIR_TEST/d2.log" 2>&1 &
 wait_for "daemon 2 never became reachable" 40 daemon_up "$D2_STATE" $D2_PORT
 ok "daemon 2 up on port $D2_PORT"

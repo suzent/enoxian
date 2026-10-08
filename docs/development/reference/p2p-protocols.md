@@ -163,9 +163,8 @@ unchanged; only how their streams are carried differs.
   empty, Iroh's public relays and address lookup are used. Those are rate
   limited and can see who connects to whom, so they are for testing only.
 
-Invites do not carry the transport or `iroh_relays` yet; the v3 invite will.
-Until then a joining device keeps the transport it runs `enox enter` with, so
-join an Iroh Circle with `ENOXIAN_TRANSPORT=iroh` set and copy `iroh_relays`
-by hand.
+An Iroh Circle mints v3 invites, which carry the transport and `iroh_relays`,
+so a joining device sets itself up from the invite alone (see
+[invites](invites.md#binary-format-v3)).
 
 `ENOXIAN_TRANSPORT=iroh scripts/test-sync.sh` runs the two-daemon test on Iroh.

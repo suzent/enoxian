@@ -102,6 +102,8 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         rendezvous_from_invite,
         admin_pubkey_hex,
         join_grant,
+        transport_from_invite,
+        iroh_relays,
     ) = if args.target.starts_with("enoxian://") {
         // A short invite carries only a key; its contents are sealed on a
         // relay. Fetch and open before anything else, so everything downstream
@@ -145,6 +147,10 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
             payload.rendezvous_addr,
             admin_pubkey_hex,
             join_grant,
+            // Only a v3 invite says anything about the transport; an older one
+            // leaves the choice to ENOXIAN_TRANSPORT and the default.
+            (payload.transport == crate::config::Transport::Iroh).then_some(payload.transport),
+            payload.iroh_relays,
         )
     } else {
         let secret = args.secret.as_deref().context(
@@ -160,8 +166,13 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
             None,
             String::new(),
             None,
+            None,
+            Vec::new(),
         )
     };
+    let transport = transport_from_invite
+        .or_else(CircleConfig::transport_from_env)
+        .unwrap_or_default();
 
     let peer = args.peer.or(peer_from_invite);
 
@@ -209,6 +220,10 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
                 existing_cfg.peers = bootstrap_peers.clone();
                 existing_cfg.relay_addrs = relay_from_invite.clone().into_iter().collect();
                 existing_cfg.rendezvous_addrs = rendezvous_addrs.clone();
+                if transport_from_invite.is_some() {
+                    existing_cfg.transport = transport;
+                    existing_cfg.iroh_relays = iroh_relays.clone();
+                }
                 config::save(&existing_cfg).context("failed to refresh circle config")?;
                 println!(
                     "✦ Already a member of '{circle_name}' — refreshed credentials from invite."
@@ -276,10 +291,8 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
                 .map(|(label, handle)| handle.unwrap_or(label))
                 .unwrap_or_default()
         }),
-        // Invites do not carry the transport yet (the v3 invite will), so a
-        // device joining an Iroh Circle records what it was started with.
-        transport: CircleConfig::transport_from_env().unwrap_or_default(),
-        iroh_relays: vec![],
+        transport,
+        iroh_relays,
     };
     config::save(&circle_config).context("failed to save circle config")?;
 
@@ -299,6 +312,12 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
     // Blocking the HTTP handler for up to 10s is undesirable and caused 500s.
     if args.no_verify {
         println!("  Config saved. Circle will connect when the daemon starts.");
+        return Ok(());
+    }
+    // The check below dials with a throwaway libp2p swarm, which cannot reach
+    // an Iroh peer; the daemon reports the connection once it starts.
+    if transport == crate::config::Transport::Iroh {
+        println!("  Config saved (Iroh transport). The daemon connects when it starts.");
         return Ok(());
     }
 
