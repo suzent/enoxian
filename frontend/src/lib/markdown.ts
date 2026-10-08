@@ -1,4 +1,4 @@
-import { marked } from 'marked'
+import { Marked, marked } from 'marked'
 import DOMPurify from 'dompurify'
 
 /**
@@ -85,8 +85,26 @@ function chipMentions(doc: Document, mentions: string[]) {
   }
 }
 
+// Chat is plain text that may carry formatting, and a backslash in it is
+// almost always part of a Windows path or a command (`C:\Users\.enoxian`,
+// `\*.log`), not a markdown escape. Standard markdown would drop it, so chat
+// keeps the backslash and the character after it as written. File previews
+// stay standard markdown.
+const chatMarked = new Marked({
+  tokenizer: {
+    escape(src) {
+      const match = /^\\[!-/:-@[-`{-~]/.exec(src)
+      return match ? { type: 'escape', raw: match[0], text: match[0] } : undefined
+    },
+  },
+})
+
 export function renderMarkdown(source: string, options: MarkdownOptions = {}): string {
-  const rendered = marked.parse(source, { async: false, breaks: options.breaks ?? false }) as string
+  return renderWith(marked, source, options)
+}
+
+function renderWith(parser: Pick<Marked, 'parse'>, source: string, options: MarkdownOptions): string {
+  const rendered = parser.parse(source, { async: false, breaks: options.breaks ?? false }) as string
   const sanitized = DOMPurify.sanitize(rendered, { FORBID_TAGS, FORBID_ATTR })
   const doc = new DOMParser().parseFromString(sanitized, 'text/html')
 
@@ -114,7 +132,8 @@ export function renderMarkdown(source: string, options: MarkdownOptions = {}): s
   return doc.body.innerHTML
 }
 
-/** A chat message body: newlines are literal, and mentions are chipped. */
+/** A chat message body: newlines and backslashes are literal, and mentions
+ *  are chipped. */
 export function renderChatMarkdown(text: string, mentions: string[] = []): string {
-  return renderMarkdown(text, { breaks: true, mentions })
+  return renderWith(chatMarked, text, { breaks: true, mentions })
 }

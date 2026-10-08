@@ -39,6 +39,14 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- Chat keeps backslashes, so Windows paths and commands such as
+  `C:\Users\you\.enoxian\*.log` show as written instead of losing the
+  backslash before `.` or `*`.
+- Pasting several lines into the chat box keeps them as separate lines
+  instead of joining them into one, and Shift+Enter starts a new line.
+
 ## [0.11.0] — 2026-10-07
 
 ### Security
