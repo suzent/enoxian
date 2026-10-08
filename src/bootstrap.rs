@@ -33,7 +33,67 @@ use crate::{
     pair_mailbox::MailboxState,
 };
 
-pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Result<()> {
+/// The `--iroh-relay*` flags of `enox bootstrap serve`.
+#[derive(Debug, Clone, Default)]
+pub struct IrohRelayFlags {
+    pub enabled: bool,
+    pub dev_port: Option<u16>,
+    pub acme_contact: Option<String>,
+    pub acme_staging: bool,
+}
+
+/// Start the Iroh relay the flags ask for, returning the URL it serves.
+#[cfg(feature = "iroh-relay-server")]
+async fn start_iroh_relay(
+    flags: IrohRelayFlags,
+    advertise_host: Option<&str>,
+) -> Result<Option<crate::iroh_relay_server::Relay>> {
+    use crate::iroh_relay_server::{start, RelayMode};
+    if !flags.enabled {
+        return Ok(None);
+    }
+    let mode = match flags.dev_port {
+        Some(port) => RelayMode::Dev { port },
+        None => RelayMode::Production {
+            domain: advertise_host
+                .map(|h| h.trim().trim_end_matches('.').to_string())
+                .filter(|h| !h.is_empty())
+                .context("--iroh-relay needs --advertise-host: the certificate is issued for it")?,
+            https_port: 443,
+            http_port: 80,
+            quic_port: Some(7842),
+            contact: flags.acme_contact,
+            staging: flags.acme_staging,
+        },
+    };
+    Ok(Some(start(mode).await?))
+}
+
+#[cfg(not(feature = "iroh-relay-server"))]
+async fn start_iroh_relay(
+    flags: IrohRelayFlags,
+    _advertise_host: Option<&str>,
+) -> Result<Option<()>> {
+    anyhow::ensure!(
+        !flags.enabled,
+        "--iroh-relay needs a build with the iroh-relay-server feature"
+    );
+    Ok(None)
+}
+
+pub async fn run(
+    port: u16,
+    relay_port: u16,
+    advertise_host: Option<&str>,
+    iroh_relay: IrohRelayFlags,
+) -> Result<()> {
+    // Before anything else binds: a relay that cannot start (port in use, no
+    // hostname) should stop the server, not leave it half up.
+    let iroh_relay = start_iroh_relay(iroh_relay, advertise_host).await?;
+    #[cfg(feature = "iroh-relay-server")]
+    let iroh_relay_url = iroh_relay.as_ref().map(|relay| relay.url.clone());
+    #[cfg(not(feature = "iroh-relay-server"))]
+    let iroh_relay_url: Option<String> = iroh_relay.map(|()| String::new());
     let keypair = load_or_create_keypair()?;
     let peer_id = keypair.public().to_peer_id();
     let peer_id_str = peer_id.to_string();
@@ -120,7 +180,7 @@ pub async fn run(port: u16, relay_port: u16, advertise_host: Option<&str>) -> Re
     // mounted here because the bootstrap server is the one address both
     // machines already know how to reach; it is trusted with nothing — see
     // `crate::pair_mailbox`.
-    let app = http_router(peer_id_str.clone(), blobs);
+    let app = http_router(peer_id_str.clone(), iroh_relay_url, blobs);
     let http_addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(http_addr)
@@ -316,22 +376,37 @@ fn is_public_ipv6(ip: std::net::Ipv6Addr) -> bool {
         && !is_unicast_link_local
 }
 
+#[derive(Clone)]
+struct Meta {
+    peer_id: String,
+    /// The Iroh relay this server runs, when it runs one.
+    iroh_relay: Option<String>,
+}
+
 /// Public bootstrap metadata and sealed-blob endpoints; no daemon credentials.
-fn http_router(peer_id: String, blobs: crate::invite_blobs::BlobState) -> Router {
+fn http_router(
+    peer_id: String,
+    iroh_relay: Option<String>,
+    blobs: crate::invite_blobs::BlobState,
+) -> Router {
     Router::new()
         .route("/peer-id", get(peer_id_handler))
         .route("/version", get(version_handler))
-        .with_state(peer_id)
+        .with_state(Meta {
+            peer_id,
+            iroh_relay,
+        })
         .nest("/pair", crate::pair_mailbox::router(MailboxState::new()))
         .nest("/invite", crate::invite_blobs::router(blobs))
 }
 
-async fn version_handler() -> impl axum::response::IntoResponse {
+async fn version_handler(State(meta): State<Meta>) -> impl axum::response::IntoResponse {
     (
         [(axum::http::header::CACHE_CONTROL, "no-store")],
         Json(serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
             "min_client_version": crate::defaults::MIN_CLIENT_VERSION,
+            "iroh_relay": meta.iroh_relay,
             "capabilities": {
                 "short_invites": true,
                 "device_linking": true,
@@ -340,8 +415,8 @@ async fn version_handler() -> impl axum::response::IntoResponse {
     )
 }
 
-async fn peer_id_handler(State(peer_id): State<String>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "peer_id": peer_id }))
+async fn peer_id_handler(State(meta): State<Meta>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "peer_id": meta.peer_id }))
 }
 
 fn load_or_create_keypair() -> Result<libp2p::identity::Keypair> {
@@ -374,7 +449,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let blobs = crate::invite_blobs::BlobState::new(dir.path().to_owned()).unwrap();
-        let app = http_router("test-peer".into(), blobs);
+        let app = http_router("test-peer".into(), None, blobs);
         let response = app
             .clone()
             .oneshot(
@@ -394,6 +469,7 @@ mod tests {
             serde_json::json!({
                 "version": env!("CARGO_PKG_VERSION"),
                 "min_client_version": crate::defaults::MIN_CLIENT_VERSION,
+                "iroh_relay": null,
                 "capabilities": { "short_invites": true, "device_linking": true },
             })
         );
@@ -410,6 +486,36 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
         assert_eq!(json, serde_json::json!({ "peer_id": "test-peer" }));
+    }
+
+    /// A server running an Iroh relay says where, so clients can find it.
+    #[tokio::test]
+    async fn version_advertises_the_iroh_relay() {
+        use axum::{
+            body::{to_bytes, Body},
+            http::Request,
+        };
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = crate::invite_blobs::BlobState::new(dir.path().to_owned()).unwrap();
+        let app = http_router(
+            "test-peer".into(),
+            Some("https://relay.example".into()),
+            blobs,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/version")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(json["iroh_relay"], "https://relay.example");
     }
 
     fn addr(value: &str) -> Multiaddr {

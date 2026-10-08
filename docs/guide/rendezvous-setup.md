@@ -236,6 +236,31 @@ sudo firewall-cmd --permanent --add-port=36522/tcp
 sudo firewall-cmd --reload
 ```
 
+### 5. Iroh relay (in development)
+
+Circles on the Iroh transport meet through an Iroh relay. The same server can
+run one next to the libp2p services. Released binaries do not include it yet:
+build with `--features iroh-relay-server`.
+
+```bash
+enox bootstrap serve --advertise-host relay.example.com \
+    --iroh-relay --acme-contact you@example.com --acme-staging
+```
+
+- **Ports:** `443/tcp` (HTTPS, and the Let's Encrypt TLS-ALPN challenge, so
+  nothing else may hold it), `80/tcp` (Iroh's captive-portal probe) and
+  `7842/udp` (QUIC address discovery). Binding 80 and 443 needs root or
+  `CAP_NET_BIND_SERVICE`.
+- **Certificates:** issued for `--advertise-host` and cached in
+  `~/.enoxian/acme`. Start with `--acme-staging`, whose certificates are not
+  trusted but which has no production rate limits, then drop it once the
+  relay is reachable.
+- **Discovery:** `/version` reports the relay as `iroh_relay`. Put the URL in
+  a Circle's `iroh_relays` so its members use this relay instead of Iroh's
+  public ones.
+- **Local testing:** `--iroh-relay-dev-port <port>` serves plain HTTP on that
+  port without a certificate.
+
 ---
 
 ## Verifying the server

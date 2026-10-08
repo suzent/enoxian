@@ -85,7 +85,18 @@ async fn main() -> anyhow::Result<()> {
         AgentCommands::Bootstrap(args) => match args.action {
             BootstrapAction::Serve(args) => {
                 let relay_port = args.relay_port.unwrap_or(args.port.saturating_add(1));
-                enoxian::bootstrap::run(args.port, relay_port, args.advertise_host.as_deref()).await
+                enoxian::bootstrap::run(
+                    args.port,
+                    relay_port,
+                    args.advertise_host.as_deref(),
+                    enoxian::bootstrap::IrohRelayFlags {
+                        enabled: args.iroh_relay,
+                        dev_port: args.iroh_relay_dev_port,
+                        acme_contact: args.acme_contact.clone(),
+                        acme_staging: args.acme_staging,
+                    },
+                )
+                .await
             }
         },
         AgentCommands::Service(args) => {
