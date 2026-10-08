@@ -28,7 +28,8 @@ COPY build.rs ./
 COPY src ./src
 RUN mkdir -p static
 
-RUN cargo build --release --locked --bin enox
+# The Iroh relay is compiled in; `--iroh-relay` turns it on.
+RUN cargo build --release --locked --bin enox --features iroh-relay-server
 
 # ── Runtime stage ────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim

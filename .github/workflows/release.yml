@@ -272,17 +272,22 @@ jobs:
 
       # ENOXIAN_RELEASE_BUILD is what makes `enox --version` say "release"
       # rather than "dev"; see build.rs. Only this workflow may set it.
+      #
+      # Linux builds include the Iroh relay (`enox bootstrap serve
+      # --iroh-relay`): relay servers run Linux and take every release from
+      # the self-updater, so a build without it would drop the relay from a
+      # server started with the flag. It only runs when that flag is given.
       - name: Build Linux ARM64
         if: matrix.target == 'aarch64-unknown-linux-musl'
         env:
           ENOXIAN_RELEASE_BUILD: "1"
-        run: cargo zigbuild --release --locked --bins --target ${{ matrix.target }}
+        run: cargo zigbuild --release --locked --bins --target ${{ matrix.target }} --features iroh-relay-server
 
       - name: Build
         if: matrix.target != 'aarch64-unknown-linux-musl'
         env:
           ENOXIAN_RELEASE_BUILD: "1"
-        run: cargo build --release --locked --bins --target ${{ matrix.target }}
+        run: cargo build --release --locked --bins --target ${{ matrix.target }} ${{ contains(matrix.target, 'linux') && '--features iroh-relay-server' || '' }}
 
       - name: Smoke test native Unix binary
         if: runner.os != 'Windows' && matrix.smoke
