@@ -81,3 +81,17 @@ describe('a send that fails', () => {
     expect(screen.queryByText(/Not sent/)).toBeNull()
   })
 })
+
+describe('Shift+Enter', () => {
+  it('starts a new line instead of sending', async () => {
+    postChat.mockResolvedValue({ id: 'm1' })
+    render(<ChatPanel />)
+
+    await typeMessage('first line')
+    await userEvent.keyboard('{Shift>}{Enter}{/Shift}')
+    expect(postChat).not.toHaveBeenCalled()
+
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(postChat).toHaveBeenCalled())
+  })
+})

@@ -780,7 +780,8 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
       dismissEngagement()
       return
     }
-    if (e.key === 'Enter') {
+    // Shift+Enter is a newline, left to the browser; Enter alone sends.
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       send()
     }

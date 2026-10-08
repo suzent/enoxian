@@ -49,26 +49,43 @@ interface Props {
 
 const CHIP_ATTR = 'data-mention'
 
+const BLOCK_TAGS = new Set(['DIV', 'P', 'LI'])
+
 /** Read the editable DOM into draft nodes. Empty text nodes are dropped so a
  *  round-trip through `restore` leaves the element `:empty` (and therefore
- *  showing its placeholder) when the draft is blank. */
+ *  showing its placeholder) when the draft is blank.
+ *
+ *  Line breaks survive: a browser stores a newline from a paste or Shift+Enter
+ *  as a `<br>` or as a new `<div>` block, never as text, so both are read back
+ *  as `\n`. A `<br>` that ends its block is the browser's placeholder for an
+ *  empty last line, not a newline anyone typed. */
 function snapshot(root: HTMLElement): DraftNode[] {
   const out: DraftNode[] = []
   const pushText = (value: string) => { if (value) out.push({ kind: 'text', value }) }
-  root.childNodes.forEach(node => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      pushText(node.textContent ?? '')
-    } else if (node instanceof HTMLElement) {
-      const token = node.getAttribute(CHIP_ATTR)
-      if (token !== null) {
-        out.push({ kind: 'mention', token })
-      } else if (node.tagName === 'BR') {
-        // ignore — Enter is send, not newline
-      } else {
+  const endsWithNewline = () => {
+    const last = out[out.length - 1]
+    return !last || (last.kind === 'text' && last.value.endsWith('\n'))
+  }
+  const walk = (parent: Node) => {
+    parent.childNodes.forEach(node => {
+      if (node.nodeType === Node.TEXT_NODE) {
         pushText(node.textContent ?? '')
+      } else if (node instanceof HTMLElement) {
+        const token = node.getAttribute(CHIP_ATTR)
+        if (token !== null) {
+          out.push({ kind: 'mention', token })
+        } else if (node.tagName === 'BR') {
+          if (node.nextSibling) pushText('\n')
+        } else if (BLOCK_TAGS.has(node.tagName)) {
+          if (!endsWithNewline()) pushText('\n')
+          walk(node)
+        } else {
+          walk(node)
+        }
       }
-    }
-  })
+    })
+  }
+  walk(root)
   return out
 }
 
@@ -246,7 +263,7 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
       ref={elRef}
       contentEditable={!disabled}
       role="textbox"
-      aria-multiline="false"
+      aria-multiline="true"
       aria-disabled={disabled}
       tabIndex={disabled ? -1 : 0}
       data-placeholder={placeholder}
