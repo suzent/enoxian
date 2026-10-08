@@ -44,6 +44,11 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
         .or_else(|| {
             let addrs = p2p.as_ref()?.listen_addrs.as_slice();
             best_listen_addr(addrs).map(String::from)
+        })
+        .or_else(|| {
+            (config.effective_transport() == crate::config::Transport::Iroh)
+                .then(|| invite::iroh_self_addr(&config.keypair_proto_hex))
+                .flatten()
         });
 
     // relay_addr: from circle config (saved at `enox enter` time from the invite).
@@ -104,6 +109,8 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
         relay_is_default,
         rendezvous_is_default,
         grant,
+        transport: config.effective_transport(),
+        iroh_relays: config.iroh_relays.clone(),
     })?;
 
     // A short link keeps the payload on the relay and carries only the key —

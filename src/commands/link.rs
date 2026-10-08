@@ -224,15 +224,21 @@ fn mint_invite(circle: &config::CircleConfig) -> Result<String> {
         .as_deref()
         .is_some_and(rdvz::is_default_rendezvous);
 
+    let iroh = circle.effective_transport() == crate::config::Transport::Iroh;
     invite::encode(&InvitePayload {
         circle_id: circle.circle_id.clone(),
         psk_bytes: psk,
         circle_name: Some(circle.circle_name.clone()),
         expires_at,
-        // No peer address: this side may not have a daemon up, and the new
-        // device reaches the circle the same way this one does — through the
-        // relay and rendezvous server the config already names.
-        peer_addr: None,
+        // No peer address on libp2p: this side may not have a daemon up, and
+        // the new device reaches the circle the same way this one does —
+        // through the relay and rendezvous server the config already names.
+        // Iroh has no rendezvous, so the new device dials this one by key.
+        peer_addr: if iroh {
+            invite::iroh_self_addr(&circle.keypair_proto_hex)
+        } else {
+            None
+        },
         admin_pubkey_bytes: hex::decode(&circle.admin_pubkey_hex)
             .ok()
             .filter(|b| !b.is_empty()),
@@ -241,6 +247,8 @@ fn mint_invite(circle: &config::CircleConfig) -> Result<String> {
         relay_is_default,
         rendezvous_is_default,
         grant,
+        transport: circle.effective_transport(),
+        iroh_relays: circle.iroh_relays.clone(),
     })
 }
 
