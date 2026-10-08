@@ -585,6 +585,25 @@ pub struct BootstrapServeArgs {
     /// Public DNS hostname advertised by the bootstrap server
     #[arg(long, env = "ENOXIAN_ADVERTISE_HOST")]
     pub advertise_host: Option<String>,
+
+    /// Also run an Iroh relay (needs a build with `iroh-relay-server`): HTTPS
+    /// with a Let's Encrypt certificate for --advertise-host on 443, HTTP on
+    /// 80, QUIC address discovery on 7842
+    #[arg(long)]
+    pub iroh_relay: bool,
+
+    /// Run the Iroh relay as plain HTTP on this port instead, for local testing
+    #[arg(long, requires = "iroh_relay")]
+    pub iroh_relay_dev_port: Option<u16>,
+
+    /// Contact email for the Let's Encrypt account
+    #[arg(long, env = "ENOXIAN_ACME_CONTACT", requires = "iroh_relay")]
+    pub acme_contact: Option<String>,
+
+    /// Use Let's Encrypt's staging directory (untrusted certificates, no
+    /// production rate limits) while trying out a deployment
+    #[arg(long, requires = "iroh_relay")]
+    pub acme_staging: bool,
 }
 
 #[derive(clap::Args)]

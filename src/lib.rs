@@ -14,6 +14,8 @@ pub mod identity;
 pub mod ignore_rules;
 pub mod invite;
 pub mod invite_blobs;
+#[cfg(feature = "iroh-relay-server")]
+pub mod iroh_relay_server;
 pub mod lifecycle;
 pub mod mls;
 pub mod network;

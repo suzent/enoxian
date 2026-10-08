@@ -226,13 +226,14 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      # The Iroh transport is off by default while in development; keep it
-      # compiling, lint-clean and its unit tests passing.
-      - name: Clippy (Iroh transport)
-        run: cargo clippy --locked --all-targets --features iroh-transport -- -D warnings
+      # The Iroh transport and relay are off by default while in development;
+      # keep them compiling, lint-clean and their tests passing.
+      # iroh-relay-server includes iroh-transport.
+      - name: Clippy (Iroh transport and relay)
+        run: cargo clippy --locked --all-targets --features iroh-relay-server -- -D warnings
 
-      - name: Iroh transport unit tests
-        run: cargo test --locked --lib --features iroh-transport network::iroh_net
+      - name: Iroh unit tests
+        run: cargo test --locked --lib --features iroh-relay-server iroh_
 
       # `--all-targets` excludes doctests, so they need their own invocation.
       - name: Doctests
