@@ -3,7 +3,19 @@ use serde_json::Value;
 
 pub async fn run(client: &reqwest::Client, base: &str, json: bool) -> Result<()> {
     let resp = client.get(format!("{base}/status")).send().await?;
+    let ok = resp.status().is_success();
     let val: Value = resp.json().await?;
+    // A circle the daemon is not running used to print a card of `?`s. Say
+    // so, with the daemon's reason when it has one (why the start failed).
+    if !ok && !json {
+        let error = val["error"]
+            .as_str()
+            .unwrap_or("the daemon refused the request");
+        match val["reason"].as_str() {
+            Some(reason) => anyhow::bail!("{error}: {reason}"),
+            None => anyhow::bail!("{error}"),
+        }
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&val)?);
     } else {

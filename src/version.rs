@@ -6,7 +6,9 @@
 //! ambiguous, so the long version also names the build channel and the commit
 //! it was built from. See `build.rs` for where those two come from.
 //!
-//! The format is `<semver> (<channel>, <commit>)`. The semver stays the second
+//! The format is `<semver> (<channel>, <commit>[, <feature>…])`, the features
+//! being the optional ones the binary was built with (`iroh-transport`,
+//! `iroh-relay-server`). The semver stays the second
 //! whitespace-separated token of the clap output, which is what
 //! [`crate::commands::update`] parses when it compares an installed binary
 //! against a release tag.
@@ -20,6 +22,9 @@ pub const CHANNEL: &str = env!("ENOX_BUILD_CHANNEL");
 /// Short commit the binary was built from, `unknown` outside a git checkout.
 pub const COMMIT: &str = env!("ENOX_GIT_COMMIT");
 
+/// Optional features compiled in, comma-separated; empty for a default build.
+pub const FEATURES: &str = env!("ENOX_BUILD_FEATURES");
+
 /// The full string clap prints for `enox --version`.
 pub const LONG_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
@@ -27,6 +32,7 @@ pub const LONG_VERSION: &str = concat!(
     env!("ENOX_BUILD_CHANNEL"),
     ", ",
     env!("ENOX_GIT_COMMIT"),
+    env!("ENOX_BUILD_FEATURE_SUFFIX"),
     ")"
 );
 
@@ -85,5 +91,23 @@ mod tests {
         assert!(matches!(CHANNEL, "dev" | "release"), "channel: {CHANNEL}");
         assert!(LONG_VERSION.contains(CHANNEL));
         assert!(LONG_VERSION.contains(COMMIT));
+        for feature in FEATURES.split(',').filter(|f| !f.is_empty()) {
+            assert!(
+                LONG_VERSION.contains(feature),
+                "{LONG_VERSION} omits {feature}"
+            );
+        }
+    }
+
+    /// The relay updater parses `enox --version` with this pattern; a feature
+    /// list must not break it.
+    #[test]
+    fn the_relay_updater_still_parses_the_long_version() {
+        let line = format!("enox {LONG_VERSION}");
+        let inside = line
+            .split_once(" (")
+            .and_then(|(_, rest)| rest.strip_suffix(')'))
+            .expect("a parenthesised build stamp");
+        assert!(!inside.contains('(') && !inside.contains(')'));
     }
 }

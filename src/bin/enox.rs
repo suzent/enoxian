@@ -106,13 +106,25 @@ async fn main() -> anyhow::Result<()> {
             dev,
             src,
             no_pull,
+            features,
             status,
             check,
             release,
             record_stable,
         } => {
-            enoxian::commands::update::run(dev, src, no_pull, status, check, release, record_stable)
-                .await
+            enoxian::commands::update::run(
+                dev,
+                enoxian::commands::update::DevOptions {
+                    src,
+                    no_pull,
+                    features,
+                },
+                status,
+                check,
+                release,
+                record_stable,
+            )
+            .await
         }
         AgentCommands::UpdateApply(args) => enoxian::commands::update::apply(args),
         AgentCommands::Identity(args) => enoxian::commands::identity::run(args),

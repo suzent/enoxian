@@ -127,6 +127,11 @@ pub struct GlobalConfig {
     /// Binary path owned by the installed login service.
     #[serde(default)]
     pub managed_executable: Option<String>,
+    /// Cargo features `enox update --dev` builds with, comma-separated. Saved
+    /// so a later update keeps them: dropping `iroh-transport` would leave an
+    /// Iroh Circle unable to start.
+    #[serde(default)]
+    pub dev_features: Option<String>,
 }
 
 pub fn global_config_path() -> Result<PathBuf> {

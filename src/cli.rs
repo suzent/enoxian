@@ -154,8 +154,12 @@ pub enum AgentCommands {
         /// Skip git pull (just rebuild)
         #[arg(long, requires = "dev")]
         no_pull: bool,
+        /// Cargo features to build with, comma-separated (e.g.
+        /// iroh-transport). Saved for later `--dev` updates; `none` clears them
+        #[arg(long, requires = "dev", value_name = "LIST")]
+        features: Option<String>,
         /// Show channel, source, managed binary, version, and service state
-        #[arg(long, conflicts_with_all = ["dev", "src", "no_pull"])]
+        #[arg(long, conflicts_with_all = ["dev", "src", "no_pull", "features"])]
         status: bool,
         /// Report the newest stable release without installing it
         #[arg(long, conflicts_with_all = ["dev", "src", "no_pull", "status"])]
