@@ -28,3 +28,8 @@ pub const DEFAULT_RELAY: Option<&str> = Some("relay.enoxian.com");
 /// saying why — the point being a transport change that old and new clients
 /// cannot speak across. `None` while every client release is still served.
 pub const MIN_CLIENT_VERSION: Option<&str> = None;
+
+/// Iroh relays run for enoxian. A Circle whose `iroh_relays` is empty uses
+/// these together with Iroh's public relays (four regions), so a device homes
+/// on whichever is nearest and the rest stand by.
+pub const DEFAULT_IROH_RELAYS: &[&str] = &["https://relay.enoxian.com"];

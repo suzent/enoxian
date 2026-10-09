@@ -166,34 +166,21 @@ pub async fn spawn(
     psk: [u8; 32],
     token: CancellationToken,
 ) -> Result<()> {
-    let relays: Vec<RelayUrl> = config
-        .iroh_relays
-        .iter()
-        .filter_map(|url| match url.parse() {
-            Ok(url) => Some(url),
-            Err(error) => {
-                warn!("[iroh] ignoring relay '{url}': {error}");
-                None
-            }
-        })
-        .collect();
-    // Without our own relays, Iroh's public ones and their address lookup:
-    // a member is then reachable by id alone. Development only.
-    let mut builder = if relays.is_empty() {
-        Endpoint::builder(presets::N0)
-    } else {
-        Endpoint::builder(presets::Minimal)
-            .relay_mode(RelayMode::Custom(RelayMap::from_iter(relays.clone())))
-    }
-    .secret_key(secret_key(keypair)?)
-    .alpns(vec![ALPN.to_vec()])
-    .transport_config(
-        QuicTransportConfig::builder()
-            .max_idle_timeout(Some(IDLE_TIMEOUT.try_into()?))
-            .build(),
-    )
-    // Gateway probing can raise the macOS firewall prompt.
-    .portmapper_config(PortmapperConfig::Disabled);
+    let relay_map = relay_map(&config.iroh_relays);
+    let relays: Vec<RelayUrl> = relay_map.urls();
+    // Minimal, not N0: nothing is published to Iroh's DNS. Members find each
+    // other by id through the relays, which every dial lists in full.
+    let mut builder = Endpoint::builder(presets::Minimal)
+        .relay_mode(RelayMode::Custom(relay_map))
+        .secret_key(secret_key(keypair)?)
+        .alpns(vec![ALPN.to_vec()])
+        .transport_config(
+            QuicTransportConfig::builder()
+                .max_idle_timeout(Some(IDLE_TIMEOUT.try_into()?))
+                .build(),
+        )
+        // Gateway probing can raise the macOS firewall prompt.
+        .portmapper_config(PortmapperConfig::Disabled);
     if config.force_relay {
         builder = builder.clear_ip_transports();
     }
@@ -231,6 +218,31 @@ pub async fn spawn(
     tokio::spawn(net.clone().dial_loop(invited, token.clone()));
     tokio::spawn(net.clone().sync_ended_loop(token.clone()));
     Ok(())
+}
+
+/// The relays a Circle uses: its own `iroh_relays` when it lists any,
+/// otherwise ours ([`crate::defaults::DEFAULT_IROH_RELAYS`]) plus Iroh's
+/// public relays. Each device homes on the one nearest it; dialing lists them
+/// all, since members of one Circle home on different relays.
+pub fn relay_map(configured: &[String]) -> RelayMap {
+    let parse = |url: &str| match url.parse::<RelayUrl>() {
+        Ok(url) => Some(url),
+        Err(error) => {
+            warn!("[iroh] ignoring relay '{url}': {error}");
+            None
+        }
+    };
+    let own: Vec<RelayUrl> = configured.iter().filter_map(|url| parse(url)).collect();
+    if !own.is_empty() {
+        return RelayMap::from_iter(own);
+    }
+    let map = RelayMap::from_iter(
+        crate::defaults::DEFAULT_IROH_RELAYS
+            .iter()
+            .filter_map(|url| parse(url)),
+    );
+    map.extend(&iroh::defaults::prod::default_relay_map());
+    map
 }
 
 /// `/ip4/<ip>/udp/<port>/quic-v1/p2p/<peer>` style addresses: the peer, and
@@ -668,6 +680,28 @@ mod tests {
         assert_ne!(base, proof(&psk, "other", &a, &b), "other circle");
         assert_ne!(base, proof(&psk, "circle", &b, &a), "direction");
         assert_ne!(base, proof(&psk, "circle", &a, &c), "other receiver");
+    }
+
+    #[test]
+    fn an_empty_relay_list_means_ours_plus_the_public_ones() {
+        let urls: Vec<String> = relay_map(&[])
+            .urls::<Vec<RelayUrl>>()
+            .iter()
+            .map(|url| url.to_string())
+            .collect();
+        assert!(
+            urls.contains(&"https://relay.enoxian.com/".to_string()),
+            "{urls:?}"
+        );
+        assert_eq!(urls.len(), 1 + 4, "ours and four public regions: {urls:?}");
+    }
+
+    #[test]
+    fn a_configured_relay_list_is_used_as_is() {
+        let urls = relay_map(&["https://relay.example".into(), "not a url".into()])
+            .urls::<Vec<RelayUrl>>();
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].to_string(), "https://relay.example/");
     }
 
     #[test]
