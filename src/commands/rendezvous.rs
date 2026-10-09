@@ -62,82 +62,9 @@ pub async fn resolve_default() -> Option<String> {
     resolve(host, &client).await.ok()
 }
 
-/// Resolve the default relay server defined in `crate::defaults::DEFAULT_RELAY`.
-/// Returns `None` if the constant is unset or the server cannot be reached (non-fatal).
-///
-/// If `DEFAULT_RELAY` and `DEFAULT_RENDEZVOUS` point to the same host the result
-/// is identical — we reuse the same `/peer-id` fetch so both share the same
-/// resolved multiaddr.
-pub async fn resolve_default_relay() -> Option<String> {
-    let host = crate::defaults::DEFAULT_RELAY?;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .ok()?;
-    resolve_relay(host, &client).await.ok()
-}
-
-/// Resolve a bootstrap relay address into a TCP libp2p relay multiaddr.
-///
-/// Short host forms use the same HTTP `/peer-id` endpoint as rendezvous
-/// resolution, but relay traffic itself runs on TCP port `http_port + 1` by
-/// default so it does not collide with the HTTP control endpoint.
-pub async fn resolve_relay(input: &str, _daemon_client: &reqwest::Client) -> Result<String> {
-    if input.starts_with('/') {
-        return Ok(input.to_string());
-    }
-    // As `resolve`: a bootstrap host must not be handed daemon credentials.
-    let client = &crate::outbound::client();
-
-    let (host, http_port) = split_host_port(input, 36521);
-    let relay_port = http_port.saturating_add(1);
-    let url = format!("http://{host}:{http_port}/peer-id");
-    let resp = client
-        .get(&url)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-        .with_context(|| format!("could not reach bootstrap server at {url} — is it running?"))?;
-
-    if !resp.status().is_success() {
-        bail!("bootstrap server at {url} returned {}", resp.status());
-    }
-
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .context("bootstrap server returned invalid JSON")?;
-    let peer_id = json["peer_id"]
-        .as_str()
-        .context("bootstrap server response missing 'peer_id' field")?;
-
-    if host.parse::<std::net::Ipv4Addr>().is_ok() {
-        Ok(format!("/ip4/{host}/tcp/{relay_port}/p2p/{peer_id}"))
-    } else {
-        Ok(format!("/dns4/{host}/tcp/{relay_port}/p2p/{peer_id}"))
-    }
-}
-
-/// Whether `addr` is the address `resolve_relay` would produce for the
-/// compiled-in [`crate::defaults::DEFAULT_RELAY`].
-///
-/// Judged offline, by host and port, so minting an invite does not have to ask
-/// the bootstrap server just to discover it is about to embed the default. The
-/// peer ID is deliberately not compared: it is the one part of the address the
-/// joiner will fetch fresh anyway, and a server that has rotated its key would
-/// otherwise make every invite grow by an address that is already stale.
-///
-/// A wrong `false` only costs bytes — the address is embedded verbatim, which
-/// is what v1 always did.
-pub fn is_default_relay(addr: &str) -> bool {
-    let Some(host) = crate::defaults::DEFAULT_RELAY else {
-        return false;
-    };
-    let (host, http_port) = split_host_port(host, 36521);
-    matches_prefix(addr, &host, "tcp", http_port.saturating_add(1), "")
-}
-
-/// As [`is_default_relay`], for [`crate::defaults::DEFAULT_RENDEZVOUS`].
+/// Whether `addr` is the compiled-in default rendezvous server, judged on host,
+/// transport and port — not the peer ID, which the joiner fetches fresh anyway.
+/// A wrong `false` only costs bytes: the address is embedded verbatim.
 pub fn is_default_rendezvous(addr: &str) -> bool {
     let Some(host) = crate::defaults::DEFAULT_RENDEZVOUS else {
         return false;
@@ -263,15 +190,6 @@ mod tests {
     }
 
     #[test]
-    fn the_resolved_default_relay_is_recognised() {
-        let Some(host) = crate::defaults::DEFAULT_RELAY else {
-            return; // a build with no default has nothing to elide
-        };
-        let addr = format!("/dns4/{host}/tcp/36522/p2p/12D3KooWanything");
-        assert!(is_default_relay(&addr));
-    }
-
-    #[test]
     fn the_resolved_default_rendezvous_is_recognised() {
         let Some(host) = crate::defaults::DEFAULT_RENDEZVOUS else {
             return;
@@ -280,38 +198,10 @@ mod tests {
         assert!(is_default_rendezvous(&addr));
     }
 
-    /// A server on the default host but a different port is somebody's own
-    /// deployment. Treating it as the default would send joiners to the public
-    /// one instead, so the port has to be part of the judgement.
-    #[test]
-    fn a_different_port_on_the_default_host_is_not_the_default() {
-        let Some(host) = crate::defaults::DEFAULT_RELAY else {
-            return;
-        };
-        let addr = format!("/dns4/{host}/tcp/9999/p2p/12D3KooWanything");
-        assert!(!is_default_relay(&addr));
-    }
-
     #[test]
     fn another_host_is_not_the_default() {
-        assert!(!is_default_relay(
-            "/dns4/relay.example.com/tcp/36522/p2p/12D3KooWanything"
-        ));
         assert!(!is_default_rendezvous(
             "/ip4/203.0.113.17/udp/36521/quic-v1/p2p/12D3KooWanything"
         ));
-    }
-
-    /// The relay runs TCP and the rendezvous server QUIC, on different ports.
-    /// Confusing the two would put a circuit address in the discovery list.
-    #[test]
-    fn the_two_services_are_not_interchangeable() {
-        let Some(host) = crate::defaults::DEFAULT_RELAY else {
-            return;
-        };
-        let relay = format!("/dns4/{host}/tcp/36522/p2p/12D3KooWanything");
-        let rendezvous = format!("/dns4/{host}/udp/36521/quic-v1/p2p/12D3KooWanything");
-        assert!(!is_default_rendezvous(&relay));
-        assert!(!is_default_relay(&rendezvous));
     }
 }

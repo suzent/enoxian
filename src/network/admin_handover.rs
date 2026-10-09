@@ -16,7 +16,7 @@
 //! did not already trust. The leaver deletes nothing until the ACK arrives.
 
 use anyhow::{Context, Result};
-use libp2p::PeerId;
+use libp2p_identity::PeerId;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -343,7 +343,7 @@ mod tests {
     use super::*;
     use crate::mls::{MlsGroupManager, MlsIdentity};
     use chrono::Utc;
-    use libp2p::identity::Keypair;
+    use libp2p_identity::Keypair;
     use std::path::PathBuf;
     use yrs::WriteTxn;
 

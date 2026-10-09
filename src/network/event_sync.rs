@@ -6,7 +6,7 @@
 //! with the decision instead of waiting for a reconnect.
 
 use anyhow::{Context, Result};
-use libp2p::PeerId;
+use libp2p_identity::PeerId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

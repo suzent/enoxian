@@ -1,14 +1,9 @@
 pub mod admin_handover;
-pub mod behaviour;
 pub mod bootstrap_behaviour;
 pub mod content_crypto;
 pub mod event_sync;
-#[cfg(feature = "iroh-transport")]
 pub mod iroh_net;
-pub mod libp2p_net;
 pub mod mls_bootstrap;
 pub mod net;
 pub mod proposal_sync;
-pub mod public_relay_transport;
 pub mod sync;
-pub mod transport;

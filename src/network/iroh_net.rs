@@ -31,7 +31,8 @@ use iroh::{
     },
     Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr,
 };
-use libp2p::{multiaddr::Protocol, Multiaddr, PeerId};
+use libp2p_identity::PeerId;
+use multiaddr::{Multiaddr, Protocol};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -74,7 +75,7 @@ fn from_tag(tag: u8) -> Option<Proto> {
 // ── Identity ─────────────────────────────────────────────────────────────────
 
 pub fn endpoint_id(peer: &PeerId) -> Result<EndpointId> {
-    let key = libp2p::identity::PublicKey::try_decode_protobuf(peer.as_ref().digest())
+    let key = libp2p_identity::PublicKey::try_decode_protobuf(peer.as_ref().digest())
         .context("peer id carries no inline public key")?
         .try_into_ed25519()
         .context("peer id is not an Ed25519 key")?;
@@ -82,11 +83,11 @@ pub fn endpoint_id(peer: &PeerId) -> Result<EndpointId> {
 }
 
 pub fn peer_id(id: &EndpointId) -> Result<PeerId> {
-    let key = libp2p::identity::ed25519::PublicKey::try_from_bytes(id.as_bytes())?;
-    Ok(libp2p::identity::PublicKey::from(key).to_peer_id())
+    let key = libp2p_identity::ed25519::PublicKey::try_from_bytes(id.as_bytes())?;
+    Ok(libp2p_identity::PublicKey::from(key).to_peer_id())
 }
 
-fn secret_key(keypair: &libp2p::identity::Keypair) -> Result<SecretKey> {
+fn secret_key(keypair: &libp2p_identity::Keypair) -> Result<SecretKey> {
     let ed = keypair
         .clone()
         .try_into_ed25519()
@@ -162,7 +163,7 @@ impl NetHandle for IrohNet {
 pub async fn spawn(
     config: &CircleConfig,
     state: AppState,
-    keypair: &libp2p::identity::Keypair,
+    keypair: &libp2p_identity::Keypair,
     psk: [u8; 32],
     token: CancellationToken,
 ) -> Result<()> {
@@ -545,6 +546,7 @@ impl IrohNet {
     /// our invite named, on the shared retry budget.
     async fn dial_loop(self, invited: Vec<PeerId>, token: CancellationToken) {
         let mut redials = PeerRedials::default();
+        let mut was_connected = std::collections::HashSet::new();
         let mut ticks = tokio::time::interval(RECONNECT_INTERVAL);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -576,9 +578,17 @@ impl IrohNet {
                     }
                 });
             }
-            for peer in self.0.connections.lock().unwrap().keys() {
+            // A sustained connection that has since ended earns its peer a
+            // fresh retry budget; a brief one does not (see PeerRedials).
+            let connected: std::collections::HashSet<PeerId> =
+                self.0.connections.lock().unwrap().keys().copied().collect();
+            for peer in &connected {
                 redials.connected(*peer, now);
             }
+            for peer in was_connected.difference(&connected) {
+                redials.disconnected(*peer, now);
+            }
+            was_connected = connected;
         }
     }
 
@@ -662,7 +672,7 @@ mod tests {
     #[test]
     fn peer_ids_and_endpoint_ids_convert_both_ways() {
         for _ in 0..50 {
-            let keypair = libp2p::identity::Keypair::generate_ed25519();
+            let keypair = libp2p_identity::Keypair::generate_ed25519();
             let peer = keypair.public().to_peer_id();
             let id = endpoint_id(&peer).unwrap();
             assert_eq!(peer_id(&id).unwrap(), peer);

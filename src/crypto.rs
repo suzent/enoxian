@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use libp2p::identity::Keypair;
+use libp2p_identity::Keypair;
 use rand::Rng;
 
 pub fn generate_psk() -> [u8; 32] {

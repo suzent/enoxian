@@ -802,7 +802,7 @@ fn verify_admin_sig(admin_pubkey_hex: &str, msg: &[u8], sig_hex: &str) -> anyhow
         anyhow::bail!("no admin pubkey configured for this circle");
     }
     let pubkey_bytes = hex::decode(admin_pubkey_hex)?;
-    let pubkey = libp2p::identity::PublicKey::try_decode_protobuf(&pubkey_bytes)
+    let pubkey = libp2p_identity::PublicKey::try_decode_protobuf(&pubkey_bytes)
         .map_err(|e| anyhow::anyhow!("invalid admin pubkey: {e}"))?;
     let sig = hex::decode(sig_hex)?;
     if !pubkey.verify(msg, &sig) {
@@ -845,7 +845,7 @@ mod tests {
     use crate::daemon::DaemonState;
     use crate::mls::{group::MlsGroupManager, MlsIdentity};
     use crate::state::AppState;
-    use libp2p::identity::Keypair;
+    use libp2p_identity::Keypair;
     use std::path::PathBuf;
     use tokio_util::sync::CancellationToken;
     use yrs::{Map, ReadTxn, Transact, WriteTxn};

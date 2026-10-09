@@ -515,7 +515,8 @@ pub struct InviteArgs {
     #[arg(long)]
     pub peer: Option<String>,
 
-    /// Embed a relay multiaddr for WAN connectivity (e.g. /ip4/1.2.3.4/tcp/36522/p2p/<peer_id>)
+    /// Put this Iroh relay URL in the invite (e.g. https://relay.example.com)
+    /// instead of the Circle's own relays
     #[arg(long)]
     pub relay: Option<String>,
 

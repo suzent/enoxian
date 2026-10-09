@@ -12,7 +12,7 @@
 
 use anyhow::Result;
 use futures::future::BoxFuture;
-use libp2p::PeerId;
+use libp2p_identity::PeerId;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::state::AppState;

@@ -217,14 +217,11 @@ fn mint_invite(circle: &config::CircleConfig) -> Result<String> {
     let expires_at = chrono::Utc::now() + invite::parse_ttl(INVITE_TTL)?;
     let grant = invite::sign_grant(&circle.circle_id, &circle.keypair_proto_hex, expires_at).ok();
 
-    let relay_addr = circle.relay_addrs.first().cloned();
     let rendezvous_addr = circle.rendezvous_addrs.first().cloned();
-    let relay_is_default = relay_addr.as_deref().is_some_and(rdvz::is_default_relay);
     let rendezvous_is_default = rendezvous_addr
         .as_deref()
         .is_some_and(rdvz::is_default_rendezvous);
 
-    let iroh = circle.effective_transport() == crate::config::Transport::Iroh;
     invite::encode(&InvitePayload {
         circle_id: circle.circle_id.clone(),
         psk_bytes: psk,
@@ -234,20 +231,15 @@ fn mint_invite(circle: &config::CircleConfig) -> Result<String> {
         // the new device reaches the circle the same way this one does —
         // through the relay and rendezvous server the config already names.
         // Iroh has no rendezvous, so the new device dials this one by key.
-        peer_addr: if iroh {
-            invite::iroh_self_addr(&circle.keypair_proto_hex)
-        } else {
-            None
-        },
+        peer_addr: invite::iroh_self_addr(&circle.keypair_proto_hex),
         admin_pubkey_bytes: hex::decode(&circle.admin_pubkey_hex)
             .ok()
             .filter(|b| !b.is_empty()),
-        relay_addr: relay_addr.filter(|_| !relay_is_default),
+        relay_addr: None,
         rendezvous_addr: rendezvous_addr.filter(|_| !rendezvous_is_default),
-        relay_is_default,
+        relay_is_default: false,
         rendezvous_is_default,
         grant,
-        transport: circle.effective_transport(),
         iroh_relays: circle.iroh_relays.clone(),
     })
 }

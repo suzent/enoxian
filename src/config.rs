@@ -59,12 +59,13 @@ pub struct CircleConfig {
     pub join_policy: JoinPolicy,
     #[serde(default)]
     pub owner: String,
-    /// Which network stack carries this Circle. Every device in a Circle must
-    /// use the same one; Iroh is for development until the switch to it.
+    /// No longer read: every Circle runs on Iroh. Kept so configs that name a
+    /// transport still load, and left as written so a downgrade to 0.11 still
+    /// finds the Circle it expects.
     #[serde(default)]
     pub transport: Transport,
-    /// Relay URLs for the Iroh transport. Empty means Iroh's public relays,
-    /// which are rate limited and see who connects to whom: fine for testing.
+    /// Iroh relay URLs. Empty means enoxian's relay plus Iroh's public ones
+    /// (see `defaults::DEFAULT_IROH_RELAYS`).
     #[serde(default)]
     pub iroh_relays: Vec<String>,
 }
@@ -75,23 +76,6 @@ pub enum Transport {
     #[default]
     Libp2p,
     Iroh,
-}
-
-impl CircleConfig {
-    /// The transport this Circle runs on. `ENOXIAN_TRANSPORT=iroh` overrides
-    /// the config for every Circle, so a test can switch a whole daemon.
-    pub fn effective_transport(&self) -> Transport {
-        Self::transport_from_env().unwrap_or(self.transport)
-    }
-
-    /// `ENOXIAN_TRANSPORT`, when set to a transport this build knows.
-    pub fn transport_from_env() -> Option<Transport> {
-        match std::env::var("ENOXIAN_TRANSPORT").as_deref() {
-            Ok("iroh") => Some(Transport::Iroh),
-            Ok("libp2p") => Some(Transport::Libp2p),
-            _ => None,
-        }
-    }
 }
 
 pub fn enoxian_dir() -> Result<PathBuf> {

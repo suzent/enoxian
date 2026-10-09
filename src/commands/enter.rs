@@ -1,25 +1,14 @@
 use anyhow::{bail, Context, Result};
-use libp2p::{
-    core::muxing::StreamMuxerBox,
-    dcutr,
-    futures::StreamExt,
-    identify, noise, pnet, quic, relay,
-    swarm::{behaviour::toggle::Toggle, SwarmEvent},
-    tcp, yamux, Multiaddr, SwarmBuilder,
-};
-use tracing::{info, warn};
-
-use libp2p_stream as stream_proto;
+use tracing::info;
 
 use crate::{
     cli::EnterArgs,
     commands::rendezvous as rdvz,
     config::{self, circle_dir, resolve_workspace_dir, CircleConfig},
-    crypto::{keypair_to_hex, psk_from_hex},
+    crypto::keypair_to_hex,
     identity::DeviceIdentity,
     invite,
     mls::MlsIdentity,
-    network::behaviour::{EnochBehaviour, EnochEvent},
 };
 
 /// Most a relay may hand back for one invite, mirroring its own cap with slack.
@@ -102,7 +91,6 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
         rendezvous_from_invite,
         admin_pubkey_hex,
         join_grant,
-        transport_from_invite,
         iroh_relays,
     ) = if args.target.starts_with("enoxian://") {
         // A short invite carries only a key; its contents are sealed on a
@@ -147,9 +135,6 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
             payload.rendezvous_addr,
             admin_pubkey_hex,
             join_grant,
-            // Only a v3 invite says anything about the transport; an older one
-            // leaves the choice to ENOXIAN_TRANSPORT and the default.
-            (payload.transport == crate::config::Transport::Iroh).then_some(payload.transport),
             payload.iroh_relays,
         )
     } else {
@@ -166,14 +151,9 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
             None,
             String::new(),
             None,
-            None,
             Vec::new(),
         )
     };
-    let transport = transport_from_invite
-        .or_else(CircleConfig::transport_from_env)
-        .unwrap_or_default();
-
     let peer = args.peer.or(peer_from_invite);
 
     // ── Build bootstrap peer list ─────────────────────────────────────────────
@@ -220,8 +200,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
                 existing_cfg.peers = bootstrap_peers.clone();
                 existing_cfg.relay_addrs = relay_from_invite.clone().into_iter().collect();
                 existing_cfg.rendezvous_addrs = rendezvous_addrs.clone();
-                if transport_from_invite.is_some() {
-                    existing_cfg.transport = transport;
+                if !iroh_relays.is_empty() {
                     existing_cfg.iroh_relays = iroh_relays.clone();
                 }
                 config::save(&existing_cfg).context("failed to refresh circle config")?;
@@ -291,7 +270,7 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
                 .map(|(label, handle)| handle.unwrap_or(label))
                 .unwrap_or_default()
         }),
-        transport,
+        transport: crate::config::Transport::Iroh,
         iroh_relays,
     };
     config::save(&circle_config).context("failed to save circle config")?;
@@ -306,158 +285,11 @@ pub async fn run(args: EnterArgs, client: &reqwest::Client) -> Result<()> {
     println!("  Workspace : {}", workspace_dir.display());
     println!("  Config    → ~/.enoxian/circles/{circle_id}/config.toml");
 
-    // ── Step 4: Optionally verify connectivity to the invite peer ─────────────
-    // Skipped when called from the daemon API (no_verify=true): the API spawns
-    // the circle's P2P swarm which handles connectivity in the background.
-    // Blocking the HTTP handler for up to 10s is undesirable and caused 500s.
-    if args.no_verify {
-        println!("  Config saved. Circle will connect when the daemon starts.");
-        return Ok(());
-    }
-    // The check below dials with a throwaway libp2p swarm, which cannot reach
-    // an Iroh peer; the daemon reports the connection once it starts.
-    if transport == crate::config::Transport::Iroh {
-        println!("  Config saved (Iroh transport). The daemon connects when it starts.");
-        return Ok(());
-    }
-
-    let Some(peer_addr_str) = peer else {
-        println!();
-        println!("  No peer address in invite. Start the daemon to connect via mDNS:");
-        println!("    enox start");
-        println!("    enox --circle \"{circle_name}\" status");
-        return Ok(());
-    };
-
-    let addr: Multiaddr = peer_addr_str
-        .parse()
-        .context("invalid peer multiaddr in invite")?;
-    let mut public_relay_peer_ids =
-        crate::network::public_relay_transport::relay_peer_ids_from_addrs(relay_from_invite.iter());
-    if crate::network::public_relay_transport::is_relayed_addr(&addr) {
-        let Some(peer_id) = crate::network::public_relay_transport::relay_peer_id(&addr) else {
-            anyhow::bail!("relay circuit address is missing relay peer id");
-        };
-        public_relay_peer_ids.insert(peer_id);
-    }
-    let public_relay_peer_ids = std::sync::Arc::new(std::sync::RwLock::new(public_relay_peer_ids));
-
-    let psk_bytes = psk_from_hex(&psk_hex)?;
-    let pnet_config = pnet::PnetConfig::new(pnet::PreSharedKey::new(psk_bytes));
-    let keypair_clone = keypair.clone();
-
-    use libp2p::kad;
-    let peer_id = keypair.public().to_peer_id();
-
-    // relay::client::new returns a (transport, behaviour) pair linked by a channel.
-    // Both MUST be included in the swarm — dropping the transport while keeping the
-    // behaviour causes a panic when the behaviour is polled ("unreachable code").
-    let (relay_transport, relay_client) = relay::client::new(peer_id);
-
-    let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
-        .with_tokio()
-        .with_other_transport(move |key| {
-            use futures::future::Either;
-            use libp2p::{core::upgrade, Transport};
-
-            // Public TCP without pnet, restricted to the invite's relay server.
-            let public_tcp = crate::network::public_relay_transport::PublicRelayTransport::new(
-                tcp::tokio::Transport::new(tcp::Config::default()),
-                public_relay_peer_ids.clone(),
-            )
-            .upgrade(upgrade::Version::V1Lazy)
-            .authenticate(noise::Config::new(key)?)
-            .multiplex(yamux::Config::default())
-            .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
-
-            // TCP + PSK: for direct circle-peer connections.
-            let tcp = tcp::tokio::Transport::new(tcp::Config::default())
-                .and_then(move |s, _| pnet_config.handshake(s))
-                .upgrade(upgrade::Version::V1Lazy)
-                .authenticate(noise::Config::new(key)?)
-                .multiplex(yamux::Config::default())
-                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
-
-            // Relay: for circuit addresses (invite peer_addr may be a relay circuit).
-            let relay = relay_transport
-                .upgrade(upgrade::Version::V1Lazy)
-                .authenticate(noise::Config::new(key)?)
-                .multiplex(yamux::Config::default())
-                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
-
-            // QUIC: invite peer_addr may also be a QUIC address.
-            let quic_t = quic::tokio::Transport::new(quic::Config::new(key))
-                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
-
-            Ok(libp2p::dns::tokio::Transport::system(
-                public_tcp
-                    .or_transport(tcp)
-                    .or_transport(relay)
-                    .or_transport(quic_t)
-                    .map(|e, _| match e {
-                        Either::Left(Either::Left(Either::Left(x))) => x,
-                        Either::Left(Either::Left(Either::Right(x))) => x,
-                        Either::Left(Either::Right(x)) => x,
-                        Either::Right(x) => x,
-                    }),
-            )?)
-        })?
-        .with_behaviour(|key| {
-            let pid = key.public().to_peer_id();
-            Ok(EnochBehaviour {
-                // Disabled: `enter` dials the invite address directly, so it
-                // needs no LAN discovery. See EnochBehaviour::mdns.
-                mdns: Toggle::from(None::<libp2p::mdns::tokio::Behaviour>),
-                kad: kad::Behaviour::new(pid, kad::store::MemoryStore::new(pid)),
-                identify: identify::Behaviour::new(identify::Config::new(
-                    "/enoxian/1.0.0".to_string(),
-                    key.public(),
-                )),
-                ping: libp2p::ping::Behaviour::default(),
-                rendezvous: libp2p::rendezvous::client::Behaviour::new(keypair_clone),
-                relay_client,
-                relay: relay::Behaviour::new(pid, relay::Config::default()),
-                dcutr: Toggle::from(Some(dcutr::Behaviour::new(pid))),
-                stream: stream_proto::Behaviour::new(),
-            })
-        })?
-        .build();
-
-    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-    swarm
-        .dial(addr.clone())
-        .context("failed to initiate dial")?;
-    info!("Dialing peer at {addr}");
-
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(10));
-    tokio::pin!(timeout);
-
-    loop {
-        tokio::select! {
-            event = swarm.select_next_some() => {
-                match event {
-                    SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
-                        println!("  ✦ Verified peer {peer_id} via {}", endpoint.get_remote_address());
-                        println!();
-                        println!("  Start the daemon: enox start");
-                        println!("  Then: enox --circle \"{circle_name}\" status");
-                        return Ok(());
-                    }
-                    SwarmEvent::OutgoingConnectionError { error, .. } => {
-                        warn!("Could not reach peer: {error}");
-                        println!("  (Config saved — connect via mDNS when Enoxian starts)");
-                        return Ok(());
-                    }
-                    SwarmEvent::Behaviour(EnochEvent::Ping(_)) => {}
-                    _ => {}
-                }
-            }
-            _ = &mut timeout => {
-                println!("  (Peer not reachable within 10s — config saved, connect via mDNS later)");
-                return Ok(());
-            }
-        }
-    }
+    // The daemon connects once it has this Circle; there is nothing to check
+    // from here that it will not report better (`enox status`, `enox who`).
+    println!("  Config saved. The daemon connects when it starts.");
+    println!("  Then: enox --circle \"{circle_name}\" who");
+    Ok(())
 }
 
 #[cfg(test)]

@@ -117,7 +117,7 @@ pub struct AppState {
     /// Peers whose last sync session ended in failure. The swarm loop closes
     /// the connection, so the redial opens a fresh session instead of the peer
     /// staying connected with nothing syncing.
-    pub sync_ended: broadcast::Sender<libp2p::PeerId>,
+    pub sync_ended: broadcast::Sender<libp2p_identity::PeerId>,
     /// Live sync sessions per peer. A peer can hold more than one connection,
     /// and closing the connection is only right when none of them still syncs.
     pub sync_sessions: Arc<DashMap<String, usize>>,
@@ -915,8 +915,8 @@ mod tests {
     use std::path::PathBuf;
     use yrs::{Any, Map, Transact, WriteTxn};
 
-    fn kind(address: &str) -> ConnectionKind {
-        crate::network::libp2p_net::classify_address(&address.parse().unwrap())
+    fn kind(ip: &str) -> ConnectionKind {
+        super::classify_ip(ip.parse().unwrap())
     }
 
     fn test_state() -> AppState {
@@ -1089,23 +1089,11 @@ mod tests {
 
     #[test]
     fn classifies_peer_connection_routes() {
-        assert_eq!(kind("/ip4/192.168.1.20/tcp/50902"), ConnectionKind::Lan);
-        assert_eq!(
-            kind("/ip4/100.96.12.3/tcp/50902"),
-            ConnectionKind::Tailscale
-        );
-        assert_eq!(
-            kind("/ip6/fd7a:115c:a1e0::1234/tcp/50902"),
-            ConnectionKind::Tailscale,
-        );
-        assert_eq!(kind("/ip4/203.0.113.8/tcp/50902"), ConnectionKind::Public);
-        assert_eq!(
-            kind("/dns4/member.example.com/tcp/50902"),
-            ConnectionKind::Public
-        );
-        assert_eq!(
-            kind("/dns4/relay.example.com/tcp/36521/p2p/12D3KooWJ5dNQYxvLwRQFqz3YxVwvhQdJXLwRj2xByLsMvjJxSxa/p2p-circuit"),
-            ConnectionKind::Relay,
-        );
+        // A relayed path is named by Iroh itself; these are the direct ones.
+        assert_eq!(kind("192.168.1.20"), ConnectionKind::Lan);
+        assert_eq!(kind("100.96.12.3"), ConnectionKind::Tailscale);
+        assert_eq!(kind("fd7a:115c:a1e0::1234"), ConnectionKind::Tailscale);
+        assert_eq!(kind("203.0.113.8"), ConnectionKind::Public);
+        assert_eq!(kind("2606:4700:4700::1111"), ConnectionKind::Public);
     }
 }

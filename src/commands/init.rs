@@ -109,7 +109,7 @@ pub async fn run(args: InitArgs) -> Result<()> {
         rendezvous_addrs: vec![],
         join_policy,
         owner,
-        transport: CircleConfig::transport_from_env().unwrap_or_default(),
+        transport: crate::config::Transport::Iroh,
         iroh_relays: vec![],
     };
     config::save(&config)?;
@@ -141,17 +141,13 @@ pub async fn run(args: InitArgs) -> Result<()> {
     let admin_pubkey_bytes = hex::decode(&admin_pubkey_hex).ok();
     let expires_at = Utc::now() + ttl;
     let grant = invite::sign_grant(&circle_id, &keypair_to_hex(&keypair)?, expires_at).ok();
-    let iroh = config.transport == crate::config::Transport::Iroh;
     let invite_uri = invite::encode(&InvitePayload {
         circle_id: circle_id.clone(),
         psk_bytes: psk,
         circle_name: Some(args.name.clone()),
         expires_at,
-        peer_addr: if iroh {
-            invite::iroh_self_addr(&config.keypair_proto_hex)
-        } else {
-            None
-        },
+        // A new Circle's only member: the joiner dials it by key, through the relays.
+        peer_addr: invite::iroh_self_addr(&config.keypair_proto_hex),
         admin_pubkey_bytes,
         relay_addr: None,
         rendezvous_addr: None,
@@ -160,7 +156,6 @@ pub async fn run(args: InitArgs) -> Result<()> {
         relay_is_default: false,
         rendezvous_is_default: false,
         grant,
-        transport: config.transport,
         iroh_relays: vec![],
     })?;
 
