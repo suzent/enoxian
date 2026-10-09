@@ -25,10 +25,12 @@ fn start_circle_detached(cfg: config::CircleConfig, daemon: DaemonState) {
         return;
     };
     let name = cfg.circle_name.clone();
+    let id = cfg.circle_id.clone();
     tokio::spawn(async move {
         let _guard = guard;
-        if let Err(e) = lifecycle::spawn_circle(cfg, daemon).await {
+        if let Err(e) = lifecycle::spawn_circle(cfg, daemon.clone()).await {
             warn!("Failed to start circle '{name}': {e}");
+            daemon.record_start_error(&id, format!("{e:#}"));
         }
     });
 }

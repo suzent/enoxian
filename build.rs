@@ -103,6 +103,21 @@ fn emit_build_stamp() {
     };
     println!("cargo:rustc-env=ENOX_BUILD_CHANNEL={channel}");
     println!("cargo:rustc-env=ENOX_GIT_COMMIT={}", git_commit());
+
+    // Optional features change what a binary can do (an Iroh Circle refuses
+    // to start without iroh-transport), so `enox --version` names them.
+    // Cargo tells a build script which features are on through these.
+    let features: Vec<&str> = [
+        ("CARGO_FEATURE_IROH_TRANSPORT", "iroh-transport"),
+        ("CARGO_FEATURE_IROH_RELAY_SERVER", "iroh-relay-server"),
+    ]
+    .into_iter()
+    .filter(|(var, _)| std::env::var_os(var).is_some())
+    .map(|(_, name)| name)
+    .collect();
+    println!("cargo:rustc-env=ENOX_BUILD_FEATURES={}", features.join(","));
+    let suffix: String = features.iter().map(|f| format!(", {f}")).collect();
+    println!("cargo:rustc-env=ENOX_BUILD_FEATURE_SUFFIX={suffix}");
 }
 
 /// Short commit of the tree being built, `-dirty` when it has uncommitted

@@ -18,10 +18,17 @@ const CHILD_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(20);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// The options that only apply to `enox update --dev`.
+#[derive(Debug, Default)]
+pub struct DevOptions {
+    pub src: Option<PathBuf>,
+    pub no_pull: bool,
+    pub features: Option<String>,
+}
+
 pub async fn run(
     dev: bool,
-    src: Option<PathBuf>,
-    no_pull: bool,
+    dev_options: DevOptions,
     status: bool,
     check: bool,
     release: Option<String>,
@@ -36,7 +43,7 @@ pub async fn run(
 
     let cfg = config::load_global();
     if dev || cfg.update_channel.as_deref() == Some(CHANNEL_DEV) {
-        run_dev(src, no_pull)
+        run_dev(dev_options)
     } else {
         run_stable(release, check).await
     }
@@ -287,8 +294,37 @@ fn installed_version(target: &Path) -> Option<String> {
     version_of(target)
 }
 
-fn run_dev(src: Option<PathBuf>, no_pull: bool) -> Result<()> {
+/// The features a dev build uses: the ones given now, saved for next time, or
+/// else the ones saved last time. `none` (or an empty list) clears them.
+fn resolve_features(arg: Option<String>) -> Result<String> {
+    let mut cfg = config::load_global();
+    if let Some(arg) = arg {
+        let list = normalize_features(&arg);
+        cfg.dev_features = (!list.is_empty()).then(|| list.clone());
+        config::save_global(&cfg)?;
+        return Ok(list);
+    }
+    Ok(cfg.dev_features.unwrap_or_default())
+}
+
+/// `--features` as cargo takes it: trimmed, comma-joined, `none` meaning no
+/// features at all.
+fn normalize_features(arg: &str) -> String {
+    arg.split(',')
+        .map(str::trim)
+        .filter(|f| !f.is_empty() && *f != "none")
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn run_dev(options: DevOptions) -> Result<()> {
+    let DevOptions {
+        src,
+        no_pull,
+        features,
+    } = options;
     let src = resolve_src(src)?;
+    let features = resolve_features(features)?;
 
     if !no_pull {
         println!("▶ Pulling latest source...");
@@ -300,11 +336,17 @@ fn run_dev(src: Option<PathBuf>, no_pull: bool) -> Result<()> {
         }
     }
 
-    println!("▶ Building development binary...");
-    let status = Command::new("cargo")
+    let mut build = Command::new("cargo");
+    build
         .args(["build", "--release", "--bin", "enox"])
-        .current_dir(&src)
-        .status()?;
+        .current_dir(&src);
+    if features.is_empty() {
+        println!("▶ Building development binary...");
+    } else {
+        println!("▶ Building development binary (features: {features})...");
+        build.args(["--features", &features]);
+    }
+    let status = build.status()?;
     if !status.success() {
         bail!("cargo build failed; the current installation was not changed");
     }
@@ -435,6 +477,9 @@ fn show_status() -> Result<()> {
         (false, false) => "not installed",
     };
     println!("service: {service_status}");
+    if let Some(features) = &cfg.dev_features {
+        println!("dev features: {features}");
+    }
     if let Some(source) = cfg.dev_src {
         println!("source: {source}");
     }
@@ -764,6 +809,21 @@ fn resolve_src(arg: Option<PathBuf>) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn features_are_trimmed_joined_and_none_clears_them() {
+        assert_eq!(
+            super::normalize_features("iroh-transport"),
+            "iroh-transport"
+        );
+        assert_eq!(
+            super::normalize_features(" iroh-transport , iroh-relay-server "),
+            "iroh-transport,iroh-relay-server"
+        );
+        assert_eq!(super::normalize_features("none"), "");
+        assert_eq!(super::normalize_features(""), "");
+    }
+
     use super::*;
 
     #[test]

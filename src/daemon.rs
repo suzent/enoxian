@@ -21,6 +21,10 @@ pub struct DaemonState {
     /// circle loads rather than checked against `circles`, which is only
     /// populated once it has finished.
     workspaces: Arc<DashMap<String, String>>,
+    /// circle_id → why its last start failed, until it starts. Without this a
+    /// circle that will not start just looks absent, and `enox status` has
+    /// nothing to say about why.
+    start_errors: Arc<DashMap<String, String>>,
     /// Cancelled when `POST /shutdown` is called — triggers graceful server exit.
     pub shutdown_token: CancellationToken,
 }
@@ -73,6 +77,7 @@ impl DaemonState {
             tokens: Arc::new(DashMap::new()),
             starting: Arc::new(DashMap::new()),
             workspaces: Arc::new(DashMap::new()),
+            start_errors: Arc::new(DashMap::new()),
             shutdown_token: CancellationToken::new(),
         }
     }
@@ -98,7 +103,18 @@ impl DaemonState {
         self.circles.insert(circle_id, state);
     }
 
+    /// Remember why `circle_id` failed to start, for the status API.
+    pub fn record_start_error(&self, circle_id: &str, error: String) {
+        self.start_errors.insert(circle_id.to_string(), error);
+    }
+
+    /// Why `circle_id` last failed to start, if it is not running for that reason.
+    pub fn start_error(&self, circle_id: &str) -> Option<String> {
+        self.start_errors.get(circle_id).map(|e| e.value().clone())
+    }
+
     pub fn insert_circle(&self, circle_id: String, state: AppState, token: CancellationToken) {
+        self.start_errors.remove(&circle_id);
         self.circles.insert(circle_id.clone(), state);
         self.tokens.insert(circle_id, token);
     }
@@ -196,6 +212,36 @@ mod tests {
             .is_err());
         daemon.stop_circle("circle-a");
         assert!(daemon.claim_workspace("/w".to_string(), "circle-b").is_ok());
+    }
+
+    /// `enox status` on a circle that would not start reports why, until it
+    /// does start.
+    #[test]
+    fn a_start_error_is_kept_until_the_circle_starts() {
+        let daemon = DaemonState::new();
+        daemon.record_start_error("circle", "no Iroh in this build".into());
+        assert_eq!(
+            daemon.start_error("circle").as_deref(),
+            Some("no Iroh in this build")
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let identity = crate::mls::MlsIdentity::generate("peer").unwrap();
+        let state = AppState::new(
+            "circle".into(),
+            "test".into(),
+            dir.path().into(),
+            dir.path().into(),
+            String::new(),
+            "agent".into(),
+            1,
+            "peer".into(),
+            crate::config::JoinPolicy::Auto,
+            "owner".into(),
+            crate::mls::new_mls_state(identity, None),
+        );
+        daemon.insert_circle("circle".into(), state, CancellationToken::new());
+        assert_eq!(daemon.start_error("circle"), None);
     }
 
     #[test]

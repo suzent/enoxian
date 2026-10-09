@@ -39,8 +39,21 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- `enox update --dev --features <list>` builds with optional features such as
+  `iroh-transport` and keeps them for later `--dev` updates (`--features none`
+  clears them). `enox update --status` shows them.
+
+### Changed
+
+- `enox --version` names the optional features a binary was built with, for
+  example `0.11.0 (dev, b8cdb9b, iroh-transport)`.
+
 ### Fixed
 
+- `enox status` for a Circle the daemon is not running says so, and why it
+  failed to start, instead of printing a row of `?`.
 - Chat keeps backslashes, so Windows paths and commands such as
   `C:\Users\you\.enoxian\*.log` show as written instead of losing the
   backslash before `.` or `*`.

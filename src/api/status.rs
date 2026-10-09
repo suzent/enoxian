@@ -14,6 +14,16 @@ pub async fn get_status(
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
+        None if daemon.start_error(&circle_id).is_some() => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": "circle is not running",
+                    "reason": daemon.start_error(&circle_id),
+                })),
+            )
+                .into_response()
+        }
         None => {
             return (
                 StatusCode::NOT_FOUND,

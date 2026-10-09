@@ -69,7 +69,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     if config.effective_transport() == config::Transport::Iroh {
         anyhow::bail!(
             "circle {} is set to the Iroh transport, which this build does not include \
-             (build with --features iroh-transport)",
+             (rebuild with `enox update --dev --features iroh-transport`)",
             config.circle_id
         );
     }
