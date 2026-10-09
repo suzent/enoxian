@@ -159,9 +159,16 @@ unchanged; only how their streams are carried differs.
   group; MLS bootstrap needs only the proof, since that is how a joiner gets
   its Welcome. A refused stream is retried every 5 seconds while the
   connection lasts.
-- **Relays**: `iroh_relays` in the Circle config lists relay URLs. When it is
-  empty, Iroh's public relays and address lookup are used. Those are rate
-  limited and can see who connects to whom, so they are for testing only.
+- **Relays**: `iroh_relays` in the Circle config lists relay URLs, as many as
+  wanted. When it is empty, the Circle uses enoxian's relay
+  (`DEFAULT_IROH_RELAYS`, `https://relay.enoxian.com`) together with Iroh's
+  public relays in four regions (US east, US west, Europe, Asia-Pacific).
+  Each device homes on the relay nearest it, and every dial lists all of
+  them, since members of one Circle home on different relays. Nothing is
+  published to Iroh's DNS address lookup. Iroh's public relays are rate
+  limited (about 1 MiB/s relayed in our measurements) and can see which
+  devices talk, though not what they say; list your own relays to avoid
+  them.
 
 An Iroh Circle mints v3 invites, which carry the transport and `iroh_relays`,
 so a joining device sets itself up from the invite alone (see
