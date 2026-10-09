@@ -55,6 +55,11 @@ refuses to publish a version whose section is missing or empty.
   the network allows it and go through enoxian's or Iroh's public relays
   otherwise.
 - `enox invite --relay` now takes an Iroh relay URL to put in the invite.
+- `enox bootstrap serve` no longer runs the libp2p rendezvous and circuit
+  relay, so it stops listening on UDP `--port` and TCP `--relay-port`. It
+  serves HTTP on `--port` and, with `--iroh-relay`, the Iroh relay. Its peer id
+  is unchanged, and `--relay-port` is still accepted (and ignored) so existing
+  service files keep starting.
 - `enox --version` names the optional features a binary was built with, for
   example `0.11.0 (dev, b8cdb9b, iroh-transport)`.
 

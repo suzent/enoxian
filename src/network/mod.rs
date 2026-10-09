@@ -1,5 +1,4 @@
 pub mod admin_handover;
-pub mod bootstrap_behaviour;
 pub mod content_crypto;
 pub mod event_sync;
 pub mod iroh_net;

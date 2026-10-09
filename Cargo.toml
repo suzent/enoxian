@@ -22,11 +22,6 @@ path = "src/lib.rs"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time", "process"] }
 
 # P2P
-libp2p = { version = "0.56", features = [
-    "tcp", "websocket", "dns", "quic", "noise", "yamux",
-    "ed25519", "mdns", "kad", "identify", "ping",
-    "rendezvous", "relay", "dcutr", "pnet", "macros", "tokio",
-] }
 tokio-util = { version = "0.7", features = ["compat"] }
 
 # CLI

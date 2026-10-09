@@ -36,7 +36,7 @@ pub struct CircleConfig {
     /// If true, the daemon skips this circle at startup and does not start its swarm.
     #[serde(default)]
     pub disabled: bool,
-    /// Diagnostic mode: only connect to circle peers through circuit relay.
+    /// Diagnostic mode: only connect to circle peers through the Iroh relay.
     #[serde(default)]
     pub force_relay: bool,
     /// Grant from the invite this device joined with, kept so the daemon can
