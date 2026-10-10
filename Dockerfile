@@ -1,14 +1,19 @@
 # Docker image for an enoxian bootstrap / relay node.
 #
-# A bootstrap node runs `enox bootstrap serve`: a public rendezvous + circuit
-# relay server. It joins no circles and holds no circle PSKs (see docs/concepts/
-# security.md), so it needs no persistent secrets beyond its own stable keypair,
-# which it generates at ~/.enoxian/bootstrap.key on first run — mount a volume
-# there to keep the peer id stable across restarts.
+# A bootstrap node runs `enox bootstrap serve`: the HTTP endpoints for invites,
+# device linking and version checks, and, with --iroh-relay, the Iroh relay
+# Circles meet through. It joins no circles and holds no circle PSKs (see
+# docs/concepts/security.md), so it needs no persistent secrets beyond its own
+# stable keypair, which it generates at ~/.enoxian/bootstrap.key on first run —
+# mount a volume there to keep the peer id stable across restarts.
 #
 # Build:   docker build -t enoxian-bootstrap .
-# Run:     docker run -p 36521:36521/udp -p 36521:36521/tcp -p 36522:36522/tcp \
-#            -v enoxian-bootstrap:/root/.enoxian enoxian-bootstrap
+# Run:     docker run -p 36521:36521/tcp -v enoxian-bootstrap:/root/.enoxian \
+#            enoxian-bootstrap
+# Relay:   docker run -p 36521:36521/tcp -p 80:80/tcp -p 443:443/tcp \
+#            -p 7842:7842/udp -v enoxian-bootstrap:/root/.enoxian \
+#            enoxian-bootstrap --port 36521 --advertise-host relay.example.com \
+#            --iroh-relay
 #
 # CI builds this image on every push to main and on pull requests that touch its
 # inputs, so it cannot drift away from the CLI unnoticed.
@@ -39,11 +44,12 @@ RUN apt-get update \
 
 COPY --from=build /src/target/release/enox /usr/local/bin/enox
 
-# QUIC rendezvous (UDP) and the status endpoint (TCP) share --port; the circuit
-# relay listens on --relay-port, which defaults to --port + 1.
-EXPOSE 36521/udp
+# The HTTP endpoints listen on --port. The Iroh relay, when turned on, takes
+# 443 (HTTPS), 80 (ACME) and 7842/udp (QUIC address discovery).
 EXPOSE 36521/tcp
-EXPOSE 36522/tcp
+EXPOSE 80/tcp
+EXPOSE 443/tcp
+EXPOSE 7842/udp
 
 # Persist the stable bootstrap keypair across restarts by mounting /root/.enoxian.
 VOLUME ["/root/.enoxian"]

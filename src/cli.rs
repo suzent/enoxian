@@ -573,18 +573,19 @@ pub struct BootstrapArgs {
 
 #[derive(Subcommand)]
 pub enum BootstrapAction {
-    /// Serve rendezvous discovery and circuit relay traffic
+    /// Serve the HTTP bootstrap endpoints and, optionally, an Iroh relay
     Serve(BootstrapServeArgs),
 }
 
 #[derive(clap::Args)]
 pub struct BootstrapServeArgs {
-    /// QUIC rendezvous and HTTP status port
+    /// HTTP port for /version, /peer-id, /pair and /invite
     #[arg(long, default_value = "36521")]
     pub port: u16,
 
-    /// TCP circuit relay port (defaults to --port + 1)
-    #[arg(long)]
+    /// Ignored. The libp2p circuit relay it set is gone; the flag is still
+    /// accepted so service files written for older servers keep starting.
+    #[arg(long, hide = true)]
     pub relay_port: Option<u16>,
 
     /// Public DNS hostname advertised by the bootstrap server
@@ -681,6 +682,33 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// The production service still passes `--relay-port`; the server must
+    /// keep starting with it, or the relay updater rolls the update back.
+    #[test]
+    fn bootstrap_serve_still_accepts_the_relay_port() {
+        let cli = AgentCli::try_parse_from([
+            "enox",
+            "bootstrap",
+            "serve",
+            "--port",
+            "36521",
+            "--relay-port",
+            "36522",
+            "--advertise-host",
+            "relay.example",
+            "--iroh-relay",
+        ])
+        .expect("old service lines must still parse");
+        let AgentCommands::Bootstrap(BootstrapArgs {
+            action: BootstrapAction::Serve(args),
+        }) = cli.command
+        else {
+            panic!("expected bootstrap serve");
+        };
+        assert_eq!(args.port, 36521);
+        assert!(args.iroh_relay);
     }
 
     #[test]

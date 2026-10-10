@@ -1437,59 +1437,6 @@ mod tests {
     }
 
     #[test]
-    fn shared_ip_relay_budget_survives_discovery_churn_with_backoff() {
-        // Exercise libp2p's actual token buckets with the production relay
-        // config. Five circle identities share one IP, each discovering three
-        // unreachable/briefly-connected peers once a second for five minutes.
-        fn simulate(backoff: bool) -> (usize, usize) {
-            let mut relay = crate::bootstrap::relay_server_config();
-            let sources: Vec<_> = (0..5).map(|_| PeerId::random()).collect();
-            let destinations: Vec<_> = (0..3).map(|_| PeerId::random()).collect();
-            let mut retries: Vec<_> = (0..5).map(|_| PeerRedials::default()).collect();
-            let addr: libp2p::Multiaddr = "/ip4/203.0.113.1/tcp/1234".parse().unwrap();
-            let start = std::time::Instant::now();
-            let (mut admitted, mut denied) = (0, 0);
-            for second in 0..300 {
-                let now = start + std::time::Duration::from_secs(second);
-                for (i, source) in sources.iter().enumerate() {
-                    for destination in &destinations {
-                        if backoff && !retries[i].allow(*destination, now) {
-                            continue;
-                        }
-                        if relay
-                            .circuit_src_rate_limiters
-                            .iter_mut()
-                            .all(|limiter| limiter.try_next(*source, &addr, now))
-                        {
-                            admitted += 1;
-                            retries[i].connected(*destination, now);
-                            retries[i].disconnected(
-                                *destination,
-                                now + std::time::Duration::from_millis(100),
-                            );
-                        } else {
-                            denied += 1;
-                        }
-                    }
-                }
-            }
-            (admitted, denied)
-        }
-        let before = simulate(false); // discovery previously dialed without a budget
-        let after = simulate(true);
-        eprintln!("relay token-bucket simulation: before={before:?}, after={after:?}");
-        assert!(
-            before.1 > 0,
-            "the old discovery path must reproduce resource denials"
-        );
-        assert_eq!(
-            after,
-            (60, 0),
-            "backoff must retain retries without exhausting the relay"
-        );
-    }
-
-    #[test]
     fn retry_deadlines_are_per_peer_and_relative_to_the_last_attempt() {
         let mut retries = PeerRedials::default();
         let start = std::time::Instant::now();

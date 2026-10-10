@@ -6,7 +6,7 @@
 #   -Local           Cross-compile locally using cross (Docker) or WSL2
 #
 # Usage:
-#   .\scripts\rendezvous\deploy-rendezvous.ps1 user@host [-Port N] [-RelayPort N] [-AdvertiseHost HOST] [-BuildOnRemote] [-Local] [-Update]
+#   .\scripts\rendezvous\deploy-rendezvous.ps1 user@host [-Port N] [-AdvertiseHost HOST] [-BuildOnRemote] [-Local] [-Update]
 #
 # Examples:
 #   .\scripts\rendezvous\deploy-rendezvous.ps1 root@sg.example.com
@@ -15,6 +15,7 @@
 param(
     [Parameter(Mandatory)][string]$Target,
     [int]$Port = 36521,
+    # Ignored: the libp2p circuit relay it set is gone.
     [int]$RelayPort = 0,
     [ValidatePattern('^[A-Za-z0-9.-]*$')][string]$AdvertiseHost = "",
     [ValidateSet("x86_64","aarch64")][string]$Arch = "x86_64",
@@ -30,10 +31,6 @@ $ScriptsDir = Split-Path $PSScriptRoot -Parent
 $RepoDir = Split-Path $ScriptsDir -Parent
 $Repo    = "suzent/enoxian"
 $RemoteBinary = "/tmp/enox"
-
-if ($RelayPort -eq 0) {
-    $RelayPort = $Port + 1
-}
 
 # Load .env from repo root if token not already provided
 if (-not $Token) {
@@ -57,7 +54,7 @@ if ($BuildOnRemote) {
     if ($LASTEXITCODE -ne 0) { throw "tar failed" }
 
     Write-Host "▶ Building on remote via Docker (piping source)..."
-    Get-Content $TarFile -AsByteStream | ssh $Target "docker run --rm -i -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=gcc -v enoxian-cargo-cache:/usr/local/cargo/registry -v enoxian-out:/out rust:alpine sh -c 'apk add --no-cache musl-dev gcc build-base && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --target x86_64-unknown-linux-musl --release --bin enox && cp target/x86_64-unknown-linux-musl/release/enox /out/enox'"
+    Get-Content $TarFile -AsByteStream | ssh $Target "docker run --rm -i -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=gcc -v enoxian-cargo-cache:/usr/local/cargo/registry -v enoxian-out:/out rust:alpine sh -c 'apk add --no-cache musl-dev gcc build-base && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --target x86_64-unknown-linux-musl --release --bin enox --features iroh-relay-server && cp target/x86_64-unknown-linux-musl/release/enox /out/enox'"
     if ($LASTEXITCODE -ne 0) { throw "Remote build failed" }
 
     ssh $Target "docker run --rm -v enoxian-out:/out busybox cp /out/enox /tmp/enox && chmod +x /tmp/enox"
@@ -86,7 +83,7 @@ if ($BuildOnRemote) {
         $oldSkipFrontend = $env:ENOXIAN_SKIP_FRONTEND_BUILD
         $env:ENOXIAN_SKIP_FRONTEND_BUILD = "1"
         try {
-            cross build --release --bin enox --target $LinuxTarget
+            cross build --release --bin enox --features iroh-relay-server --target $LinuxTarget
             if ($LASTEXITCODE -ne 0) { throw "cross build failed" }
         } finally {
             $env:ENOXIAN_SKIP_FRONTEND_BUILD = $oldSkipFrontend
@@ -103,7 +100,7 @@ command -v musl-gcc &>/dev/null || sudo apt-get install -y -q build-essential mu
 . "`$HOME/.cargo/env"
 rustup target add $LinuxTarget
 cd "$wslRepoDir"
-cargo build --release --bin enox --target $LinuxTarget 2>&1
+cargo build --release --bin enox --features iroh-relay-server --target $LinuxTarget 2>&1
 "@ | Set-Content -Encoding utf8 $tmpScript
         $wslTmp = (wsl wslpath ($tmpScript.Replace('\','/'))).Trim()
         wsl bash $wslTmp
@@ -167,7 +164,7 @@ systemctl is-active enoxian-bootstrap && echo "✦ Service restarted" \
     if ($LASTEXITCODE -ne 0) { throw "scp of setup script failed" }
     $AdvertiseArg = if ($AdvertiseHost) { " --advertise-host '$AdvertiseHost'" } else { "" }
     $UpdateArg = if ($AutoUpdate) { " --auto-update $AutoUpdate" } else { "" }
-    ssh $Target "BINARY_SRC='$RemoteBinary' bash /tmp/setup-rendezvous.sh --port $Port --relay-port $RelayPort$AdvertiseArg$UpdateArg"
+    ssh $Target "BINARY_SRC='$RemoteBinary' bash /tmp/setup-rendezvous.sh --port $Port$AdvertiseArg$UpdateArg"
 }
 
 if ($LASTEXITCODE -ne 0) { throw "Remote setup failed" }

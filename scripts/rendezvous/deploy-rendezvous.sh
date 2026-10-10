@@ -7,7 +7,7 @@
 #   --local           Cross-compile locally using cross (Docker)
 #
 # Usage:
-#   ./scripts/rendezvous/deploy-rendezvous.sh user@host [--port PORT] [--relay-port PORT] [--advertise-host HOST] [--build-on-remote] [--local] [--update]
+#   ./scripts/rendezvous/deploy-rendezvous.sh user@host [--port PORT] [--advertise-host HOST] [--build-on-remote] [--local] [--update]
 #
 # Examples:
 #   ./scripts/rendezvous/deploy-rendezvous.sh root@sg.example.com
@@ -16,13 +16,12 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || "$1" == --* ]]; then
-    echo "Usage: $0 user@host [--port PORT] [--relay-port PORT] [--advertise-host HOST] [--build-on-remote] [--local] [--arch x86_64|aarch64] [--update]"
+    echo "Usage: $0 user@host [--port PORT] [--advertise-host HOST] [--build-on-remote] [--local] [--arch x86_64|aarch64] [--update]"
     exit 1
 fi
 
 SSH_TARGET="$1"; shift
 PORT=36521
-RELAY_PORT=""
 ADVERTISE_HOST=""
 ARCH="x86_64"
 UPDATE_ONLY=false
@@ -35,7 +34,7 @@ TOKEN="${GITHUB_TOKEN:-}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --port)            PORT="$2"; shift 2 ;;
-        --relay-port)      RELAY_PORT="$2"; shift 2 ;;
+        --relay-port)      shift 2 ;;  # ignored: the libp2p circuit relay is gone
         --advertise-host)  ADVERTISE_HOST="$2"; shift 2 ;;
         --arch)            ARCH="$2"; shift 2 ;;
         --build-on-remote) BUILD_ON_REMOTE=true; shift ;;
@@ -46,10 +45,6 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
-
-if [[ -z "$RELAY_PORT" ]]; then
-    RELAY_PORT=$((PORT + 1))
-fi
 
 if [[ -n "$ADVERTISE_HOST" && ! "$ADVERTISE_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
     echo "Invalid --advertise-host: $ADVERTISE_HOST"
@@ -79,7 +74,7 @@ if $BUILD_ON_REMOTE; then
             -v enoxian-cargo-cache:/usr/local/cargo/registry \
             -v enoxian-out:/out \
             rust:alpine \
-            sh -c 'apk add --no-cache musl-dev gcc build-base && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --target x86_64-unknown-linux-musl --release --bin enox && cp target/x86_64-unknown-linux-musl/release/enox /out/enox'"
+            sh -c 'apk add --no-cache musl-dev gcc build-base && mkdir /src && tar -xzf - -C /src && cd /src && cargo build --target x86_64-unknown-linux-musl --release --bin enox --features iroh-relay-server && cp target/x86_64-unknown-linux-musl/release/enox /out/enox'"
 
     ssh "$SSH_TARGET" \
         "docker run --rm -v enoxian-out:/out busybox cp /out/enox /tmp/enox && chmod +x /tmp/enox"
@@ -91,10 +86,10 @@ elif $LOCAL; then
     cd "$REPO_DIR"
 
     if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "$ARCH" ]]; then
-        cargo build --release --bin enox
+        cargo build --release --bin enox --features iroh-relay-server
         BINARY="$REPO_DIR/target/release/enox"
     elif command -v cross &>/dev/null; then
-        cross build --release --bin enox --target "$LINUX_TARGET"
+        cross build --release --bin enox --features iroh-relay-server --target "$LINUX_TARGET"
     else
         echo "Error: install cross (cargo install cross) or use --build-on-remote"
         exit 1
@@ -154,5 +149,5 @@ else
     fi
     UPDATE_ARG=""
     if [[ -n "$AUTO_UPDATE" ]]; then UPDATE_ARG=" --auto-update $AUTO_UPDATE"; fi
-    ssh "$SSH_TARGET" "bash /tmp/setup-rendezvous.sh --port $PORT --relay-port $RELAY_PORT$ADVERTISE_ARG$UPDATE_ARG"
+    ssh "$SSH_TARGET" "bash /tmp/setup-rendezvous.sh --port $PORT$ADVERTISE_ARG$UPDATE_ARG"
 fi

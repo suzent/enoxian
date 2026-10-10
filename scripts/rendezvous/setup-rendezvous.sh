@@ -3,22 +3,23 @@
 # The enox binary must be available at /tmp/enox unless BINARY_SRC overrides it.
 #
 # Usage:
-#   bash setup-rendezvous.sh [--port PORT] [--relay-port PORT] [--advertise-host HOST] [--auto-update stable|off]
+#   bash setup-rendezvous.sh [--port PORT] [--advertise-host HOST] [--auto-update stable|off]
 #
-# Defaults:
-#   PORT=36521
-#   RELAY_PORT=PORT+1
+# PORT (default 36521) is the HTTP port for /version, /peer-id, /pair and
+# /invite. With --advertise-host the server also runs the Iroh relay on 443
+# (HTTPS, Let's Encrypt certificate for HOST), 80 (ACME) and 7842/udp (QUIC
+# address discovery). --relay-port is accepted and ignored: the libp2p circuit
+# relay it set is gone.
 set -euo pipefail
 
 PORT=36521
-RELAY_PORT=""
 ADVERTISE_HOST=""
 AUTO_UPDATE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --port) PORT="$2"; shift 2 ;;
-        --relay-port) RELAY_PORT="$2"; shift 2 ;;
+        --relay-port) shift 2 ;;  # ignored; see above
         --advertise-host) ADVERTISE_HOST="$2"; shift 2 ;;
         --auto-update) AUTO_UPDATE="$2"; shift 2 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
@@ -37,10 +38,6 @@ if [[ -n "$AUTO_UPDATE" ]]; then
     command -v python3 >/dev/null
 fi
 
-if [[ -z "$RELAY_PORT" ]]; then
-    RELAY_PORT=$((PORT + 1))
-fi
-
 if [[ -n "$ADVERTISE_HOST" && ! "$ADVERTISE_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
     echo "Invalid --advertise-host: $ADVERTISE_HOST"
     exit 1
@@ -52,12 +49,14 @@ SERVICE_NAME="enoxian-bootstrap"
 SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
 SERVICE_USER="enoxian"
 
-echo "Setting up enoxian rendezvous server on port $PORT and relay port $RELAY_PORT"
+echo "Setting up the enoxian bootstrap server on port $PORT"
 
 ADVERTISE_ARGS=""
 if [[ -n "$ADVERTISE_HOST" ]]; then
-    ADVERTISE_ARGS=" --advertise-host $ADVERTISE_HOST"
-    echo "  Advertising public hostname $ADVERTISE_HOST"
+    ADVERTISE_ARGS=" --advertise-host $ADVERTISE_HOST --iroh-relay"
+    echo "  Running the Iroh relay at https://$ADVERTISE_HOST"
+else
+    echo "  No --advertise-host: HTTP only, no Iroh relay (it needs a hostname for its certificate)"
 fi
 
 # Install binary
@@ -91,12 +90,14 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$enoxian_DIR"
 echo "  Writing $SERVICE_FILE"
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=enoxian Bootstrap Server (rendezvous + relay)
+Description=enoxian Bootstrap Server (HTTP + Iroh relay)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$BINARY_DST bootstrap serve --port $PORT --relay-port $RELAY_PORT$ADVERTISE_ARGS
+ExecStart=$BINARY_DST bootstrap serve --port $PORT$ADVERTISE_ARGS
+# The Iroh relay listens on 80 and 443.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 Restart=always
 RestartSec=5
 User=$SERVICE_USER
@@ -109,18 +110,22 @@ WantedBy=multi-user.target
 EOF
 
 # Firewall
-echo "  Opening port $PORT (UDP + TCP) and $RELAY_PORT/tcp"
+PORTS=("$PORT/tcp")
+if [[ -n "$ADVERTISE_HOST" ]]; then
+    PORTS+=(80/tcp 443/tcp 7842/udp)
+fi
+echo "  Opening ${PORTS[*]}"
 if command -v ufw &>/dev/null; then
-    ufw allow "$PORT/udp" comment "enoxian rendezvous QUIC" 2>/dev/null || true
-    ufw allow "$PORT/tcp" comment "enoxian rendezvous HTTP" 2>/dev/null || true
-    ufw allow "$RELAY_PORT/tcp" comment "enoxian circuit relay" 2>/dev/null || true
+    for p in "${PORTS[@]}"; do
+        ufw allow "$p" comment "enoxian bootstrap" 2>/dev/null || true
+    done
 elif command -v firewall-cmd &>/dev/null; then
-    firewall-cmd --permanent --add-port="$PORT/udp" 2>/dev/null || true
-    firewall-cmd --permanent --add-port="$PORT/tcp" 2>/dev/null || true
-    firewall-cmd --permanent --add-port="$RELAY_PORT/tcp" 2>/dev/null || true
+    for p in "${PORTS[@]}"; do
+        firewall-cmd --permanent --add-port="$p" 2>/dev/null || true
+    done
     firewall-cmd --reload 2>/dev/null || true
 else
-    echo "  (no ufw/firewalld found - open $PORT/udp, $PORT/tcp, and $RELAY_PORT/tcp manually)"
+    echo "  (no ufw/firewalld found - open ${PORTS[*]} manually)"
 fi
 
 # Enable and start
@@ -133,14 +138,16 @@ systemctl start "$SERVICE_NAME"
 sleep 1
 if systemctl is-active --quiet "$SERVICE_NAME"; then
     echo ""
-    echo "Rendezvous server running on port $PORT; relay on TCP $RELAY_PORT"
+    echo "Bootstrap server running on port $PORT"
     echo ""
     echo "  Peer ID:"
     curl -sf "http://localhost:$PORT/peer-id" | grep -o '"peer_id":"[^"]*"' | cut -d'"' -f4 \
-        && echo "" || echo "  (starting up 鈥?try again in a moment)"
-    echo ""
-    echo "  To embed in invites from your local machine:"
-    echo "    enox invite <circle> --rendezvous $(curl -sf https://api4.my-ip.io/ip 2>/dev/null || hostname -I | awk '{print $1}')"
+        && echo "" || echo "  (starting up - try again in a moment)"
+    if [[ -n "$ADVERTISE_HOST" ]]; then
+        echo ""
+        echo "  To put this relay in invites from your local machine:"
+        echo "    enox invite <circle> --relay https://$ADVERTISE_HOST"
+    fi
     echo ""
     echo "  Logs: journalctl -u $SERVICE_NAME -f"
 else
