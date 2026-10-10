@@ -35,22 +35,19 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
     // ── Auto-detect addresses — explicit CLI flags always override ─────────────
     // peer_addr priority:
     //   1. explicit --peer flag
-    //   2. ExternalAddrConfirmed (Identify from a connected peer — most reliable)
-    //   3. best listen addr sorted: public IP > Tailscale (100.64/10) > RFC1918
+    //   2. best direct addr: public IP > Tailscale (100.64/10) > RFC1918
+    //   3. this device's id alone, dialed through the relays
     let peer_addr = args
         .peer
         .clone()
-        .or_else(|| p2p.as_ref()?.external_addrs.first().cloned())
         .or_else(|| {
-            let addrs = p2p.as_ref()?.listen_addrs.as_slice();
-            best_listen_addr(addrs).map(String::from)
+            let addrs = p2p.as_ref()?.direct_addrs.as_slice();
+            invite::best_direct_addr(addrs).map(String::from)
         })
         .or_else(|| invite::iroh_self_addr(&config.keypair_proto_hex));
 
-    // relay_addr: from circle config (saved at `enox enter` time from the invite).
-    // The user never has to think about this — if they joined via a relay invite,
-    // they can forward that same relay to the people they invite.
-    // The relays the joiner falls back on: --relay, or the Circle's own.
+    // The relays the joiner falls back on: --relay, or the Circle's own (saved
+    // at `enox enter` from the invite, so they pass on from member to member).
     let iroh_relays = match args.relay.clone() {
         Some(url) => vec![url],
         None => config.iroh_relays.clone(),
@@ -170,8 +167,7 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
 
 struct P2PInfo {
     peer_id: String,
-    external_addrs: Vec<String>,
-    listen_addrs: Vec<String>,
+    direct_addrs: Vec<String>,
 }
 
 /// Seal an encoded invite, leave it on the relay, and return the short link.
@@ -242,37 +238,11 @@ async fn fetch_p2p_info(client: &reqwest::Client, api_base: &str) -> Option<P2PI
     };
     Some(P2PInfo {
         peer_id,
-        external_addrs: parse_addrs("external_addrs"),
-        listen_addrs: parse_addrs("listen_addrs"),
+        // `listen_addrs` is what a daemon from before 0.12 calls them.
+        direct_addrs: Some(parse_addrs("direct_addrs"))
+            .filter(|addrs| !addrs.is_empty())
+            .unwrap_or_else(|| parse_addrs("listen_addrs")),
     })
-}
-
-/// Pick the best listen addr from the list: public IPs first, then Tailscale
-/// (100.64/10), then RFC1918. Returns the highest-priority addr, or None if empty.
-fn best_listen_addr(addrs: &[String]) -> Option<&str> {
-    fn rank(addr: &str) -> u8 {
-        // Parse IPv4 from a multiaddr string like /ip4/1.2.3.4/tcp/...
-        let ip_str = match addr.strip_prefix("/ip4/").and_then(|s| s.split('/').next()) {
-            Some(s) => s,
-            None => return 4,
-        };
-        let ip: std::net::Ipv4Addr = match ip_str.parse() {
-            Ok(ip) => ip,
-            Err(_) => return 4,
-        };
-        if ip.is_private() || ip.is_link_local() {
-            return 3; // RFC1918 / link-local — least preferred
-        }
-        let o = ip.octets();
-        if o[0] == 100 && o[1] >= 64 && o[1] <= 127 {
-            return 2; // Tailscale CGNAT — usable within a tailnet
-        }
-        1 // public IP — most preferred
-    }
-    addrs
-        .iter()
-        .min_by_key(|a| rank(a.as_str()))
-        .map(String::as_str)
 }
 
 fn try_load_admin_pubkey(circle_id: &str) -> Option<Vec<u8>> {

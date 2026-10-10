@@ -151,7 +151,7 @@ d1_has_iroh_addr() { curl1 "/circles/$CIRCLE_ID/api/status" | grep -q quic-v1/p2
 wait_for "daemon 1 reported no Iroh address" 30 d1_has_iroh_addr
 D1_PEER=$(curl1 "/circles/$CIRCLE_ID/api/status" | python3 -c "
 import sys, json
-addrs = json.load(sys.stdin)['p2p']['listen_addrs']
+addrs = json.load(sys.stdin)['p2p']['direct_addrs']
 udp = [a for a in addrs if '/udp/' in a and '/p2p/' in a]
 a = udp[0] if udp else ''
 print('/ip4/127.0.0.1/udp/' + a.split('/udp/')[1] if a else '')

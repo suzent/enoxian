@@ -1,8 +1,8 @@
 # Security Model
 
 This document describes the current security model. The implementation combines
-stable device identity, a circle transport gate, authenticated peer sessions,
-and MLS-derived content keys. The transport PSK is stable; it is not derived
+stable device identity, an authenticated Iroh transport, a per-stream Circle
+proof, and MLS-derived content keys. The Circle PSK is stable; it is not derived
 again for every MLS epoch.
 
 ## Trust Boundaries
@@ -11,24 +11,78 @@ enoxian separates transport, identity, membership, and content:
 
 | Layer | Mechanism | What it proves | Status |
 |-------|-----------|----------------|--------|
-| Transport | Stable per-circle PSK via `libp2p::pnet` | The peer holds the circle network secret | Implemented |
-| Identity | Noise + per-circle Ed25519 key derived from the device key | The peer owns this device identity | Implemented |
-| Membership | Signed member list + `mls_removed` tombstone sync gate | The peer has not been explicitly evicted | Implemented |
+| Identity | Iroh QUIC (TLS 1.3) keyed by the per-circle Ed25519 key derived from the device key | The peer owns this endpoint id, which is its peer ID | Implemented |
+| Circle | Circle proof on every stream, derived from the stable PSK | The peer holds the circle secret | Implemented |
+| Membership | Removed peers refused at connection; MLS leaf required on content streams; signed member list + `mls_removed` tombstones | The peer is a current member and has not been evicted | Implemented |
 | Content | MLS exporter + HKDF + ChaCha20-Poly1305 | The peer holds the active MLS epoch secret and the frame was not modified | Implemented |
 
-The public bootstrap server is outside the circle trust boundary. It provides
-rendezvous and circuit relay only; it does not join any circle and does not hold
-any circle PSK.
+Relays and the bootstrap server are outside the circle trust boundary. They
+join no circle and hold no circle PSK.
 
-## Transport PSK
+0.11 and earlier used libp2p, with the PSK applied through `libp2p::pnet` on
+direct TCP only and Noise for identity. 0.12 removes libp2p entirely; the two
+cannot talk to each other.
 
-Every circle has a stable 256-bit pre-shared key. It is applied to direct TCP
-circle-peer connections through `libp2p::pnet` before Noise starts. A peer with
-the wrong PSK fails before sync protocol negotiation.
+## Transport
 
-The PSK is a coarse network gate, not the revocation mechanism. It is distributed
-in invite links and saved in `~/.enoxian/circles/<id>/config.toml`. It does not
+Every circle runs one Iroh endpoint per device. The endpoint's secret key is the
+device's per-circle Ed25519 key (see *Peer Identity*), so a member's Iroh
+endpoint id and its peer ID are the same public key. Iroh connections are QUIC
+with TLS 1.3, and the TLS handshake authenticates both endpoint ids. After the
+handshake each side knows, with cryptographic certainty, which peer ID is on the
+other end.
+
+One QUIC connection per pair of peers carries every protocol, under the single
+ALPN `enoxian/3`. The connection may run over a direct UDP path or through a
+relay; Iroh holepunches and moves between paths inside the same connection. The
+security properties below are the same on every path.
+
+The endpoint publishes nothing to Iroh's DNS address lookup, and port mapping
+(UPnP/NAT-PMP) is disabled. Members find each other by peer ID through the
+circle's relays, plus any direct-address hint an invite carried.
+
+## Circle Proof
+
+Every circle has a stable 256-bit pre-shared key. It is never sent on the wire.
+Instead, every stream opens with a one-byte protocol tag and a 32-byte proof in
+each direction:
+
+```text
+proof = HKDF-SHA256(salt = "enoxian-circle-proof-v1",
+                    ikm  = circle PSK,
+                    info = len ‖ circle_id ‖ len ‖ sender peer ID ‖ len ‖ receiver peer ID)
+```
+
+Both peer IDs come from the TLS-authenticated connection, so a proof made for
+one peer cannot be replayed to another, or in the other direction. Proofs are
+compared in constant time. A stream that does not show its tag and proof within
+10 seconds is reset.
+
+The opener sends its tag and proof first. The accepting side checks the proof,
+applies the admission rules below, and only then sends its own proof back, so a
+peer that fails learns nothing about the secret.
+
+The proof replaces libp2p's pnet. Unlike pnet, which guarded direct TCP only, it
+covers every path, including relayed ones.
+
+The PSK is a coarse gate, not the revocation mechanism. It is distributed in
+invite links and saved in `~/.enoxian/circles/<id>/config.toml`. It does not
 expire after a peer joins, and it is not rotated on MLS epoch changes.
+
+## Admission
+
+Admission is decided per connection and per stream:
+
+1. **Connection.** A device whose peer ID is tombstoned in `mls_removed` has its
+   incoming connection closed at once (reason `removed`). Members never dial a
+   removed peer.
+2. **Every stream.** The Circle proof must verify.
+3. **Content streams** (sync, proposals, events, admin handover). The peer must
+   also have a leaf in our MLS group. A peer that is not in the group yet, or
+   that we have not caught up on, is refused; the opener retries every 5
+   seconds while the connection lasts.
+4. **MLS bootstrap** needs only the proof, because it is how a joiner obtains
+   its Welcome. What it may exchange there is limited (see *Content Frames*).
 
 ## Peer Identity
 
@@ -40,15 +94,16 @@ using HKDF-SHA256:
 HKDF(device_key, "enoxian-device-v1", "circle/<circle-id>")
 ```
 
-The result is a stable peer ID for each `(device, circle)` pair. Noise proves
-ownership of that per-circle key during connection setup.
+The result is a stable peer ID for each `(device, circle)` pair. The same key is
+the device's Iroh endpoint key, and the QUIC/TLS handshake proves ownership of
+it during connection setup.
 
 Implications:
 
 - A peer cannot impersonate another peer ID without the corresponding key.
 - Rejoining the same circle from the same device presents the same peer ID.
-- A removed peer that reconnects with the same identity can be rejected by the
-  tombstone sync gate.
+- A removed peer that reconnects with the same identity is refused at
+  connection, by every member that has its tombstone.
 
 ## Membership And Eviction
 
@@ -63,13 +118,14 @@ Eviction is enforced by `mls_removed`:
    CRDT map.
 3. The MLS Remove commit is broadcast through `mls_commits` so remaining members
    keep MLS membership state in sync.
-4. `src/network/sync.rs` checks `mls_removed` before exchanging any CRDT data
-   and rejects tombstoned peers.
+4. Members close any connection from a tombstoned peer and stop dialing it.
+   `src/network/sync.rs` also checks `mls_removed` before exchanging any CRDT
+   data and rejects tombstoned peers.
 
 The MLS Remove commit advances the content-encryption epoch. A removed member
 can process the removal but cannot export the new epoch secret, so it cannot
-decrypt subsequent content frames. Tombstones remain a useful early sync gate;
-the MLS epoch is the cryptographic boundary.
+decrypt subsequent content frames. Tombstones remain a useful early gate at
+connection and sync; the MLS epoch is the cryptographic boundary.
 
 ## MLS
 
@@ -86,7 +142,7 @@ MLS commits are replicated in the control doc:
 Each daemon applies incoming commits serially and retains a small in-memory
 window of exporter secrets for frames already in flight. Offline members replay
 the durable commit sequence before opening content from a newer epoch. The MLS
-exporter secret is never used as the transport PSK.
+exporter secret is never used as the circle PSK.
 
 ## Content Frames
 
@@ -97,17 +153,16 @@ are authenticated as associated data. HKDF-SHA256 domain-separates CRDT,
 proposal, and event keys from the MLS exporter secret, preventing ciphertext
 from being moved between protocol purposes or circles.
 
-A separate `/enoxian/mls-bootstrap/1.0.0` stream solves the join/offline
-bootstrap cycle. It carries only KeyPackages, signed owner/pending/member
-records, targeted Welcomes, removal tombstones, and MLS commits. It is protected
-by Noise but not by the content key, because a joiner does not have that key
-yet. The circle PSK guards direct TCP only; QUIC and relayed connections reach
-the stream without it. So a peer is treated by its MLS group membership: one
-with a leaf in our group exchanges every record, and one without receives only
-our own entries plus its own Welcome and tombstone, and may write only entries
-about itself. MLS commits are applied from anyone, since MLS verifies them. The
-stream never carries workspace files, chat, tasks, proposal content, event-log
-entries, or blobs.
+A separate MLS bootstrap stream solves the join/offline bootstrap cycle. It
+carries only KeyPackages, signed owner/pending/member records, targeted
+Welcomes, removal tombstones, and MLS commits. It requires the Circle proof but
+not the content key, because a joiner does not have that key yet. Anyone who
+holds the PSK can reach it, so a peer is treated by its MLS group membership:
+one with a leaf in our group exchanges every record, and one without receives
+only our own entries plus its own Welcome and tombstone, and may write only
+entries about itself. MLS commits are applied from anyone, since MLS verifies
+them. The stream never carries workspace files, chat, tasks, proposal content,
+event-log entries, or blobs.
 
 ## Current Attacker Capabilities
 
@@ -115,37 +170,47 @@ entries, or blobs.
 
 | Action | Possible? |
 |--------|-----------|
-| Connect to the circle swarm | Yes |
+| Connect to other members | Yes |
 | Read synced workspace files and chat | Yes |
 | Write CRDT updates | Yes |
-| Impersonate another peer ID | No, Noise proves key ownership |
+| Impersonate another peer ID | No, the QUIC/TLS handshake proves key ownership |
 | Perform admin member operations | No, requires `admin.key` |
 
 ### Removed Member Who Still Has The Stable PSK
 
 | Action | Possible? |
 |--------|-----------|
-| Open a transport connection | Yes, if the PSK is still known |
-| Complete a sync session with peers that have the tombstone | No |
+| Connect to members that have its tombstone | No, they close the connection and never dial it |
+| Open content streams with members whose MLS group has removed it | No, it has no leaf |
 | Read new CRDT/proposal/event content after the removal epoch | No |
 | Read data already synced to local disk | Yes |
 | Read bootstrap membership records and MLS commits | No, only the sender's own records and its own tombstone once out of the MLS group |
+
+### Invite Holder Not Yet Admitted
+
+| Action | Possible? |
+|--------|-----------|
+| Open the MLS bootstrap stream | Yes, it holds the PSK |
+| Open content streams | No, it has no MLS leaf until an admin admits it |
+| Read bootstrap membership records | No, only each member's own records |
+| Write membership records about other peers | No, only about itself |
+| Read circle content | No |
 
 ### Outside Peer Without The PSK
 
 | Action | Possible? |
 |--------|-----------|
-| Connect to direct PSK-TCP circle peers | No |
-| Reach members over QUIC or a relay | Yes, these carry no PSK |
-| Read bootstrap membership records | No, only each member's own records |
-| Write membership records about other peers | No, only about itself |
+| Complete a QUIC handshake with a member it can address | Yes, with its own key |
+| Open any stream | No, every stream fails the Circle proof |
+| Read bootstrap membership records | No |
 | Read circle content | No |
-| Discover local peer IDs and addresses via mDNS | Yes, on the same LAN |
+| Discover members on the LAN | No, there is no LAN discovery and nothing is published to DNS |
 
 ## Invites
 
-Invite links contain the circle ID, stable PSK, expiry timestamp, optional circle
-name, optional peer/relay/rendezvous addresses, and optional admin public key.
+Invite links contain the circle ID, the stable PSK, an expiry timestamp, an
+optional circle name, the inviter's peer ID with an optional direct address,
+optional Iroh relay URLs, and an optional admin public key.
 
 Expiry is enforced by `enox enter` before joining. It prevents accidental or
 late use of old links, but it does not revoke a peer that already joined and
@@ -158,56 +223,56 @@ Practical guidance:
 - Remove unwanted members promptly so the tombstone propagates.
 - Treat the PSK as a durable secret until explicit circle-key rotation is added.
 
-## Relay And Rendezvous
+## Relays And The Bootstrap Server
 
-### Default Infrastructure
+### Default Relays
 
-A Circle with no rendezvous or relay address configured does **not** stay
-LAN-only. On daemon start, each such Circle resolves a project-operated default
-— `relay.enoxian.com` — over HTTP (`GET /peer-id`, 5s timeout) and uses it for
-discovery and as a circuit-relay fallback. This is a fallback, not an override:
-configuring `rendezvous_addrs`, or reserving any relay, suppresses it entirely,
-and an unreachable default is non-fatal (the Circle degrades to LAN-only).
+A circle whose config lists no `iroh_relays` uses the defaults: enoxian's relay
+(`https://relay.enoxian.com`, `DEFAULT_IROH_RELAYS` in `src/defaults.rs`) plus
+Iroh's public relays, run by n0, in four regions. Each device homes on the relay
+nearest it, and peers reach it there until a direct path opens. A device behind
+symmetric NAT (a mobile carrier, for example) never gets a direct path, so its
+traffic stays on a relay.
 
 The practical consequence is that the default posture contacts third-party
-infrastructure. The trust properties below apply to it exactly as they do to a
-bootstrap server you run yourself — it never holds the PSK and cannot decrypt
-content — but it does observe the metadata listed under *Residual Metadata
-Leakage*, including your peer IDs, IP addresses, and connection timing.
+infrastructure. To avoid it, run your own relay (`enox bootstrap serve
+--iroh-relay`, see [rendezvous setup](../../guide/rendezvous-setup.md)) and list
+it in the circle's `iroh_relays`. A configured list replaces the defaults
+entirely.
 
-To avoid it, run your own (`enox bootstrap serve`, see
-[../reference/rendezvous-setup.md](../../guide/rendezvous-setup.md)) and set
-the Circle's rendezvous/relay addresses. The defaults live in
-`src/defaults.rs`; a build with them set to `None` disables the behavior
-outright.
+### What A Relay Sees
 
-### Trust Properties
+A relay forwards QUIC packets between endpoints. It cannot read them: the QUIC
+connection is end-to-end between the two members, and content frames are
+additionally MLS-encrypted inside it. The relay does see:
 
-The bootstrap server (`enox bootstrap serve`) is centralized network
-infrastructure, not a centralized trust core. It learns metadata such as peer
-IDs, circle UUID namespaces, timing, addresses, and traffic volume. It does not
-hold the PSK and does not parse circle sync frames.
+- the endpoint ids of both sides, which are the members' peer IDs;
+- their IP addresses, timing, packet sizes, and traffic volume;
+- the ALPN `enoxian/3`, which travels in the clear in the QUIC handshake.
 
-Data paths:
+The ALPN is therefore not a secret. It identifies enoxian traffic, nothing more;
+the Circle proof is what keeps outsiders out.
 
-- LAN or static-IP direct path: TCP + PSK + Noise + Yamux.
-- Bootstrap/rendezvous path: QUIC to the bootstrap server for discovery.
-- Circuit relay fallback: Noise-protected relay circuit when direct dialing
-  fails.
+### The Bootstrap Server
 
-Relay traffic is opaque to the relay at both the libp2p transport layer and the
-MLS-derived content layer. Authorized current members decrypt content locally.
+`enox bootstrap serve` holds no PSK and joins no circle. It serves HTTP for
+version and upgrade checks, the `enox link` pairing dead drop, and sealed
+short-invite blobs, and with `--iroh-relay` it also runs an Iroh relay with the
+properties above. It no longer does peer discovery or libp2p circuit relay. It
+learns metadata such as which clients fetch from it and when, but it does not
+see circle sync traffic except as a relay of encrypted QUIC.
 
 ## Residual Metadata Leakage
 
 Content encryption protects payloads, not traffic shape. A relay or network
-observer can still learn peer IDs used for routing, IP/address information available to the
-transport, connection timing and duration, protocol selection, frame sizes,
-frame counts, and traffic volume. The bootstrap stream additionally exposes
-each member's own membership records to any peer that reaches it. MLS
-epochs and nonces are visible in encrypted frame headers. File paths are inside
-the encrypted CRDT frame and proposal/event metadata and blobs are encrypted as
-one authenticated payload.
+observer can still learn the peer IDs (endpoint ids) of both sides, IP/address
+information, connection timing and duration, that the traffic is enoxian
+(from the ALPN), packet sizes and counts, and traffic volume. Protocol tags and
+proofs travel inside the encrypted QUIC connection. The bootstrap stream
+additionally exposes each member's own membership records to any peer that
+holds the PSK. MLS epochs and nonces are visible in encrypted frame headers to
+the receiving peer. File paths are inside the encrypted CRDT frame and
+proposal/event metadata and blobs are encrypted as one authenticated payload.
 
 ## What Agents Send Out
 
@@ -287,9 +352,11 @@ broken admin device cannot hand anything over, and its circle loses admin.
 
 ## LAN Exposure
 
-mDNS announces peer IDs and listen addresses on the local network. It does not
-expose circle content or the PSK. Peer IDs and addresses should nevertheless be
-treated as metadata visible to other devices on the LAN.
+enoxian does no LAN discovery; 0.11 and earlier announced peer IDs over mDNS,
+and 0.12 does not. Iroh may still find and use a direct LAN path between two
+members that are already connected. Observers on the LAN see the same metadata
+as any network observer (see *Residual Metadata Leakage*), not content or the
+PSK.
 
 ## Data At Rest
 

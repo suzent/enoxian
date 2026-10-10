@@ -18,6 +18,15 @@ const SETTINGS_TABS: readonly SegmentedTabOption<SettingsTab>[] = [
   { value: 'connectivity', content: <><RadioTower size={14} aria-hidden="true" />CONNECTIVITY</> },
 ]
 
+/** `relay.enoxian.com` for `https://relay.enoxian.com/`. */
+function relayHost(url: string): string {
+  try {
+    return new URL(url).host.replace(/\.$/, '')
+  } catch {
+    return url
+  }
+}
+
 interface Props {
   onClose: () => void
   circleId?: string
@@ -492,13 +501,18 @@ export default function DeviceSettings({ onClose, circleId, membership }: Props)
                 </span>
               </div>
 
-              <div className="settings-connectivity__availability" aria-label="Connectivity services">
-                <span className={connectivity.relay_configured ? 'is-ready' : ''}>
-                  <i aria-hidden="true" /> RELAY
-                </span>
-                <span className={connectivity.rendezvous_configured ? 'is-ready' : ''}>
-                  <i aria-hidden="true" /> RENDEZVOUS
-                </span>
+              {/* Members connect directly where the network allows and through
+                  one of these relays otherwise; each device homes on the
+                  nearest. */}
+              <div className="settings-connectivity__availability" aria-label="Relays">
+                {connectivity.relays.length === 0 && (
+                  <span><i aria-hidden="true" /> NO RELAYS</span>
+                )}
+                {connectivity.relays.map(url => (
+                  <span key={url} className="is-ready" title={url}>
+                    <i aria-hidden="true" /> {relayHost(url)}
+                  </span>
+                ))}
               </div>
 
               <section className="settings-connectivity__mode">

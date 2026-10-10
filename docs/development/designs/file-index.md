@@ -126,7 +126,7 @@ into an existing transport. What exists:
 The blocker for iroh is the transport. It is a QUIC stack with dial-by-public-key
 and its own NAT traversal, and `iroh-docs` is a meta-protocol over `iroh-blobs`
 and `iroh-gossip`. A Circle's security model is MLS-derived per-epoch content
-keys over libp2p, with removed-peer tombstones rechecked between protocol
+keys over libp2p (as written; 0.12 has since moved every Circle to Iroh), with removed-peer tombstones rechecked between protocol
 phases. Adopting iroh means either running two independent networking stacks
 with two trust models — and content leaving the MLS boundary, which is not
 acceptable — or reimplementing its protocols on our transport, at which point

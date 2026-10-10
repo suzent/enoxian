@@ -43,16 +43,18 @@ pub struct CircleConfig {
     /// present it when it writes its pending entry.
     #[serde(default)]
     pub join_grant: Option<crate::control::JoinGrant>,
-    /// Known peer multiaddrs (e.g. from invite). Dialed on startup as bootstrap
-    /// peers in addition to mDNS discovery.
+    /// Peers named by the invite this device joined with, as
+    /// `/ip4/<ip>/udp/<port>/quic-v1/p2p/<peer>` or `/p2p/<peer>`. Dialed on
+    /// startup; any IP and port is a direct-address hint.
     #[serde(default)]
     pub peers: Vec<String>,
-    /// Circuit relay multiaddrs. On startup we connect to each relay and listen
-    /// on a p2p-circuit address so peers behind NAT can reach us.
+    /// libp2p circuit relays, from 0.11 and earlier. Still loaded, no longer
+    /// read; Iroh relays are in `iroh_relays`.
     #[serde(default)]
     pub relay_addrs: Vec<String>,
-    /// Rendezvous server multiaddrs (QUIC). On startup we dial these, register
-    /// our circle namespace, and discover other members via rendezvous.
+    /// The bootstrap server: the HTTP host for short invites and upgrade
+    /// checks. Stored as a multiaddr, as 0.11 wrote it; only the host and port
+    /// are used now.
     #[serde(default)]
     pub rendezvous_addrs: Vec<String>,
     #[serde(default)]

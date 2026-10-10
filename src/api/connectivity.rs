@@ -21,10 +21,7 @@ pub async fn get_connectivity(
         Ok(cfg) => Json(json!({
             "force_relay": cfg.force_relay,
             "active": daemon.is_active(&cfg.circle_id),
-            "relay_configured": !cfg.relay_addrs.is_empty()
-                || crate::defaults::DEFAULT_RELAY.is_some(),
-            "rendezvous_configured": !cfg.rendezvous_addrs.is_empty()
-                || crate::defaults::DEFAULT_RENDEZVOUS.is_some(),
+            "relays": crate::network::iroh_net::relay_urls(&cfg.iroh_relays),
         }))
         .into_response(),
         Err(e) => (

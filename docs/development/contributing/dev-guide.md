@@ -160,9 +160,12 @@ The updater restores the previous binary automatically when its 20-second API
 health check fails. Inspect `enox update --status` and the service logs before
 retrying.
 
-**Circles not discovered across machines**
-Both machines must be on the same LAN for mDNS to work. For WAN, use a Circle
-invite with its embedded rendezvous/relay address.
+**Devices in a Circle do not connect**
+Every device must run 0.12 or later; 0.11 and earlier used libp2p and cannot
+reach 0.12 devices. Check `enox --circle <name> who` and the `p2p` block of the
+status API: `home_relay` should be set, and `recent_conn_errors` shows failed
+handshakes. Devices reach each other through the Circle's relays, so both need
+outbound access to at least one of them.
 
 **`cargo install` is slow**
 First install compiles everything from scratch (~2–3 minutes). After that, incremental rebuilds only recompile changed files (~5–15 seconds).

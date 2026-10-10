@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 
-/// Resolve a rendezvous server address into a full libp2p multiaddr.
+/// Resolve a bootstrap server address into the multiaddr form config and
+/// invites store it in (only its host and port are used now).
 ///
 /// Accepts:
 ///   - A full multiaddr: `/ip4/1.2.3.4/udp/36521/quic-v1/p2p/<id>` — returned as-is

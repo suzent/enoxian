@@ -112,11 +112,28 @@ by `enox agent reaction pull|push` and defaults to `pull`.
 
 ### `bootstrap serve`
 
-Run a public rendezvous and circuit-relay server:
+Run a bootstrap server, and optionally an Iroh relay:
 
 ```bash
-enox bootstrap serve --port 36521 [--relay-port 36522] [--advertise-host HOST]
+enox bootstrap serve [--port 36521] [--advertise-host HOST] [--iroh-relay]
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port` | `36521` | HTTP port for `/version`, `/peer-id`, `/pair` and `/invite` (TCP) |
+| `--advertise-host` | — | Public DNS name of the server. Required with `--iroh-relay`. Also read from `ENOXIAN_ADVERTISE_HOST` |
+| `--iroh-relay` | off | Also run an Iroh relay: HTTPS on 443 with a Let's Encrypt certificate for `--advertise-host`, HTTP on 80 for Iroh's captive-portal probe, QUIC address discovery on 7842/udp. Needs a build with the `iroh-relay-server` feature (Linux release binaries and the Docker image have it) |
+| `--acme-contact` | — | Contact email for the Let's Encrypt account. Also read from `ENOXIAN_ACME_CONTACT` |
+| `--acme-staging` | off | Use Let's Encrypt's staging directory while trying out a deployment |
+| `--iroh-relay-dev-port` | — | Run the relay as plain HTTP on this port instead, for local testing |
+
+The server joins no Circle and holds no PSK. It does no peer discovery: it
+serves short invites, pairing for `enox link`, and the version check. Binding
+ports 80 and 443 needs root or `CAP_NET_BIND_SERVICE`.
+
+Servers before 0.12 also listened on UDP 36521 and TCP 36522 (`--relay-port`)
+for libp2p. Those ports are no longer used; `--relay-port` is still accepted
+and ignored so existing service files keep starting.
 
 ---
 
@@ -200,7 +217,7 @@ enox init --name <NAME> [--ttl <DURATION>] [--dir <PATH>] [--owner <NAME>]
   peer-id   : 12D3KooW...
   workspace : /Users/suzy/enoxian/MyCircle
 
-  invite    : enoxian://v2/CRxkUjpNaBcDeFgH...
+  invite    : enoxian://v3/...
 
   Share the invite link to let peers join (valid for 7d).
   Generate a new link anytime: enox invite "MyCircle"
@@ -213,42 +230,48 @@ enox init --name <NAME> [--ttl <DURATION>] [--dir <PATH>] [--owner <NAME>]
 Join a Circle using an invite link.
 
 ```bash
-enox enter enoxian://v2/CRxkUjpNaBcDeFgH...
-enox enter enoxian://v2/... --dir ~/projects/shared
-enox enter enoxian://v2/... --rendezvous /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<id>
+enox enter enoxian://s1/G9Qg1TN8zxAV2hHofrH0vA
+enox enter enoxian://v3/... --dir ~/projects/shared
+enox enter enoxian://v3/... --rendezvous enox.example.com
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--dir` | `~/enoxian/<name>` | Workspace directory for this circle |
-| `--peer` | — | Override the peer address embedded in the invite |
-| `--rendezvous` | — | Override or add a rendezvous/bootstrap server address (saved to config for future use) |
+| `--peer` | — | Override the peer embedded in the invite (`/ip4/<ip>/udp/<port>/quic-v1/p2p/<peer-id>` or `/p2p/<peer-id>`) |
+| `--rendezvous` | — | Bootstrap server host (`host` or `host:port`), used for short links, `enox link` and the upgrade check. Saved to config |
 
 - Same circle (same UUID) → "Already a member", exits cleanly
 - Same name, different circle → workspace auto-suffixed (`MyCircle-d4e2e7`)
 - Expired invite → rejected immediately
-- Relay and rendezvous addresses from the invite are saved to `config.toml` automatically and used by future daemon starts
+- The invite's Iroh relays and rendezvous server are saved to `config.toml` and used by future daemon starts
+- `enox enter` saves the config and prints `Config saved. The daemon connects when it starts.`, then suggests `enox --circle <name> who` to check that peers are connected
 
 ---
 
 ### `invite`
 
-Generate a new invite link for an existing circle. When the daemon is running, connectivity addresses are **auto-detected** and embedded — no flags needed in most cases.
+Generate a new invite link for an existing circle. When the daemon is running, the best direct address is **auto-detected** and embedded — no flags needed in most cases.
 
 ```bash
-enox invite <CIRCLE> [--ttl <DURATION>] [--peer <MULTIADDR>] [--relay <MULTIADDR>] [--rendezvous <MULTIADDR>]
+enox invite <CIRCLE> [--ttl <DURATION>] [--long] [--peer <MULTIADDR>] [--relay <URL>] [--rendezvous <HOST>]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--ttl` | `7d` | How long the invite is valid |
-| `--peer` | auto | Direct peer multiaddr (e.g. `/ip4/1.2.3.4/tcp/36521`). Auto-detected from daemon's confirmed external address if not specified. |
-| `--relay` | auto | Relay node multiaddr for NAT traversal (e.g. `/ip4/1.2.3.4/tcp/36521/p2p/<peer_id>`). Auto-populated from your `relay_addrs` config if not specified. |
-| `--rendezvous` | auto | Bootstrap/rendezvous server multiaddr for both-behind-NAT (e.g. `/ip4/1.2.3.4/udp/36521/quic-v1/p2p/<peer_id>`). Auto-populated from your `rendezvous_addrs` config if not specified. |
+| `--long` | off | Print the self-contained `enoxian://v3/` link instead of the short one |
+| `--peer` | auto | Peer to embed, e.g. `/ip4/1.2.3.4/udp/4433/quic-v1/p2p/<peer-id>`. Defaults to this device with its best direct address (public, then Tailscale, then private), or its peer id alone |
+| `--relay` | auto | An Iroh relay URL (e.g. `https://relay.example.com`) to put in the invite instead of the Circle's own relays |
+| `--rendezvous` | auto | Bootstrap server host (`host` or `host:port`) that holds the short link and that the joiner saves. Defaults to the Circle's saved server, then the build's default |
 
-The command prints the embedded addresses so the inviter knows what will be used. If the daemon is not running, the invite is generated without connectivity data and only works over LAN mDNS.
+The command prints what it embedded (peer and relays) so the inviter knows what
+will be used. If the daemon is not running, the invite carries only this
+device's peer id; the joiner still reaches it through the relays once the
+daemon starts.
 
-Once one member joins via relay or bootstrap, those addresses are saved in their config and forwarded automatically in every invite they generate.
+A joiner saves the invite's relays and rendezvous server in their config, and
+forwards them in every invite they generate.
 
 ---
 

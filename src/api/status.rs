@@ -38,25 +38,31 @@ pub async fn get_status(
             .await
             .unwrap_or_default();
 
-    let external_addrs = state
-        .p2p_external_addrs
+    let direct_addrs = state
+        .p2p_direct_addrs
         .read()
         .map(|v| v.clone())
         .unwrap_or_default();
-
-    let listen_addrs = state
-        .p2p_listen_addrs
+    let home_relay = state
+        .p2p_home_relay
         .read()
         .map(|v| v.clone())
         .unwrap_or_default();
+    let endpoint_id = state
+        .peer_id
+        .parse()
+        .ok()
+        .and_then(|peer| crate::network::iroh_net::endpoint_id(&peer).ok())
+        .map(|id| id.to_string());
 
-    // relay_addrs and rendezvous_addrs come from the persisted circle config.
-    let (relay_addrs, rendezvous_addrs, force_relay) = config::load(&state.circle_id)
-        .map(|c| (c.relay_addrs, c.rendezvous_addrs, c.force_relay))
+    let (iroh_relays, force_relay) = config::load(&state.circle_id)
+        .map(|c| (c.iroh_relays, c.force_relay))
         .unwrap_or_default();
+    let relays = crate::network::iroh_net::relay_urls(&iroh_relays);
 
     // Recent connection failures (most recent first) — makes silent handshake
-    // failures like a PSK mismatch visible without trawling daemon logs.
+    // failures, such as a peer from another Circle, visible without trawling
+    // daemon logs.
     let conn_errors: Vec<_> = state
         .recent_conn_errors
         .read()
@@ -124,10 +130,10 @@ pub async fn get_status(
         "locks":        locks,
         "p2p": {
             "peer_id":          state.peer_id,
-            "external_addrs":   external_addrs,
-            "listen_addrs":     listen_addrs,
-            "relay_addrs":      relay_addrs,
-            "rendezvous_addrs": rendezvous_addrs,
+            "endpoint_id":      endpoint_id,
+            "relays":           relays,
+            "home_relay":       home_relay,
+            "direct_addrs":     direct_addrs,
             "force_relay":      force_relay,
             "recent_conn_errors": conn_errors,
         },

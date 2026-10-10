@@ -58,13 +58,13 @@ pub struct AppState {
     /// attribute actions to a label vouched for by this device.
     pub actor_tokens: crate::actor_token::ActorTokenRegistry,
     pub execution_inbox: Arc<RwLock<Option<std::sync::Weak<crate::agent::inbox::Inbox>>>>,
-    /// Externally-confirmed TCP multiaddrs for this node (populated by Identify / ExternalAddrConfirmed).
-    /// Used by `enox invite` to auto-embed a connectable peer address.
-    pub p2p_external_addrs: Arc<RwLock<Vec<String>>>,
-    /// Local listen multiaddrs (non-loopback, non-unspecified, non-circuit).
-    /// On a VPS with a public IP these include the real address immediately at startup,
-    /// before any peer connects to confirm via Identify. Used as fallback for `enox invite`.
-    pub p2p_listen_addrs: Arc<RwLock<Vec<String>>>,
+    /// The direct addresses the Iroh endpoint can be reached on, as
+    /// `/ip4/<ip>/udp/<port>/quic-v1/p2p/<peer>`. Invites carry the best one
+    /// as a hint, so a joiner on the same network need not go via a relay.
+    pub p2p_direct_addrs: Arc<RwLock<Vec<String>>>,
+    /// The relay this device homes on: the nearest of the Circle's relays,
+    /// where others reach it until a direct path opens.
+    pub p2p_home_relay: Arc<RwLock<Option<String>>>,
     /// Connections observed by this daemon. This stays local because each peer
     /// can see a different route to the same member.
     /// Live connections per peer, keyed by the transport's connection id.
@@ -561,8 +561,8 @@ impl AppState {
             peer_id,
             actor_tokens: crate::actor_token::ActorTokenRegistry::default(),
             execution_inbox: Arc::new(RwLock::new(None)),
-            p2p_external_addrs: Arc::new(RwLock::new(Vec::new())),
-            p2p_listen_addrs: Arc::new(RwLock::new(Vec::new())),
+            p2p_direct_addrs: Arc::new(RwLock::new(Vec::new())),
+            p2p_home_relay: Arc::new(RwLock::new(None)),
             peer_connections: Arc::new(RwLock::new(HashMap::new())),
             docs,
             control,

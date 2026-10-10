@@ -49,7 +49,7 @@ ssh root@relay 'install -m 755 /tmp/enoxian-relay-update.new /usr/local/sbin/eno
 systemctl list-timers enoxian-relay-update.timer
 journalctl -u enoxian-relay-update.service
 systemctl start enoxian-relay-update.service  # check/update immediately
-python3 /usr/local/sbin/enoxian-relay-update --service enoxd-bootstrap --check
+python3 /usr/local/sbin/enoxian-relay-update --service enoxian-bootstrap --check
 bash setup-relay-updates.sh off             # disable future checks
 python3 test-update-relay.py                # isolated updater regression tests
 ```

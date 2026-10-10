@@ -44,9 +44,9 @@ For a link carrying its own contents:
 enox invite MyCircle --long
 ```
 
-This prints an `enoxian://v2/` link. It does not require the short-link service
+This prints an `enoxian://v3/` link. It does not require the short-link service
 to resolve, though joining and syncing still require connectivity to the Circle.
-Older `v1` links remain readable until they expire.
+Older `v1` and `v2` links remain readable until they expire.
 
 If the relay cannot store a short invite, or the requested TTL is longer than
 its 30-day retention, enoxian prints a self-contained link with an explanation.
@@ -56,17 +56,18 @@ when a device joins. Generate another invite if a grant has already been used.
 ## Connect across networks
 
 Start with a normal invite: enoxian includes available connection information
-automatically. By default it can use the project-operated relay to help devices
-find and connect to each other.
+automatically. Devices find each other through relays: by default the
+project-operated relay plus Iroh's public relays. They connect directly when
+the network allows it, and otherwise stay on the relay.
 
-If your team runs its own rendezvous server:
+If your team runs its own server for short links and pairing:
 
 ```sh
 enox invite MyCircle --rendezvous enox.example.com
 ```
 
 For advanced setups, `--peer` supplies a direct peer address and `--relay`
-supplies a relay address. See the [CLI reference](cli.md#invite) and
+names an Iroh relay URL (such as `https://relay.example.com`) for the invite. See the [CLI reference](cli.md#invite) and
 [relay deployment guide](rendezvous-setup.md) for details.
 
 ## Share safely

@@ -1,9 +1,86 @@
 # P2P Protocol Reference
 
-Circle peers multiplex application streams over libp2p. Direct TCP circle
-connections use the stable circle PSK, Noise identity authentication, and
-Yamux. Relay circuits use Noise/Yamux through infrastructure that does not join
-the circle. Content protocols add MLS-derived authenticated encryption.
+Circle peers talk over Iroh: one QUIC connection per pair of peers, carrying
+one bidirectional stream per protocol. Iroh's TLS handshake authenticates both
+endpoint ids, every stream proves the Circle secret, and content protocols add
+MLS-derived authenticated encryption on top.
+
+0.11 and earlier used libp2p (PSK-gated TCP, Noise, Yamux, and
+`/enoxian/...` protocol ids). 0.12 devices cannot talk to them.
+
+## Transport
+
+### Endpoint and identity
+
+Each device runs one Iroh endpoint per Circle. Its key is the device's
+per-circle Ed25519 key, so a member's EndpointId and PeerId are the same public
+key and convert both ways. The endpoint publishes nothing to Iroh's DNS address
+lookup; peers are dialed by id through the Circle's relays, plus any
+direct-address hint from an invite.
+
+### Connections
+
+- ALPN: `enoxian/3`, the only one. It is visible in the QUIC handshake, so it
+  is not a secret.
+- One connection per pair of peers. The member with the lower PeerId dials; a
+  joiner also dials the peers its invite named, since they do not know it yet.
+  If two connections to one peer appear, the one dialed by the lower PeerId
+  stays.
+- A dial lists the peer's id, all of the Circle's relay URLs, and any direct
+  addresses known for it. Iroh holepunches and migrates paths inside the one
+  connection.
+- An incoming connection from a removed peer is closed at once with reason
+  `removed`. Removed peers are never dialed.
+- Idle timeout 15 seconds, with keep-alives every 5. The dialer redials 2
+  seconds after losing a peer, and sweeps all members every 30 seconds with
+  per-peer backoff.
+- When a peer's sync session ends, the connection is closed so the dialer
+  reconnects and every stream starts over. The close waits a second first:
+  closing a QUIC connection discards data the peer has not acknowledged, and
+  a session that ends on purpose ends with a last frame (`REVOKED`).
+- Either side may open a stream on a connection, whoever dialed it: admin
+  handover opens from the leaving admin.
+
+The dialer opens MLS bootstrap, sync, proposals and events, in that order, as
+soon as a connection is up. Admin handover is opened on demand.
+
+### Stream header
+
+Every bidirectional stream starts with a protocol tag and a Circle proof:
+
+```text
+opener   → acceptor   tag[1] | proof[32]
+acceptor → opener     proof[32]
+```
+
+| Tag | Protocol |
+|-----|----------|
+| 1 | MLS bootstrap |
+| 2 | Admin handover |
+| 3 | Sync |
+| 4 | Proposals |
+| 5 | Events |
+
+Any other tag is refused. The proof is:
+
+```text
+HKDF-SHA256(salt = "enoxian-circle-proof-v1", ikm = Circle PSK,
+            info = len32 ‖ circle_id ‖ len32 ‖ sender PeerId ‖ len32 ‖ receiver PeerId)
+```
+
+`len32` is a 4-byte big-endian length; PeerIds are in their binary form. Both
+PeerIds come from the authenticated connection, so a proof cannot be replayed
+to another peer or reflected back. Proofs are compared in constant time.
+
+The acceptor checks the proof, and for every protocol except MLS bootstrap
+also checks that the opener has a leaf in its MLS group. Only then does it
+send its own proof. On failure it resets the stream. The opener checks the
+returned proof the same way. The whole header must complete within 10
+seconds. An opener whose stream was refused retries every 5 seconds while the
+connection lasts, which covers a joiner that has not been admitted yet or a
+peer that is behind on MLS.
+
+After the header, the stream carries the protocol's own framing, below.
 
 ## Content Frame
 
@@ -28,11 +105,11 @@ across circles or protocol purposes.
 Outer length/count fields remain visible for framing. Paths and semantic
 payloads are encrypted together.
 
-## `/enoxian/mls-bootstrap/1.0.0`
+## MLS bootstrap (tag 1)
 
 This persistent stream breaks the join/offline bootstrap cycle before a peer
-has the current content key. It is protected by the circle PSK and Noise but is
-not MLS-content-encrypted.
+has the current content key. It requires the Circle proof but no MLS leaf, and
+is not MLS-content-encrypted.
 
 It carries only KeyPackages, signed owner/pending/member records, a Welcome
 targeted at the receiver, removal tombstones, and the append-only MLS commit
@@ -44,7 +121,7 @@ retain eight recent exporter secrets in memory for in-flight old-epoch frames;
 they are not persisted. A removed member can process its Remove commit but
 cannot export the following epoch secret.
 
-## `/enoxian/admin-handover/1.0.0`
+## Admin handover (tag 2)
 
 A one-shot stream a leaving admin opens to its chosen successor. Both frames are
 content frames with purpose `admin handover`, each behind a 4-byte big-endian
@@ -60,7 +137,7 @@ only a key whose public half matches its pinned `admin_pubkey_hex`. It writes
 `admin.key` with owner-only permissions before it replies `ok`. The leaver deletes
 nothing until that reply arrives, and gives up after 30 seconds.
 
-## `/enoxian/sync/2.0.0`
+## Sync (tag 3)
 
 This persistent bidirectional stream carries Yjs file documents, the control
 document, awareness, deletions, revocation/session messages, and live updates.
@@ -101,7 +178,7 @@ bundles the payload needs no base64 expansion.
 On stream setup each side re-requests any attachment still missing from its
 transcript, which backfills a device that was offline or joined late.
 
-## `/enoxian/proposals/2.0.0`
+## Proposals (tag 4)
 
 Once per connection, both peers reconcile their durable proposal stores:
 
@@ -114,7 +191,7 @@ The deterministic status precedence resolves divergent decisions. Bundle and
 blob messages are bounded, hash-verified, and encrypted as complete proposal
 frames.
 
-## `/enoxian/events/2.0.0`
+## Events (tag 5)
 
 Peers first exchange event ids, request the missing set, and send individually
 bounded event envelopes followed by `EventsDone`. The stream remains open and
@@ -131,47 +208,21 @@ All content protocols recheck removed-peer tombstones between phases and close
 when either endpoint is removed. Frames are capped at 64 MiB. Content readers
 wait briefly for bootstrap to install a requested MLS epoch, then fail closed.
 
-Visible metadata includes peer routing identities, addresses, protocol choice,
-connection timing, frame sizes/counts, traffic volume, and the MLS epoch/nonce
-header. See [the security model](../architecture/security.md) for the full boundary.
+A relay or network observer sees endpoint ids, addresses, the ALPN,
+connection timing, packet sizes and counts, and traffic volume. Tags, proofs
+and frames travel inside the encrypted QUIC connection; the receiving peer
+also sees the MLS epoch/nonce header. See [the security model](../architecture/security.md) for the full boundary.
 
-## Iroh Transport (in development)
+## Relays
 
-Builds with `--features iroh-transport` can run a Circle on Iroh instead of
-libp2p. Every device in the Circle must use the same transport. Set it per
-Circle with `transport = "iroh"` in the Circle's `config.toml`, or for every
-Circle of a daemon with `ENOXIAN_TRANSPORT=iroh`. The protocols above run
-unchanged; only how their streams are carried differs.
-
-- **Identity**: the endpoint key is the Circle's Ed25519 key, so a member's
-  EndpointId and PeerId are the same public key and convert both ways.
-- **Connections**: one QUIC connection per pair of peers, ALPN `enoxian/3`.
-  The member with the lower PeerId dials; a joiner also dials the peers its
-  invite names. If two connections appear, the one dialed by the lower PeerId
-  stays.
-- **Streams**: each bidirectional stream starts with a one-byte protocol tag
-  (1 MLS bootstrap, 2 admin handover, 3 sync, 4 proposals, 5 events). Then
-  both sides exchange a 32-byte proof that they hold the Circle secret:
-  HKDF-SHA256 over the PSK, bound to the Circle id and both PeerIds. This
-  replaces libp2p's pnet PSK, and unlike pnet it also covers relayed paths.
-- **Admission**: a removed peer's connection is closed at once. Sync,
-  proposals, events and admin handover also require a leaf in the local MLS
-  group; MLS bootstrap needs only the proof, since that is how a joiner gets
-  its Welcome. A refused stream is retried every 5 seconds while the
-  connection lasts.
-- **Relays**: `iroh_relays` in the Circle config lists relay URLs, as many as
-  wanted. When it is empty, the Circle uses enoxian's relay
-  (`DEFAULT_IROH_RELAYS`, `https://relay.enoxian.com`) together with Iroh's
-  public relays in four regions (US east, US west, Europe, Asia-Pacific).
-  Each device homes on the relay nearest it, and every dial lists all of
-  them, since members of one Circle home on different relays. Nothing is
-  published to Iroh's DNS address lookup. Iroh's public relays are rate
-  limited (about 1 MiB/s relayed in our measurements) and can see which
-  devices talk, though not what they say; list your own relays to avoid
-  them.
-
-An Iroh Circle mints v3 invites, which carry the transport and `iroh_relays`,
-so a joining device sets itself up from the invite alone (see
+A Circle's relays are its `iroh_relays` config when that lists any. When it is
+empty, the Circle uses enoxian's relay (`DEFAULT_IROH_RELAYS`,
+`https://relay.enoxian.com`) together with Iroh's public relays in four
+regions. Each device homes on the relay nearest it, and every dial lists all of
+them, since members of one Circle home on different relays. Iroh's public
+relays are rate limited (about 1 MiB/s relayed in our measurements) and can see
+which devices talk, though not what they say; list your own relays to avoid
+them. Invites carry the inviter's `iroh_relays` (see
 [invites](invites.md#binary-format-v3)).
 
-`ENOXIAN_TRANSPORT=iroh scripts/test-sync.sh` runs the two-daemon test on Iroh.
+`scripts/test-sync.sh` runs two daemons against each other over Iroh.
