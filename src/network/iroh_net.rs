@@ -1,4 +1,4 @@
-//! The Iroh transport, behind the `iroh-transport` feature while in development.
+//! The Iroh transport, which every Circle connects over.
 //!
 //! One endpoint per Circle, keyed by the Circle's Ed25519 key, so a member's
 //! EndpointId is the same public key as its PeerId and the two convert both
@@ -55,6 +55,9 @@ const REOPEN_INTERVAL: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 /// After losing a peer we dial, try again this soon rather than at the sweep.
 const REDIAL_AFTER: Duration = Duration::from_secs(2);
+/// How long a connection stays up after its sync session ends, so the
+/// session's last frame reaches the peer before the close discards it.
+const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
 fn tag(proto: Proto) -> u8 {
     match proto {
@@ -246,6 +249,25 @@ pub fn relay_map(configured: &[String]) -> RelayMap {
     map
 }
 
+/// The URLs of [`relay_map`], for showing which relays a Circle uses: the
+/// configured or enoxian's first, then Iroh's public ones.
+pub fn relay_urls(configured: &[String]) -> Vec<String> {
+    let mut urls: Vec<String> = relay_map(configured)
+        .urls::<Vec<RelayUrl>>()
+        .into_iter()
+        .map(|url| url.to_string())
+        .collect();
+    let ours = |url: &String| {
+        configured
+            .iter()
+            .map(String::as_str)
+            .chain(crate::defaults::DEFAULT_IROH_RELAYS.iter().copied())
+            .any(|own| url.trim_end_matches('/') == own.trim_end_matches('/'))
+    };
+    urls.sort_by_key(|url| !ours(url));
+    urls
+}
+
 /// `/ip4/<ip>/udp/<port>/quic-v1/p2p/<peer>` style addresses: the peer, and
 /// any IP + UDP port in it as a direct-address hint.
 fn parse_peer_addr(addr: &str) -> Option<(PeerId, Vec<SocketAddr>)> {
@@ -335,6 +357,9 @@ impl IrohNet {
             if we_dialed { "dialed" } else { "accepted" }
         );
         tokio::spawn(self.clone().watch(connection.clone(), remote));
+        // Either side may open a stream, whoever dialed: admin handover opens
+        // from the leaving admin on whatever connection is up.
+        tokio::spawn(self.clone().accept_streams(connection.clone(), remote));
         if we_dialed {
             for proto in Proto::ON_CONNECT {
                 tokio::spawn(self.clone().run_outbound(connection.clone(), remote, proto));
@@ -478,16 +503,17 @@ impl IrohNet {
                     connection.close(2u32.into(), b"removed");
                     return;
                 }
-                let Ok(Some(connection)) = net.adopt(connection, false) else {
-                    return;
-                };
-                while let Ok((send, recv)) = connection.accept_bi().await {
-                    tokio::spawn(net.clone().serve_inbound(peer, send, recv));
-                }
+                let _ = net.adopt(connection, false);
             });
         }
         mark_peer_offline_on_shutdown(&self.0.state);
         self.0.endpoint.close().await;
+    }
+
+    async fn accept_streams(self, connection: Connection, peer: PeerId) {
+        while let Ok((send, recv)) = connection.accept_bi().await {
+            tokio::spawn(self.clone().serve_inbound(peer, send, recv));
+        }
     }
 
     async fn serve_inbound(self, peer: PeerId, mut send: SendStream, mut recv: RecvStream) {
@@ -606,23 +632,31 @@ impl IrohNet {
                 },
             };
             for peer in peers {
-                if self.0.state.sync_sessions.get(&peer.to_string()).is_some() {
-                    continue;
-                }
-                if let Some(connection) = self.connection(&peer) {
-                    info!(
-                        "[{}] closing connection to {peer}: its sync session ended",
-                        self.circle()
-                    );
-                    connection.close(0u32.into(), b"sync ended");
-                }
+                let net = self.clone();
+                tokio::spawn(async move {
+                    // Closing a QUIC connection drops whatever the peer has
+                    // not acknowledged yet, and a session that ends on purpose
+                    // ends with a last frame (`REVOKED` to a removed member).
+                    // Let it land first.
+                    tokio::time::sleep(CLOSE_GRACE).await;
+                    if net.0.state.sync_sessions.get(&peer.to_string()).is_some() {
+                        return;
+                    }
+                    if let Some(connection) = net.connection(&peer) {
+                        info!(
+                            "[{}] closing connection to {peer}: its sync session ended",
+                            net.circle()
+                        );
+                        connection.close(0u32.into(), b"sync ended");
+                    }
+                });
             }
         }
     }
 
-    /// Show this endpoint's reachable addresses where libp2p's listen
-    /// addresses went, as multiaddrs carrying our PeerId, so invites built
-    /// from them name us and a direct-address hint.
+    /// Keep the status page's direct addresses and home relay current. The
+    /// addresses are multiaddrs carrying our PeerId, so an invite built from
+    /// one names us and a direct-address hint.
     async fn publish_addresses(self, token: CancellationToken) {
         let mut ticks = tokio::time::interval(Duration::from_secs(10));
         loop {
@@ -630,10 +664,9 @@ impl IrohNet {
                 _ = token.cancelled() => return,
                 _ = ticks.tick() => {}
             }
-            let addrs: Vec<String> = self
-                .0
-                .endpoint
-                .addr()
+            let addr = self.0.endpoint.addr();
+            let home = addr.relay_urls().next().map(|url| url.to_string());
+            let addrs: Vec<String> = addr
                 .ip_addrs()
                 .map(|addr| {
                     let ip = match addr.ip() {
@@ -643,8 +676,11 @@ impl IrohNet {
                     format!("{ip}/udp/{}/quic-v1/p2p/{}", addr.port(), self.0.local)
                 })
                 .collect();
-            if let Ok(mut listen) = self.0.state.p2p_listen_addrs.write() {
-                *listen = addrs;
+            if let Ok(mut direct) = self.0.state.p2p_direct_addrs.write() {
+                *direct = addrs;
+            }
+            if let Ok(mut relay) = self.0.state.p2p_home_relay.write() {
+                *relay = home;
             }
         }
     }
@@ -712,6 +748,120 @@ mod tests {
             .urls::<Vec<RelayUrl>>();
         assert_eq!(urls.len(), 1);
         assert_eq!(urls[0].to_string(), "https://relay.example/");
+    }
+
+    fn test_state(peer: &PeerId) -> AppState {
+        AppState::new(
+            "circle".into(),
+            "Circle".into(),
+            std::path::PathBuf::new(),
+            std::path::PathBuf::new(),
+            String::new(),
+            "agent".into(),
+            1,
+            peer.to_string(),
+            crate::config::JoinPolicy::Manual,
+            "owner".into(),
+            crate::mls::new_mls_state(
+                crate::mls::MlsIdentity::generate(&peer.to_string()).unwrap(),
+                None,
+            ),
+        )
+    }
+
+    fn test_config(peers: Vec<String>) -> CircleConfig {
+        CircleConfig {
+            join_grant: None,
+            circle_id: "circle".into(),
+            circle_name: "Circle".into(),
+            psk_hex: String::new(),
+            keypair_proto_hex: String::new(),
+            workspace_dir: String::new(),
+            admin_pubkey_hex: String::new(),
+            disabled: false,
+            force_relay: false,
+            peers,
+            relay_addrs: vec![],
+            rendezvous_addrs: vec![],
+            join_policy: crate::config::JoinPolicy::Manual,
+            owner: String::new(),
+            transport: Default::default(),
+            // Unreachable: the two endpoints meet directly on loopback.
+            iroh_relays: vec!["http://127.0.0.1:9".into()],
+        }
+    }
+
+    /// The side that accepted a connection can open a stream on it, as admin
+    /// handover does when the leaving admin has the higher PeerId.
+    #[tokio::test]
+    async fn the_side_that_was_dialed_can_open_streams_too() {
+        let mut keys: Vec<_> = (0..2)
+            .map(|_| libp2p_identity::Keypair::generate_ed25519())
+            .collect();
+        keys.sort_by_key(|key| key.public().to_peer_id().to_bytes());
+        let (low_key, high_key) = (&keys[0], &keys[1]);
+        let (low, high) = (
+            low_key.public().to_peer_id(),
+            high_key.public().to_peer_id(),
+        );
+        let psk = [7u8; 32];
+        let token = CancellationToken::new();
+
+        let high_state = test_state(&high);
+        spawn(
+            &test_config(vec![]),
+            high_state.clone(),
+            high_key,
+            psk,
+            token.clone(),
+        )
+        .await
+        .unwrap();
+        let port = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let port = high_state
+                    .p2p_direct_addrs
+                    .read()
+                    .unwrap()
+                    .iter()
+                    .find_map(|addr| parse_peer_addr(addr)?.1.first().map(|direct| direct.port()));
+                if let Some(port) = port {
+                    return port;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the endpoint publishes its address");
+
+        // The lower PeerId dials, so `high` only ever accepts.
+        let low_state = test_state(&low);
+        let hint = format!("/ip4/127.0.0.1/udp/{port}/quic-v1/p2p/{high}");
+        spawn(
+            &test_config(vec![hint]),
+            low_state.clone(),
+            low_key,
+            psk,
+            token.clone(),
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while high_state.peer_connections(&low.to_string()).is_empty() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("low dials high");
+
+        // MLS bootstrap needs only the Circle proof, so the empty test groups
+        // do not refuse it.
+        let net = high_state.net().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), net.open(low, Proto::MlsBootstrap))
+            .await
+            .expect("the dialer answers a stream it did not open")
+            .unwrap();
+        token.cancel();
     }
 
     #[test]
