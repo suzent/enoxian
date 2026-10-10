@@ -138,7 +138,7 @@ pub enum AgentCommands {
     Stop,
     /// Run the local daemon in the foreground (advanced)
     Daemon(DaemonArgs),
-    /// Run a public rendezvous and circuit-relay server
+    /// Run a public bootstrap server and Iroh relay
     Bootstrap(BootstrapArgs),
     /// Install and manage login-time background startup
     Service(ServiceArgs),
@@ -480,11 +480,13 @@ pub struct EnterArgs {
     #[arg(long)]
     pub secret: Option<String>,
 
-    /// Directly dial a peer multiaddr (overrides any peer embedded in the invite)
+    /// Dial this peer address instead of the one in the invite
+    /// (e.g. /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<peer_id>)
     #[arg(long)]
     pub peer: Option<String>,
 
-    /// Rendezvous server multiaddr for WAN
+    /// Bootstrap server (host[:port]) for short invites and upgrade checks,
+    /// instead of the one in the invite
     #[arg(long)]
     pub rendezvous: Option<String>,
 
@@ -494,12 +496,6 @@ pub struct EnterArgs {
 
     #[arg(long)]
     pub owner: Option<String>,
-
-    /// Skip the 10-second connectivity verification step.
-    /// Set automatically when called from the daemon API — the daemon's P2P
-    /// swarm handles connectivity; blocking the HTTP handler is not desirable.
-    #[arg(skip)]
-    pub no_verify: bool,
 }
 
 #[derive(Parser)]
@@ -511,7 +507,8 @@ pub struct InviteArgs {
     #[arg(long, default_value = "7d")]
     pub ttl: String,
 
-    /// Embed a peer multiaddr so invitees can connect without mDNS (e.g. /ip4/1.2.3.4/tcp/9091)
+    /// Embed this peer address instead of the best direct one the daemon
+    /// reports (e.g. /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<peer_id>)
     #[arg(long)]
     pub peer: Option<String>,
 
@@ -520,8 +517,8 @@ pub struct InviteArgs {
     #[arg(long)]
     pub relay: Option<String>,
 
-    /// Embed a rendezvous server multiaddr for automatic peer discovery
-    /// (e.g. /ip4/1.2.3.4/udp/36521/quic-v1/p2p/<peer_id>)
+    /// Bootstrap server (host[:port]) that holds the short invite and that
+    /// joiners use for upgrade checks
     #[arg(long)]
     pub rendezvous: Option<String>,
 

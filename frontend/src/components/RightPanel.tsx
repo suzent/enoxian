@@ -3,7 +3,7 @@ import CircleMembership from './CircleMembership'
 import DeviceSettings from './DeviceSettings'
 import InviteLink from './InviteLink'
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { Presence, Task, Member, PendingEntry, Proposal } from '../types'
+import type { Presence, Task, Member, PendingEntry, Proposal, InviteConnectivity } from '../types'
 import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, createFile, renameFile, deleteFile, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember, enableCircle, disableCircle, leaveCircle, getProposals } from '../api'
 import ProposalsTab from './ProposalsTab'
 import { FileQuickView } from './EditorPanel'
@@ -59,7 +59,7 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
   const [previewFile, setPreviewFile] = useState<string | null>(null)
   const [openFolders, setOpenFolders] = useState<Set<string>>(() => new Set())
   const [inviteUri, setInviteUri] = useState<string | null>(null)
-  const [inviteConnectivity, setInviteConnectivity] = useState<{peer_addr: string|null, relay_addr: string|null, rendezvous_addr: string|null} | null>(null)
+  const [inviteConnectivity, setInviteConnectivity] = useState<InviteConnectivity | null>(null)
   const [longInviteUri, setLongInviteUri] = useState<string | undefined>()
   const [inviteNote, setInviteNote] = useState<string | null>(null)
   const [inviteLoading, setInviteLoading] = useState(false)
@@ -491,11 +491,10 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
             <div className="member-invitation">
               <InviteLink key={inviteUri} uri={inviteUri} longUri={longInviteUri} note={inviteNote} />
               {inviteConnectivity && (() => {
-                const wan = inviteConnectivity.peer_addr || inviteConnectivity.relay_addr || inviteConnectivity.rendezvous_addr
+                const wan = !!inviteConnectivity.direct_addr || inviteConnectivity.relays.length > 0
                 const tags: string[] = []
-                if (inviteConnectivity.peer_addr) tags.push('DIRECT')
-                if (inviteConnectivity.relay_addr) tags.push('RELAY')
-                if (inviteConnectivity.rendezvous_addr) tags.push('RDVZ')
+                if (inviteConnectivity.direct_addr) tags.push('DIRECT')
+                if (inviteConnectivity.relays.length > 0) tags.push('RELAY')
                 return (
                   <div className="invite-connection-status">
                     <span className={wan ? '' : 'is-muted'}>{wan ? '● Reachable' : '○ Local network only'}</span>

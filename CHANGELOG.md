@@ -60,6 +60,13 @@ refuses to publish a version whose section is missing or empty.
   serves HTTP on `--port` and, with `--iroh-relay`, the Iroh relay. Its peer id
   is unchanged, and `--relay-port` is still accepted (and ignored) so existing
   service files keep starting.
+- Settings → Connectivity lists the relays a Circle falls back on, and invite
+  links are tagged DIRECT and RELAY only. In the API, `/status` reports
+  `endpoint_id`, `relays`, `home_relay` and `direct_addrs` under `p2p`
+  (replacing `external_addrs`, `listen_addrs`, `relay_addrs` and
+  `rendezvous_addrs`), `/connectivity` reports `relays` instead of
+  `relay_configured` and `rendezvous_configured`, and the invite response's
+  `connectivity` is `{ direct_addr, relays }`.
 - `enox --version` names the optional features a binary was built with, for
   example `0.11.0 (dev, b8cdb9b, iroh-transport)`.
 

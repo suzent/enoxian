@@ -42,15 +42,15 @@ Writes use a temporary file and atomic replacement so a partial process failure 
 
 ## Peer Sessions
 
-Direct peer sessions pass through these layers:
+Peer sessions pass through these layers:
 
-1. TCP connection;
-2. Circle pre-shared-key gate;
-3. Noise authentication tied to device identity;
-4. Yamux multiplexing;
+1. an Iroh QUIC connection, one per pair of peers, over a direct path or a relay;
+2. TLS authentication of both endpoint ids, which are the peers' per-circle device keys;
+3. a one-byte protocol tag and a Circle proof derived from the pre-shared key, on every stream;
+4. an MLS group check for content streams;
 5. a versioned application stream for content, proposals, events, control state, or awareness.
 
-The rendezvous path supplies peer discovery and forwarding when direct connectivity is unavailable. Application content frames are protected with MLS-derived encryption on both paths. Exact framing is in [P2P protocols](../reference/p2p-protocols.md).
+Relays forward encrypted QUIC when no direct path is available; Iroh switches to a direct path inside the same connection when one opens. Application content frames are protected with MLS-derived encryption on every path. Exact framing is in [P2P protocols](../reference/p2p-protocols.md).
 
 ## MLS State
 

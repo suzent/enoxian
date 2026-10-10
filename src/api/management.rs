@@ -107,9 +107,6 @@ pub async fn enter_circle(
         rendezvous: None,
         dir: payload.dir.map(std::path::PathBuf::from),
         owner: payload.owner,
-        // Skip the 10-second connectivity verification step — the daemon's P2P
-        // swarm spawned below handles connectivity in the background.
-        no_verify: true,
     };
 
     match enter::run(args, &http_client).await {
@@ -197,25 +194,18 @@ pub async fn generate_invite(
     // A direct address the Iroh endpoint published (public IP > Tailscale >
     // RFC1918), or else this device's PeerId alone, which the joiner dials by
     // key through the relays.
-    let peer_addr = daemon
-        .get(&circle_id)
-        .and_then(|state| {
-            let ext = state.p2p_external_addrs.read().ok()?.first().cloned();
-            if ext.is_some() {
-                return ext;
-            }
-            let listen = state.p2p_listen_addrs.read().ok()?;
-            best_connectable_addr(listen.as_slice()).map(String::from)
-        })
+    let direct_addr = daemon.get(&circle_id).and_then(|state| {
+        let direct = state.p2p_direct_addrs.read().ok()?;
+        best_connectable_addr(direct.as_slice()).map(String::from)
+    });
+    let peer_addr = direct_addr
+        .clone()
         .or_else(|| invite::iroh_self_addr(&config.keypair_proto_hex));
 
     let iroh_relays = config.iroh_relays.clone();
-    // Shown to the user as the relay this Circle falls back on.
-    let relay_shown = iroh_relays.first().cloned().or_else(|| {
-        crate::defaults::DEFAULT_IROH_RELAYS
-            .first()
-            .map(|r| r.to_string())
-    });
+    // The relays the joiner falls back on: the ones the invite names, or the
+    // defaults when it names none.
+    let relays = crate::network::iroh_net::relay_urls(&iroh_relays);
 
     // rendezvous_addr: from saved config, or fall back to the default server
     // (enoxian.com) so invites are WAN-capable even without manual configuration.
@@ -273,9 +263,8 @@ pub async fn generate_invite(
         "short_note": short_note,
         // Tell the frontend what was embedded so it can show a connectivity hint
         "connectivity": {
-            "peer_addr": peer_addr,
-            "relay_addr": relay_shown,
-            "rendezvous_addr": rendezvous_addr,
+            "direct_addr": direct_addr,
+            "relays": relays,
         }
     }))
     .into_response()
@@ -293,12 +282,9 @@ async fn short_or_full(uri: &str, rendezvous: Option<&str>) -> (String, Option<&
 }
 
 /// Pick the best listen addr for embedding in an invite.
-/// Prefers public IPs > Tailscale CGNAT (100.64/10) > RFC1918. Skips loopback / circuit addrs.
+/// Prefers public IPs > Tailscale CGNAT (100.64/10) > RFC1918. Skips loopback.
 fn best_connectable_addr(addrs: &[String]) -> Option<&str> {
     fn rank(addr: &str) -> u8 {
-        if addr.contains("/p2p-circuit") {
-            return 5;
-        }
         let ip_str = match addr.strip_prefix("/ip4/").and_then(|s| s.split('/').next()) {
             Some(s) => s,
             None => return 5,

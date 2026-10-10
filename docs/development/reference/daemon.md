@@ -2,7 +2,7 @@
 
 `enox daemon run` is the long-running mode of the unified `enox` binary. It
 serves **all known Circles** over a single HTTP/WS port, with each Circle getting
-its own P2P swarm on a random port. Normal users should prefer `enox start` or
+its own Iroh endpoint on a random UDP port. Normal users should prefer `enox start` or
 `enox service install`.
 
 ```
@@ -10,7 +10,8 @@ Usage: enox daemon run [OPTIONS]
 
 Options:
   --port <PORT>    HTTP port [default: 36521]
-  --bootstrap      Run as a public rendezvous + relay server, not as a circle daemon
+  --bind-lan       Bind the API to 0.0.0.0 instead of loopback
+  --bind <IP>      Explicit bind address (overrides --bind-lan)
   -h, --help
 ```
 
@@ -23,13 +24,13 @@ Options:
 3. For each enabled circle:
    - Create in-memory state for documents, broadcasts, file-write suppression, and proposal sync
    - Spawn a file watcher on the circle's workspace directory
-   - Build a libp2p swarm with Noise/Yamux, mDNS, Kademlia, Identify, Ping, Rendezvous, Relay/DCUtR, and stream protocols
-   - Dial configured peers, relay addresses, and rendezvous servers
-   - Spawn the membership bootstrap and encrypted `/enoxian/sync/2.0.0` stream accept tasks
-   - Spawn the swarm event loop and register the circle in shared daemon state
+   - Bind an Iroh endpoint keyed by the Circle's Ed25519 key, homed on the Circle's relays
+   - Accept incoming streams and start dialing members (see [Networking](#networking))
+   - Register the circle in shared daemon state
 4. Start a single HTTP/WS server on `--port` serving all circles
 
-The circle PSK is a stable per-circle network credential. Member removal is
+The circle PSK is a stable per-circle network credential: every stream starts
+with a proof derived from it. Member removal is
 enforced by replicated member/tombstone state and advances the MLS epoch so
 removed members cannot derive new content-encryption keys.
 
@@ -82,12 +83,16 @@ keypair_proto_hex = "0802..."            # Ed25519 node keypair, protobuf-encode
 workspace_dir     = "/Users/suzy/enoxian/MyCircle"
 admin_pubkey_hex  = "0803..."            # Ed25519 admin pubkey
 disabled          = false                # skip this circle on daemon startup
-peers             = []                   # direct peer multiaddrs to dial
-relay_addrs       = []                   # circuit relay multiaddrs
-rendezvous_addrs  = []                   # QUIC rendezvous server multiaddrs
+force_relay       = false                # use relay paths only (diagnostic)
+peers             = []                   # peers named by the invite, dialed on join
+rendezvous_addrs  = []                   # bootstrap server (short links, enox link, upgrade check)
+iroh_relays       = []                   # Iroh relay URLs; empty = default relays
 join_policy       = "auto"               # auto or manual
 owner             = "alice"              # human/device owner label
 ```
+
+Configs written by 0.11 or earlier may also have `relay_addrs` and
+`transport`. Both still load and are no longer read.
 
 > Do not share `keypair_proto_hex`. The `psk_hex` is the circle network
 > credential and is embedded in invite links.
@@ -119,7 +124,7 @@ Files in the workspace are watched recursively. Any write triggers a CRDT update
 
 ```bash
 RUST_LOG=info  enox daemon run          # recommended for normal use
-RUST_LOG=debug enox daemon run          # full verbosity including libp2p internals
+RUST_LOG=debug enox daemon run          # full verbosity including Iroh internals
 RUST_LOG=warn  enox daemon run          # errors and warnings only
 ```
 
@@ -163,35 +168,83 @@ ssh -L 36521:127.0.0.1:36521 user@host   # then use http://127.0.0.1:36521 local
 `--bind-lan` is acceptable only on a network you fully trust; the token is still
 required, but widening the bind widens the attack surface.
 
+## Networking
+
+Every Circle connects over Iroh (QUIC). 0.11 and earlier used libp2p; the two
+cannot talk to each other, so every device in a Circle must run 0.12 or later.
+
+**Endpoint.** Each Circle has its own Iroh endpoint, keyed by the Circle's
+Ed25519 key (derived per Circle from the device identity). Its EndpointId is
+the same public key as the member's PeerId, so the PeerId stays the member id.
+Nothing is published to Iroh's DNS discovery, and port mapping (UPnP/NAT-PMP)
+is off.
+
+**Streams.** One connection per pair of peers carries every protocol under the
+single ALPN `enoxian/3`. Each bidirectional stream opens with a one-byte
+protocol tag (mls-bootstrap, admin-handover, sync, proposals, events), then a
+32-byte Circle proof in each direction. The proof is an HKDF of the Circle PSK
+bound to the Circle id and both peers' ids, so it cannot be replayed to another
+peer, and it covers relayed paths too. Streams must show their tag and proof
+within 10 seconds. Content protocols also require the peer to have a leaf in
+this device's MLS group; mls-bootstrap needs only the proof, since it is how a
+joiner gets its Welcome. A removed member's connection is closed at once, and
+removed members are never dialed.
+
+**Dialing.** Of two members, the one with the lower PeerId dials. A joiner also
+dials the peers its invite named, since they do not know it yet. If two
+connections to one peer appear, the one dialed by the lower PeerId stays. A
+dial names the peer id, all of the Circle's relay URLs, and any direct-address
+hint from an invite.
+
+**Reconnects.** The daemon sweeps the member list every 30 seconds and redials
+missing peers, with per-peer exponential backoff. After losing a peer it dials,
+it tries again after 2 seconds. A connection with no traffic for 15 seconds is
+dropped; Iroh sends keep-alives every 5 seconds.
+
+**Paths.** Iroh holepunches and migrates paths inside one QUIC connection: a
+connection that starts on a relay moves to a direct path when one opens,
+without reconnecting. Behind a
+symmetric NAT (a mobile carrier, say) no direct path opens and traffic stays on
+the relay. The member list shows the selected path as LAN, Tailscale, Public
+or Relay.
+
+**Relays.** A Circle uses its config's `iroh_relays` when that list is not
+empty. Otherwise it uses `https://relay.enoxian.com` plus Iroh's public relays.
+Each device homes on the nearest one; other devices reach it there until a
+direct path opens. Invites carry the inviter's `iroh_relays`, and `enox enter`
+saves them into the joiner's config.
+
+**Status.** `GET /circles/<id>/api/status` reports the endpoint under `p2p`:
+`peer_id`, `endpoint_id`, `relays`, `home_relay`, `direct_addrs`,
+`force_relay` and `recent_conn_errors`. See the
+[API reference](api.md).
+
 ## Force-relay diagnostics
 
 Each Circle has a device-local `force_relay` setting. In the frontend, open
 **Settings → Connectivity** and enable **Force relay**. The daemon keeps running
-while only that Circle's P2P swarm is rebuilt. Force-relay mode:
-
-- disables direct TCP and QUIC listeners
-- skips saved direct-peer addresses
-- disables DCUtR direct upgrades
-- ignores non-circuit addresses returned by rendezvous
-- rejects incoming direct circle-peer connections
+while only that Circle is restarted. With force relay on, the Circle's endpoint
+has no IP transports, so every connection goes through a relay and no direct
+path is tried.
 
 The setting is persisted in the Circle's `config.toml`. Disable the toggle to
-return to automatic routing. A successful relayed member connection appears as
-`RELAY` in the member list and contains `/p2p-circuit` in its address.
+return to automatic routing. A relayed member connection appears as `RELAY` in
+the member list.
 
 ## Bootstrap mode
 
-`enox bootstrap serve` runs a public rendezvous + circuit relay server. It does not
-load circles and holds no circle PSKs.
+`enox bootstrap serve` runs the bootstrap server. It does not load circles,
+holds no circle PSKs, and does no peer discovery.
 
 ```bash
 enox bootstrap serve --port 36521
 ```
 
-The server listens over QUIC for libp2p rendezvous/relay traffic and exposes
-`GET /peer-id` over HTTP on the same port so `enox invite --rendezvous <host>`
-can resolve the server's peer ID. Its stable keypair is stored at
-`~/.enoxian/bootstrap.key`.
+It serves HTTP on `--port`: `/version` (including `min_client_version`, so old
+clients see an upgrade notice), `/peer-id`, `/pair` for `enox link`, and
+`/invite` for short invites. Its stable keypair is stored at
+`~/.enoxian/bootstrap.key`. With `--iroh-relay` (and `--advertise-host`) it
+also runs an Iroh relay; see the [CLI reference](../../guide/cli.md#bootstrap-serve).
 
 ---
 

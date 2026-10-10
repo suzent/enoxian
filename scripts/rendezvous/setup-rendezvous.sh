@@ -7,7 +7,8 @@
 #
 # PORT (default 36521) is the HTTP port for /version, /peer-id, /pair and
 # /invite. With --advertise-host the server also runs the Iroh relay on 443
-# (HTTPS, Let's Encrypt certificate for HOST), 80 (ACME) and 7842/udp (QUIC
+# (HTTPS, Let's Encrypt certificate for HOST), 80 (Iroh's captive-portal
+# probe) and 7842/udp (QUIC
 # address discovery). --relay-port is accepted and ignored: the libp2p circuit
 # relay it set is gone.
 set -euo pipefail

@@ -64,18 +64,34 @@ Circle overview.
   ],
   "p2p": {
     "peer_id": "12D3KooW...",
-    "listen_addrs": ["/ip4/192.168.1.10/tcp/49822"],
-    "external_addrs": [],
-    "relay_addrs": [],
-    "rendezvous_addrs": [],
-    "recent_conn_errors": []
+    "endpoint_id": "3b6a27bc...",
+    "relays": ["https://relay.enoxian.com/", "..."],
+    "home_relay": "https://relay.enoxian.com/",
+    "direct_addrs": ["/ip4/192.168.1.10/udp/49822/quic-v1/p2p/12D3KooW..."],
+    "force_relay": false,
+    "recent_conn_errors": [{ "ts": "2026-09-25T14:30:12Z", "error": "..." }]
   }
 }
 ```
 
 `locks` lists every path currently held through `bind`, sorted by path.
 
-`upgrade_required` is `null`, or `{ "min_version": "0.11.0", "server": "relay.enoxian.com" }`
+`p2p` describes this Circle's Iroh endpoint:
+
+| Field | Meaning |
+|-------|---------|
+| `peer_id` | This device's id in the Circle |
+| `endpoint_id` | The same key in Iroh's text form |
+| `relays` | Relay URLs the Circle uses: its `iroh_relays`, or the defaults when that is empty |
+| `home_relay` | The relay this device is homed on, or `null` before it has one |
+| `direct_addrs` | Direct addresses the endpoint has found, as multiaddrs ending in `/p2p/<peer_id>` |
+| `force_relay` | Whether this Circle is limited to relay paths on this device |
+| `recent_conn_errors` | Recent connection failures, newest first |
+
+Daemons before 0.12 reported libp2p fields here (`listen_addrs`,
+`external_addrs`, `relay_addrs`, `rendezvous_addrs`); they are gone.
+
+`upgrade_required` is `null`, or `{ "min_version": "0.12.0", "server": "relay.enoxian.com" }`
 when one of the Circle's bootstrap servers no longer serves this client version.
 
 ---
@@ -337,7 +353,7 @@ Two further per-circle routes are used by the local UI:
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET`/`POST` | `/circles/<id>/api/connectivity` | Read or set embedded peer, relay, and rendezvous addresses |
+| `GET`/`POST` | `/circles/<id>/api/connectivity` | Read the Circle's relays, or set `force_relay` |
 | `GET`/`POST` | `/circles/<id>/api/chat/activity` | Read or publish agent chat activity indicators |
 | `GET` | `/circles/<id>/api/chat/executions` | Inspect local durable delivery status (paginated; optional `message_id` filter) |
 | `GET` | `/circles/<id>/api/chat/engagement` | What the next mention-less message will do |
@@ -737,7 +753,7 @@ Revert a previously accepted proposal.
 
 ### `POST /circles/<id>/stop`
 
-Stop a running circle (cancel its P2P swarm and tasks). The circle remains configured and can be restarted.
+Stop a running circle (close its Iroh endpoint and cancel its tasks). The circle remains configured and can be restarted.
 
 **Response `200`:**
 ```json
@@ -792,8 +808,27 @@ Stop a circle and remove the local circle config directory.
 
 ### `POST /circles/<id>/api/invite`
 
-Generate a 7-day invite for a circle. The response contains `invite_uri` and a
-`connectivity` object describing embedded peer, relay, and rendezvous addresses.
+Generate a 7-day invite for a circle.
+
+**Response `200`:**
+```json
+{
+  "invite_uri": "enoxian://s1/...",
+  "long_invite_uri": "enoxian://v3/...",
+  "short_note": null,
+  "connectivity": {
+    "direct_addr": "/ip4/203.0.113.7/udp/49822/quic-v1/p2p/12D3KooW...",
+    "relays": ["https://relay.enoxian.com/"]
+  }
+}
+```
+
+`invite_uri` is the short link, or the self-contained one when it could not be
+shortened; `short_note` then says why. `long_invite_uri` is always the
+self-contained link. `connectivity.direct_addr` is the direct address embedded
+in the invite (public, then Tailscale, then private), or `null` when the invite
+carries only the device id and the joiner dials through the relays.
+`connectivity.relays` lists the relays the joiner falls back on.
 
 ---
 

@@ -371,7 +371,6 @@ async fn enter_circle(uri: &str, client: &reqwest::Client) -> Result<String> {
             peer: None,
             rendezvous: None,
             owner: None,
-            no_verify: true,
         },
         client,
     )

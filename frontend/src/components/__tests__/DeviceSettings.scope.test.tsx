@@ -19,7 +19,7 @@ vi.mock('../../api', () => ({
   setEngagement: vi.fn(async () => ({ ok: true })),
   addAgent: vi.fn(),
   removeAgent: vi.fn(),
-  getConnectivitySettings: vi.fn(async () => ({ force_relay: false })),
+  getConnectivitySettings: vi.fn(async () => ({ force_relay: false, active: true, relays: ['https://relay.enoxian.com/'] })),
   getIdentity: vi.fn(async () => ({
     device_label: 'macbook-pro', user_handle: 'suzy', has_user_key: true, update_channel: 'stable',
   })),
@@ -94,6 +94,8 @@ describe('separate settings entry points', () => {
     await screen.findByText(/Applies in/)
     await userEvent.click(screen.getByRole('tab', { name: 'CONNECTIVITY' }))
     expect(await screen.findByText('Connectivity', { selector: 'h2' })).toBeTruthy()
+    expect(await screen.findByTitle('https://relay.enoxian.com/')).toBeTruthy()
+    expect(screen.getByText(/relay\.enoxian\.com/)).toBeTruthy()
   })
   it.each([undefined, 'c1'])('saves behaviour to the scope opened by the entry point (%s)', async circleId => {
     const { setEngagement } = await import('../../api')

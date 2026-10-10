@@ -69,10 +69,10 @@ Tasks, membership, locks, retained chat, and related metadata use their own sync
 
 ## Transport and Trust Layers
 
-- Direct peer connections use TCP, a circle pre-shared-key gate, Noise authentication, and Yamux streams.
-- Rendezvous relays help peers connect when direct routing is unavailable.
+- Peers connect over Iroh: one QUIC connection per pair, authenticated by each device's per-circle key, with a Circle proof derived from the pre-shared key on every stream.
+- Iroh relays carry the connection when no direct path is available; they forward encrypted QUIC and hold no circle secret.
 - MLS-derived content keys protect synchronized content across direct and relayed paths.
-- Bootstrap transfers use a separate authenticated QUIC protocol.
+- MLS bootstrap runs as its own stream that needs the Circle proof but not yet the content key.
 - The local HTTP API is loopback-only by default and uses bearer authentication for mutating operations.
 
 Wire formats and versioning are documented in [P2P protocols](../reference/p2p-protocols.md). The broader security model is in [Security](security.md).

@@ -19,11 +19,19 @@ export interface UpgradeNotice {
   server: string
 }
 
+/** What a fresh invite carries for reaching this device. */
+export interface InviteConnectivity {
+  /** A direct address hint, when this device has one. */
+  direct_addr: string | null
+  /** The relays the joiner falls back on. */
+  relays: string[]
+}
+
 export interface ConnectivitySettings {
   force_relay: boolean
   active: boolean
-  relay_configured: boolean
-  rendezvous_configured: boolean
+  /** The Iroh relays this Circle falls back on when no direct path opens. */
+  relays: string[]
 }
 
 export interface Member {

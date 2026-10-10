@@ -21,15 +21,16 @@ Agents may send messages, files, and context to their model providers. Ambient
 agents read unaddressed human messages as well, so enabling them changes what
 is sent outside the Circle. See [using agents](../guide/agents.md).
 
-## Relay and rendezvous
+## Relays
 
 Circle content is encrypted in transit, including when it passes through a
-relay. The project-operated default service is `relay.enoxian.com`. Its
-operator can observe connection metadata such as peer IDs, network addresses,
-and timing, but cannot read the encrypted Circle content merely by relaying it.
+relay. By default a Circle uses enoxian's relay, `relay.enoxian.com`, together
+with Iroh's public relays. A relay operator can observe connection metadata
+such as peer IDs, network addresses, and timing, but cannot read the encrypted
+Circle content merely by relaying it.
 
-You can [host your own relay](../guide/rendezvous-setup.md) and configure your
-Circles to use it.
+You can [host your own relay](../guide/rendezvous-setup.md) and list it in
+your Circles' `iroh_relays`; a Circle with its own list uses only those relays.
 
 ## Protect local data
 

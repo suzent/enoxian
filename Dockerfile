@@ -45,7 +45,8 @@ RUN apt-get update \
 COPY --from=build /src/target/release/enox /usr/local/bin/enox
 
 # The HTTP endpoints listen on --port. The Iroh relay, when turned on, takes
-# 443 (HTTPS), 80 (ACME) and 7842/udp (QUIC address discovery).
+# 443 (HTTPS; the certificate is issued over TLS-ALPN-01), 80 (Iroh's
+# captive-portal probe) and 7842/udp (QUIC address discovery).
 EXPOSE 36521/tcp
 EXPOSE 80/tcp
 EXPOSE 443/tcp

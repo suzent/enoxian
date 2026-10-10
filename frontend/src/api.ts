@@ -1,4 +1,4 @@
-import type { Circle, Status, Presence, ChatMessage, Attachment, ChatActivity, EngagementView, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin, ConnectivitySettings } from './types'
+import type { Circle, Status, Presence, ChatMessage, Attachment, ChatActivity, EngagementView, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin, ConnectivitySettings, InviteConnectivity } from './types'
 
 const api = (circleId: string) => `/circles/${circleId}/api`
 
@@ -266,7 +266,7 @@ export const initCircle = (name: string, owner?: string, joinPolicy?: string, di
 export const enterCircle = (target: string, owner?: string, secret?: string, peer?: string, dir?: string) =>
   post<{status: string, circle_id?: string}>('/api/enter', { target, owner, secret, peer, dir }, INVITE_TIMEOUT_MS)
 export const inviteCircle = (id: string) =>
-  post<{invite_uri: string, long_invite_uri?: string, short_note?: string | null, connectivity: {peer_addr: string|null, relay_addr: string|null, rendezvous_addr: string|null}}>(`${api(id)}/invite`, {}, INVITE_TIMEOUT_MS)
+  post<{invite_uri: string, long_invite_uri?: string, short_note?: string | null, connectivity: InviteConnectivity}>(`${api(id)}/invite`, {}, INVITE_TIMEOUT_MS)
 export const enableCircle = (id: string) =>
   post<{status: string}>(`${api(id)}/enable`, {})
 export const disableCircle = (id: string) =>
