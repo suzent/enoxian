@@ -154,7 +154,7 @@ impl DistrustEntry {
         let Ok(bytes) = hex::decode(admin_pubkey_hex.trim()) else {
             return false;
         };
-        let Ok(key) = libp2p::identity::PublicKey::try_decode_protobuf(&bytes) else {
+        let Ok(key) = libp2p_identity::PublicKey::try_decode_protobuf(&bytes) else {
             return false;
         };
         let Ok(sig) = hex::decode(self.admin_signature.trim()) else {
@@ -964,7 +964,7 @@ mod distrust_tests {
     /// circle — a denial of service available to everybody inside it.
     #[test]
     fn a_distrust_record_is_only_authority_when_the_admin_signed_it() {
-        use libp2p::identity::Keypair;
+        use libp2p_identity::Keypair;
 
         let admin = Keypair::generate_ed25519();
         let admin_hex = hex::encode(admin.public().encode_protobuf());
@@ -1018,7 +1018,7 @@ mod distrust_tests {
     /// not a distrust, or one could be replayed as the other.
     #[test]
     fn a_trust_signature_does_not_authenticate_a_distrust() {
-        use libp2p::identity::Keypair;
+        use libp2p_identity::Keypair;
 
         let admin = Keypair::generate_ed25519();
         let admin_hex = hex::encode(admin.public().encode_protobuf());

@@ -1,5 +1,5 @@
 use chrono::Utc;
-use libp2p::PeerId;
+use libp2p_identity::PeerId;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use yrs::{Any, Map, Out, ReadTxn, Transact, WriteTxn};

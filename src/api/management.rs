@@ -193,56 +193,29 @@ pub async fn generate_invite(
         .and_then(|h| keypair_from_hex(h.trim()).ok())
         .map(|k| k.public().encode_protobuf());
 
-    // ── Auto-embed best peer address from live P2P state ──────────────────────
-    // Priority:
-    //   1. ExternalAddrConfirmed (confirmed by a peer via Identify) — most reliable for WAN
-    //   2. Best routable listen addr (public IP > Tailscale > RFC1918)
-    //   3. Relay circuit address (relay_addr/p2p-circuit/p2p/OUR_PEER_ID) — works
-    //      for NAT'd peers with a relay reservation; joiner dials us via relay.
-    let peer_addr = daemon.get(&circle_id).and_then(|state| {
-        // Try external first (confirmed by a remote peer — most reliable for WAN)
-        let ext = state.p2p_external_addrs.read().ok()?.first().cloned();
-        if ext.is_some() {
-            return ext;
-        }
-        // Fall back to best listen addr
-        let listen = state.p2p_listen_addrs.read().ok()?;
-        best_connectable_addr(listen.as_slice()).map(String::from)
-    });
+    // ── Auto-embed the best address we have ──────────────────────────────────
+    // A direct address the Iroh endpoint published (public IP > Tailscale >
+    // RFC1918), or else this device's PeerId alone, which the joiner dials by
+    // key through the relays.
+    let peer_addr = daemon
+        .get(&circle_id)
+        .and_then(|state| {
+            let ext = state.p2p_external_addrs.read().ok()?.first().cloned();
+            if ext.is_some() {
+                return ext;
+            }
+            let listen = state.p2p_listen_addrs.read().ok()?;
+            best_connectable_addr(listen.as_slice()).map(String::from)
+        })
+        .or_else(|| invite::iroh_self_addr(&config.keypair_proto_hex));
 
-    let transport = config.effective_transport();
     let iroh_relays = config.iroh_relays.clone();
-
-    // relay_addr: from saved config, or fall back to the default relay server
-    // so invites are usable for WAN NAT traversal even without manual configuration.
-    // Resolved first so it can also serve as the peer_addr fallback below.
-    let relay_addr = if let Some(saved) = config.relay_addrs.into_iter().next() {
-        Some(saved)
-    } else {
-        crate::commands::rendezvous::resolve_default_relay().await
-    };
-
-    // If no direct/external address is available (NAT'd peer, daemon just started),
-    // derive our relay circuit address from relay_addr + our keypair's peer ID.
-    // This is deterministic and reachable: the joiner dials us through the relay.
-    let peer_addr = if peer_addr.is_none() && transport == crate::config::Transport::Iroh {
-        invite::iroh_self_addr(&config.keypair_proto_hex)
-    } else if peer_addr.is_none() {
-        relay_addr
-            .as_deref()
-            .and_then(|relay_str| relay_str.parse::<libp2p::Multiaddr>().ok())
-            .and_then(|relay_maddr| {
-                keypair_from_hex(&config.keypair_proto_hex).ok().map(|kp| {
-                    let my_peer_id = kp.public().to_peer_id();
-                    relay_maddr
-                        .with(libp2p::multiaddr::Protocol::P2pCircuit)
-                        .with(libp2p::multiaddr::Protocol::P2p(my_peer_id))
-                        .to_string()
-                })
-            })
-    } else {
-        peer_addr
-    };
+    // Shown to the user as the relay this Circle falls back on.
+    let relay_shown = iroh_relays.first().cloned().or_else(|| {
+        crate::defaults::DEFAULT_IROH_RELAYS
+            .first()
+            .map(|r| r.to_string())
+    });
 
     // rendezvous_addr: from saved config, or fall back to the default server
     // (enoxian.com) so invites are WAN-capable even without manual configuration.
@@ -255,9 +228,6 @@ pub async fn generate_invite(
     // A server that is just the compiled-in default travels as a flag rather
     // than an address — see `commands::invite` for why the check is against the
     // address itself and not against which branch produced it.
-    let relay_is_default = relay_addr
-        .as_deref()
-        .is_some_and(crate::commands::rendezvous::is_default_relay);
     let rendezvous_is_default = rendezvous_addr
         .as_deref()
         .is_some_and(crate::commands::rendezvous::is_default_rendezvous);
@@ -277,12 +247,11 @@ pub async fn generate_invite(
         expires_at,
         peer_addr: peer_addr.clone(),
         admin_pubkey_bytes,
-        relay_addr: relay_addr.clone().filter(|_| !relay_is_default),
+        relay_addr: None,
         rendezvous_addr: rendezvous_addr.clone().filter(|_| !rendezvous_is_default),
-        relay_is_default,
+        relay_is_default: false,
         rendezvous_is_default,
         grant,
-        transport,
         iroh_relays,
     }) {
         Ok(uri) => uri,
@@ -305,7 +274,7 @@ pub async fn generate_invite(
         // Tell the frontend what was embedded so it can show a connectivity hint
         "connectivity": {
             "peer_addr": peer_addr,
-            "relay_addr": relay_addr,
+            "relay_addr": relay_shown,
             "rendezvous_addr": rendezvous_addr,
         }
     }))
@@ -555,7 +524,6 @@ mod short_invite_tests {
             relay_is_default: false,
             rendezvous_is_default: false,
             grant: None,
-            transport: Default::default(),
             iroh_relays: vec![],
         })
         .unwrap();

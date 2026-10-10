@@ -70,9 +70,7 @@ curl1() { curl -sf -H "Authorization: Bearer $(tok1)" "http://127.0.0.1:$D1_PORT
 curl2() { curl -sf -H "Authorization: Bearer $(tok2)" "http://127.0.0.1:$D2_PORT$1"; }
 
 enox1() { ENOXIAN_HOME="$D1_STATE" ENOXIAN_API="http://127.0.0.1:$D1_PORT" "$ENOX" "$@"; }
-# Device two never sees ENOXIAN_TRANSPORT: on an Iroh run it has to learn the
-# transport from the invite, as a real joiner would.
-enox2() { env -u ENOXIAN_TRANSPORT ENOXIAN_HOME="$D2_STATE" ENOXIAN_API="http://127.0.0.1:$D2_PORT" "$ENOX" "$@"; }
+enox2() { ENOXIAN_HOME="$D2_STATE" ENOXIAN_API="http://127.0.0.1:$D2_PORT" "$ENOX" "$@"; }
 
 # Poll until a predicate holds. Fixed sleeps were the main source of both
 # flakiness and slowness here: too short and a healthy run fails, too long and
@@ -114,12 +112,7 @@ d2_has_file()  { curl2 "/circles/$CIRCLE_ID/api/files" 2>/dev/null | grep -q "$1
 d2_content_is() { [[ "$(cat "$D2_WS/$1" 2>/dev/null || true)" == "$2" ]]; }
 
 section "Build"
-# ENOXIAN_TRANSPORT=iroh runs both daemons on the Iroh transport.
-if [[ "${ENOXIAN_TRANSPORT:-}" == "iroh" ]]; then
-    cargo build --bins -q --features iroh-transport && ok "built (Iroh transport)"
-else
-    cargo build --bins -q && ok "built"
-fi
+cargo build --bins -q && ok "built"
 
 section "Start daemon 1 (circle creator)"
 mkdir -p "$D1_STATE" "$D1_WS"
@@ -143,7 +136,7 @@ ok "circle active on daemon 1"
 
 section "Start daemon 2 and enter circle"
 mkdir -p "$D2_STATE" "$D2_WS"
-env -u ENOXIAN_TRANSPORT ENOXIAN_DEVICE_LABEL="device-two" ENOXIAN_HOME="$D2_STATE" \
+ENOXIAN_DEVICE_LABEL="device-two" ENOXIAN_HOME="$D2_STATE" \
     "$ENOX" daemon run --port $D2_PORT > "$TMPDIR_TEST/d2.log" 2>&1 &
 wait_for "daemon 2 never became reachable" 40 daemon_up "$D2_STATE" $D2_PORT
 ok "daemon 2 up on port $D2_PORT"
@@ -152,28 +145,17 @@ ok "daemon 2 up on port $D2_PORT"
 # `listen_addrs` never contains 127.0.0.1 — the previous filter for it always
 # came up empty and the join silently dialed nothing. Take the port from any
 # TCP listener and reach it over loopback.
-# On Iroh the listen addresses are UDP and carry the peer id, which the
-# joiner needs to dial by key.
-if [[ "${ENOXIAN_TRANSPORT:-}" == "iroh" ]]; then
-    d1_has_iroh_addr() { curl1 "/circles/$CIRCLE_ID/api/status" | grep -q quic-v1/p2p; }
-    wait_for "daemon 1 reported no Iroh address" 30 d1_has_iroh_addr
-    D1_PEER=$(curl1 "/circles/$CIRCLE_ID/api/status" | python3 -c "
+# The listen addresses are UDP and carry the peer id, which the joiner needs
+# to dial by key. Reach daemon 1 over loopback on the same port.
+d1_has_iroh_addr() { curl1 "/circles/$CIRCLE_ID/api/status" | grep -q quic-v1/p2p; }
+wait_for "daemon 1 reported no Iroh address" 30 d1_has_iroh_addr
+D1_PEER=$(curl1 "/circles/$CIRCLE_ID/api/status" | python3 -c "
 import sys, json
 addrs = json.load(sys.stdin)['p2p']['listen_addrs']
 udp = [a for a in addrs if '/udp/' in a and '/p2p/' in a]
 a = udp[0] if udp else ''
 print('/ip4/127.0.0.1/udp/' + a.split('/udp/')[1] if a else '')
 ")
-else
-    D1_TCP_PORT=$(curl1 "/circles/$CIRCLE_ID/api/status" | python3 -c "
-import sys, json
-addrs = json.load(sys.stdin)['p2p']['listen_addrs']
-tcp = [a for a in addrs if '/tcp/' in a]
-print(tcp[0].split('/tcp/')[1].split('/')[0] if tcp else '')
-")
-    [[ -n "$D1_TCP_PORT" ]] || fail "daemon 1 reported no TCP listener to dial"
-    D1_PEER="/ip4/127.0.0.1/tcp/$D1_TCP_PORT"
-fi
 [[ -n "$D1_PEER" ]] || fail "daemon 1 reported no address to dial"
 ok "dialing daemon 1 at $D1_PEER"
 

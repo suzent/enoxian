@@ -2,19 +2,8 @@
 //! `POST /circles/<id>/start` API endpoint.
 
 use anyhow::Result;
-use libp2p::{
-    core::muxing::StreamMuxerBox,
-    dcutr,
-    futures::StreamExt,
-    identify, kad, mdns, noise, pnet, quic, relay, rendezvous,
-    swarm::{
-        behaviour::toggle::Toggle,
-        dial_opts::{DialOpts, PeerCondition},
-        SwarmEvent,
-    },
-    tcp, yamux, Multiaddr, PeerId, SwarmBuilder,
-};
-use std::collections::{HashMap, HashSet};
+use libp2p_identity::PeerId;
+use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -42,38 +31,12 @@ use crate::{
     crypto::{keypair_from_hex, psk_from_hex},
     daemon::DaemonState,
     mls::{MlsGroupManager, MlsIdentity, SharedMlsState},
-    network::{
-        behaviour::{EnochBehaviour, EnochEvent},
-        libp2p_net::{self, Libp2pNet},
-        net::{self, NetHandle, Proto},
-    },
     presence,
     state::AppState,
     sync_yjs::watcher::spawn_watcher,
 };
-use libp2p_stream as stream_proto;
-
-/// Non-async shim with a concrete return type so that `rotate_psk_and_restart`
-/// can call `spawn_circle` without creating an opaque-type inference cycle.
-fn spawn_circle_boxed(
-    config: CircleConfig,
-    daemon: DaemonState,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
-    Box::pin(spawn_circle(config, daemon))
-}
 
 pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<()> {
-    // Before anything starts: a Circle this build cannot carry must not leave
-    // watchers and loops running that nothing will ever cancel.
-    #[cfg(not(feature = "iroh-transport"))]
-    if config.effective_transport() == config::Transport::Iroh {
-        anyhow::bail!(
-            "circle {} is set to the Iroh transport, which this build does not include \
-             (rebuild with `enox update --dev --features iroh-transport`)",
-            config.circle_id
-        );
-    }
-    let force_relay = config.force_relay;
     let keypair = keypair_from_hex(&config.keypair_proto_hex)?;
     let peer_id = keypair.public().to_peer_id();
     let psk_bytes = psk_from_hex(&config.psk_hex)?;
@@ -667,795 +630,16 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     spawn_control_persist(state.clone(), cdir.clone(), token.clone());
     spawn_storage_gc(state.clone(), token.clone());
 
-    // ── Iroh instead of libp2p, when this Circle is set to it ───────────────
-    #[cfg(feature = "iroh-transport")]
-    if config.effective_transport() == config::Transport::Iroh {
-        let started = crate::network::iroh_net::spawn(
-            &config,
-            state.clone(),
-            &keypair,
-            psk_bytes,
-            token.clone(),
-        )
-        .await;
-        if let Err(error) = started {
-            // Everything above is already running; stop it, or the daemon's
-            // retry starts a second copy alongside it.
-            token.cancel();
-            return Err(error);
-        }
-        daemon.insert_circle(config.circle_id.clone(), state, token);
-        workspace_claim.retain();
-        return Ok(());
+    // ── Network: one Iroh endpoint for this Circle ──────────────────────────
+    let started =
+        crate::network::iroh_net::spawn(&config, state.clone(), &keypair, psk_bytes, token.clone())
+            .await;
+    if let Err(error) = started {
+        // Everything above is already running; stop it, or the daemon's retry
+        // starts a second copy alongside it.
+        token.cancel();
+        return Err(error);
     }
-
-    // ── Build the P2P swarm ───────────────────────────────────────────────────
-    let pnet_config = pnet::PnetConfig::new(pnet::PreSharedKey::new(psk_bytes));
-    let keypair_clone = keypair.clone();
-    let relay_peer_ids = crate::network::public_relay_transport::relay_peer_ids_from_addrs(
-        config.relay_addrs.iter(),
-    );
-    let relay_base_addrs = std::sync::Arc::new(std::sync::RwLock::new(
-        config
-            .relay_addrs
-            .iter()
-            .filter_map(|addr| addr.parse::<Multiaddr>().ok())
-            .filter_map(|addr| {
-                crate::network::public_relay_transport::relay_peer_id(&addr)
-                    .map(|peer_id| (peer_id, addr))
-            })
-            .collect::<HashMap<_, _>>(),
-    ));
-    let mut public_relay_peer_ids = relay_peer_ids.clone();
-    public_relay_peer_ids.extend(
-        crate::network::public_relay_transport::relay_peer_ids_from_addrs(
-            config.rendezvous_addrs.iter(),
-        ),
-    );
-    let public_relay_peer_ids = std::sync::Arc::new(std::sync::RwLock::new(public_relay_peer_ids));
-    let public_relay_peer_ids_for_transport = public_relay_peer_ids.clone();
-
-    // relay::client::new produces the relay transport (for dialing circuits) and
-    // the relay client behaviour (for managing reservations).
-    let (relay_transport, relay_client_behaviour) = relay::client::new(peer_id);
-
-    let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
-        .with_tokio()
-        .with_other_transport(move |key| {
-            use futures::future::Either;
-            use libp2p::{core::upgrade, Transport};
-
-            // Public TCP without pnet: only allowed for known relay server peer IDs.
-            // This lets us reserve circuit slots on public infrastructure that does
-            // not know the circle PSK, while keeping direct peer TCP PSK-protected.
-            let public_tcp = crate::network::public_relay_transport::PublicRelayTransport::new(
-                tcp::tokio::Transport::new(tcp::Config::default()),
-                public_relay_peer_ids_for_transport.clone(),
-            )
-            .upgrade(upgrade::Version::V1Lazy)
-            .authenticate(noise::Config::new(key)?)
-            .multiplex(yamux::Config::default())
-            .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
-
-            // TCP + PSK: used for LAN / direct connections within the circle.
-            let tcp = tcp::tokio::Transport::new(tcp::Config::default())
-                .and_then(move |s, _| pnet_config.handshake(s))
-                .upgrade(upgrade::Version::V1Lazy)
-                .authenticate(noise::Config::new(key)?)
-                .multiplex(yamux::Config::default())
-                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
-
-            // Relay: used for circuit connections through a relay node.
-            // No PSK here — relay connections are already over an authenticated channel.
-            let relay = relay_transport
-                .upgrade(upgrade::Version::V1Lazy)
-                .authenticate(noise::Config::new(key)?)
-                .multiplex(yamux::Config::default())
-                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
-
-            // QUIC: no PSK — used for bootstrap/rendezvous server connections.
-            // Bootstrap servers don't share the circle PSK; they speak plain QUIC.
-            let quic_t = quic::tokio::Transport::new(quic::Config::new(key))
-                .map(|(id, muxer), _| (id, StreamMuxerBox::new(muxer)));
-
-            Ok(libp2p::dns::tokio::Transport::system(
-                public_tcp
-                    .or_transport(tcp)
-                    .or_transport(relay)
-                    .or_transport(quic_t)
-                    .map(|e, _| match e {
-                        Either::Left(Either::Left(Either::Left(x))) => x,
-                        Either::Left(Either::Left(Either::Right(x))) => x,
-                        Either::Left(Either::Right(x)) => x,
-                        Either::Right(x) => x,
-                    }),
-            )?)
-        })?
-        .with_behaviour(move |key| {
-            let pid = key.public().to_peer_id();
-            Ok(EnochBehaviour {
-                // Disabled: see EnochBehaviour::mdns. Re-enable by wrapping
-                // `mdns::tokio::Behaviour::new(mdns::Config::default(), pid)?` in
-                // `Toggle::from(Some(..))`.
-                mdns: Toggle::from(None::<mdns::tokio::Behaviour>),
-                kad: {
-                    let mut kad = kad::Behaviour::new(pid, kad::store::MemoryStore::new(pid));
-                    kad.set_mode(Some(kad::Mode::Server));
-                    kad
-                },
-                identify: identify::Behaviour::new(identify::Config::new(
-                    "/enoxian/1.0.0".to_string(),
-                    key.public(),
-                )),
-                ping: libp2p::ping::Behaviour::default(),
-                rendezvous: libp2p::rendezvous::client::Behaviour::new(keypair_clone),
-                relay_client: relay_client_behaviour,
-                relay: relay::Behaviour::new(pid, relay::Config::default()),
-                dcutr: Toggle::from((!force_relay).then(|| dcutr::Behaviour::new(pid))),
-                stream: stream_proto::Behaviour::new(),
-            })
-        })?
-        .build();
-
-    // TCP (PSK-protected, for LAN and relay) on a STABLE per-circle port; QUIC
-    // (UDP, for WAN/NAT hole-punching via DCUtR) on an ephemeral port.
-    //
-    // LAN peers discover each other via mDNS regardless of port, and behind NAT
-    // we rely on the relay/rendezvous + the QUIC ExternalAddrConfirmed address.
-    // But peers reached over a stable-IP overlay (e.g. Tailscale) WITHOUT a
-    // rendezvous server only have the bootstrap address saved at `enox enter`
-    // time — so that address must survive daemon restarts. A deterministic TCP
-    // port keeps it valid; we fall back to ephemeral if the port is taken.
-    //
-    // QUIC stays ephemeral: a fixed UDP port buys nothing here (hole-punching
-    // discovers addresses dynamically), and the combined relay+quic transport
-    // rejects a fixed-port QUIC listen, so binding one would just fail anyway.
-    if force_relay {
-        info!(
-            "[{}] force-relay mode: direct TCP/QUIC listeners and DCUtR are disabled",
-            config.circle_id
-        );
-    } else {
-        let listen_port = stable_listen_port(&config.circle_id);
-        let tcp_addr = format!("/ip4/0.0.0.0/tcp/{listen_port}").parse::<Multiaddr>()?;
-        if let Err(e) = swarm.listen_on(tcp_addr) {
-            warn!(
-                "[{}] stable TCP listen port {listen_port} unavailable ({e}); falling back to ephemeral",
-                config.circle_id
-            );
-            swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse::<Multiaddr>()?)?;
-        }
-        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse::<Multiaddr>()?)?;
-    }
-
-    // ── Dial bootstrap peers from config ──────────────────────────────────────
-    // Peer addresses saved at `enox enter` time (from invite). This ensures
-    // connectivity even when mDNS is unavailable (different subnets, firewalls).
-    for peer_str in config.peers.iter().filter(|_| !force_relay) {
-        match peer_str.parse::<Multiaddr>() {
-            Ok(addr) => {
-                info!("[{}] dialing bootstrap peer {addr}", config.circle_id);
-                let _ = swarm.dial(addr);
-            }
-            Err(e) => warn!(
-                "[{}] invalid peer addr '{}': {e}",
-                config.circle_id, peer_str
-            ),
-        }
-    }
-
-    // ── Connect through relay nodes ───────────────────────────────────────────
-    // Listening on a p2p-circuit address causes libp2p to connect to the relay
-    // and request a reservation slot, making us reachable from any network.
-    //
-    // Configured relays are reserved immediately. If none are configured we fall
-    // back to the DEFAULT_RELAY server resolved in the background — this is the
-    // WAN fallback between rendezvous (discovery) and LAN-only (mDNS).
-    let (relay_tx, mut relay_rx) = tokio::sync::mpsc::channel::<Multiaddr>(4);
-
-    let mut reserved_any_relay = false;
-    for relay_str in &config.relay_addrs {
-        match relay_str.parse::<Multiaddr>() {
-            Ok(relay_addr) => {
-                let circuit_addr = relay_addr
-                    .clone()
-                    .with(libp2p::multiaddr::Protocol::P2pCircuit);
-                info!(
-                    "[{}] reserving relay slot at {relay_addr}",
-                    config.circle_id
-                );
-                if let Err(e) = swarm.listen_on(circuit_addr) {
-                    warn!("[{}] relay circuit listen failed: {e}", config.circle_id);
-                } else {
-                    reserved_any_relay = true;
-                }
-            }
-            Err(e) => warn!(
-                "[{}] invalid relay addr '{}': {e}",
-                config.circle_id, relay_str
-            ),
-        }
-    }
-
-    // If no relay configured, resolve the default relay server in the background
-    // (WAN fallback — peers behind NAT stay reachable even without rendezvous).
-    if !reserved_any_relay && crate::defaults::DEFAULT_RELAY.is_some() {
-        let tx = relay_tx.clone();
-        let cid = config.circle_id.clone();
-        tokio::spawn(async move {
-            match crate::commands::rendezvous::resolve_default_relay().await {
-                Some(addr_str) => match addr_str.parse::<Multiaddr>() {
-                    Ok(addr) => {
-                        info!("[{cid}] resolved default relay: {addr_str}");
-                        let _ = tx.send(addr).await;
-                    }
-                    Err(e) => warn!("[{cid}] invalid resolved relay addr: {e}"),
-                },
-                None => warn!("[{cid}] default relay unreachable — no WAN relay fallback"),
-            }
-        });
-    }
-
-    // ── Dial rendezvous servers (QUIC) ────────────────────────────────────────
-    // Rendezvous servers speak QUIC without PSK. After connecting we register
-    // under the circle UUID namespace and discover other members.
-    //
-    // Configured rendezvous addrs are dialed immediately (synchronous path).
-    // If none are configured, the default server (DEFAULT_RENDEZVOUS) is resolved
-    // in a background task so spawn_circle returns without blocking on a network
-    // call — this prevents api/enter from timing out when the server is unreachable.
-    //
-    // The channel rdvz_tx/rdvz_rx lets the background task inject the resolved
-    // address into the running swarm event loop.
-    let rendezvous_peers: std::sync::Arc<std::sync::RwLock<HashSet<PeerId>>> =
-        std::sync::Arc::new(std::sync::RwLock::new(HashSet::new()));
-    // Addresses for those peers. `rendezvous_peers` alone is not enough to
-    // recover from a dropped rendezvous connection: redialing needs an address,
-    // and kad may not have one for a server we only ever dialed by config.
-    let rendezvous_addrs: std::sync::Arc<std::sync::RwLock<HashMap<PeerId, Multiaddr>>> =
-        std::sync::Arc::new(std::sync::RwLock::new(HashMap::new()));
-
-    let (rdvz_tx, mut rdvz_rx) = tokio::sync::mpsc::channel::<(Multiaddr, PeerId)>(4);
-
-    // Dial any explicitly-configured rendezvous servers right now.
-    for rdvz_str in &config.rendezvous_addrs {
-        match rdvz_str.parse::<Multiaddr>() {
-            Ok(addr) => {
-                if let Some(pid) = addr.iter().find_map(|p| {
-                    if let libp2p::multiaddr::Protocol::P2p(id) = p {
-                        Some(id)
-                    } else {
-                        None
-                    }
-                }) {
-                    rendezvous_peers.write().unwrap().insert(pid);
-                    rendezvous_addrs.write().unwrap().insert(pid, addr.clone());
-                    if relay_peer_ids.contains(&pid) {
-                        info!(
-                            "[{}] rendezvous shares relay peer {pid}; using relay TCP connection",
-                            config.circle_id
-                        );
-                        continue;
-                    }
-                }
-                info!("[{}] dialing rendezvous server {addr}", config.circle_id);
-                let _ = swarm.dial(addr);
-            }
-            Err(e) => warn!(
-                "[{}] invalid rendezvous addr '{}': {e}",
-                config.circle_id, rdvz_str
-            ),
-        }
-    }
-
-    // If no rendezvous configured, resolve the default server in the background.
-    if config.rendezvous_addrs.is_empty() && crate::defaults::DEFAULT_RENDEZVOUS.is_some() {
-        let tx = rdvz_tx.clone();
-        let cid = config.circle_id.clone();
-        tokio::spawn(async move {
-            match crate::commands::rendezvous::resolve_default().await {
-                Some(addr_str) => match addr_str.parse::<Multiaddr>() {
-                    Ok(addr) => {
-                        let peer_id = addr.iter().find_map(|p| {
-                            if let libp2p::multiaddr::Protocol::P2p(id) = p {
-                                Some(id)
-                            } else {
-                                None
-                            }
-                        });
-                        if let Some(pid) = peer_id {
-                            info!("[{cid}] resolved default rendezvous: {addr_str}");
-                            let _ = tx.send((addr, pid)).await;
-                        } else {
-                            warn!("[{cid}] default rendezvous addr has no peer ID: {addr_str}");
-                        }
-                    }
-                    Err(e) => warn!("[{cid}] invalid resolved rendezvous addr: {e}"),
-                },
-                None => warn!("[{cid}] default rendezvous unreachable — LAN-only mode"),
-            }
-        });
-    }
-
-    // ── Accept each protocol's incoming streams ──────────────────────────────
-    // MLS bootstrap is the narrow plaintext membership stream; admin handover
-    // takes a key from a leaving admin; sync, proposals and events are the
-    // encrypted content streams. Each runs on the accepting side as responder.
-    state.set_net(std::sync::Arc::new(Libp2pNet::new(
-        swarm.behaviour().stream.new_control(),
-    )));
-    for proto in Proto::ALL {
-        let mut control = swarm.behaviour().stream.new_control();
-        let state = state.clone();
-        let token = token.clone();
-        tokio::spawn(async move {
-            let mut incoming = match libp2p_net::accept(&mut control, proto) {
-                Ok(streams) => Box::pin(streams),
-                Err(error) => {
-                    warn!("[{}] accept failed: {error}", proto.name());
-                    return;
-                }
-            };
-            loop {
-                tokio::select! {
-                    _ = token.cancelled() => break,
-                    item = incoming.next() => match item {
-                        Some((peer_id, stream)) => {
-                            tokio::spawn(net::serve(proto, peer_id, stream, state.clone(), false));
-                        }
-                        None => break,
-                    }
-                }
-            }
-        });
-    }
-
-    // ── Swarm event loop ──────────────────────────────────────────────────────
-    let circle_id = config.circle_id.clone();
-    let open_net = Libp2pNet::new(swarm.behaviour().stream.new_control());
-    let swarm_token = token.clone();
-    let state_for_swarm = state.clone();
-    let rendezvous_namespace = rendezvous::Namespace::new(circle_id.clone())
-        .unwrap_or_else(|_| rendezvous::Namespace::from_static("enoxian"));
-
-    tokio::spawn(async move {
-        // Re-register with rendezvous servers every hour (TTL is 2h).
-        let mut reregister = tokio::time::interval(std::time::Duration::from_secs(3600));
-        reregister.tick().await; // skip the immediate first tick
-
-        // Rediscover and redial lost peers. Discovery and this sweep share
-        // one retry budget below. Relayed circuits are capped (30 min / 64 MB in
-        // `relay_server_config`), so every relayed peer connection is torn down
-        // periodically by design — without this sweep, two devices on different
-        // networks stop syncing within half an hour and stay stopped until the
-        // daemon restarts.
-        let mut reconnect = tokio::time::interval(RECONNECT_INTERVAL);
-        reconnect.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        reconnect.tick().await; // skip the immediate first tick
-
-        // Discovery and the periodic sweep share deadlines. A transport that
-        // connects then immediately fails its protocol handshake is still a failure.
-        let mut redials = PeerRedials::default();
-
-        // The background resolver tasks feeding these channels drop their senders
-        // once they finish (resolve or fail). A closed `mpsc::Receiver` returns
-        // `recv() => Ready(None)` *immediately and forever*, so without these
-        // guards the `select!` would spin at 100% CPU polling a dead channel.
-        // Disable each branch the first time its channel closes.
-        let mut rdvz_open = true;
-        let mut relay_open = true;
-        let mut sync_ended_open = true;
-        let mut sync_ended_rx = state_for_swarm.sync_ended.subscribe();
-
-        loop {
-            tokio::select! {
-                _ = swarm_token.cancelled() => {
-                    info!("[{}] circle stopped", circle_id);
-                    // Write OFFLINE before dropping the swarm so connected peers
-                    // receive the CRDT update over the still-open connections.
-                    presence::write_offline(&state_for_swarm, &state_for_swarm.agent_id);
-                    break;
-                }
-                // A sync session failed while its connection stayed up. Close
-                // the connection so the redial starts a new session; left
-                // open, the peer looks connected and nothing syncs.
-                ended = sync_ended_rx.recv(), if sync_ended_open => match ended {
-                    Ok(peer_id) => {
-                        if swarm.is_connected(&peer_id)
-                            && state_for_swarm.sync_sessions.get(&peer_id.to_string()).is_none()
-                        {
-                            info!("[{}] closing connection to {peer_id}: its sync session ended", circle_id);
-                            let _ = swarm.disconnect_peer_id(peer_id);
-                        }
-                    }
-                    // Notifications were dropped, so the peers they named are
-                    // unknown. Close every member connection with no live
-                    // session; rendezvous and relay nodes are not members.
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        for peer_id in member_peer_ids(&state_for_swarm) {
-                            if swarm.is_connected(&peer_id)
-                                && state_for_swarm.sync_sessions.get(&peer_id.to_string()).is_none()
-                            {
-                                info!("[{}] closing connection to {peer_id}: no sync session", circle_id);
-                                let _ = swarm.disconnect_peer_id(peer_id);
-                            }
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => sync_ended_open = false,
-                },
-                // Background-resolved rendezvous address arrived (e.g. default server).
-                item = rdvz_rx.recv(), if rdvz_open => match item {
-                    Some((addr, peer_id)) => {
-                        rendezvous_peers.write().unwrap().insert(peer_id);
-                        rendezvous_addrs.write().unwrap().insert(peer_id, addr.clone());
-                        info!("[{}] dialing background-resolved rendezvous: {addr}", circle_id);
-                        let _ = swarm.dial(addr);
-                    }
-                    None => rdvz_open = false, // sender dropped — stop polling this branch
-                },
-                // Background-resolved relay address arrived — reserve circuit slot (WAN fallback).
-                item = relay_rx.recv(), if relay_open => match item {
-                    Some(relay_addr) => {
-                        if let Some(peer_id) =
-                            crate::network::public_relay_transport::relay_peer_id(&relay_addr)
-                        {
-                            public_relay_peer_ids.write().unwrap().insert(peer_id);
-                            relay_base_addrs
-                                .write()
-                                .unwrap()
-                                .insert(peer_id, relay_addr.clone());
-                        }
-                        let circuit_addr = relay_addr
-                            .clone()
-                            .with(libp2p::multiaddr::Protocol::P2pCircuit);
-                        info!("[{}] reserving background-resolved relay slot: {relay_addr}", circle_id);
-                        if let Err(e) = swarm.listen_on(circuit_addr) {
-                            warn!("[{}] relay circuit listen failed: {e}", circle_id);
-                        }
-                    }
-                    None => relay_open = false, // sender dropped — stop polling this branch
-                },
-                _ = reregister.tick() => {
-                    let peers: Vec<PeerId> =
-                        rendezvous_peers.read().unwrap().iter().copied().collect();
-                    for rdvz_peer in peers {
-                        if swarm.is_connected(&rdvz_peer) {
-                            if let Err(e) = swarm.behaviour_mut().rendezvous.register(
-                                rendezvous_namespace.clone(), rdvz_peer, None,
-                            ) {
-                                warn!("[{}] rendezvous re-register: {e}", circle_id);
-                            }
-                        }
-                    }
-                }
-                _ = reconnect.tick() => {
-                    // Rendezvous servers: rediscover over live links, redial dead
-                    // ones. Re-running discovery is what surfaces peers whose
-                    // reachable address changed (a new relay circuit, say) while
-                    // we were disconnected from them.
-                    let peers: Vec<PeerId> =
-                        rendezvous_peers.read().unwrap().iter().copied().collect();
-                    for rdvz_peer in peers {
-                        if swarm.is_connected(&rdvz_peer) {
-                            swarm.behaviour_mut().rendezvous.discover(
-                                Some(rendezvous_namespace.clone()), None, None, rdvz_peer,
-                            );
-                            continue;
-                        }
-                        let addr = rendezvous_addrs.read().unwrap().get(&rdvz_peer).cloned();
-                        let Some(addr) = addr else { continue };
-                        if !redials.allow(rdvz_peer, std::time::Instant::now()) {
-                            continue;
-                        }
-                        info!("[{}] rendezvous {rdvz_peer} disconnected; redialing", circle_id);
-                        let _ = swarm.dial(
-                            DialOpts::peer_id(rdvz_peer)
-                                .addresses(vec![addr])
-                                .condition(PeerCondition::DisconnectedAndNotDialing)
-                                .build(),
-                        );
-                    }
-
-                    // Circle members: redial anyone in the roster we have lost.
-                    let local = *swarm.local_peer_id();
-                    for member in member_peer_ids(&state_for_swarm) {
-                        if member == local || swarm.is_connected(&member) {
-                            continue;
-                        }
-                        if state_for_swarm.is_foreign_peer(member.to_string().as_str()) {
-                            continue;
-                        }
-                        if !redials.allow(member, std::time::Instant::now()) {
-                            continue;
-                        }
-                        tracing::debug!("[{}] redialing lost peer {member}", circle_id);
-                        let _ = swarm.dial(
-                            DialOpts::peer_id(member)
-                                .condition(PeerCondition::DisconnectedAndNotDialing)
-                                .build(),
-                        );
-                    }
-                }
-                event = swarm.select_next_some() => match event {
-                    SwarmEvent::NewListenAddr { address, .. } => {
-                        info!("[{}] P2P listening on {address}", circle_id);
-                        // Track non-loopback, non-unspecified, non-circuit listen addrs.
-                        // On a VPS these include the real public IP immediately at startup.
-                        if is_routable_listen_addr(&address) {
-                            if let Ok(mut addrs) = state_for_swarm.p2p_listen_addrs.write() {
-                                let s = address.to_string();
-                                if !addrs.contains(&s) { addrs.push(s); }
-                            }
-                        }
-                    }
-                    SwarmEvent::ExternalAddrConfirmed { address } => {
-                        info!("[{}] external address confirmed: {address}", circle_id);
-                        if let Ok(mut addrs) = state_for_swarm.p2p_external_addrs.write() {
-                            let s = address.to_string();
-                            if !addrs.contains(&s) { addrs.push(s); }
-                        }
-                    }
-                    SwarmEvent::ExternalAddrExpired { address } => {
-                        if let Ok(mut addrs) = state_for_swarm.p2p_external_addrs.write() {
-                            addrs.retain(|a| a != &address.to_string());
-                        }
-                    }
-                    SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
-                        let remote_addr = endpoint.get_remote_address();
-                        // For inbound relay circuits libp2p reports the remote address as
-                        // only `/p2p/<source>`; the circuit marker lives on the local side.
-                        let is_relayed = endpoint.is_relayed();
-                        let is_infrastructure = rendezvous_peers.read().unwrap().contains(&peer_id)
-                            || relay_base_addrs.read().unwrap().contains_key(&peer_id);
-                        if force_relay
-                            && !is_infrastructure
-                            && !is_relayed
-                        {
-                            info!(
-                                "[{}] force-relay mode: rejecting direct peer connection from {peer_id} via {remote_addr}",
-                                circle_id
-                            );
-                            swarm.close_connection(connection_id);
-                            continue;
-                        }
-                        // A peer that already identified itself as belonging to
-                        // another circle is dropped before we spend any streams
-                        // on it. Only confirmed mismatches are filtered here —
-                        // an unknown peer may be a fresh joiner and must still
-                        // be allowed to reach the sync handshake.
-                        if !is_infrastructure
-                            && state_for_swarm.is_foreign_peer(&peer_id.to_string())
-                        {
-                            tracing::debug!(
-                                "[{}] dropping connection from {peer_id}: belongs to another circle",
-                                circle_id
-                            );
-                            swarm.close_connection(connection_id);
-                            continue;
-                        }
-                        let route_addr = match &endpoint {
-                            libp2p::core::ConnectedPoint::Listener { local_addr, .. }
-                                if is_relayed => local_addr,
-                            _ => remote_addr,
-                        };
-                        info!("[{}] P2P connected: {peer_id} via {route_addr}", circle_id);
-                        state_for_swarm.record_peer_connection(
-                            peer_id.to_string(),
-                            connection_id.to_string(),
-                            libp2p_net::classify_address(route_addr),
-                            route_addr.to_string(),
-                        );
-                        redials.connected(peer_id, std::time::Instant::now());
-                        // If this is a rendezvous server, register + discover immediately.
-                        if rendezvous_peers.read().unwrap().contains(&peer_id) {
-                            if let Err(e) = swarm.behaviour_mut().rendezvous.register(
-                                rendezvous_namespace.clone(), peer_id, None,
-                            ) {
-                                warn!("[{}] rendezvous register at {peer_id}: {e}", circle_id);
-                            }
-                            swarm.behaviour_mut().rendezvous.discover(
-                                Some(rendezvous_namespace.clone()), None, None, peer_id,
-                            );
-                        }
-                        if endpoint.is_dialer() {
-                            // Don't open sync stream to rendezvous-only servers.
-                            if !rendezvous_peers.read().unwrap().contains(&peer_id) {
-                                for proto in Proto::ON_CONNECT {
-                                    let open = open_net.open(peer_id, proto);
-                                    let state = state_for_swarm.clone();
-                                    tokio::spawn(async move {
-                                        match open.await {
-                                            Ok(stream) => net::serve(proto, peer_id, stream, state, true).await,
-                                            Err(error) => warn!("[{}] open_stream to {peer_id}: {error}", proto.name()),
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    SwarmEvent::ConnectionClosed { peer_id, connection_id, cause, num_established, .. } => {
-                        // One of several connections to a peer closing is
-                        // churn. The *last* one is a state change — the peer
-                        // goes offline — so that keeps INFO, logged below where
-                        // num_established is known to be zero.
-                        if num_established == 0 {
-                            redials.disconnected(peer_id, std::time::Instant::now());
-                            info!("[{}] P2P disconnected: {peer_id}: {cause:?}", circle_id);
-                        } else {
-                            tracing::debug!(
-                                "[{}] P2P connection closed: {peer_id} ({num_established} left): {cause:?}",
-                                circle_id
-                            );
-                        }
-                        state_for_swarm.remove_peer_connection(
-                            peer_id.to_string().as_str(),
-                            &connection_id.to_string(),
-                        );
-                        // When the last connection to this peer closes, immediately mark
-                        // them offline in the shared presence CRDT so all peers see it
-                        // right away — no need to wait for the heartbeat to time out.
-                        if num_established == 0 {
-                            mark_peer_offline(&state_for_swarm, &peer_id.to_string());
-                        }
-                    }
-                    SwarmEvent::Behaviour(EnochEvent::Mdns(mdns::Event::Discovered(peers))) => {
-                        for (peer_id, addr) in peers {
-                            if state_for_swarm.is_foreign_peer(&peer_id.to_string()) {
-                                continue;
-                            }
-                            info!("[{}] mDNS discovered: {peer_id} @ {addr}", circle_id);
-                            swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
-                            if swarm.is_connected(&peer_id)
-                                || !redials.allow(peer_id, std::time::Instant::now()) {
-                                continue;
-                            }
-                            if let Err(e) = swarm.dial(
-                                DialOpts::peer_id(peer_id)
-                                    .addresses(vec![addr])
-                                    .condition(libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing)
-                                    .build(),
-                            ) {
-                                tracing::debug!("[{}] dial skipped: {e}", circle_id);
-                            }
-                        }
-                    }
-                    SwarmEvent::Behaviour(EnochEvent::Mdns(mdns::Event::Expired(peers))) => {
-                        for (peer_id, _) in peers {
-                            info!("[{}] mDNS expired: {peer_id}", circle_id);
-                        }
-                    }
-                    SwarmEvent::Behaviour(EnochEvent::Identify(identify::Event::Received {
-                        peer_id, info, ..
-                    })) => {
-                        // Don't feed another circle's peer into our routing
-                        // table — that is what makes the redial loop survive
-                        // long after the connection was rejected.
-                        if state_for_swarm.is_foreign_peer(&peer_id.to_string()) {
-                            continue;
-                        }
-                        for addr in &info.listen_addrs {
-                            swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
-                        }
-                    }
-                    SwarmEvent::Behaviour(EnochEvent::Rendezvous(e)) => {
-                        use rendezvous::client::Event as RE;
-                        match e {
-                            RE::Registered { rendezvous_node, ttl, .. } => {
-                                info!("[{}] rendezvous registered at {rendezvous_node} (ttl={ttl}s)", circle_id);
-                            }
-                            RE::RegisterFailed { rendezvous_node, error, .. } => {
-                                warn!("[{}] rendezvous register failed at {rendezvous_node}: {error:?}", circle_id);
-                            }
-                            RE::Discovered { registrations, rendezvous_node, .. } => {
-                                info!("[{}] rendezvous discovered {} peers from {rendezvous_node}", circle_id, registrations.len());
-                                for reg in registrations {
-                                    let pid = reg.record.peer_id();
-                                    if pid == *swarm.local_peer_id() { continue; }
-                                    if state_for_swarm.is_foreign_peer(&pid.to_string()) {
-                                        tracing::debug!(
-                                            "[{}] skipping {pid}: belongs to another circle",
-                                            circle_id
-                                        );
-                                        continue;
-                                    }
-                                    let addresses: Vec<_> = reg.record.addresses().iter()
-                                        .filter(|addr| !force_relay
-                                            || crate::network::public_relay_transport::is_relayed_addr(addr))
-                                        .cloned().collect();
-                                    // Refresh routing even while backed off, and give one
-                                    // dial all candidates so a bad first address cannot
-                                    // starve the working relay address.
-                                    for addr in &addresses {
-                                        swarm.behaviour_mut().kad.add_address(&pid, addr.clone());
-                                    }
-                                    if addresses.is_empty() || swarm.is_connected(&pid)
-                                        || !redials.allow(pid, std::time::Instant::now()) {
-                                        continue;
-                                    }
-                                    let _ = swarm.dial(
-                                        DialOpts::peer_id(pid)
-                                            .addresses(addresses)
-                                            .condition(PeerCondition::DisconnectedAndNotDialing)
-                                            .build(),
-                                    );
-                                }
-                            }
-                            RE::DiscoverFailed { rendezvous_node, error, .. } => {
-                                warn!("[{}] rendezvous discover failed at {rendezvous_node}: {error:?}", circle_id);
-                            }
-                            _ => {}
-                        }
-                    }
-                    SwarmEvent::Behaviour(EnochEvent::RelayClient(e)) => {
-                        use relay::client::Event as RCE;
-                        if let RCE::ReservationReqAccepted { relay_peer_id, .. } = e {
-                            info!("[{}] relay reservation accepted at {relay_peer_id}", circle_id);
-                            // Synthesize our circuit address and add it to our tracked external addresses.
-                            // This ensures that when we re-register with rendezvous, we tell other peers
-                            // "You can reach me by tunneling through this relay".
-                            let relay_addr = relay_base_addrs
-                                .read()
-                                .unwrap()
-                                .get(&relay_peer_id)
-                                .cloned();
-
-                            if let Some(mut base_addr) = relay_addr {
-                                base_addr.push(libp2p::multiaddr::Protocol::P2pCircuit);
-                                if let Ok(mut ext) = state_for_swarm.p2p_external_addrs.write() {
-                                    let s = base_addr.to_string();
-                                    if !ext.contains(&s) {
-                                        ext.push(s);
-                                        info!("[{}] added circuit to external addrs: {base_addr}", circle_id);
-                                    }
-                                }
-                                // Immediately tell the swarm this is a valid external address for us
-                                swarm.add_external_address(base_addr);
-
-                                // Re-trigger rendezvous registration now that we have an external address
-                                for &rdvz_peer in &*rendezvous_peers.read().unwrap() {
-                                    if swarm.is_connected(&rdvz_peer) {
-                                        let _ = swarm.behaviour_mut().rendezvous.register(
-                                            rendezvous_namespace.clone(), rdvz_peer, None,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        tracing::debug!("[{}] relay client: {e:?}", circle_id);
-                    }
-                    SwarmEvent::Behaviour(EnochEvent::Dcutr(e)) => {
-                        tracing::debug!("[{}] dcutr: {e:?}", circle_id);
-                    }
-                    SwarmEvent::Behaviour(EnochEvent::Ping(e)) => {
-                        tracing::debug!("[{}] Ping: {e:?}", circle_id);
-                    }
-                    SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                        let hint = psk_mismatch_hint(&error.to_string());
-                        // A failed dial is ordinary here. Peers advertise every
-                        // address they have, including LAN ones nobody outside
-                        // their subnet can reach, so most dials to most
-                        // addresses time out and the swarm simply tries the
-                        // next. Logging each at WARN produced hundreds of
-                        // thousands of lines a day and buried the events that
-                        // do mean something.
-                        //
-                        // A PSK mismatch is the exception: that is a real
-                        // misconfiguration a user can act on, so it keeps the
-                        // warning. Either way the error is recorded for
-                        // `recent_conn_errors`, which is where a user looks for
-                        // it — the detail is not lost, only the spam.
-                        if hint.is_empty() {
-                            tracing::debug!("[{}] outgoing connection to {peer_id:?} failed: {error}", circle_id);
-                        } else {
-                            tracing::warn!("[{}] outgoing connection to {peer_id:?} failed: {error}{hint}", circle_id);
-                        }
-                        state_for_swarm.record_conn_error(format!("{error}{hint}"));
-                    }
-                    _ => {}
-                }
-            }
-        }
-    });
 
     daemon.insert_circle(config.circle_id.clone(), state, token);
     // The circle is live; the claim now belongs to it until `stop_circle`.
@@ -1463,10 +647,6 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
     Ok(())
 }
 
-/// Periodically persist the durable control-doc state (chat/tasks/members) to
-/// disk, and once more on clean shutdown. Debounced by a fixed interval — the
-/// control doc changes often (presence heartbeats), but those are excluded from
-/// the snapshot, so a periodic full save is cheap and simple. See
 /// Periodically reclaim storage that nothing refers to any more.
 ///
 /// Runs on a long interval rather than on every change: collection walks the
@@ -1474,58 +654,6 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
 /// delayed so it never competes with startup — a device that has just come
 /// online is busy reconciling, and that is also when blobs are most likely to
 /// be about to become reachable again.
-/// The hint appended to a dial failure that looks like a circle-key mismatch,
-/// or an empty string when the failure is ordinary.
-///
-/// A connection reset during or just after the noise handshake (right after the
-/// pnet pre-shared-key cipher is set up) almost always means the two sides have
-/// different circle PSKs — the dialed address belongs to a different circle, or
-/// one side re-created the circle with a new key. pnet is unauthenticated, so
-/// the cipher "succeeds" and the failure only surfaces here.
-///
-/// This also decides the log level: a mismatch is a real misconfiguration and
-/// is worth a warning, while an ordinary unreachable address is routine P2P
-/// behaviour and belongs at debug.
-fn psk_mismatch_hint(error: &str) -> &'static str {
-    if error.contains("reset") || error.contains("ConnectionReset") {
-        " — likely PSK mismatch (different circle key, or the dialed address belongs to another circle)"
-    } else {
-        ""
-    }
-}
-
-#[cfg(test)]
-mod log_level_tests {
-    use super::psk_mismatch_hint;
-
-    #[test]
-    fn an_unreachable_address_stays_quiet() {
-        // The overwhelmingly common case: peers advertise LAN addresses that
-        // nobody outside their subnet can reach, and every dial times out.
-        for routine in [
-            "Timeout has been reached",
-            "Failed to negotiate transport protocol(s)",
-            "Relay has no reservation for destination.",
-            "Handshake with the remote timed out.",
-        ] {
-            assert_eq!(psk_mismatch_hint(routine), "", "{routine} should not warn");
-        }
-    }
-
-    #[test]
-    fn a_key_mismatch_still_warns_with_the_reason() {
-        for mismatch in [
-            "Handshake failed: Connection reset by peer (os error 54)",
-            "IO(ConnectionReset)",
-        ] {
-            assert!(
-                psk_mismatch_hint(mismatch).contains("PSK mismatch"),
-                "{mismatch} is actionable and must keep its warning"
-            );
-        }
-    }
-}
-
 fn spawn_storage_gc(state: AppState, token: CancellationToken) {
     tokio::spawn(async move {
         // Six hours: often enough that storage cannot run away, rare enough to
@@ -1569,6 +697,10 @@ fn spawn_storage_gc(state: AppState, token: CancellationToken) {
     });
 }
 
+/// Periodically persist the durable control-doc state (chat/tasks/members) to
+/// disk, and once more on clean shutdown. Debounced by a fixed interval — the
+/// control doc changes often (presence heartbeats), but those are excluded from
+/// the snapshot, so a periodic full save is cheap and simple. See
 /// `crate::store::control`.
 fn spawn_control_persist(
     state: AppState,
@@ -2124,47 +1256,6 @@ pub(crate) async fn apply_commit_entry(
     }
 }
 
-/// Saves the new PSK to config.toml, then stops and restarts the circle so
-/// the swarm rebuilds its transport with the new pnet key.
-///
-/// NOTE: no longer wired to MLS epoch changes — the transport PSK is a stable
-/// per-circle gate and eviction is the mls_removed sync-gate (see
-/// docs/concepts/security.md). Retained for a possible future *explicit* circle-key
-/// rotation (e.g. a manual `enox rotate-key` admin action); currently unused.
-#[allow(dead_code)]
-pub async fn rotate_psk_and_restart(circle_id: &str, new_psk: [u8; 32], daemon: DaemonState) {
-    let mut cfg = match config::load(circle_id) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("[mls] rotate_psk: config load failed: {e}");
-            return;
-        }
-    };
-    cfg.psk_hex = hex::encode(new_psk);
-    if let Err(e) = config::save(&cfg) {
-        warn!("[mls] rotate_psk: config save failed: {e}");
-        return;
-    }
-    info!("[mls] PSK rotated for circle {circle_id} — restarting swarm");
-
-    let id = circle_id.to_string();
-    tokio::spawn(async move {
-        daemon.stop_circle(&id);
-        // Brief pause so the old swarm tasks finish draining before we rebuild.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        match config::load(&id) {
-            Ok(new_cfg) if !new_cfg.disabled => {
-                // spawn_circle_boxed has a concrete return type, breaking the
-                // opaque-type cycle between spawn_circle and rotate_psk_and_restart.
-                if let Err(e) = spawn_circle_boxed(new_cfg, daemon).await {
-                    warn!("[mls] rotate_psk: respawn failed: {e}");
-                }
-            }
-            _ => {}
-        }
-    });
-}
-
 /// Re-publish this device's advertised agents / label into every active
 /// circle's member list, so a change to `agents.toml` (e.g. an agent added via
 /// the settings API) becomes visible to peers without a daemon restart.
@@ -2237,21 +1328,6 @@ pub fn readvertise_local_agents(daemon: &DaemonState) {
             }
         }
     }
-}
-
-/// Deterministic TCP listen port for a circle, in the IANA dynamic/private
-/// range (49152–61151). Derived from the circle_id via FNV-1a so every device
-/// in the circle is predictable and the same across daemon restarts — which is
-/// what keeps a saved Tailscale/LAN bootstrap address valid without a
-/// rendezvous server. Collisions with other processes fall back to ephemeral
-/// at bind time (see spawn_circle).
-fn stable_listen_port(circle_id: &str) -> u16 {
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in circle_id.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    49_152 + (hash % 12_000) as u16
 }
 
 /// Peer ids in the circle roster, or an empty list if the control doc is busy
@@ -2328,33 +1404,6 @@ impl PeerRedials {
     }
 }
 
-/// Returns true for listen addresses worth tracking for invite embedding:
-/// rejects loopback, unspecified, link-local, and p2p-circuit relay addresses.
-/// RFC1918 and Tailscale CGNAT addresses are kept — `enox invite` sorts them
-/// after public IPs so a public address is preferred when available.
-fn is_routable_listen_addr(addr: &Multiaddr) -> bool {
-    use libp2p::multiaddr::Protocol;
-
-    if addr.to_string().contains("p2p-circuit") {
-        return false;
-    }
-
-    for proto in addr.iter() {
-        match proto {
-            Protocol::Ip4(ip) => {
-                if ip.is_loopback() || ip.is_unspecified() || ip.is_link_local() {
-                    return false;
-                }
-            }
-            Protocol::Ip6(ip) if ip.is_loopback() || ip.is_unspecified() => {
-                return false;
-            }
-            _ => {}
-        }
-    }
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2397,7 +1446,7 @@ mod tests {
             let sources: Vec<_> = (0..5).map(|_| PeerId::random()).collect();
             let destinations: Vec<_> = (0..3).map(|_| PeerId::random()).collect();
             let mut retries: Vec<_> = (0..5).map(|_| PeerRedials::default()).collect();
-            let addr: Multiaddr = "/ip4/203.0.113.1/tcp/1234".parse().unwrap();
+            let addr: libp2p::Multiaddr = "/ip4/203.0.113.1/tcp/1234".parse().unwrap();
             let start = std::time::Instant::now();
             let (mut admitted, mut denied) = (0, 0);
             for second in 0..300 {
@@ -2512,7 +1561,7 @@ mod tests {
     }
 
     fn seed_valid_request(state: &AppState, peer: &str) {
-        let issuer = libp2p::identity::Keypair::generate_ed25519();
+        let issuer = libp2p_identity::Keypair::generate_ed25519();
         let expires_at = chrono::Utc::now() + chrono::Duration::hours(1);
         let grant = crate::invite::sign_grant(
             &state.circle_id,
@@ -2578,7 +1627,7 @@ mod tests {
     #[tokio::test]
     async fn automatic_sweep_keeps_a_rejoin_it_cannot_prove_and_admits_the_next_key() {
         let (state, _dir) = automatic_state().await;
-        let peer_key = libp2p::identity::Keypair::generate_ed25519();
+        let peer_key = libp2p_identity::Keypair::generate_ed25519();
         let peer = peer_key.public().to_peer_id().to_string();
         // One fixed time for the tie, so it holds across a second boundary.
         let tie = crate::mls::identity::unix_now().unwrap() - 3600;

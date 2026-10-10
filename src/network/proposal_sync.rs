@@ -21,7 +21,7 @@
 //! source of truth; `ProposalBundle` is the transfer unit, reused unchanged.
 
 use anyhow::{Context, Result};
-use libp2p::PeerId;
+use libp2p_identity::PeerId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

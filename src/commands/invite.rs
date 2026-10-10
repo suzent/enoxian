@@ -45,27 +45,15 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
             let addrs = p2p.as_ref()?.listen_addrs.as_slice();
             best_listen_addr(addrs).map(String::from)
         })
-        .or_else(|| {
-            (config.effective_transport() == crate::config::Transport::Iroh)
-                .then(|| invite::iroh_self_addr(&config.keypair_proto_hex))
-                .flatten()
-        });
+        .or_else(|| invite::iroh_self_addr(&config.keypair_proto_hex));
 
     // relay_addr: from circle config (saved at `enox enter` time from the invite).
     // The user never has to think about this — if they joined via a relay invite,
     // they can forward that same relay to the people they invite.
-    let cli_relay = match args.relay {
-        Some(ref s) => Some(
-            rdvz::resolve_relay(s, client)
-                .await
-                .with_context(|| format!("could not resolve relay server '{s}'"))?,
-        ),
-        None => None,
-    };
-    let relay_addr = if let Some(addr) = cli_relay.or_else(|| config.relay_addrs.first().cloned()) {
-        Some(addr)
-    } else {
-        rdvz::resolve_default_relay().await
+    // The relays the joiner falls back on: --relay, or the Circle's own.
+    let iroh_relays = match args.relay.clone() {
+        Some(url) => vec![url],
+        None => config.iroh_relays.clone(),
     };
 
     // rendezvous_addr: explicit flag (auto-resolved) > saved in circle config.
@@ -88,7 +76,6 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
     // against which branch above produced it: a member who joined through the
     // default relay has it saved in their circle config, and would otherwise
     // embed it verbatim every time they invite someone.
-    let relay_is_default = relay_addr.as_deref().is_some_and(rdvz::is_default_relay);
     let rendezvous_is_default = rendezvous_addr
         .as_deref()
         .is_some_and(rdvz::is_default_rendezvous);
@@ -104,13 +91,12 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
         expires_at,
         peer_addr: peer_addr.clone(),
         admin_pubkey_bytes,
-        relay_addr: relay_addr.clone().filter(|_| !relay_is_default),
+        relay_addr: None,
         rendezvous_addr: rendezvous_addr.clone().filter(|_| !rendezvous_is_default),
-        relay_is_default,
+        relay_is_default: false,
         rendezvous_is_default,
         grant,
-        transport: config.effective_transport(),
-        iroh_relays: config.iroh_relays.clone(),
+        iroh_relays: iroh_relays.clone(),
     })?;
 
     // A short link keeps the payload on the relay and carries only the key —
@@ -165,17 +151,16 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
     if let Some(ref a) = peer_addr {
         println!("    peer      : {a}");
     }
-    if let Some(ref a) = relay_addr {
-        println!("    relay     : {a}");
+    if iroh_relays.is_empty() {
+        println!("    relays    : enoxian's and Iroh's public relays (default)");
+    } else {
+        println!("    relays    : {}", iroh_relays.join(", "));
     }
     if let Some(ref a) = rendezvous_addr {
         println!("    rendezvous: {a}");
     }
-    if peer_addr.is_none() && relay_addr.is_none() && rendezvous_addr.is_none() {
-        println!("    (none — joinees will connect via mDNS on the same LAN)");
-        if p2p.is_none() {
-            println!("    Tip: start the daemon first for auto-detected WAN addresses.");
-        }
+    if p2p.is_none() {
+        println!("    Tip: start the daemon first, so the invite carries a direct address.");
     }
     println!();
     println!("  Join with: enox enter \"<invite>\"");

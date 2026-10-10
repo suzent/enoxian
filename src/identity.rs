@@ -15,7 +15,7 @@
 /// MLS re-add churn and epoch-rotation lockouts.
 use anyhow::{bail, Context, Result};
 use hkdf::Hkdf;
-use libp2p::identity::Keypair;
+use libp2p_identity::Keypair;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -194,9 +194,9 @@ impl DeviceIdentity {
         hk.expand(info.as_bytes(), &mut okm)
             .map_err(|_| anyhow::anyhow!("HKDF expand failed"))?;
         // libp2p's ed25519::SecretKey::try_from_bytes takes exactly 32 raw bytes.
-        let secret = libp2p::identity::ed25519::SecretKey::try_from_bytes(okm)
+        let secret = libp2p_identity::ed25519::SecretKey::try_from_bytes(okm)
             .map_err(|e| anyhow::anyhow!("ed25519 secret: {e}"))?;
-        let kp = libp2p::identity::ed25519::Keypair::from(secret);
+        let kp = libp2p_identity::ed25519::Keypair::from(secret);
         Ok(Keypair::from(kp))
     }
 
@@ -367,9 +367,9 @@ impl UserIdentity {
         let mut okm = [0u8; 32];
         hk.expand(b"user-root-key", &mut okm)
             .map_err(|_| anyhow::anyhow!("HKDF failed"))?;
-        let secret = libp2p::identity::ed25519::SecretKey::try_from_bytes(okm)
+        let secret = libp2p_identity::ed25519::SecretKey::try_from_bytes(okm)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok(Keypair::from(libp2p::identity::ed25519::Keypair::from(
+        Ok(Keypair::from(libp2p_identity::ed25519::Keypair::from(
             secret,
         )))
     }
@@ -400,7 +400,7 @@ impl UserIdentity {
         attestation_hex: &str,
     ) -> Result<bool> {
         let user_bytes = hex::decode(user_pubkey_hex.trim()).context("decode user pubkey")?;
-        let user_key = libp2p::identity::PublicKey::try_decode_protobuf(&user_bytes)
+        let user_key = libp2p_identity::PublicKey::try_decode_protobuf(&user_bytes)
             .map_err(|e| anyhow::anyhow!("invalid user public key: {e}"))?;
         let sig = hex::decode(attestation_hex.trim()).context("decode attestation")?;
         Ok(user_key.verify(&attestation_message(device_pubkey_hex)?, &sig))
@@ -449,7 +449,7 @@ fn attestation_message(device_pubkey_hex: &str) -> Result<Vec<u8>> {
     let device_bytes = hex::decode(device_pubkey_hex.trim()).context("decode device pubkey")?;
     // A device key is a libp2p public key. Refusing anything else keeps a
     // signing key from being talked into signing bytes of somebody's choosing.
-    libp2p::identity::PublicKey::try_decode_protobuf(&device_bytes)
+    libp2p_identity::PublicKey::try_decode_protobuf(&device_bytes)
         .map_err(|e| anyhow::anyhow!("device public key is not a valid key: {e}"))?;
 
     let len = u32::try_from(device_bytes.len()).context("device pubkey is implausibly long")?;
@@ -476,7 +476,7 @@ impl ChainLink {
     pub fn is_valid(&self) -> Result<bool> {
         let signer_bytes =
             hex::decode(self.signer_pubkey_hex.trim()).context("decode signer pubkey")?;
-        let signer = libp2p::identity::PublicKey::try_decode_protobuf(&signer_bytes)
+        let signer = libp2p_identity::PublicKey::try_decode_protobuf(&signer_bytes)
             .map_err(|e| anyhow::anyhow!("invalid signer public key: {e}"))?;
         let sig = hex::decode(self.sig.trim()).context("decode attestation")?;
         Ok(signer.verify(&attestation_message(&self.subject_pubkey_hex)?, &sig))
@@ -544,14 +544,14 @@ fn migrate_chain(file: &IdentityFile, seed: &[u8; 32]) -> Result<Vec<ChainLink>>
 
 /// This device's public key from its seed alone — needed during load, before a
 /// `DeviceIdentity` exists to ask.
-fn device_public_key(seed: &[u8; 32]) -> Result<libp2p::identity::PublicKey> {
+fn device_public_key(seed: &[u8; 32]) -> Result<libp2p_identity::PublicKey> {
     let hk = Hkdf::<Sha256>::new(Some(b"enoxian-device-v1"), seed);
     let mut okm = [0u8; 32];
     hk.expand(b"circle/__device__", &mut okm)
         .map_err(|_| anyhow::anyhow!("HKDF expand failed"))?;
-    let secret = libp2p::identity::ed25519::SecretKey::try_from_bytes(okm)
+    let secret = libp2p_identity::ed25519::SecretKey::try_from_bytes(okm)
         .map_err(|e| anyhow::anyhow!("ed25519 secret: {e}"))?;
-    Ok(Keypair::from(libp2p::identity::ed25519::Keypair::from(secret)).public())
+    Ok(Keypair::from(libp2p_identity::ed25519::Keypair::from(secret)).public())
 }
 
 // ── Device / circle-key binding ───────────────────────────────────────────────
@@ -620,7 +620,7 @@ pub fn verify_binding(
     device_pubkey_hex: &str,
     binding_hex: &str,
 ) -> Result<bool> {
-    let peer: libp2p::PeerId = peer_id
+    let peer: libp2p_identity::PeerId = peer_id
         .trim()
         .parse()
         .map_err(|e| anyhow::anyhow!("not a peer id: {e}"))?;
@@ -631,7 +631,7 @@ pub fn verify_binding(
     };
 
     let device_bytes = hex::decode(device_pubkey_hex.trim()).context("decode device pubkey")?;
-    let Ok(device_key) = libp2p::identity::PublicKey::try_decode_protobuf(&device_bytes) else {
+    let Ok(device_key) = libp2p_identity::PublicKey::try_decode_protobuf(&device_bytes) else {
         return Ok(false);
     };
 
@@ -659,7 +659,7 @@ fn key_package_binding_message(circle_id: &str, signature_key: &[u8]) -> Vec<u8>
 /// another member's peer id and have that member's leaf swapped out as if it
 /// had rejoined.
 pub fn sign_key_package_binding(
-    peer_key: &libp2p::identity::Keypair,
+    peer_key: &libp2p_identity::Keypair,
     circle_id: &str,
     signature_key: &[u8],
 ) -> Result<String> {
@@ -676,7 +676,7 @@ pub fn verify_key_package_binding(
     signature_key: &[u8],
     binding_hex: &str,
 ) -> bool {
-    let Ok(peer) = peer_id.trim().parse::<libp2p::PeerId>() else {
+    let Ok(peer) = peer_id.trim().parse::<libp2p_identity::PeerId>() else {
         return false;
     };
     let Some(key) = peer_public_key(&peer) else {
@@ -689,13 +689,13 @@ pub fn verify_key_package_binding(
 }
 
 /// Recover the public key an Ed25519 peer ID carries inline.
-fn peer_public_key(peer: &libp2p::PeerId) -> Option<libp2p::identity::PublicKey> {
-    let hash = libp2p::multihash::Multihash::from(*peer);
+fn peer_public_key(peer: &libp2p_identity::PeerId) -> Option<libp2p_identity::PublicKey> {
+    let hash = peer.as_ref();
     // 0x00 is the identity multihash: the "digest" is the key itself.
     if hash.code() != 0x00 {
         return None;
     }
-    libp2p::identity::PublicKey::try_decode_protobuf(hash.digest()).ok()
+    libp2p_identity::PublicKey::try_decode_protobuf(hash.digest()).ok()
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

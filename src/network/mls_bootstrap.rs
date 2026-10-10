@@ -8,7 +8,7 @@
 //! removal. Workspace/control content uses the MLS-encrypted v2 protocols.
 
 use anyhow::{Context, Result};
-use libp2p::PeerId;
+use libp2p_identity::PeerId;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::warn;
@@ -544,7 +544,7 @@ mod tests {
             String::new(),
             "agent".into(),
             1,
-            libp2p::identity::Keypair::generate_ed25519()
+            libp2p_identity::Keypair::generate_ed25519()
                 .public()
                 .to_peer_id()
                 .to_string(),
@@ -552,7 +552,7 @@ mod tests {
             "owner".into(),
             crate::mls::new_mls_state(identity, None),
         );
-        let sender = libp2p::identity::Keypair::generate_ed25519()
+        let sender = libp2p_identity::Keypair::generate_ed25519()
             .public()
             .to_peer_id();
         {
@@ -588,7 +588,7 @@ mod tests {
     }
 
     fn peer() -> PeerId {
-        libp2p::identity::Keypair::generate_ed25519()
+        libp2p_identity::Keypair::generate_ed25519()
             .public()
             .to_peer_id()
     }

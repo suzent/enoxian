@@ -7,7 +7,7 @@
 ///
 /// Framing: [4-byte path len][path UTF-8][4-byte data len][y-sync bytes]
 use anyhow::{Context, Result};
-use libp2p::PeerId;
+use libp2p_identity::PeerId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

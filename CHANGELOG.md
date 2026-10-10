@@ -47,6 +47,14 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
+- **Every Circle now connects over Iroh, and libp2p is gone from the
+  client.** Devices on 0.11 or earlier can no longer reach devices on this
+  version, so every device in a Circle has to upgrade. Identities, members,
+  Circle keys and invites carry over; nothing needs to be re-created, and
+  invites minted by older versions still work. Connections are direct where
+  the network allows it and go through enoxian's or Iroh's public relays
+  otherwise.
+- `enox invite --relay` now takes an Iroh relay URL to put in the invite.
 - `enox --version` names the optional features a binary was built with, for
   example `0.11.0 (dev, b8cdb9b, iroh-transport)`.
 
