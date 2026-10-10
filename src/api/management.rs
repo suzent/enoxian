@@ -196,7 +196,7 @@ pub async fn generate_invite(
     // key through the relays.
     let direct_addr = daemon.get(&circle_id).and_then(|state| {
         let direct = state.p2p_direct_addrs.read().ok()?;
-        best_connectable_addr(direct.as_slice()).map(String::from)
+        invite::best_direct_addr(direct.as_slice()).map(String::from)
     });
     let peer_addr = direct_addr
         .clone()
@@ -279,37 +279,6 @@ async fn short_or_full(uri: &str, rendezvous: Option<&str>) -> (String, Option<&
             Some("Short invite unavailable: the relay could not store it. Use this full invite instead."),
         ),
     }
-}
-
-/// Pick the best listen addr for embedding in an invite.
-/// Prefers public IPs > Tailscale CGNAT (100.64/10) > RFC1918. Skips loopback.
-fn best_connectable_addr(addrs: &[String]) -> Option<&str> {
-    fn rank(addr: &str) -> u8 {
-        let ip_str = match addr.strip_prefix("/ip4/").and_then(|s| s.split('/').next()) {
-            Some(s) => s,
-            None => return 5,
-        };
-        let ip: std::net::Ipv4Addr = match ip_str.parse() {
-            Ok(ip) => ip,
-            Err(_) => return 5,
-        };
-        if ip.is_loopback() || ip.is_unspecified() {
-            return 4;
-        }
-        if ip.is_private() || ip.is_link_local() {
-            return 3;
-        }
-        let o = ip.octets();
-        if o[0] == 100 && (64..=127).contains(&o[1]) {
-            return 2;
-        } // Tailscale
-        1 // public IP
-    }
-    addrs
-        .iter()
-        .filter(|a| rank(a) < 4)
-        .min_by_key(|a| rank(a))
-        .map(String::as_str)
 }
 
 pub async fn enable_circle(

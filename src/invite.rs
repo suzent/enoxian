@@ -190,6 +190,37 @@ impl InviteGrant {
     }
 }
 
+/// The direct address to put in an invite: a public IP, else Tailscale
+/// (100.64/10), else a private LAN address. Loopback and unspecified
+/// addresses are left out, since they would only reach the inviter's own
+/// machine.
+pub fn best_direct_addr(addrs: &[String]) -> Option<&str> {
+    fn rank(addr: &str) -> Option<u8> {
+        let ip: std::net::Ipv4Addr = addr
+            .strip_prefix("/ip4/")?
+            .split('/')
+            .next()?
+            .parse()
+            .ok()?;
+        if ip.is_loopback() || ip.is_unspecified() {
+            return None;
+        }
+        if ip.is_private() || ip.is_link_local() {
+            return Some(3);
+        }
+        let o = ip.octets();
+        if o[0] == 100 && (64..=127).contains(&o[1]) {
+            return Some(2);
+        }
+        Some(1)
+    }
+    addrs
+        .iter()
+        .filter_map(|addr| Some((rank(addr)?, addr)))
+        .min_by_key(|(rank, _)| *rank)
+        .map(|(_, addr)| addr.as_str())
+}
+
 /// The peer an invite names when this device has no direct address to offer:
 /// its PeerId alone, which the joiner dials by key through the relays.
 pub fn iroh_self_addr(keypair_proto_hex: &str) -> Option<String> {
@@ -1579,6 +1610,28 @@ mod tests {
 
     /// Every invite is v3 now; a v2 link minted before the switch still
     /// decodes, with no relay list.
+    #[test]
+    fn the_direct_address_prefers_public_and_never_loopback() {
+        let addr = |ip: &str| format!("/ip4/{ip}/udp/4000/quic-v1/p2p/12D3KooWx");
+        let pick = |ips: &[&str]| {
+            let addrs: Vec<String> = ips.iter().map(|ip| addr(ip)).collect();
+            best_direct_addr(&addrs).map(String::from)
+        };
+        assert_eq!(
+            pick(&["127.0.0.1", "0.0.0.0", "192.168.1.5"]),
+            Some(addr("192.168.1.5"))
+        );
+        assert_eq!(
+            pick(&["192.168.1.5", "100.70.1.2", "203.0.113.9"]),
+            Some(addr("203.0.113.9"))
+        );
+        assert_eq!(
+            pick(&["192.168.1.5", "100.70.1.2"]),
+            Some(addr("100.70.1.2"))
+        );
+        assert_eq!(pick(&["127.0.0.1", "0.0.0.0"]), None);
+    }
+
     #[test]
     fn every_invite_is_v3_and_v2_links_still_decode() {
         let payload = realistic(Some(a_grant()));

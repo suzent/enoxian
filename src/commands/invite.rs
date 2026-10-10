@@ -42,7 +42,7 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
         .clone()
         .or_else(|| {
             let addrs = p2p.as_ref()?.direct_addrs.as_slice();
-            best_listen_addr(addrs).map(String::from)
+            invite::best_direct_addr(addrs).map(String::from)
         })
         .or_else(|| invite::iroh_self_addr(&config.keypair_proto_hex));
 
@@ -243,34 +243,6 @@ async fn fetch_p2p_info(client: &reqwest::Client, api_base: &str) -> Option<P2PI
             .filter(|addrs| !addrs.is_empty())
             .unwrap_or_else(|| parse_addrs("listen_addrs")),
     })
-}
-
-/// Pick the best listen addr from the list: public IPs first, then Tailscale
-/// (100.64/10), then RFC1918. Returns the highest-priority addr, or None if empty.
-fn best_listen_addr(addrs: &[String]) -> Option<&str> {
-    fn rank(addr: &str) -> u8 {
-        // Parse IPv4 from a multiaddr string like /ip4/1.2.3.4/tcp/...
-        let ip_str = match addr.strip_prefix("/ip4/").and_then(|s| s.split('/').next()) {
-            Some(s) => s,
-            None => return 4,
-        };
-        let ip: std::net::Ipv4Addr = match ip_str.parse() {
-            Ok(ip) => ip,
-            Err(_) => return 4,
-        };
-        if ip.is_private() || ip.is_link_local() {
-            return 3; // RFC1918 / link-local — least preferred
-        }
-        let o = ip.octets();
-        if o[0] == 100 && o[1] >= 64 && o[1] <= 127 {
-            return 2; // Tailscale CGNAT — usable within a tailnet
-        }
-        1 // public IP — most preferred
-    }
-    addrs
-        .iter()
-        .min_by_key(|a| rank(a.as_str()))
-        .map(String::as_str)
 }
 
 fn try_load_admin_pubkey(circle_id: &str) -> Option<Vec<u8>> {
