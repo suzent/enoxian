@@ -72,6 +72,8 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- An ACP agent that writes its whole reply right before ending its turn no
+  longer has the reply dropped instead of posted to the room.
 - `enox status` for a Circle the daemon is not running says so, and why it
   failed to start, instead of printing a row of `?`.
 - Chat keeps backslashes, so Windows paths and commands such as
