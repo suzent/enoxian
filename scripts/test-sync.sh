@@ -281,6 +281,24 @@ echo "written after readmission" > "$D1_WS/after-readmit.txt"
 wait_for "after-readmit.txt never reached the readmitted daemon 2" 150 d2_has_file "after-readmit.txt"
 ok "sync resumed with the readmitted device"
 
+section "Removal and readmission while offline"
+# Daemon 2 is down for both, so it never learns it was removed and its old
+# group still looks live when it starts. Being readmitted since it was last
+# admitted is what has to make it ask to join again.
+pkill -f "enox daemon run --port $D2_PORT" 2>/dev/null || true
+sleep 1
+enox1 --circle "$CIRCLE_NAME" member remove "$D2_ID" > /dev/null || fail "offline remove failed"
+enox1 --circle "$CIRCLE_NAME" member readmit "$D2_ID" > /dev/null || fail "offline readmit failed"
+ok "daemon 2 removed and readmitted while down"
+ENOXIAN_DEVICE_LABEL="device-two" ENOXIAN_HOME="$D2_STATE" \
+    "$ENOX" daemon run --port $D2_PORT >> "$TMPDIR_TEST/d2.log" 2>&1 &
+wait_for "daemon 2 never came back" 40 daemon_up "$D2_STATE" $D2_PORT
+wait_for "daemon 2 never asked to join after an offline readmission" 120 d1_has_key_package
+enox1 --circle "$CIRCLE_NAME" member approve "$D2_ID" > /dev/null || fail "approve failed"
+echo "written after offline readmission" > "$D1_WS/after-offline-readmit.txt"
+wait_for "after-offline-readmit.txt never reached daemon 2" 150 d2_has_file "after-offline-readmit.txt"
+ok "sync resumed after an offline readmission"
+
 trap - ERR
 echo
 echo "All sync tests passed ✓"

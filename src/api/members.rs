@@ -301,35 +301,6 @@ pub async fn remove_member(
             .into_response();
     }
 
-    // The signed record that keeps a removal in force once the device has
-    // ever been readmitted (#260). Only the holder of admin.key can sign it;
-    // a removal it cannot sign would leave a readmitted device in, so that is
-    // refused before anything irreversible happens.
-    let can_sign_standing = admin_sign_in(&state.circle_dir, b"membership").is_ok();
-    if !can_sign_standing {
-        let readmitted = state.control.try_transact().ok().map(|txn| {
-            crate::membership::standing(
-                &txn,
-                &state.circle_id,
-                &state.admin_pubkey_hex,
-                &req.peer_id,
-            ) == Some(crate::membership::Standing::In)
-        });
-        match readmitted {
-            None => return super::circle_busy(),
-            Some(true) => {
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(json!({
-                        "error": "this device was readmitted; removing it again needs the device that holds admin.key"
-                    })),
-                )
-                    .into_response()
-            }
-            Some(false) => {}
-        }
-    }
-
     // Issue MLS Remove commit so all remaining members advance their epoch,
     // deriving a new PSK that the evicted peer cannot compute.
     //
@@ -349,6 +320,40 @@ pub async fn remove_member(
         {
             let mut mls_locked = state.mls.lock().await;
             if let Ok(mut txn) = state.control.try_transact_mut() {
+                // The signed record that keeps this removal in force once the
+                // device has ever been readmitted (#260), signed first so that
+                // nothing irreversible happens without it. Only the holder of
+                // admin.key can sign it. Without it a device that was never
+                // readmitted is still removed by its tombstone; a readmitted
+                // one would stay in, so that removal is refused.
+                let out_record = match crate::membership::sign_next(
+                    &txn,
+                    &state.circle_id,
+                    &state.admin_pubkey_hex,
+                    &req.peer_id,
+                    crate::membership::Standing::Out,
+                    |msg| admin_sign_in(&state.circle_dir, msg),
+                ) {
+                    Ok(record) => Some(record),
+                    Err(_)
+                        if crate::membership::standing(
+                            &txn,
+                            &state.circle_id,
+                            &state.admin_pubkey_hex,
+                            &req.peer_id,
+                        ) == Some(crate::membership::Standing::In) =>
+                    {
+                        return (
+                            StatusCode::FORBIDDEN,
+                            Json(json!({
+                                "error": "this device was readmitted; removing it again needs the device that holds admin.key"
+                            })),
+                        )
+                            .into_response();
+                    }
+                    Err(_) => None,
+                };
+
                 // A circle with no MLS group, or a peer that never joined it,
                 // is a CRDT-only eviction — no commit to publish.
                 let mls_out = match mls_locked.remove_member_by_peer(&req.peer_id) {
@@ -407,17 +412,10 @@ pub async fn remove_member(
                 welcome_map.remove(&mut txn, req.peer_id.as_str());
                 pending_map.remove(&mut txn, req.peer_id.as_str());
                 removed_map.insert(&mut txn, req.peer_id.as_str(), removed_at.as_str());
-                if can_sign_standing {
-                    if let Err(e) = crate::membership::write(
-                        &mut txn,
-                        &state.circle_id,
-                        &state.admin_pubkey_hex,
-                        &req.peer_id,
-                        crate::membership::Standing::Out,
-                        |msg| admin_sign_in(&state.circle_dir, msg),
-                    ) {
+                if let Some(record) = &out_record {
+                    if let Err(e) = crate::membership::store(&mut txn, record) {
                         tracing::error!(
-                            "[member] removed {} but could not sign its membership record: {e}",
+                            "[member] removed {} but could not store its membership record: {e}",
                             req.peer_id
                         );
                     }

@@ -752,7 +752,7 @@ async fn sync_inner(
 
     if peer_session.you_are_removed {
         mark_self_removed(state);
-        crate::lifecycle::forget_group_if_removed(state).await;
+        crate::lifecycle::settle_own_standing(state).await;
         warn!(
             "[sync] this device was removed from circle {}",
             state.circle_id
@@ -1177,7 +1177,7 @@ async fn sync_inner(
                     }
                     IncomingEvent::Revoked => {
                         mark_self_removed(state);
-                        crate::lifecycle::forget_group_if_removed(state).await;
+                        crate::lifecycle::settle_own_standing(state).await;
                         warn!("[sync] membership revoked by {peer_id}");
                         break;
                     }

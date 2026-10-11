@@ -290,7 +290,7 @@ async fn apply_snapshot(state: &AppState, peer: PeerId, incoming: Snapshot) -> R
 
     // This stream is how a removed device usually learns it was removed: its
     // own tombstone or record arrives here, and sync is refused from then on.
-    crate::lifecycle::forget_group_if_removed(state).await;
+    crate::lifecycle::settle_own_standing(state).await;
 
     for entry in incoming.commits {
         crate::lifecycle::apply_commit_entry(entry.clone(), state.mls.clone(), state.clone()).await;

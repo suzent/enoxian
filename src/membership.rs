@@ -178,6 +178,21 @@ pub fn write(
     standing: Standing,
     sign: impl FnOnce(&[u8]) -> anyhow::Result<String>,
 ) -> anyhow::Result<MembershipRecord> {
+    let record = sign_next(txn, circle_id, admin_pubkey_hex, peer_id, standing, sign)?;
+    store(txn, &record)?;
+    Ok(record)
+}
+
+/// The next record about `peer_id`, signed but not yet stored, so a caller
+/// can make sure of the signature before doing anything it cannot undo.
+pub fn sign_next<T: ReadTxn>(
+    txn: &T,
+    circle_id: &str,
+    admin_pubkey_hex: &str,
+    peer_id: &str,
+    standing: Standing,
+    sign: impl FnOnce(&[u8]) -> anyhow::Result<String>,
+) -> anyhow::Result<MembershipRecord> {
     let gen = next_gen(txn, circle_id, admin_pubkey_hex, peer_id);
     let admin_signature = sign(message(circle_id, peer_id, standing, gen).as_bytes())?;
     let record = MembershipRecord {
@@ -191,10 +206,29 @@ pub fn write(
         record.is_authentic(circle_id, admin_pubkey_hex),
         "the membership record is not signed by this circle's admin key"
     );
-    let json = serde_json::to_string(&record)?;
+    Ok(record)
+}
+
+/// Store a record made by [`sign_next`].
+pub fn store(txn: &mut TransactionMut, record: &MembershipRecord) -> anyhow::Result<()> {
+    let json = serde_json::to_string(record)?;
     let map = txn.get_or_insert_map(MEMBERSHIP_KEY);
     map.insert(txn, record.key().as_str(), json.as_str());
-    Ok(record)
+    Ok(())
+}
+
+/// The `gen` of the record readmitting `peer_id`, if its latest word is a
+/// readmission.
+pub fn readmission_gen<T: ReadTxn>(
+    txn: &T,
+    circle_id: &str,
+    admin_pubkey_hex: &str,
+    peer_id: &str,
+) -> Option<u64> {
+    let records = authentic_records(txn, circle_id, admin_pubkey_hex, peer_id);
+    deciding(&records)
+        .filter(|r| r.standing == Standing::In)
+        .map(|r| r.gen)
 }
 
 /// Every stored record, as `(key, json)` pairs, for relaying.

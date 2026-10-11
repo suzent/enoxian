@@ -188,7 +188,28 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         use yrs::{Any, Map, Out, Transact};
         let map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
         let is_local_admin = cdir.join("admin.key").exists();
-        forget_group_if_removed(&state).await;
+        if !is_local_admin {
+            let request = PendingEntry {
+                peer_id: peer_id.to_string(),
+                owner: config.owner.clone(),
+                agent_id: agent_id.clone(),
+                device_label: crate::identity::read_identity_display()
+                    .map(|(label, _)| label)
+                    .unwrap_or_default(),
+                agents: crate::identity::read_local_agents(),
+                owner_sig: {
+                    let owner_claim_msg = format!("owner:{}", config.owner);
+                    keypair
+                        .sign(owner_claim_msg.as_bytes())
+                        .map(hex::encode)
+                        .unwrap_or_default()
+                },
+                requested_at: chrono::Utc::now(),
+                join_grant: config.join_grant.clone(),
+            };
+            *state.join_request.lock().unwrap() = serde_json::to_string(&request).ok();
+        }
+        settle_own_standing(&state).await;
         // Not the member list: a device keeps its own entry there when it
         // learns of its removal over the bootstrap stream, and a readmitted
         // device restarting with that entry would never ask to join again
@@ -209,25 +230,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             )
         };
         let write_pending = || {
-            let pending_entry = PendingEntry {
-                peer_id: peer_id.to_string(),
-                owner: config.owner.clone(),
-                agent_id: agent_id.clone(),
-                device_label: crate::identity::read_identity_display()
-                    .map(|(label, _)| label)
-                    .unwrap_or_default(),
-                agents: crate::identity::read_local_agents(),
-                owner_sig: {
-                    let owner_claim_msg = format!("owner:{}", config.owner);
-                    keypair
-                        .sign(owner_claim_msg.as_bytes())
-                        .map(hex::encode)
-                        .unwrap_or_default()
-                },
-                requested_at: chrono::Utc::now(),
-                join_grant: config.join_grant.clone(),
-            };
-            if let Ok(json_str) = serde_json::to_string(&pending_entry) {
+            if let Some(json_str) = state.join_request.lock().unwrap().clone() {
                 let pending_map = state.control.get_or_insert_map(MLS_PENDING_KEY);
                 let mut txn = state.control.transact_mut();
                 pending_map.insert(&mut txn, peer_id.to_string().as_str(), json_str.as_str());
@@ -1242,6 +1245,7 @@ pub(crate) async fn consume_welcome(welcome_hex: String, mls: SharedMlsState, st
     let _ = group.save(identity, &state.circle_dir);
     let rejoined = current.is_some();
     mls_locked.replace_group(group);
+    record_admission(&state);
     if rejoined {
         info!("[mls] rejoined the group via a new Welcome");
     } else {
@@ -1249,16 +1253,74 @@ pub(crate) async fn consume_welcome(welcome_hex: String, mls: SharedMlsState, st
     }
 }
 
-/// Drop the MLS group this device was removed from, if it is removed.
+/// Where this device notes the `gen` of the readmission it was last admitted
+/// under: 0 for a device admitted without ever being removed.
+fn admitted_gen_path(circle_dir: &std::path::Path) -> std::path::PathBuf {
+    circle_dir.join("mls").join("admitted_gen")
+}
+
+fn admitted_gen(circle_dir: &std::path::Path) -> u64 {
+    std::fs::read_to_string(admitted_gen_path(circle_dir))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// The readmission `gen` this device holds for itself, if it is newer than the
+/// one it was last admitted under: it was removed and readmitted since, whether
+/// or not it ever learned of the removal.
+fn readmitted_since_admission(state: &AppState) -> Option<u64> {
+    use yrs::Transact;
+    let txn = state.control.try_transact().ok()?;
+    let gen = crate::membership::readmission_gen(
+        &txn,
+        &state.circle_id,
+        &state.admin_pubkey_hex,
+        &state.peer_id,
+    )?;
+    (gen > admitted_gen(&state.circle_dir)).then_some(gen)
+}
+
+/// Note that this device was just admitted, under its current readmission.
+fn record_admission(state: &AppState) {
+    use yrs::Transact;
+    let gen = state
+        .control
+        .try_transact()
+        .ok()
+        .and_then(|txn| {
+            crate::membership::readmission_gen(
+                &txn,
+                &state.circle_id,
+                &state.admin_pubkey_hex,
+                &state.peer_id,
+            )
+        })
+        .unwrap_or(0);
+    let path = admitted_gen_path(&state.circle_dir);
+    if let Err(e) = std::fs::write(&path, gen.to_string()) {
+        warn!(
+            "[mls] could not record admission in {}: {e}",
+            path.display()
+        );
+    }
+}
+
+/// Bring this device's MLS state in line with its standing.
 ///
-/// A removed device rarely sees the commit that removed it: peers stop sending
-/// it commits once it is outside the group, so the group it holds keeps looking
-/// live. Keeping it would make a readmitted device restart as if it were still
-/// a member and never ask to join again (#260). Without it the device is, as
-/// far as MLS goes, a newcomer: it asks to join on its next start, and joins
-/// from the admin's Welcome like any other.
-pub(crate) async fn forget_group_if_removed(state: &AppState) {
-    if !state.is_self_removed() {
+/// A removed device drops the group it was removed from. It rarely sees the
+/// commit that removed it: peers stop sending it commits once it is outside the
+/// group, so that group keeps looking live, and a readmitted device would
+/// restart as if it were still a member and never ask to join (#260).
+///
+/// A device readmitted since it was last admitted drops it too, for the same
+/// reason, even if it was offline for the removal and only ever sees the
+/// readmission; and it files its join request again, so the admin can approve
+/// it. Without a group it is, as far as MLS goes, a newcomer, and joins from
+/// the admin's Welcome like any other.
+pub(crate) async fn settle_own_standing(state: &AppState) {
+    let readmitted = readmitted_since_admission(state);
+    if !state.is_self_removed() && readmitted.is_none() {
         return;
     }
     if state.mls.lock().await.forget_group() {
@@ -1269,6 +1331,19 @@ pub(crate) async fn forget_group_if_removed(state: &AppState) {
             }
         }
         info!("[mls] dropped the group this device was removed from");
+    }
+    let Some(gen) = readmitted else { return };
+    let Some(request) = state.join_request.lock().unwrap().clone() else {
+        return;
+    };
+    use yrs::{Map, Transact, WriteTxn};
+    let Ok(mut txn) = state.control.try_transact_mut() else {
+        return;
+    };
+    let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
+    if pending.get(&txn, state.peer_id.as_str()).is_none() {
+        pending.insert(&mut txn, state.peer_id.as_str(), request.as_str());
+        info!("[member] readmitted (gen {gen}); asking to join again");
     }
 }
 
@@ -1481,22 +1556,21 @@ mod tests {
     use crate::state::AppState;
     use yrs::{Map, ReadTxn, Transact, WriteTxn};
 
-    /// A removed device drops the group it was removed from, on disk too, so
-    /// that it restarts as a newcomer and asks to join again; a readmitted one
-    /// keeps whatever group it has (#260).
-    #[tokio::test]
-    async fn a_removed_device_forgets_its_group_and_a_readmitted_one_does_not() {
-        let dir = tempfile::tempdir().unwrap();
-        let admin_key = libp2p_identity::Keypair::generate_ed25519();
+    /// A device holding a live-looking group, with its own admin-signed
+    /// membership records written by `admin_key`.
+    async fn device_with_group(
+        dir: &std::path::Path,
+        admin_key: &libp2p_identity::Keypair,
+    ) -> (AppState, crate::mls::SharedMlsState) {
         let device = MlsIdentity::generate("device").unwrap();
         let group = MlsGroupManager::create(&device).unwrap();
-        group.save(&device, dir.path()).unwrap();
+        group.save(&device, dir).unwrap();
         let mls = crate::mls::new_mls_state(device, Some(group));
         let state = AppState::new(
             "circle".into(),
             "Circle".into(),
-            dir.path().into(),
-            dir.path().into(),
+            dir.into(),
+            dir.into(),
             hex::encode(admin_key.public().encode_protobuf()),
             "agent".into(),
             1,
@@ -1505,33 +1579,92 @@ mod tests {
             "owner".into(),
             mls.clone(),
         );
+        *state.join_request.lock().unwrap() = Some("{\"request\":1}".into());
+        (state, mls)
+    }
+
+    fn standing_record(
+        state: &AppState,
+        admin_key: &libp2p_identity::Keypair,
+        standing: crate::membership::Standing,
+    ) {
+        let mut txn = state.control.transact_mut();
+        crate::membership::write(
+            &mut txn,
+            "circle",
+            &state.admin_pubkey_hex,
+            "device",
+            standing,
+            |msg: &[u8]| Ok(hex::encode(admin_key.sign(msg)?)),
+        )
+        .unwrap();
+    }
+
+    fn has_pending(state: &AppState) -> bool {
+        let txn = state.control.transact();
+        txn.get_map(MLS_PENDING_KEY)
+            .and_then(|m| m.get(&txn, "device"))
+            .is_some()
+    }
+
+    /// A removed device drops the group it was removed from, on disk too, so
+    /// that it restarts as a newcomer and asks to join again (#260).
+    #[tokio::test]
+    async fn a_removed_device_forgets_its_group() {
+        use crate::membership::Standing;
+        let dir = tempfile::tempdir().unwrap();
+        let admin_key = libp2p_identity::Keypair::generate_ed25519();
+        let (state, mls) = device_with_group(dir.path(), &admin_key).await;
         let group_file = dir.path().join("mls").join("group.json");
-        let sign = |msg: &[u8]| Ok(hex::encode(admin_key.sign(msg)?));
-        let record = |standing| {
-            let mut txn = state.control.transact_mut();
-            crate::membership::write(
-                &mut txn,
-                "circle",
-                &state.admin_pubkey_hex,
-                "device",
-                standing,
-                sign,
-            )
-            .unwrap();
-        };
 
-        forget_group_if_removed(&state).await;
-        assert!(mls.lock().await.group.is_some(), "not removed: kept");
+        settle_own_standing(&state).await;
+        assert!(mls.lock().await.group.is_some(), "in good standing: kept");
 
-        record(crate::membership::Standing::Out);
-        record(crate::membership::Standing::In);
-        forget_group_if_removed(&state).await;
-        assert!(mls.lock().await.group.is_some(), "readmitted: kept");
-
-        record(crate::membership::Standing::Out);
-        forget_group_if_removed(&state).await;
+        standing_record(&state, &admin_key, Standing::Out);
+        settle_own_standing(&state).await;
         assert!(mls.lock().await.group.is_none(), "removed: dropped");
         assert!(!group_file.exists(), "and not restored on the next start");
+        assert!(
+            !has_pending(&state),
+            "a removed device does not ask to join"
+        );
+    }
+
+    /// A device offline for both its removal and its readmission sees only the
+    /// readmission, and its group still looks live. Being readmitted since it
+    /// was last admitted is what tells it that group is stale: it drops it and
+    /// files its join request again. Once admitted, it settles (#260).
+    #[tokio::test]
+    async fn a_device_readmitted_while_offline_asks_to_join_again() {
+        use crate::membership::Standing;
+        let dir = tempfile::tempdir().unwrap();
+        let admin_key = libp2p_identity::Keypair::generate_ed25519();
+        let (state, mls) = device_with_group(dir.path(), &admin_key).await;
+        record_admission(&state);
+        standing_record(&state, &admin_key, Standing::Out);
+        standing_record(&state, &admin_key, Standing::In);
+        assert!(!state.is_self_removed());
+
+        settle_own_standing(&state).await;
+        assert!(
+            mls.lock().await.group.is_none(),
+            "the stale group is dropped"
+        );
+        assert!(has_pending(&state), "and the device asks to join again");
+
+        // Admitted under this readmission: nothing more to do, even with the
+        // join request still pending until the admin's approval clears it.
+        let group = MlsGroupManager::create(&mls.lock().await.identity).unwrap();
+        mls.lock().await.replace_group(group);
+        record_admission(&state);
+        settle_own_standing(&state).await;
+        assert!(mls.lock().await.group.is_some(), "admitted: kept");
+
+        // Removed and readmitted again: the same, a round later.
+        standing_record(&state, &admin_key, Standing::Out);
+        standing_record(&state, &admin_key, Standing::In);
+        settle_own_standing(&state).await;
+        assert!(mls.lock().await.group.is_none());
     }
 
     /// A device may still hold the group it was removed from, if it never

@@ -147,8 +147,13 @@ over `membership:{circle_id}:{peer_id}:{in|out}:{gen}` and stored under
   It seldom sees the commit that removed it, since peers send commits only to
   group members, so that group would otherwise keep looking live. Without it,
   a readmitted device restarts as a newcomer, asks to join with fresh keys, and
-  joins from the admin's Welcome. A device that never learned of its removal
-  replaces its old group with the Welcome's when that lands on a later epoch.
+  joins from the admin's Welcome. A device offline for both its removal and its
+  readmission only ever sees the readmission; it notes the `gen` it was last
+  admitted under (`mls/admitted_gen`), and a readmission newer than that makes
+  it drop its group and ask to join the same way. A Welcome that lands on a
+  later epoch than a group the device still holds replaces it, reversibly.
+- `enox member remove` signs the `out` record before the MLS removal, and
+  stops there if it cannot sign one for a device that was readmitted.
 
 Only the device holding `admin.key` can sign these records. A removal made
 without it cannot outrank a readmission, so it is refused for a readmitted
