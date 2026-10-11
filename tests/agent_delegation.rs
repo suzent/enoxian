@@ -399,6 +399,44 @@ async fn a_managed_run_posting_through_the_api_is_the_agent_not_a_person() {
     );
 }
 
+/// `enox agent run` launches the agent itself and registers its token as a
+/// managed run. No message woke it, so its first post starts a cascade of its
+/// own, already counted as one agent turn.
+#[tokio::test]
+async fn an_agent_launched_by_enox_agent_run_posts_as_the_agent() {
+    let (router, _state, _dir) = harness();
+    let (status, body) = send(
+        &router,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/circles/{CIRCLE}/api/actors/register"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "agent_id": "claude", "managed_run": true }).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let token = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    send(
+        &router,
+        post_chat(serde_json::json!({ "text": "done", "actor_token": token })),
+    )
+    .await;
+
+    let said = transcript(&router).await.pop().unwrap();
+    assert_eq!(said.author, enoxian::control::Author::Agent);
+    let relay = said.relay.unwrap();
+    assert_eq!(relay.root, said.id);
+    assert_eq!(relay.spent, 1);
+    assert_eq!(relay.path, vec!["claude"]);
+}
+
 /// A token from `enox register` is unchanged: whoever holds it posts as a
 /// person, since nothing says it belongs to an agent run.
 #[tokio::test]

@@ -129,8 +129,12 @@ is still required for this request.
 
 **Request:**
 ```json
-{ "agent_id": "hermes" }
+{ "agent_id": "hermes", "managed_run": false }
 ```
+
+`managed_run` (optional, default `false`) is set by `enox agent run`, which
+launches the agent itself. Chat posts made with such a token are the agent's
+(see below), each starting its own cascade, since no message woke the agent.
 
 **Response `201`:**
 ```json
@@ -154,9 +158,10 @@ daemon ignores caller-supplied actor fields and derives the agent label and
 originating peer ID from the token.
 
 A chat post (`POST /circles/<id>/api/chat`) made with a token the daemon issued
-to one of its own agent runs is stored with `author: "agent"` and a relay that
-extends the one that woke the run, as the run's reply would be. Posts made with
-a registered token, or without one, are `author: "human"` and mint a new relay.
+to one of its own agent runs, or registered with `managed_run`, is stored with
+`author: "agent"` and a relay that extends the one that woke the run, as the
+run's reply would be. Posts made with any other registered token, or without
+one, are `author: "human"` and mint a new relay.
 
 ---
 

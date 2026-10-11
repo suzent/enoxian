@@ -13,14 +13,17 @@ pub struct RegisteredActor {
     pub expires_at: String,
 }
 
+/// `managed_run` marks a token for an agent this CLI launches itself, whose
+/// chat posts are the agent's rather than a person's.
 pub async fn issue(
     client: &reqwest::Client,
     base: &str,
     agent_id: &str,
+    managed_run: bool,
 ) -> Result<RegisteredActor> {
     let resp = client
         .post(format!("{base}/actors/register"))
-        .json(&json!({ "agent_id": agent_id }))
+        .json(&json!({ "agent_id": agent_id, "managed_run": managed_run }))
         .send()
         .await?;
     let status = resp.status();
@@ -40,7 +43,7 @@ pub async fn run(
     agent_id: String,
     json_out: bool,
 ) -> Result<()> {
-    let registered = issue(client, base, &agent_id).await?;
+    let registered = issue(client, base, &agent_id, false).await?;
     if json_out {
         println!("{}", serde_json::to_string_pretty(&registered)?);
     } else {
