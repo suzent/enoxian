@@ -79,6 +79,8 @@ refuses to publish a version whose section is missing or empty.
   backslash before `.` or `*`.
 - Pasting several lines into the chat box keeps them as separate lines
   instead of joining them into one, and Shift+Enter starts a new line.
+- Agents that cannot run commands are no longer told to run `enox inbox`,
+  which led some to post tool-call markup or a narrated step as their reply.
 
 ## [0.11.0] — 2026-10-07
 
