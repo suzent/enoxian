@@ -1458,13 +1458,23 @@ fn launch_rejection(
 /// `react` posts every agent reply with `reply_to` set to the message that woke
 /// it, so a direct child by an agent is the whole test.
 fn answered_by_an_agent(state: &AppState, message_id: &str) -> bool {
-    answering_agent(state, message_id).is_some()
+    state
+        .transcript()
+        .iter()
+        .any(|m| is_agent_answer(m, message_id))
 }
 
-/// The agent that answered this message and what it said, if one has.
+fn is_agent_answer(m: &crate::control::ChatMessage, message_id: &str) -> bool {
+    m.reply_to.as_deref() == Some(message_id) && m.author == crate::control::Author::Agent
+}
+
+/// Every agent that answered this message and what it said, oldest first.
 ///
-/// The queue uses only the boolean; the hold turn needs the reply itself, so it
-/// can show the agent what it is being asked to react to.
+/// The queue uses only the boolean; the hold turn needs the replies themselves,
+/// so it can show the agent what it is being asked to react to. All of them,
+/// not the first: with several listeners, a later one that sees only the first
+/// answer repeats a correction already made, or passes on a point another
+/// agent disputed (#252).
 ///
 /// The name is qualified by the device that ran it, because `agent_id` is a
 /// bare label and namesakes across devices are ordinary — a Circle can easily
@@ -1473,12 +1483,20 @@ fn answered_by_an_agent(state: &AppState, message_id: &str) -> bool {
 /// claude. Deliberately *not* rendered as `@owner/device/agent`: the agent is
 /// being asked to write a reply, and handing it a live mention invites one into
 /// the answer, which would wake that agent on the next pass.
-pub(super) fn answering_agent(state: &AppState, message_id: &str) -> Option<(String, String)> {
-    let answer = state.transcript().into_iter().find(|m| {
-        m.reply_to.as_deref() == Some(message_id) && m.author == crate::control::Author::Agent
-    })?;
-    let name = super::label::Roster::load(state).speaker(&answer);
-    Some((name, answer.text))
+pub(super) fn answering_agents(state: &AppState, message_id: &str) -> Vec<(String, String)> {
+    let answers: Vec<_> = state
+        .transcript()
+        .into_iter()
+        .filter(|m| is_agent_answer(m, message_id))
+        .collect();
+    if answers.is_empty() {
+        return Vec::new();
+    }
+    let roster = super::label::Roster::load(state);
+    answers
+        .into_iter()
+        .map(|m| (roster.speaker(&m), m.text))
+        .collect()
 }
 
 fn concise_error(error: &anyhow::Error) -> String {
@@ -3862,21 +3880,20 @@ mod tests {
 
     #[test]
     fn the_hold_turn_can_see_who_answered_and_what_they_said() {
-        // `answering_agent` is what the hold prompt is built from: the draft is
+        // `answering_agents` is what the hold prompt is built from: the draft is
         // held against a specific reply, so the agent is shown the thing it is
         // being asked to react to rather than told "something changed".
         let (state, _dir) = test_state("local", "suzy");
         let asked = room_message("asked", "how does the retry path work here?");
         add_chat(&state, &asked);
-        assert_eq!(answering_agent(&state, "asked"), None);
+        assert!(answering_agents(&state, "asked").is_empty());
 
         let mut mine = room_message("mine", "an unrelated post by an agent");
         mine.author = crate::control::Author::Agent;
         mine.agent_id = "claude".into();
         add_chat(&state, &mine);
-        assert_eq!(
-            answering_agent(&state, "asked"),
-            None,
+        assert!(
+            answering_agents(&state, "asked").is_empty(),
             "an agent post that replies to nothing is not an answer"
         );
 
@@ -3885,10 +3902,30 @@ mod tests {
         answer.agent_id = "codex".into();
         answer.reply_to = Some("asked".into());
         add_chat(&state, &answer);
-        let (named, said) = answering_agent(&state, "asked").unwrap();
+        let answers = answering_agents(&state, "asked");
+        assert_eq!(answers.len(), 1);
+        let (named, said) = &answers[0];
         assert_eq!(said, "it retries on the reconcile tick");
         assert!(named.starts_with("codex"));
         assert!(answered_by_an_agent(&state, "asked"));
+
+        // A later listener sees every answer, in the order they were posted,
+        // not just the first one (#252).
+        let mut second = room_message("second", "no, it retries on the next sync");
+        second.author = crate::control::Author::Agent;
+        second.agent_id = "gemini".into();
+        second.reply_to = Some("asked".into());
+        add_chat(&state, &second);
+        let answers = answering_agents(&state, "asked");
+        let said: Vec<_> = answers.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(
+            said,
+            [
+                "it retries on the reconcile tick",
+                "no, it retries on the next sync"
+            ]
+        );
+        assert!(answers[1].0.starts_with("gemini"));
     }
 
     #[test]
@@ -3909,7 +3946,7 @@ mod tests {
         answer.reply_to = Some("asked".into());
         add_chat(&state, &answer);
 
-        let (named, _) = answering_agent(&state, "asked").unwrap();
+        let (named, _) = answering_agents(&state, "asked").remove(0);
         assert_eq!(named, "claude (on suzy/jessair)");
         // Not a live mention: the agent is about to write a reply, and handing
         // it @suzy/jessair/claude invites that handle into the answer.

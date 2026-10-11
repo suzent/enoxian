@@ -72,6 +72,9 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- With several agents reading the room, one whose draft is held now sees
+  every reply posted while it was writing, not only the first, and a long
+  reply keeps its conclusion instead of being cut off after 600 characters.
 - An ACP agent that writes its whole reply right before ending its turn no
   longer has the reply dropped instead of posted to the room.
 - `enox status` for a Circle the daemon is not running says so, and why it
