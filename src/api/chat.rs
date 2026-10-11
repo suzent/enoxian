@@ -172,6 +172,17 @@ pub async fn post_chat(
         Ok(actor) => actor,
         Err(error) => return error.into_response(),
     };
+    // A post made with a token enoxian gave one of its own agent runs is that
+    // agent talking, however it reached the API. Posting it as a person's would
+    // mint a fresh relay and offer it to every agent reading the room, which
+    // gets around both the relay budget and ambient's human-only rule (#254).
+    let trigger = match actor.managed_run {
+        Some(run) => Trigger::AgentReply {
+            agent: actor.agent_id.clone(),
+            parent: run.relay,
+        },
+        None => Trigger::Human,
+    };
     let sender = actor.agent_id;
     let attachments = match resolve_attachments(&state, &req.attachments) {
         Ok(a) => a,
@@ -188,15 +199,7 @@ pub async fn post_chat(
         )
             .into_response();
     }
-    // A user/UI post fires mention triggers.
-    match post_reply(
-        &state,
-        sender,
-        req.text,
-        attachments,
-        Trigger::Human,
-        req.reply_to,
-    ) {
+    match post_reply(&state, sender, req.text, attachments, trigger, req.reply_to) {
         Ok(id) => (StatusCode::CREATED, Json(json!({ "id": id }))).into_response(),
         Err(error) if error.to_string().contains("state busy") => super::circle_busy(),
         Err(error) => (

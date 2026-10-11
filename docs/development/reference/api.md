@@ -153,6 +153,11 @@ Mutating coordination requests may include `actor_token`. When present, the
 daemon ignores caller-supplied actor fields and derives the agent label and
 originating peer ID from the token.
 
+A chat post (`POST /circles/<id>/api/chat`) made with a token the daemon issued
+to one of its own agent runs is stored with `author: "agent"` and a relay that
+extends the one that woke the run, as the run's reply would be. Posts made with
+a registered token, or without one, are `author: "human"` and mint a new relay.
+
 ---
 
 ## Tasks

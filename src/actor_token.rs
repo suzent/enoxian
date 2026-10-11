@@ -16,6 +16,19 @@ pub struct ActorIdentity {
     pub peer_id: String,
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    /// Set when enoxian issued this token to an agent run it started, as
+    /// opposed to `enox register`. What that run posts through the API is the
+    /// agent's, and continues the cascade that woke it (#254).
+    #[serde(skip)]
+    pub managed_run: Option<ManagedRun>,
+}
+
+/// The turn a managed run's token belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedRun {
+    /// The relay of the message that woke the run; `None` when that message
+    /// came from a peer that predates relays.
+    pub relay: Option<crate::control::Relay>,
 }
 
 #[derive(Clone, Default)]
@@ -25,6 +38,28 @@ pub struct ActorTokenRegistry {
 
 impl ActorTokenRegistry {
     pub fn issue(&self, circle_id: &str, peer_id: &str, agent_id: &str) -> (String, ActorIdentity) {
+        self.issue_inner(circle_id, peer_id, agent_id, None)
+    }
+
+    /// A token for an agent run enoxian started, woken by a message carrying
+    /// `relay`. Posts made with it are attributed to the agent, not a person.
+    pub fn issue_for_run(
+        &self,
+        circle_id: &str,
+        peer_id: &str,
+        agent_id: &str,
+        relay: Option<crate::control::Relay>,
+    ) -> (String, ActorIdentity) {
+        self.issue_inner(circle_id, peer_id, agent_id, Some(ManagedRun { relay }))
+    }
+
+    fn issue_inner(
+        &self,
+        circle_id: &str,
+        peer_id: &str,
+        agent_id: &str,
+        managed_run: Option<ManagedRun>,
+    ) -> (String, ActorIdentity) {
         let now = Utc::now();
         let identity = ActorIdentity {
             run_id: None,
@@ -34,6 +69,7 @@ impl ActorTokenRegistry {
             peer_id: peer_id.to_string(),
             issued_at: now,
             expires_at: now + Duration::hours(DEFAULT_TOKEN_TTL_HOURS),
+            managed_run,
         };
 
         // Include the device and Circle in token derivation, while retaining

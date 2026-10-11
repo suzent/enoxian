@@ -354,3 +354,67 @@ async fn system_posts_carry_no_budget_and_trigger_nothing() {
         "a system post must not mint a budget"
     );
 }
+
+/// An agent enoxian runs can post through the CLI (`enox say`) with the token
+/// it was handed, instead of in its turn reply. That post is still the agent:
+/// were it a person's, it would mint a fresh budget and be offered to every
+/// agent reading the room, and two agents could wake each other forever (#254).
+#[tokio::test]
+async fn a_managed_run_posting_through_the_api_is_the_agent_not_a_person() {
+    let (router, state, _dir) = harness();
+    send(
+        &router,
+        post_chat(serde_json::json!({ "text": "@claude please start", "agent_id": "alice" })),
+    )
+    .await;
+    let root = transcript(&router).await[0].clone();
+    let (token, _) =
+        state
+            .actor_tokens
+            .issue_for_run(CIRCLE, "peer-local", "claude", root.relay.clone());
+    let mut rx = state.events.subscribe();
+
+    let (status, _) = send(
+        &router,
+        post_chat(serde_json::json!({
+            "text": "@codex @gemini over to you",
+            "actor_token": token,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let said = transcript(&router).await.pop().unwrap();
+    assert_eq!(said.agent_id, "claude");
+    assert_eq!(said.author, enoxian::control::Author::Agent);
+    let relay = said.relay.expect("an agent post carries the cascade");
+    assert_eq!(relay.root, root.id, "continues the cascade that woke it");
+    assert_eq!(relay.spent, 1);
+    assert_eq!(relay.path, vec!["claude"]);
+    let fired: Vec<String> = drained(&mut rx).into_iter().map(|(a, _)| a).collect();
+    assert_eq!(
+        fired,
+        vec!["codex"],
+        "an agent hands off once, like a reply"
+    );
+}
+
+/// A token from `enox register` is unchanged: whoever holds it posts as a
+/// person, since nothing says it belongs to an agent run.
+#[tokio::test]
+async fn a_registered_actor_still_posts_as_a_person() {
+    let (router, state, _dir) = harness();
+    let (token, _) = state.actor_tokens.issue(CIRCLE, "peer-local", "harness");
+
+    let (status, _) = send(
+        &router,
+        post_chat(serde_json::json!({ "text": "hello", "actor_token": token })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let said = transcript(&router).await.pop().unwrap();
+    assert_eq!(said.agent_id, "harness");
+    assert_eq!(said.author, enoxian::control::Author::Human);
+    assert_eq!(said.relay.unwrap().spent, 0);
+}

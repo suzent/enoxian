@@ -79,6 +79,7 @@ pub(crate) fn resolve_actor(
         peer_id: state.peer_id.clone(),
         issued_at: chrono::Utc::now(),
         expires_at: chrono::Utc::now(),
+        managed_run: None,
     })
 }
 
