@@ -53,6 +53,10 @@ pub const MLS_OWNER_CLAIMS_KEY: &str = "mls_owner_claims";
 /// Used as a sync-level gate: removed peers are rejected before any CRDT data
 /// is exchanged, even during the brief window before PSK rotation completes.
 pub const MLS_REMOVED_KEY: &str = "mls_removed";
+/// Map[`{peer_id}#{gen}#{in|out}` → MembershipRecord JSON] — admin-signed,
+/// versioned standing, which supersedes `mls_removed` for any peer it covers.
+/// See [`crate::membership`].
+pub const MEMBERSHIP_KEY: &str = "membership";
 /// Map[user_pubkey_hex → DistrustEntry JSON] — user identities this circle has
 /// disowned.
 ///

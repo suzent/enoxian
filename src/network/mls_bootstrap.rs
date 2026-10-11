@@ -15,7 +15,7 @@ use tracing::warn;
 use yrs::{Array, Map, Out, ReadTxn, Transact, WriteTxn};
 
 use crate::control::{
-    MlsCommitEntry, MEMBER_LIST_KEY, MLS_COMMITS_KEY, MLS_KEY_PACKAGES_KEY,
+    MlsCommitEntry, MEMBERSHIP_KEY, MEMBER_LIST_KEY, MLS_COMMITS_KEY, MLS_KEY_PACKAGES_KEY,
     MLS_KEY_PACKAGE_BINDINGS_KEY, MLS_OWNER_CLAIMS_KEY, MLS_PENDING_KEY, MLS_REMOVED_KEY,
     MLS_WELCOMES_KEY,
 };
@@ -36,6 +36,11 @@ struct Snapshot {
     pending: Vec<(String, String)>,
     members: Vec<(String, String)>,
     removed: Vec<(String, String)>,
+    /// Admin-signed membership records. Absent from older peers. Relayed to
+    /// anyone, since each carries its own authority (see `crate::membership`):
+    /// a removed device gets its readmission this way, being refused sync.
+    #[serde(default)]
+    membership: Vec<(String, String)>,
     welcome: Option<String>,
     commits: Vec<MlsCommitEntry>,
 }
@@ -93,6 +98,7 @@ fn try_snapshot(state: &AppState, receiver: &PeerId) -> Option<Snapshot> {
         pending: map_strings_in(&txn, MLS_PENDING_KEY),
         members: map_strings_in(&txn, MEMBER_LIST_KEY),
         removed: map_strings_in(&txn, MLS_REMOVED_KEY),
+        membership: crate::membership::entries(&txn),
         welcome: map_strings_in(&txn, MLS_WELCOMES_KEY)
             .into_iter()
             .find(|(peer, _)| peer == &receiver)
@@ -131,6 +137,9 @@ impl Snapshot {
         keep(&mut self.pending, &sender);
         keep(&mut self.members, &sender);
         keep(&mut self.removed, receiver);
+        let own_records = format!("{receiver}#");
+        self.membership
+            .retain(|(key, _)| key.starts_with(&own_records));
         self.commits.clear();
         self
     }
@@ -233,9 +242,33 @@ async fn apply_snapshot(state: &AppState, peer: PeerId, incoming: Snapshot) -> R
             Vec::new(),
         )
     };
+    // Signed records need no trust in the sender, so they are taken from
+    // anyone. Each lives under its own key and is never rewritten: one already
+    // held is skipped, so two copies differing only in `at` cannot flip back
+    // and forth between peers.
+    let mut membership = crate::membership::accept_relayed(
+        &state.circle_id,
+        &state.admin_pubkey_hex,
+        &incoming.membership,
+    );
+    if !membership.is_empty() {
+        match state.control.try_transact() {
+            Ok(txn) => {
+                let held = txn.get_map(MEMBERSHIP_KEY);
+                membership.retain(|(key, _)| {
+                    held.as_ref()
+                        .is_none_or(|map| map.get(&txn, key.as_str()).is_none())
+                });
+            }
+            // Unable to tell which are new, take none this time; the peer
+            // resends its snapshot when anything changes, and on reconnect.
+            Err(_) => membership.clear(),
+        }
+    }
     merge_maps(
         state,
         &[
+            (MEMBERSHIP_KEY, &membership),
             (MLS_KEY_PACKAGES_KEY, &key_packages),
             (MLS_KEY_PACKAGE_BINDINGS_KEY, &key_package_bindings),
             (MLS_OWNER_CLAIMS_KEY, &owner_claims),
@@ -254,6 +287,10 @@ async fn apply_snapshot(state: &AppState, peer: PeerId, incoming: Snapshot) -> R
         )
         .await?;
     }
+
+    // This stream is how a removed device usually learns it was removed: its
+    // own tombstone or record arrives here, and sync is refused from then on.
+    crate::lifecycle::forget_group_if_removed(state).await;
 
     for entry in incoming.commits {
         crate::lifecycle::apply_commit_entry(entry.clone(), state.mls.clone(), state.clone()).await;
@@ -428,6 +465,7 @@ mod tests {
             pending: vec![],
             members: vec![],
             removed: vec![],
+            membership: vec![],
             welcome: None,
             commits: vec![],
         }
@@ -595,6 +633,15 @@ mod tests {
 
     /// A state whose MLS group holds this device and, when given, `member`.
     async fn group_state(dir: &std::path::Path, member: Option<&PeerId>) -> AppState {
+        administered_state(dir, member, String::new()).await
+    }
+
+    /// As [`group_state`], in a circle whose admin key is `admin_pubkey_hex`.
+    async fn administered_state(
+        dir: &std::path::Path,
+        member: Option<&PeerId>,
+        admin_pubkey_hex: String,
+    ) -> AppState {
         let local = peer().to_string();
         let identity = crate::mls::MlsIdentity::generate(&local).unwrap();
         let mut group = crate::mls::MlsGroupManager::create(&identity).unwrap();
@@ -609,7 +656,7 @@ mod tests {
             "test".into(),
             dir.into(),
             dir.into(),
-            String::new(),
+            admin_pubkey_hex,
             "agent".into(),
             1,
             local,
@@ -760,5 +807,114 @@ mod tests {
             stored(MLS_REMOVED_KEY, &victim),
             Some(format!("removed-by-{member}"))
         );
+    }
+
+    fn membership_record(
+        admin: &libp2p_identity::Keypair,
+        peer: &str,
+        standing: crate::membership::Standing,
+        gen: u64,
+    ) -> (String, String) {
+        let record = crate::membership::MembershipRecord {
+            peer_id: peer.into(),
+            standing,
+            gen,
+            at: chrono::Utc::now(),
+            admin_signature: hex::encode(
+                admin
+                    .sign(crate::membership::message("circle", peer, standing, gen).as_bytes())
+                    .unwrap(),
+            ),
+        };
+        (record.key(), serde_json::to_string(&record).unwrap())
+    }
+
+    /// A removed device is refused sync, so the bootstrap stream is the only
+    /// way its readmission reaches it. It gets its own records and no one
+    /// else's (#260).
+    #[tokio::test]
+    async fn a_device_outside_the_group_gets_its_own_membership_records() {
+        use crate::membership::Standing;
+        let dir = tempfile::tempdir().unwrap();
+        let admin = libp2p_identity::Keypair::generate_ed25519();
+        let state = administered_state(
+            dir.path(),
+            None,
+            hex::encode(admin.public().encode_protobuf()),
+        )
+        .await;
+        let (removed, other) = (peer(), peer().to_string());
+        let removed_id = removed.to_string();
+        {
+            let mut txn = state.control.transact_mut();
+            let map = txn.get_or_insert_map(MEMBERSHIP_KEY);
+            for (peer, standing, gen) in [
+                (&removed_id, Standing::Out, 1),
+                (&removed_id, Standing::In, 2),
+                (&other, Standing::Out, 1),
+            ] {
+                let (key, json) = membership_record(&admin, peer, standing, gen);
+                map.insert(&mut txn, key.as_str(), json.as_str());
+            }
+        }
+
+        let sent = snapshot(&state, &removed).await.unwrap();
+        let mut got = keys(&sent.membership);
+        got.sort();
+        let mut want = [format!("{removed_id}#1#out"), format!("{removed_id}#2#in")];
+        want.sort();
+        assert_eq!(got, want.iter().map(String::as_str).collect::<Vec<_>>());
+    }
+
+    /// Signed records carry their own authority, so they are taken from
+    /// anyone, including the device they are about. Unsigned or forged ones
+    /// are not, and a record already held is never rewritten.
+    #[tokio::test]
+    async fn signed_membership_records_are_taken_from_anyone_and_forgeries_from_no_one() {
+        use crate::membership::Standing;
+        let dir = tempfile::tempdir().unwrap();
+        let admin = libp2p_identity::Keypair::generate_ed25519();
+        let state = administered_state(
+            dir.path(),
+            None,
+            hex::encode(admin.public().encode_protobuf()),
+        )
+        .await;
+        let device = peer();
+        let device_id = device.to_string();
+        seed(&state, &[(MLS_REMOVED_KEY, &device_id)]);
+        assert!(state.is_peer_removed(&device_id));
+
+        let stranger = libp2p_identity::Keypair::generate_ed25519();
+        let forged = membership_record(&stranger, &device_id, Standing::In, 5);
+        let mut incoming = snapshot_value("circle");
+        incoming.sender_peer_id = device_id.clone();
+        incoming.membership = vec![forged];
+        apply_snapshot(&state, device, incoming).await.unwrap();
+        assert!(state.is_peer_removed(&device_id), "a forged readmission");
+
+        let genuine = membership_record(&admin, &device_id, Standing::In, 1);
+        let mut incoming = snapshot_value("circle");
+        incoming.sender_peer_id = device_id.clone();
+        incoming.membership = vec![genuine.clone()];
+        apply_snapshot(&state, device, incoming).await.unwrap();
+        assert!(
+            !state.is_peer_removed(&device_id),
+            "relayed by the device itself"
+        );
+
+        // The same record again, re-timestamped and re-signed: kept as it was.
+        let again = membership_record(&admin, &device_id, Standing::In, 1);
+        assert_ne!(again.1, genuine.1);
+        let mut incoming = snapshot_value("circle");
+        incoming.sender_peer_id = device_id.clone();
+        incoming.membership = vec![again];
+        apply_snapshot(&state, device, incoming).await.unwrap();
+        let txn = state.control.transact();
+        let held = txn
+            .get_map(MEMBERSHIP_KEY)
+            .and_then(|m| m.get(&txn, genuine.0.as_str()))
+            .map(|v| v.to_string(&txn));
+        assert_eq!(held, Some(genuine.1));
     }
 }

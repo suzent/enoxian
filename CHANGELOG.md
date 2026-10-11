@@ -41,6 +41,11 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- `enox member readmit <PEER-ID>` lets a removed device back into a Circle.
+  Before, a removed device that was invited back was refused forever, since it
+  returns under the same peer ID. Removal and readmission are now admin-signed,
+  versioned records, so they can be repeated any number of times. Devices on
+  older versions keep refusing a readmitted device until they upgrade.
 - `enox update --dev --features <list>` builds with optional features such as
   `iroh-transport` and keeps them for later `--dev` updates (`--features none`
   clears them). `enox update --status` shows them.

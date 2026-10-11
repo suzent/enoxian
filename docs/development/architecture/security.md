@@ -122,6 +122,39 @@ Eviction is enforced by `mls_removed`:
    `src/network/sync.rs` also checks `mls_removed` before exchanging any CRDT
    data and rejects tombstoned peers.
 
+A removal can be lifted. A device's per-circle peer ID is derived from its
+device key, so a device invited back returns under the same ID and would match
+its tombstone forever. Standing is therefore also recorded in the `membership`
+map as admin-signed, versioned records, `{peer_id, in|out, gen}`, each signed
+over `membership:{circle_id}:{peer_id}:{in|out}:{gen}` and stored under
+`{peer_id}#{gen}#{in|out}`:
+
+- `enox member remove` writes an `out` record alongside the tombstone, and
+  `enox member readmit` writes an `in` record. Each takes the next `gen`.
+- For a peer with any authentic record, the one with the highest `gen` decides,
+  and `out` wins a tie. The tombstone applies only to peers with no record.
+- Nothing is ordered by wall-clock time, so neither clock skew nor the order
+  records arrive in changes the outcome, and an old record replayed later loses
+  on `gen`. The signature covers `gen`, so a removed device cannot promote a
+  readmission it holds past a later removal.
+- Records are relayed by anyone, including over the MLS bootstrap stream to a
+  peer outside the group (its own records only), since each is checked against
+  the admin key wherever it is enforced. That is how a removed device, refused
+  sync, learns it was readmitted.
+- A peer still reporting a readmitted device as removed does not make it
+  tombstone itself again: its own signed `in` record outranks the claim.
+- A device that learns it was removed drops the MLS group it was removed from.
+  It seldom sees the commit that removed it, since peers send commits only to
+  group members, so that group would otherwise keep looking live. Without it,
+  a readmitted device restarts as a newcomer, asks to join with fresh keys, and
+  joins from the admin's Welcome. A device that never learned of its removal
+  replaces its old group with the Welcome's when that lands on a later epoch.
+
+Only the device holding `admin.key` can sign these records. A removal made
+without it cannot outrank a readmission, so it is refused for a readmitted
+device. Devices on versions without `membership` keep enforcing the tombstone,
+and refuse a readmitted device until they upgrade.
+
 The MLS Remove commit advances the content-encryption epoch. A removed member
 can process the removal but cannot export the new epoch secret, so it cannot
 decrypt subsequent content frames. Tombstones remain a useful early gate at
@@ -155,12 +188,13 @@ from being moved between protocol purposes or circles.
 
 A separate MLS bootstrap stream solves the join/offline bootstrap cycle. It
 carries only KeyPackages, signed owner/pending/member records, targeted
-Welcomes, removal tombstones, and MLS commits. It requires the Circle proof but
+Welcomes, removal tombstones, admin-signed membership records, and MLS commits. It requires the Circle proof but
 not the content key, because a joiner does not have that key yet. Anyone who
 holds the PSK can reach it, so a peer is treated by its MLS group membership:
 one with a leaf in our group exchanges every record, and one without receives
-only our own entries plus its own Welcome and tombstone, and may write only
-entries about itself. MLS commits are applied from anyone, since MLS verifies
+only our own entries plus its own Welcome, tombstone and membership records,
+and may write only entries about itself, apart from membership records, which
+are accepted from anyone because each carries the admin's signature. MLS commits are applied from anyone, since MLS verifies
 them. The stream never carries workspace files, chat, tasks, proposal content,
 event-log entries, or blobs.
 

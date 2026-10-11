@@ -629,6 +629,30 @@ enox [--circle <NAME>] member remove <PEER-ID>
 
 ---
 
+### `member readmit`
+
+Let a removed device back in. Requires `admin.key` on this device.
+
+```bash
+enox [--circle <NAME>] member readmit <PEER-ID>
+```
+
+A device keeps its peer ID when it is invited back, so without this its old
+removal refuses it forever. Pass the full peer ID: a removed device is no longer
+in the member list. Then:
+
+1. Restart the daemon on the readmitted device. It asks to join again when it
+   starts, with fresh keys.
+2. When its request shows up in `member pending`, approve it with
+   `member approve`.
+
+Removing and readmitting can be repeated any number of times.
+
+Devices running an older version do not know about readmission and keep
+refusing the device until they upgrade.
+
+---
+
 ### `member promote`
 
 Promote a member to admin. Requires `admin.key`.

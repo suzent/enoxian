@@ -1,7 +1,6 @@
 use crate::control::{
     ChatActivity, ChatMessage, CircleEvent, MemberEntry, Presence, Task, TaskStatus,
-    CHAT_ACTIVITY_KEY, CHAT_KEY, MEMBER_LIST_KEY, MLS_PENDING_KEY, MLS_REMOVED_KEY, PRESENCE_KEY,
-    TASKS_KEY,
+    CHAT_ACTIVITY_KEY, CHAT_KEY, MEMBER_LIST_KEY, MLS_PENDING_KEY, PRESENCE_KEY, TASKS_KEY,
 };
 use dashmap::DashMap;
 use serde::Serialize;
@@ -738,15 +737,16 @@ impl AppState {
         }
     }
 
+    /// Whether `peer_id` is removed from this circle, by its latest
+    /// admin-signed membership record or, lacking one, its tombstone. `None`
+    /// when the control document is busy.
     pub fn try_is_peer_removed(&self, peer_id: &str) -> Option<bool> {
-        use yrs::ReadTxn;
         let txn = self.control.try_transact().ok()?;
-        let Some(removed) = txn.get_map(MLS_REMOVED_KEY) else {
-            return Some(false);
-        };
-        Some(matches!(
-            removed.get(&txn, peer_id),
-            Some(Out::Any(Any::String(_)))
+        Some(crate::membership::is_removed(
+            &txn,
+            &self.circle_id,
+            &self.admin_pubkey_hex,
+            peer_id,
         ))
     }
 

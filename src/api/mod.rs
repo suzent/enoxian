@@ -182,6 +182,10 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
             post(members::remove_member),
         )
         .route(
+            "/circles/{circle_id}/members/readmit",
+            post(members::readmit_member),
+        )
+        .route(
             "/circles/{circle_id}/members/promote",
             post(members::promote_member),
         )

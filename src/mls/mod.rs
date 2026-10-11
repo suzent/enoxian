@@ -8,6 +8,7 @@ pub use openmls::prelude::Ciphersuite;
 
 pub const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
+use openmls::prelude::OpenMlsProvider as _;
 use std::sync::Arc;
 use std::{collections::BTreeMap, io};
 use tokio::sync::Mutex;
@@ -19,6 +20,9 @@ pub struct MlsState {
     /// just before an epoch transition can still be opened after the commit is
     /// applied. Offline catch-up uses MLS commits, not persisted old secrets.
     epoch_secrets: BTreeMap<u64, [u8; 32]>,
+    /// The last Welcome this device tried, so one already handled is not
+    /// joined again every time a peer resends it. In memory only.
+    pub(crate) last_welcome: Option<String>,
 }
 
 pub type SharedMlsState = Arc<Mutex<MlsState>>;
@@ -63,12 +67,35 @@ pub fn new_mls_state(identity: MlsIdentity, group: Option<MlsGroupManager>) -> S
         identity,
         group,
         epoch_secrets: BTreeMap::new(),
+        last_welcome: None,
     };
     let _ = state.refresh_content_secret();
     Arc::new(Mutex::new(state))
 }
 
 impl MlsState {
+    /// Swap in a group joined from a new Welcome, dropping the secrets of the
+    /// one it replaces.
+    pub fn replace_group(&mut self, group: MlsGroupManager) {
+        self.group = Some(group);
+        self.epoch_secrets.clear();
+        let _ = self.refresh_content_secret();
+    }
+
+    /// Drop the group, from memory and from the provider's storage, so a
+    /// later Welcome to the same group id can be joined. Returns whether there
+    /// was one.
+    pub fn forget_group(&mut self) -> bool {
+        let Some(mut group) = self.group.take() else {
+            return false;
+        };
+        if let Err(e) = group.group.delete(self.identity.provider.storage()) {
+            tracing::warn!("[mls] could not clear the dropped group from storage: {e:?}");
+        }
+        self.epoch_secrets.clear();
+        true
+    }
+
     pub fn current_epoch(&self) -> Option<u64> {
         self.group.as_ref().map(MlsGroupManager::epoch)
     }
@@ -223,6 +250,7 @@ mod tests {
             identity: MlsIdentity::generate("peer-local").unwrap(),
             group: None,
             epoch_secrets: BTreeMap::new(),
+            last_welcome: None,
         }
     }
 
@@ -265,6 +293,7 @@ mod tests {
             identity,
             group: Some(group),
             epoch_secrets: BTreeMap::new(),
+            last_welcome: None,
         }
     }
 

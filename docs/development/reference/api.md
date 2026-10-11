@@ -663,6 +663,31 @@ Remove a member. Requires a valid admin signature.
 
 **Events emitted:** `member_removed`
 
+When the daemon holds `admin.key`, it also writes an admin-signed `out` record to
+the `membership` map. Without `admin.key`, removing a device that was readmitted
+is refused with `403`, since only a signed record can outrank the readmission.
+
+---
+
+### `POST /circles/<id>/members/readmit`
+
+Lift a removal so the device can connect and ask to join again. Signed with this
+daemon's `admin.key`; returns `403` without it.
+
+**Request:**
+```json
+{ "peer_id": "12D3KooW..." }
+```
+
+**Response `200`:**
+```json
+{ "status": "readmitted", "peer_id": "12D3KooW...", "gen": 2 }
+```
+
+`status` is `not_removed`, and nothing is written, when the peer is not removed.
+The device asks to join again when its daemon next starts, and is approved like
+any joiner (`/members/approve`).
+
 ---
 
 ### `POST /circles/<id>/members/promote`

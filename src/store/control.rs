@@ -69,6 +69,12 @@ struct ControlSnapshot {
     /// restarts while the transport PSK remains stable.
     #[serde(default)]
     removed: std::collections::BTreeMap<String, String>,
+    /// `{peer_id}#{gen}#{in|out}` -> MembershipRecord JSON. Supersedes
+    /// `removed`, so it is the same kind of boundary and has to survive the
+    /// same way: a readmission lost on restart would lock the device out
+    /// again, and a lost removal would let it back in.
+    #[serde(default)]
+    membership: std::collections::BTreeMap<String, String>,
     /// user_pubkey_hex -> DistrustEntry JSON. An authorization boundary, so it
     /// has to outlive every device being offline at once: without it, a circle
     /// that all restarts forgets who it disowned, and a compromised identity
@@ -143,6 +149,10 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
             .get_map(MLS_REMOVED_KEY)
             .map(|map| map_strings(&map, &txn))
             .unwrap_or_default();
+        let membership = txn
+            .get_map(crate::control::MEMBERSHIP_KEY)
+            .map(|map| map_strings(&map, &txn))
+            .unwrap_or_default();
         let distrusted_users = txn
             .get_map(crate::control::DISTRUSTED_USERS_KEY)
             .map(|map| map_strings(&map, &txn))
@@ -192,6 +202,7 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
             tasks,
             members,
             removed,
+            membership,
             distrusted_users,
             deletions,
         }
@@ -252,6 +263,7 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
         let tasks = txn.get_or_insert_map(TASKS_KEY);
         let members = txn.get_or_insert_map(MEMBER_LIST_KEY);
         let removed = txn.get_or_insert_map(MLS_REMOVED_KEY);
+        let membership = txn.get_or_insert_map(crate::control::MEMBERSHIP_KEY);
         let distrusted = txn.get_or_insert_map(crate::control::DISTRUSTED_USERS_KEY);
         let deletions = txn.get_or_insert_map(crate::control::DELETIONS_KEY);
         let chat = txn.get_or_insert_array(CHAT_KEY);
@@ -277,6 +289,9 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
         }
         for (k, v) in &snap.removed {
             removed.insert(&mut txn, k.as_str(), v.as_str());
+        }
+        for (k, v) in &snap.membership {
+            membership.insert(&mut txn, k.as_str(), v.as_str());
         }
         for (k, v) in &snap.distrusted_users {
             distrusted.insert(&mut txn, k.as_str(), v.as_str());
@@ -412,6 +427,33 @@ mod tests {
                 assert_eq!(entry.admin_signature, "ab12");
             }
             other => panic!("distrust lost across restart: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A readmission is what keeps a device in after its tombstone; losing it
+    /// on restart would lock the device out again (#260).
+    #[test]
+    fn membership_records_survive_a_restart() {
+        let tmp = std::env::temp_dir().join(format!("enox-ctrl-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let record = r#"{"peer_id":"p1","standing":"in","gen":2,"at":"2026-10-01T00:00:00Z","admin_signature":"ab12"}"#;
+
+        let src = Doc::new();
+        {
+            let membership = src.get_or_insert_map(crate::control::MEMBERSHIP_KEY);
+            let mut txn = src.transact_mut();
+            membership.insert(&mut txn, "p1#2#in", record);
+        }
+        save(&tmp, &src).unwrap();
+
+        let dst = Doc::new();
+        restore(&tmp, &dst).unwrap();
+        let membership = dst.get_or_insert_map(crate::control::MEMBERSHIP_KEY);
+        let txn = dst.transact();
+        match membership.get(&txn, "p1#2#in") {
+            Some(Out::Any(Any::String(raw))) => assert_eq!(&*raw, record),
+            other => panic!("membership record lost across restart: {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }
