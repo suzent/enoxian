@@ -1596,9 +1596,13 @@ async fn react(
             |listener| roster.agent(listener, &state.peer_id),
         ));
     }
-    let (actor_token, _) = state
-        .actor_tokens
-        .issue(&state.circle_id, &state.peer_id, agent_id);
+    // Bound to this turn's cascade: an agent that posts with `enox say`
+    // instead of its turn reply is still the agent, and still spends from the
+    // budget that woke it (#254).
+    let (actor_token, _) =
+        state
+            .actor_tokens
+            .issue_for_run(&state.circle_id, &state.peer_id, agent_id, relay.clone());
     let _token_lease = ManagedToken {
         registry: state.actor_tokens.clone(),
         token: actor_token.clone(),

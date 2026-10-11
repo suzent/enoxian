@@ -653,6 +653,7 @@ mod tests {
             peer_id: peer_id.into(),
             issued_at: now,
             expires_at: now + chrono::Duration::hours(1),
+            managed_run: None,
         }
     }
 

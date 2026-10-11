@@ -13,6 +13,11 @@ use serde_json::json;
 #[derive(Deserialize)]
 pub struct RegisterActorRequest {
     pub agent_id: String,
+    /// Set by `enox agent run`, which launches the agent itself: what the agent
+    /// posts with this token is the agent's, not a person's (#254). It starts
+    /// its own cascade, since no message woke it.
+    #[serde(default)]
+    pub managed_run: bool,
 }
 
 pub async fn register_actor(
@@ -38,9 +43,15 @@ pub async fn register_actor(
             .into_response();
     }
 
-    let (token, actor) = state
-        .actor_tokens
-        .issue(&state.circle_id, &state.peer_id, agent_id);
+    let (token, actor) = if req.managed_run {
+        state
+            .actor_tokens
+            .issue_for_run(&state.circle_id, &state.peer_id, agent_id, None)
+    } else {
+        state
+            .actor_tokens
+            .issue(&state.circle_id, &state.peer_id, agent_id)
+    };
     (
         StatusCode::CREATED,
         Json(json!({
@@ -79,6 +90,7 @@ pub(crate) fn resolve_actor(
         peer_id: state.peer_id.clone(),
         issued_at: chrono::Utc::now(),
         expires_at: chrono::Utc::now(),
+        managed_run: None,
     })
 }
 

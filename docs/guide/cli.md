@@ -31,6 +31,11 @@ lock attribution without putting a secret in the prompt or on every command.
 The CLI reads `ENOXIAN_ACTOR_TOKEN` automatically. Native write/edit tools do
 not need it because their attribution comes from the managed session.
 
+What such an agent posts with `enox say` counts as the agent's, exactly like
+its turn reply: it continues the cascade that woke the agent, spends from the
+same relay budget, and is not offered to agents reading the room. A token from
+`enox register` (below) posts as a person.
+
 An agent started outside Enoxian's managed process can register a label with the
 local device and use the returned one-hour token on each mutating invocation:
 

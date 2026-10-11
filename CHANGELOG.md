@@ -72,6 +72,10 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- A message an agent run by enoxian posts with `enox say` is recorded as the
+  agent's, not a person's. It now counts against the relay budget of the turn
+  that woke the agent and is no longer offered to agents reading the room, so
+  two agents can no longer keep waking each other through the CLI.
 - With several agents reading the room, one whose draft is held now sees
   every reply posted while it was writing, not only the first, and a long
   reply keeps its conclusion instead of being cut off after 600 characters.
