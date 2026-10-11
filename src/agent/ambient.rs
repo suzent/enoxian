@@ -107,6 +107,16 @@ pub fn hold_decision(reply: &str) -> Held {
     }
 }
 
+/// How much of the other agents' replies a hold prompt quotes, in total.
+///
+/// A bound on the whole, not on each quote: a fixed per-reply cut either lets
+/// several listeners blow up the prompt or starves a lone long reply.
+const HOLD_QUOTE_BUDGET: usize = 1_200;
+
+/// Below this, a quote stops saying anything; a crowded room gets a longer
+/// prompt rather than a row of fragments.
+const HOLD_QUOTE_FLOOR: usize = 240;
+
 /// The prompt for a hold turn: the room moved while this agent was thinking.
 ///
 /// Deliberately a *turn*, not a check. The ACP session is still open at this
@@ -114,13 +124,36 @@ pub fn hold_decision(reply: &str) -> Held {
 /// can ask the agent what it wants — and asking is the whole point. A version
 /// that dropped the draft without asking would be the harness deciding, which
 /// is the design this exists to avoid.
-pub fn hold_instruction(other: &str, their_reply: &str) -> String {
-    let quoted: String = their_reply.chars().take(600).collect();
+///
+/// `answers` is every agent reply to the message, oldest first. A listener
+/// shown only the first one repeats a correction a second agent already made,
+/// or passes because the first answer "covered it" without knowing it was
+/// disputed (#252).
+pub fn hold_instruction(answers: &[(String, String)]) -> String {
+    let each = (HOLD_QUOTE_BUDGET / answers.len().max(1)).max(HOLD_QUOTE_FLOOR);
+    let quote = |text: &str| format!("---\n{}\n---", head_and_tail(text, each));
+    let (said, who) = match answers {
+        [(other, text)] => (
+            format!("{other} answered the same message:\n\n{}", quote(text)),
+            other.clone(),
+        ),
+        _ => (
+            format!(
+                "{} agents answered the same message, in this order:\n\n{}",
+                answers.len(),
+                answers
+                    .iter()
+                    .map(|(name, text)| format!("{name}:\n{}", quote(text)))
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            ),
+            "they".to_string(),
+        ),
+    };
     format!(
-        "Hold on — while you were writing, {other} answered the same message:\n\n\
-         ---\n{quoted}\n---\n\n\
+        "Hold on — while you were writing, {said}\n\n\
          Your draft has not been posted yet. Decide what to do with it:\n\
-         - Reply with exactly PASS to drop it, if {other} covered the point.\n\
+         - Reply with exactly PASS to drop it, if {who} covered the point.\n\
          - Reply with exactly SEND to post your draft unchanged, if you still \
          have something they did not say.\n\
          - Otherwise, reply with the text you want posted instead, and that \
@@ -128,6 +161,23 @@ pub fn hold_instruction(other: &str, their_reply: &str) -> String {
          Adding a second take on a point already made is worse than saying \
          nothing, but do not drop a genuine disagreement or a correction."
     )
+}
+
+/// `text` cut to about `limit` characters, keeping both ends.
+///
+/// Replies often reason first and conclude last, so a head-only cut shows the
+/// reasoning and drops the answer.
+fn head_and_tail(text: &str, limit: usize) -> String {
+    let text = text.trim();
+    let len = text.chars().count();
+    if len <= limit {
+        return text.to_string();
+    }
+    let head = limit / 2;
+    let tail = limit - head;
+    let start: String = text.chars().take(head).collect();
+    let end: String = text.chars().skip(len - tail).collect();
+    format!("{} […] {}", start.trim_end(), end.trim_start())
 }
 
 /// Did the agent decline rather than answer?
@@ -433,7 +483,7 @@ mod tests {
 
     #[test]
     fn the_hold_prompt_names_who_answered_and_offers_both_escapes() {
-        let p = hold_instruction("codex", "it retries on the reconcile tick");
+        let p = hold_instruction(&[("codex".into(), "it retries on the reconcile tick".into())]);
         assert!(p.contains("codex answered the same message"));
         assert!(p.contains("it retries on the reconcile tick"));
         assert!(p.contains("exactly PASS"));
@@ -447,10 +497,49 @@ mod tests {
     #[test]
     fn a_very_long_prior_reply_is_truncated_in_the_hold_prompt() {
         let huge = "x".repeat(5_000);
-        let p = hold_instruction("codex", &huge);
+        let p = hold_instruction(&[("codex".into(), huge)]);
         assert!(
             p.len() < 2_000,
             "a hold prompt must stay small: {}",
+            p.len()
+        );
+    }
+
+    #[test]
+    fn a_long_reply_keeps_its_conclusion() {
+        // Reasoning first, answer last: a head-only cut drops the answer.
+        let reply = format!("{} so the answer is 11", "because ".repeat(400));
+        let p = hold_instruction(&[("codex".into(), reply)]);
+        assert!(p.contains("so the answer is 11"), "{p}");
+        assert!(p.contains("[…]"));
+    }
+
+    #[test]
+    fn every_answer_is_shown_in_order_with_its_author() {
+        let answers = [
+            ("codex".to_string(), "17".to_string()),
+            ("gemini".to_string(), "11, not 17".to_string()),
+        ];
+        let p = hold_instruction(&answers);
+        assert!(p.contains("2 agents answered the same message"), "{p}");
+        let first = p.find("codex:\n---\n17\n---").expect("codex quoted");
+        let second = p
+            .find("gemini:\n---\n11, not 17\n---")
+            .expect("gemini quoted");
+        assert!(first < second, "oldest first");
+        assert!(p.contains("if they covered the point"));
+    }
+
+    #[test]
+    fn the_quote_budget_covers_all_answers_together() {
+        let answers: Vec<_> = ["a", "b", "c"]
+            .iter()
+            .map(|n| (n.to_string(), "y".repeat(5_000)))
+            .collect();
+        let p = hold_instruction(&answers);
+        assert!(
+            p.len() < 2_500,
+            "three long replies stay bounded: {}",
             p.len()
         );
     }

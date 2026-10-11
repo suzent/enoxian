@@ -600,13 +600,20 @@ async fn hold_draft<H: super::acp::ClientHooks>(
     let (state, message_id) = (coordination?, trigger_id?);
     // The queue already refuses a turn whose message was answered before it
     // started, so anything found now arrived while this agent was writing.
-    let (other, their_reply) = super::reaction::answering_agent(state, message_id)?;
-    tracing::info!("[agent] holding draft: {other} answered {message_id} first");
+    let answers = super::reaction::answering_agents(state, message_id);
+    if answers.is_empty() {
+        return None;
+    }
+    tracing::info!(
+        "[agent] holding draft: {} answered {message_id} first",
+        answers
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     match acp
-        .prompt_until(
-            &super::ambient::hold_instruction(&other, &their_reply),
-            stop,
-        )
+        .prompt_until(&super::ambient::hold_instruction(&answers), stop)
         .await
     {
         Ok(_) => Some(super::ambient::hold_decision(
