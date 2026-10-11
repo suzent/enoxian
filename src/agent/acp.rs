@@ -447,6 +447,13 @@ impl<H: ClientHooks> AcpSession<H> {
                 resp = self.resp_rx.recv() => {
                     let resp = resp.ok_or_else(|| anyhow!("agent closed the connection during `{method}`"))?;
                     if resp.get("id").and_then(Value::as_u64) == Some(id) {
+                        // The reader routes lines in order, so whatever the
+                        // agent sent before this response is already queued.
+                        // `select!` may have picked the response first; the
+                        // last reply chunk is often among those (#251).
+                        while let Ok(req) = self.req_rx.try_recv() {
+                            self.service(req).await?;
+                        }
                         if let Some(err) = resp.get("error") {
                             return Err(anyhow!("agent error on `{method}`: {}", compact(err)));
                         }
@@ -458,14 +465,22 @@ impl<H: ClientHooks> AcpSession<H> {
                 // An agent-initiated request/notification we must service.
                 req = self.req_rx.recv() => {
                     if let Some(req) = req {
-                        if let Some(activity) = &self.activity {
-                            activity.lock().unwrap().observe(&req, chrono::Utc::now().timestamp());
-                        }
-                        self.handle_agent_request(req).await?;
+                        self.service(req).await?;
                     }
                 }
             }
         }
+    }
+
+    /// Record what the agent is doing and handle its request or notification.
+    async fn service(&mut self, req: Value) -> Result<()> {
+        if let Some(activity) = &self.activity {
+            activity
+                .lock()
+                .unwrap()
+                .observe(&req, chrono::Utc::now().timestamp());
+        }
+        self.handle_agent_request(req).await
     }
 
     /// Tell the agent to stop the current turn (a notification; the turn's
@@ -820,8 +835,8 @@ pub(crate) mod tests {
         else {
             return;
         };
-        let mut out = std::io::stdout();
-        let mut send = |msg: Value| {
+        let send = |msg: Value| {
+            let mut out = std::io::stdout();
             writeln!(out, "{msg}").unwrap();
             out.flush().unwrap();
         };
@@ -839,6 +854,20 @@ pub(crate) mod tests {
                     "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": false}}})),
                 Some("session/new") => send(json!({"jsonrpc": "2.0", "id": id,
                     "result": {"sessionId": "fake-session"}})),
+                // The whole reply and the end of the turn in one write, as an
+                // agent that computes its answer before streaming it does.
+                Some("session/prompt") if mode == "burst" => {
+                    let chunk = json!({"jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": "fake-session", "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "the answer"}}}});
+                    let done = json!({"jsonrpc": "2.0", "id": id,
+                        "result": {"stopReason": "end_turn"}});
+                    let mut out = std::io::stdout().lock();
+                    out.write_all(format!("{chunk}\n{done}\n").as_bytes())
+                        .unwrap();
+                    out.flush().unwrap();
+                }
                 // Start a long tool call and say nothing more, as an agent in
                 // the middle of a build does.
                 Some("session/prompt") => {
@@ -857,6 +886,50 @@ pub(crate) mod tests {
                 _ => {}
             }
         }
+    }
+
+    /// Collects the reply text the way the driver's `ReplyBuf` does.
+    #[derive(Clone, Default)]
+    struct Recorder(Arc<Mutex<String>>);
+    impl ClientHooks for Recorder {
+        fn on_permission(&self, _tool: &Value) -> PermissionDecision {
+            PermissionDecision::Allow
+        }
+        fn on_update(&self, update: &Value) {
+            if let Some(text) = agent_message_text(update) {
+                self.0.lock().unwrap().push_str(&text);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reply_chunk_written_with_the_response_is_not_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let reply = Recorder::default();
+        let mut acp = AcpSession::start(
+            &fake_agent_command(),
+            dir.path(),
+            reply.clone(),
+            None,
+            "fake-acp:burst",
+            "circle",
+            None,
+        )
+        .await
+        .unwrap();
+        let never = CancellationToken::new();
+        // Each turn is a coin flip without the fix, so take enough of them
+        // that losing none by luck is not plausible.
+        for turn in 0..32 {
+            reply.0.lock().unwrap().clear();
+            let result = tokio::time::timeout(LIVENESS, acp.prompt_until("ask", &never))
+                .await
+                .expect("the turn ends")
+                .unwrap();
+            assert_eq!(result.stop_reason, "end_turn");
+            assert_eq!(*reply.0.lock().unwrap(), "the answer", "turn {turn}");
+        }
+        acp.shutdown().await;
     }
 
     async fn fake_session(mode: &str) -> (AcpSession<AllowAll>, tempfile::TempDir) {
