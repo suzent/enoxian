@@ -495,9 +495,10 @@ fn standing_brief(state: &AppState, agent_id: &str, framing: Framing) -> String 
          mentioning it. Whether it actually runs is that device's own decision, only the first \
          agent you mention is woken, and a chain of hand-offs shares a limited budget — so do the \
          work yourself unless delegating is plainly better.\n\
-         You only see what you are handed. To see what else is waiting in this room — questions \
-         nobody has answered, and which agents are already working on what — run \
-         `enox inbox --agent {agent}`.\n",
+         You only see what you are handed. If you can run shell commands, run \
+         `enox inbox --agent {agent}` to see what else is waiting in this room — questions nobody \
+         has answered, and which agents are already working on what. If you cannot, answer from \
+         what you have here.\n",
         agent = agent_id,
         circle = state.circle_name,
         addressing = addressing,
@@ -902,6 +903,11 @@ mod tests {
             assert!(brief.contains("knowledge base and index, not a place to build software"));
             assert!(brief.contains("Do not clone"));
             assert!(brief.contains("AGENTS.md at its root, read it first"));
+            // Not every agent has a shell; one that does not must not be
+            // told to run a command as if it did (#253).
+            assert!(
+                brief.contains("If you can run shell commands, run `enox inbox --agent claude`")
+            );
         }
 
         // The brief goes to a fresh session only. A resumed one already holds
