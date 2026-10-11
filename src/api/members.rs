@@ -228,8 +228,18 @@ pub async fn readmit_member(
         )
             .into_response();
     }
-    let Ok(mut txn) = state.control.try_transact_mut() else {
-        return super::circle_busy();
+    // The document is often briefly held by sync, especially right after a
+    // removal; wait for it as the other member operations do.
+    let mut attempt: u32 = 0;
+    let mut txn = loop {
+        if let Ok(txn) = state.control.try_transact_mut() {
+            break txn;
+        }
+        attempt += 1;
+        if attempt >= APPROVAL_RETRIES {
+            return super::circle_busy();
+        }
+        tokio::time::sleep(APPROVAL_BACKOFF * attempt).await;
     };
     if !crate::membership::is_removed(
         &txn,
