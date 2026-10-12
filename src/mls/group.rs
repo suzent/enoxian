@@ -84,6 +84,51 @@ impl MlsGroupManager {
         Ok(Self { group })
     }
 
+    /// Join from `welcome_bytes` in place of `old`, the group this device was
+    /// removed from, which shares the new group's id and would otherwise block
+    /// the join (#260).
+    ///
+    /// Reversible: storage is put back as it was unless the join succeeds and,
+    /// when `newer_than` is given, lands on a later epoch. So a Welcome that
+    /// does not apply, or one older than the group held, leaves `old` intact.
+    pub fn rejoin_from_welcome(
+        old: &mut MlsGroupManager,
+        identity: &MlsIdentity,
+        welcome_bytes: &[u8],
+        newer_than: Option<u64>,
+    ) -> Result<Self> {
+        let storage = identity.provider.storage();
+        let backup = storage
+            .values
+            .read()
+            .map_err(|_| anyhow::anyhow!("storage lock poisoned"))?
+            .clone();
+        let restore = || -> Result<()> {
+            *storage
+                .values
+                .write()
+                .map_err(|_| anyhow::anyhow!("storage lock poisoned"))? = backup.clone();
+            Ok(())
+        };
+        old.group
+            .delete(storage)
+            .map_err(|e| anyhow::anyhow!("delete the old group: {e:?}"))?;
+        match Self::join_from_welcome(identity, welcome_bytes, None) {
+            Ok(group) if newer_than.is_none_or(|epoch| group.epoch() > epoch) => Ok(group),
+            Ok(group) => {
+                restore()?;
+                anyhow::bail!(
+                    "the Welcome joins epoch {}, not after the group held",
+                    group.epoch()
+                )
+            }
+            Err(e) => {
+                restore()?;
+                Err(e)
+            }
+        }
+    }
+
     // ── Admin: add a member ───────────────────────────────────────────────────
     // key_package_bytes: TLS-serialized KeyPackage published by the new member
     // Returns (commit_bytes, welcome_bytes, ratchet_tree_bytes)
@@ -222,6 +267,11 @@ impl MlsGroupManager {
 
         raw.try_into()
             .map_err(|_| anyhow::anyhow!("exporter returned wrong length"))
+    }
+
+    /// False once this device has processed a commit removing it.
+    pub fn is_active(&self) -> bool {
+        self.group.is_active()
     }
 
     pub fn epoch(&self) -> u64 {

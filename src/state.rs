@@ -1,7 +1,6 @@
 use crate::control::{
     ChatActivity, ChatMessage, CircleEvent, MemberEntry, Presence, Task, TaskStatus,
-    CHAT_ACTIVITY_KEY, CHAT_KEY, MEMBER_LIST_KEY, MLS_PENDING_KEY, MLS_REMOVED_KEY, PRESENCE_KEY,
-    TASKS_KEY,
+    CHAT_ACTIVITY_KEY, CHAT_KEY, MEMBER_LIST_KEY, MLS_PENDING_KEY, PRESENCE_KEY, TASKS_KEY,
 };
 use dashmap::DashMap;
 use serde::Serialize;
@@ -123,6 +122,10 @@ pub struct AppState {
     pub sync_sessions: Arc<DashMap<String, usize>>,
     /// Local admission failures, exposed to the UI without syncing diagnostic state.
     pub approval_errors: Arc<DashMap<String, String>>,
+    /// This device's join request, signed at startup with its circle key,
+    /// which the running daemon does not otherwise keep. Filed again when the
+    /// device learns it was readmitted after a removal it never saw (#260).
+    pub join_request: Arc<std::sync::Mutex<Option<String>>>,
     /// Opens outbound streams on this circle's transport, for requests that
     /// start outside the connection loop — handing the admin key over on
     /// leave. Set once the transport is up; absent in tests and before start.
@@ -583,6 +586,7 @@ impl AppState {
             sync_ended: sync_ended_tx,
             sync_sessions: Arc::new(DashMap::new()),
             approval_errors: Arc::new(DashMap::new()),
+            join_request: Arc::new(std::sync::Mutex::new(None)),
             net: Arc::new(std::sync::OnceLock::new()),
             live_runs: Default::default(),
             admission_log: Arc::new(crate::agent::decisions::AdmissionLog::new()),
@@ -738,15 +742,16 @@ impl AppState {
         }
     }
 
+    /// Whether `peer_id` is removed from this circle, by its latest
+    /// admin-signed membership record or, lacking one, its tombstone. `None`
+    /// when the control document is busy.
     pub fn try_is_peer_removed(&self, peer_id: &str) -> Option<bool> {
-        use yrs::ReadTxn;
         let txn = self.control.try_transact().ok()?;
-        let Some(removed) = txn.get_map(MLS_REMOVED_KEY) else {
-            return Some(false);
-        };
-        Some(matches!(
-            removed.get(&txn, peer_id),
-            Some(Out::Any(Any::String(_)))
+        Some(crate::membership::is_removed(
+            &txn,
+            &self.circle_id,
+            &self.admin_pubkey_hex,
+            peer_id,
         ))
     }
 

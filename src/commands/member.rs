@@ -226,6 +226,25 @@ pub async fn run(
             }
         }
 
+        MemberAction::Readmit { peer_id } => {
+            // Not resolved against the member list: a removed device is no
+            // longer on it.
+            let body = serde_json::json!({ "peer_id": peer_id });
+            let url = format!("{base}/readmit");
+            let val = post_member_action(client, &url, &body).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&val)?);
+            } else if val["status"] == "not_removed" {
+                println!("✦ {peer_id} is not removed; nothing to do");
+            } else {
+                println!("✦ readmitted {peer_id}");
+                println!(
+                    "  Restart enox on that device so it asks to join again, then approve it:"
+                );
+                println!("  enox member pending, then enox member approve {peer_id}");
+            }
+        }
+
         MemberAction::Promote { peer_id } => {
             let peer_id = resolve_peer_id(client, &base, &peer_id).await?;
             // The signed message covers the owner read back from the member

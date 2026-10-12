@@ -646,6 +646,20 @@ fn mark_self_removed(state: &AppState) {
                 return;
             }
         };
+        // A peer that has not caught up with our readmission still says we are
+        // removed. The admin's signed word outranks it: taking the peer at its
+        // word would tombstone a readmitted device again and drop its member
+        // entry (#260).
+        if crate::membership::standing(
+            &txn,
+            &state.circle_id,
+            &state.admin_pubkey_hex,
+            &state.peer_id,
+        ) == Some(crate::membership::Standing::In)
+        {
+            warn!("[sync] a peer says this device was removed, but the admin readmitted it");
+            return;
+        }
         use yrs::WriteTxn;
         let removed = txn.get_or_insert_map(MLS_REMOVED_KEY);
         let members = txn.get_or_insert_map(MEMBER_LIST_KEY);
@@ -738,6 +752,7 @@ async fn sync_inner(
 
     if peer_session.you_are_removed {
         mark_self_removed(state);
+        crate::lifecycle::settle_own_standing(state).await;
         warn!(
             "[sync] this device was removed from circle {}",
             state.circle_id
@@ -1162,6 +1177,7 @@ async fn sync_inner(
                     }
                     IncomingEvent::Revoked => {
                         mark_self_removed(state);
+                        crate::lifecycle::settle_own_standing(state).await;
                         warn!("[sync] membership revoked by {peer_id}");
                         break;
                     }
@@ -1498,6 +1514,61 @@ mod tests {
         assert!(state.sync_sessions.get("peer").is_none());
         // An end without a recorded start must not underflow.
         assert!(state.sync_session_ended("peer"));
+    }
+
+    /// A peer that has not caught up with this device's readmission still
+    /// reports it removed. The admin's signed record outranks that, so the
+    /// device neither tombstones itself again nor drops its member entry
+    /// (#260).
+    #[test]
+    fn a_readmitted_device_is_not_talked_back_out_by_a_stale_peer() {
+        use yrs::{Map, Transact, WriteTxn};
+        let admin = libp2p_identity::Keypair::generate_ed25519();
+        let state = AppState::new(
+            "circle-local".into(),
+            "Circle".into(),
+            std::path::PathBuf::new(),
+            std::path::PathBuf::new(),
+            hex::encode(admin.public().encode_protobuf()),
+            "agent".into(),
+            1,
+            "peer-local".into(),
+            crate::config::JoinPolicy::Manual,
+            "owner".into(),
+            crate::mls::new_mls_state(
+                crate::mls::MlsIdentity::generate("peer-local").unwrap(),
+                None,
+            ),
+        );
+        {
+            let mut txn = state.control.transact_mut();
+            txn.get_or_insert_map(MLS_REMOVED_KEY).insert(
+                &mut txn,
+                "peer-local",
+                "2026-10-01T00:00:00Z",
+            );
+            crate::membership::write(
+                &mut txn,
+                "circle-local",
+                &state.admin_pubkey_hex,
+                "peer-local",
+                crate::membership::Standing::In,
+                |msg| Ok(hex::encode(admin.sign(msg)?)),
+            )
+            .unwrap();
+            txn.get_or_insert_map(crate::control::MEMBER_LIST_KEY)
+                .insert(&mut txn, "peer-local", "{}");
+        }
+        assert!(!state.is_self_removed());
+
+        mark_self_removed(&state);
+
+        assert!(!state.is_self_removed());
+        let txn = state.control.transact();
+        assert!(txn
+            .get_map(crate::control::MEMBER_LIST_KEY)
+            .and_then(|m| m.get(&txn, "peer-local"))
+            .is_some());
     }
 
     #[test]

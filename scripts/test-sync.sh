@@ -3,7 +3,8 @@
 # for a second physical device.
 #
 # Verifies: circle creation, join, presence, file sync, content sync, PSK
-# stability across member ops, and stable peer IDs across a restart.
+# stability across member ops, stable peer IDs across a restart, and a removed
+# device being readmitted (#260).
 #
 # Usage: ./scripts/test-sync.sh
 # Requires: cargo (the script builds what it needs)
@@ -245,6 +246,58 @@ section "Identity in status API"
 DEVICE_LABEL=$(curl1 "/circles/$CIRCLE_ID/api/status" | python3 -c "import sys,json;print(json.load(sys.stdin).get('device_label',''))")
 [[ -n "$DEVICE_LABEL" ]] || fail "device_label missing from status response"
 ok "device_label in status: $DEVICE_LABEL"
+
+section "Removal and readmission"
+# A device keeps its peer ID when it comes back, so its removal used to refuse
+# it forever (#260). Remove daemon 2, readmit it, approve it, and expect sync to
+# resume under the same peer ID.
+D2_ID=$(curl2 "/circles/$CIRCLE_ID/api/status" | python3 -c "import sys,json;print(json.load(sys.stdin)['p2p']['peer_id'])")
+d2_removed_is() {
+    [[ "$(curl2 "/circles/$CIRCLE_ID/api/status" 2>/dev/null \
+        | python3 -c "import sys,json;print(json.load(sys.stdin).get('removed'))" 2>/dev/null)" == "$1" ]]
+}
+enox1 --circle "$CIRCLE_NAME" member remove "$D2_ID" > /dev/null || fail "remove failed"
+wait_for "daemon 2 never learned it was removed" 60 d2_removed_is True
+ok "daemon 2 removed"
+
+enox1 --circle "$CIRCLE_NAME" member readmit "$D2_ID" > /dev/null || fail "readmit failed"
+wait_for "daemon 2 never learned it was readmitted" 120 d2_removed_is False
+ok "daemon 2 readmitted"
+
+# A device that was running when removed asks to join again on its next start.
+pkill -f "enox daemon run --port $D2_PORT" 2>/dev/null || true
+sleep 1
+ENOXIAN_DEVICE_LABEL="device-two" ENOXIAN_HOME="$D2_STATE" \
+    "$ENOX" daemon run --port $D2_PORT >> "$TMPDIR_TEST/d2.log" 2>&1 &
+wait_for "daemon 2 never came back after restart" 40 daemon_up "$D2_STATE" $D2_PORT
+d1_has_key_package() {
+    curl1 "/circles/$CIRCLE_ID/members/pending" 2>/dev/null | grep -q "$D2_ID"
+}
+wait_for "daemon 2's join request never reached daemon 1" 120 d1_has_key_package
+enox1 --circle "$CIRCLE_NAME" member approve "$D2_ID" > /dev/null || fail "approve failed"
+ok "daemon 2 approved again"
+
+echo "written after readmission" > "$D1_WS/after-readmit.txt"
+wait_for "after-readmit.txt never reached the readmitted daemon 2" 150 d2_has_file "after-readmit.txt"
+ok "sync resumed with the readmitted device"
+
+section "Removal and readmission while offline"
+# Daemon 2 is down for both, so it never learns it was removed and its old
+# group still looks live when it starts. Being readmitted since it was last
+# admitted is what has to make it ask to join again.
+pkill -f "enox daemon run --port $D2_PORT" 2>/dev/null || true
+sleep 1
+enox1 --circle "$CIRCLE_NAME" member remove "$D2_ID" > /dev/null || fail "offline remove failed"
+enox1 --circle "$CIRCLE_NAME" member readmit "$D2_ID" > /dev/null || fail "offline readmit failed"
+ok "daemon 2 removed and readmitted while down"
+ENOXIAN_DEVICE_LABEL="device-two" ENOXIAN_HOME="$D2_STATE" \
+    "$ENOX" daemon run --port $D2_PORT >> "$TMPDIR_TEST/d2.log" 2>&1 &
+wait_for "daemon 2 never came back" 40 daemon_up "$D2_STATE" $D2_PORT
+wait_for "daemon 2 never asked to join after an offline readmission" 120 d1_has_key_package
+enox1 --circle "$CIRCLE_NAME" member approve "$D2_ID" > /dev/null || fail "approve failed"
+echo "written after offline readmission" > "$D1_WS/after-offline-readmit.txt"
+wait_for "after-offline-readmit.txt never reached daemon 2" 150 d2_has_file "after-offline-readmit.txt"
+ok "sync resumed after an offline readmission"
 
 trap - ERR
 echo

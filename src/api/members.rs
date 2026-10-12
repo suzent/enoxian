@@ -197,6 +197,80 @@ pub async fn add_member(
 }
 
 #[derive(Deserialize)]
+pub struct ReadmitMemberRequest {
+    pub peer_id: String,
+}
+
+/// Lift a removal, so the device can connect and ask to join again.
+///
+/// A device keeps its peer id when it is invited back, so its removal would
+/// otherwise refuse it forever (#260). This writes an admin-signed record that
+/// outranks every earlier one; the device then connects, publishes a fresh
+/// KeyPackage, and is approved like any joiner. Signed with the local
+/// admin.key: the record's `gen` is chosen here, so a signature made elsewhere
+/// could not cover it.
+pub async fn readmit_member(
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
+    Json(req): Json<ReadmitMemberRequest>,
+) -> impl IntoResponse {
+    let Some(state) = daemon.get(&circle_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "circle not found"})),
+        )
+            .into_response();
+    };
+    if let Err(e) = admin_sign_in(&state.circle_dir, b"membership") {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": format!("admin key required: {e}")})),
+        )
+            .into_response();
+    }
+    // The document is often briefly held by sync, especially right after a
+    // removal; wait for it as the other member operations do.
+    let mut attempt: u32 = 0;
+    let mut txn = loop {
+        if let Ok(txn) = state.control.try_transact_mut() {
+            break txn;
+        }
+        attempt += 1;
+        if attempt >= APPROVAL_RETRIES {
+            return super::circle_busy();
+        }
+        tokio::time::sleep(APPROVAL_BACKOFF * attempt).await;
+    };
+    if !crate::membership::is_removed(
+        &txn,
+        &state.circle_id,
+        &state.admin_pubkey_hex,
+        &req.peer_id,
+    ) {
+        return Json(json!({"status": "not_removed", "peer_id": req.peer_id})).into_response();
+    }
+    match crate::membership::write(
+        &mut txn,
+        &state.circle_id,
+        &state.admin_pubkey_hex,
+        &req.peer_id,
+        crate::membership::Standing::In,
+        |msg| admin_sign_in(&state.circle_dir, msg),
+    ) {
+        Ok(record) => {
+            drop(txn);
+            Json(json!({"status": "readmitted", "peer_id": req.peer_id, "gen": record.gen}))
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": format!("could not sign the readmission: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
 pub struct RemoveMemberRequest {
     pub peer_id: String,
     pub admin_signature: String,
@@ -256,6 +330,40 @@ pub async fn remove_member(
         {
             let mut mls_locked = state.mls.lock().await;
             if let Ok(mut txn) = state.control.try_transact_mut() {
+                // The signed record that keeps this removal in force once the
+                // device has ever been readmitted (#260), signed first so that
+                // nothing irreversible happens without it. Only the holder of
+                // admin.key can sign it. Without it a device that was never
+                // readmitted is still removed by its tombstone; a readmitted
+                // one would stay in, so that removal is refused.
+                let out_record = match crate::membership::sign_next(
+                    &txn,
+                    &state.circle_id,
+                    &state.admin_pubkey_hex,
+                    &req.peer_id,
+                    crate::membership::Standing::Out,
+                    |msg| admin_sign_in(&state.circle_dir, msg),
+                ) {
+                    Ok(record) => Some(record),
+                    Err(_)
+                        if crate::membership::standing(
+                            &txn,
+                            &state.circle_id,
+                            &state.admin_pubkey_hex,
+                            &req.peer_id,
+                        ) == Some(crate::membership::Standing::In) =>
+                    {
+                        return (
+                            StatusCode::FORBIDDEN,
+                            Json(json!({
+                                "error": "this device was readmitted; removing it again needs the device that holds admin.key"
+                            })),
+                        )
+                            .into_response();
+                    }
+                    Err(_) => None,
+                };
+
                 // A circle with no MLS group, or a peer that never joined it,
                 // is a CRDT-only eviction — no commit to publish.
                 let mls_out = match mls_locked.remove_member_by_peer(&req.peer_id) {
@@ -314,6 +422,14 @@ pub async fn remove_member(
                 welcome_map.remove(&mut txn, req.peer_id.as_str());
                 pending_map.remove(&mut txn, req.peer_id.as_str());
                 removed_map.insert(&mut txn, req.peer_id.as_str(), removed_at.as_str());
+                if let Some(record) = &out_record {
+                    if let Err(e) = crate::membership::store(&mut txn, record) {
+                        tracing::error!(
+                            "[member] removed {} but could not store its membership record: {e}",
+                            req.peer_id
+                        );
+                    }
+                }
                 drop(txn);
 
                 if let Err(e) = mls_locked.save(&state.circle_dir) {
@@ -815,8 +931,14 @@ fn verify_admin_sig(admin_pubkey_hex: &str, msg: &[u8], sig_hex: &str) -> anyhow
 /// daemon's local admin.key for this circle.  Returns the hex signature on success,
 /// or an error if admin.key is not present (i.e. this machine is not the admin).
 fn local_admin_sign(circle_id: &str, msg: &[u8]) -> anyhow::Result<String> {
-    use crate::{config::circle_dir, crypto::keypair_from_hex};
-    let key_path = circle_dir(circle_id)?.join("admin.key");
+    admin_sign_in(&crate::config::circle_dir(circle_id)?, msg)
+}
+
+/// Sign with the admin.key in `circle_dir`, which is `state.circle_dir` for a
+/// running circle.
+fn admin_sign_in(circle_dir: &std::path::Path, msg: &[u8]) -> anyhow::Result<String> {
+    use crate::crypto::keypair_from_hex;
+    let key_path = circle_dir.join("admin.key");
     // Admin keys written before secrets had a restrictive mode are tightened
     // here, which is the one place this file is certainly being looked at.
     crate::config::tighten_if_loose(&key_path);
@@ -1089,6 +1211,127 @@ mod tests {
         MlsGroupManager::join_from_welcome(&rejoined, &hex::decode(welcome).unwrap(), None)
             .expect("the rejoined device can use the new welcome");
         assert!(!map_has(&fx, MLS_PENDING_KEY, &peer));
+    }
+
+    // ── Readmission (#260) ────────────────────────────────────────────────────
+
+    /// Give the fixture's daemon its admin.key, as the admin's device has.
+    fn hold_admin_key(fx: &Fixture) {
+        std::fs::write(
+            fx.state.circle_dir.join("admin.key"),
+            crate::crypto::keypair_to_hex(&fx.admin).unwrap(),
+        )
+        .unwrap();
+    }
+
+    async fn remove(fx: &Fixture, peer: &str) -> StatusCode {
+        remove_member(
+            State(fx.daemon.clone()),
+            Path(CIRCLE.into()),
+            Json(RemoveMemberRequest {
+                peer_id: peer.into(),
+                admin_signature: sign(&fx.admin, &format!("remove:{peer}")),
+            }),
+        )
+        .await
+        .into_response()
+        .status()
+    }
+
+    async fn readmit(fx: &Fixture, peer: &str) -> StatusCode {
+        readmit_member(
+            State(fx.daemon.clone()),
+            Path(CIRCLE.into()),
+            Json(ReadmitMemberRequest {
+                peer_id: peer.into(),
+            }),
+        )
+        .await
+        .into_response()
+        .status()
+    }
+
+    async fn approve_as(fx: &Fixture, peer: &str) -> StatusCode {
+        approve_member(
+            State(fx.daemon.clone()),
+            Path(CIRCLE.into()),
+            Json(ApproveMemberRequest {
+                peer_id: peer.into(),
+                role: None,
+                owner: "alice".into(),
+                admin_signature: sign(&fx.admin, &format!("add:{peer}:member:owner:alice")),
+                agents: None,
+            }),
+        )
+        .await
+        .into_response()
+        .status()
+    }
+
+    /// The whole way back in, more than once: removed, readmitted, approved
+    /// with new keys, removed again, and back again.
+    #[tokio::test]
+    async fn a_removed_device_can_be_readmitted_any_number_of_times() {
+        let fx = fixture();
+        hold_admin_key(&fx);
+        let (peer_key, peer) = candidate_with_key(&fx, "alice");
+        assert_eq!(approve_as(&fx, &peer).await, StatusCode::OK);
+
+        for round in 0..3 {
+            assert_eq!(remove(&fx, &peer).await, StatusCode::OK);
+            assert!(fx.state.is_peer_removed(&peer), "round {round}: removed");
+
+            assert_eq!(readmit(&fx, &peer).await, StatusCode::OK);
+            assert!(
+                !fx.state.is_peer_removed(&peer),
+                "round {round}: readmitted, though the tombstone is still there"
+            );
+            assert!(map_has(&fx, MLS_REMOVED_KEY, &peer));
+
+            // The device comes back with new keys and is approved as before.
+            let rejoined = MlsIdentity::generate(&peer).unwrap();
+            publish_rejoin(&fx, &peer, &rejoined, Some(&peer_key));
+            assert_eq!(approve_as(&fx, &peer).await, StatusCode::OK);
+            assert!(map_has(&fx, MEMBER_LIST_KEY, &peer), "round {round}");
+            assert!(!fx.state.is_peer_removed(&peer));
+        }
+    }
+
+    #[tokio::test]
+    async fn readmitting_needs_the_admin_key_on_this_device() {
+        let fx = fixture();
+        let peer = candidate(&fx, "alice");
+        assert_eq!(remove(&fx, &peer).await, StatusCode::OK);
+
+        assert_eq!(readmit(&fx, &peer).await, StatusCode::FORBIDDEN);
+        assert!(fx.state.is_peer_removed(&peer));
+    }
+
+    #[tokio::test]
+    async fn readmitting_a_device_that_is_not_removed_writes_nothing() {
+        let fx = fixture();
+        hold_admin_key(&fx);
+        let peer = candidate(&fx, "alice");
+        assert_eq!(readmit(&fx, &peer).await, StatusCode::OK);
+        assert!(crate::membership::entries(&fx.state.control.transact()).is_empty());
+    }
+
+    /// Without admin.key the daemon cannot sign the record that outranks a
+    /// readmission, so a removal that would leave the device in is refused
+    /// before the MLS group changes.
+    #[tokio::test]
+    async fn removing_a_readmitted_device_needs_the_admin_key() {
+        let fx = fixture();
+        hold_admin_key(&fx);
+        let peer = candidate(&fx, "alice");
+        assert_eq!(remove(&fx, &peer).await, StatusCode::OK);
+        assert_eq!(readmit(&fx, &peer).await, StatusCode::OK);
+        std::fs::remove_file(fx.state.circle_dir.join("admin.key")).unwrap();
+        let before = epoch(&fx);
+
+        assert_eq!(remove(&fx, &peer).await, StatusCode::FORBIDDEN);
+        assert!(!fx.state.is_peer_removed(&peer));
+        assert_eq!(epoch(&fx), before);
     }
 
     /// Put a rejoining device's new KeyPackage and join request in place,

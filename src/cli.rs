@@ -411,6 +411,14 @@ pub enum MemberAction {
     },
     /// Remove a member (auto-signs with admin.key if present)
     Remove { peer_id: String },
+    /// Let a removed device back in (needs this device's admin.key).
+    ///
+    /// Restart enox on that device so it asks to join again, then approve it
+    /// with `enox member approve` once its request arrives.
+    Readmit {
+        /// The removed device's full peer ID
+        peer_id: String,
+    },
     /// Promote a member to admin (auto-signs with admin.key if present)
     Promote { peer_id: String },
     /// List pending join requests
