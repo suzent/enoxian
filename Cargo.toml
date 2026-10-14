@@ -91,13 +91,17 @@ openmls_traits = "0.6"
 tls_codec = "0.5"
 ignore = "0.4.33"
 
+[target.'cfg(unix)'.dependencies]
+# Raising the daemon's open-file limit (`commands::serve::raise_open_file_limit`).
+libc = "0.2"
+
 [features]
 # Iroh is always built in now. Kept as an empty feature so a saved
 # `enox update --dev --features iroh-transport` keeps working.
 iroh-transport = []
-# Let `enox bootstrap serve --iroh-relay` run an Iroh relay alongside the
-# libp2p bootstrap services. Off by default, so a release does not change
-# what a deployed server runs until it is built and started with it.
+# Let `enox bootstrap serve --iroh-relay` run an Iroh relay alongside its
+# HTTP endpoints. Off by default; Linux release binaries and the bootstrap
+# image are built with it.
 iroh-relay-server = ["dep:iroh-relay", "dep:rustls"]
 
 [dev-dependencies]

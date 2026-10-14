@@ -723,6 +723,29 @@ fn spawn_storage_gc(state: AppState, token: CancellationToken) {
 /// control doc changes often (presence heartbeats), but those are excluded from
 /// the snapshot, so a periodic full save is cheap and simple. See
 /// `crate::store::control`.
+/// How many times a save tries for the control document before giving up
+/// until the next tick, and how long it waits between tries.
+const CONTROL_SAVE_TRIES: u32 = 5;
+const CONTROL_SAVE_RETRY: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Save the control document, waiting out a write in progress.
+///
+/// A save reads the document, so it fails while sync, presence or the API
+/// holds a write on it. One attempt every 30 seconds lost that race often
+/// enough to log a warning every few minutes, and at shutdown it could drop
+/// the last 30 seconds of state.
+async fn save_control(state: &AppState, circle_dir: &std::path::Path) -> anyhow::Result<()> {
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        match crate::store::control::save(circle_dir, &state.control) {
+            Ok(()) => return Ok(()),
+            Err(e) if tries >= CONTROL_SAVE_TRIES => return Err(e),
+            Err(_) => tokio::time::sleep(CONTROL_SAVE_RETRY).await,
+        }
+    }
+}
+
 fn spawn_control_persist(
     state: AppState,
     circle_dir: std::path::PathBuf,
@@ -735,14 +758,14 @@ fn spawn_control_persist(
             tokio::select! {
                 _ = token.cancelled() => {
                     // Final save on shutdown so the latest state is durable.
-                    if let Err(e) = crate::store::control::save(&circle_dir, &state.control) {
-                        warn!("[control] shutdown save failed: {e}");
+                    if let Err(e) = save_control(&state, &circle_dir).await {
+                        warn!("[control] {} shutdown save failed: {e}", state.circle_name);
                     }
                     break;
                 }
                 _ = interval.tick() => {
-                    if let Err(e) = crate::store::control::save(&circle_dir, &state.control) {
-                        warn!("[control] periodic save failed: {e}");
+                    if let Err(e) = save_control(&state, &circle_dir).await {
+                        warn!("[control] {} periodic save failed: {e}", state.circle_name);
                     }
                 }
             }

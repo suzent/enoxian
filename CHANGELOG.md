@@ -77,6 +77,17 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- The daemon raises its open-file limit at startup (launchd starts it at
+  256), so several Circles starting or catching up at once no longer run out
+  of file descriptors and refuse API connections.
+- A proposal engine that hits an error restarts after a short wait instead of
+  leaving its Circle without proposals until the daemon restarts.
+- Saving a Circle's state waits out a write in progress instead of skipping
+  the save, which logged "circle state busy; persistence deferred" every few
+  minutes and could drop the last half minute of state at shutdown.
+- `enox member add` refuses a device that is waiting to join and points to
+  `enox member approve`; adding it left the device pending and outside the
+  group. `enox invite` and `enox init` say an invite admits one device.
 - A message an agent run by enoxian posts with `enox say` is recorded as the
   agent's, not a person's. It now counts against the relay budget of the turn
   that woke the agent and is no longer offered to agents reading the room, so

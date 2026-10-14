@@ -167,11 +167,11 @@ pub async fn run(args: InitArgs) -> Result<()> {
     println!("  invite    : {invite_uri}");
     println!();
     println!(
-        "  Share the invite link to let peers join (valid for {}).",
+        "  Share the invite link to let a device join (one device, valid for {}).",
         args.ttl
     );
     println!(
-        "  Generate a new link anytime: enox invite \"{}\"",
+        "  Make a link for each further device: enox invite \"{}\"",
         args.name
     );
 

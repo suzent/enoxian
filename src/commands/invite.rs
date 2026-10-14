@@ -129,7 +129,7 @@ pub async fn run(args: InviteArgs, client: &reqwest::Client, api_base: &str) -> 
     };
 
     println!(
-        "✦ Invite for '{}' (valid {}):",
+        "✦ Invite for '{}' (one device, valid {}):",
         config.circle_name, args.ttl
     );
     println!();

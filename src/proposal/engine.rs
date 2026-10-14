@@ -33,11 +33,43 @@ use tokio_util::sync::CancellationToken;
 
 /// A dirty window closes after this long without further file events.
 const IDLE_WINDOW: Duration = Duration::from_secs(3);
+/// The first wait before restarting an engine that failed; it doubles on each
+/// failure in a row, up to [`MAX_RESTART_DELAY`].
+const RESTART_DELAY: Duration = Duration::from_secs(5);
+const MAX_RESTART_DELAY: Duration = Duration::from_secs(300);
+/// An engine that ran this long before failing starts the backoff over.
+const HEALTHY_RUN: Duration = Duration::from_secs(600);
 
+/// Run the engine for the life of the Circle, restarting it after an error.
+///
+/// Errors here are mostly transient I/O — running out of file descriptors
+/// while a workspace scan or snapshot write was in flight — and an engine that
+/// stopped for good left the Circle without proposals until the daemon was
+/// restarted. A restart reloads the baseline and folds in whatever changed
+/// meanwhile, as at startup.
 pub fn spawn_engine(state: AppState, token: CancellationToken) {
     tokio::spawn(async move {
-        if let Err(e) = run(state, token).await {
-            tracing::warn!("[proposal] engine stopped: {e:#}");
+        let mut delay = RESTART_DELAY;
+        loop {
+            let started = std::time::Instant::now();
+            let Err(e) = run(state.clone(), token.clone()).await else {
+                return;
+            };
+            if token.is_cancelled() {
+                return;
+            }
+            if started.elapsed() >= HEALTHY_RUN {
+                delay = RESTART_DELAY;
+            }
+            tracing::warn!(
+                "[proposal] engine stopped: {e:#}; restarting in {}s",
+                delay.as_secs()
+            );
+            tokio::select! {
+                _ = token.cancelled() => return,
+                _ = tokio::time::sleep(delay) => {}
+            }
+            delay = (delay * 2).min(MAX_RESTART_DELAY);
         }
     });
 }
