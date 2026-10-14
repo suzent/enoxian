@@ -77,6 +77,11 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- A device that met a peer it had not seen (one joining, or coming back
+  after a restart) could stop sending chat, presence and membership changes
+  to its other peers until they reconnected: what the meeting wrote into the
+  Circle's shared state was never sent on, and peers held back everything the
+  device wrote after it. Files kept syncing, so nothing looked wrong.
 - The daemon raises its open-file limit at startup (launchd starts it at
   256), so several Circles starting or catching up at once no longer run out
   of file descriptors and refuse API connections.
