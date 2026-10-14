@@ -90,6 +90,14 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
         .baseline_id()
         .and_then(|id| store.load_snapshot(&id).ok());
     let prior = match prior {
+        Some(baseline) => Some(recover_unadvanced_baseline(
+            &store,
+            &state.peer_id,
+            baseline,
+        )?),
+        None => None,
+    };
+    let prior = match prior {
         Some(mut baseline) => {
             consume_write_evidence(&state, &store, &mut baseline, &device_label)?;
             Some(baseline)
@@ -309,6 +317,45 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
 /// Commit each evidenced operation independently, so two writes to one file
 /// remain separately reviewable. The rolling checkpoint also makes recovery
 /// idempotent if the process dies between committing and removing the journal.
+/// Move the baseline past changes a previous run recorded but did not adopt.
+///
+/// The engine saves a result snapshot, records this device's proposals that
+/// end in it, and only then moves the baseline to it. A run that failed in
+/// between — the engine restarts after errors, and the daemon can stop at any
+/// point — left proposals ending in a snapshot newer than the baseline. Taking
+/// the baseline from there keeps the next run from recording the same change
+/// a second time under a new proposal id.
+fn recover_unadvanced_baseline(
+    store: &ProposalStore,
+    local_peer: &str,
+    baseline: Snapshot,
+) -> anyhow::Result<Snapshot> {
+    let newest = store
+        .list_proposals()
+        .into_iter()
+        .filter(|p| {
+            p.origin_peer_id == local_peer
+                && matches!(
+                    p.source,
+                    ProposalSource::Ambient | ProposalSource::Interactive
+                )
+                && p.result_snapshot != baseline.id
+        })
+        .filter_map(|p| store.load_snapshot(&p.result_snapshot).ok())
+        .filter(|result| result.created_at > baseline.created_at)
+        .max_by_key(|result| result.created_at);
+    let Some(result) = newest else {
+        return Ok(baseline);
+    };
+    tracing::info!(
+        "[proposal] baseline {} → {}: already recorded by an earlier run",
+        baseline.id,
+        result.id
+    );
+    store.set_baseline(&result.id)?;
+    Ok(result)
+}
+
 fn consume_write_evidence(
     state: &AppState,
     store: &ProposalStore,
@@ -665,6 +712,49 @@ mod tests {
 
     fn set(paths: &[&str]) -> BTreeSet<String> {
         paths.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A run that recorded a change but stopped before moving the baseline
+    /// must not record it again on restart; another device's proposals and
+    /// older ones are not followed.
+    #[test]
+    fn a_restart_adopts_a_result_already_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ProposalStore::open(dir.path()).unwrap();
+        let base = snap(&[("a.txt", "h1")]);
+        store.save_snapshot(&base).unwrap();
+        store.set_baseline(&base.id).unwrap();
+
+        let record = |peer: &str, source, from: &Snapshot, to: &Snapshot| {
+            let mut p = Proposal::ambient("circle".into(), from.id.clone(), to.id.clone(), vec![]);
+            p.origin_peer_id = peer.into();
+            p.source = source;
+            store.save_proposal(&p).unwrap();
+        };
+
+        // Nothing recorded past the baseline: it stays.
+        let mut older = snap(&[("a.txt", "h0")]);
+        older.created_at = base.created_at - chrono::Duration::seconds(10);
+        store.save_snapshot(&older).unwrap();
+        record("me", ProposalSource::Ambient, &older, &older);
+        let elsewhere = snap(&[("a.txt", "h9")]);
+        store.save_snapshot(&elsewhere).unwrap();
+        record("them", ProposalSource::Ambient, &base, &elsewhere);
+        let kept = recover_unadvanced_baseline(&store, "me", base.clone()).unwrap();
+        assert_eq!(kept.id, base.id);
+
+        // Two windows recorded, the baseline moved for neither.
+        let first = snap(&[("a.txt", "h2")]);
+        store.save_snapshot(&first).unwrap();
+        record("me", ProposalSource::Interactive, &base, &first);
+        let mut second = snap(&[("a.txt", "h3")]);
+        second.created_at = first.created_at + chrono::Duration::seconds(1);
+        store.save_snapshot(&second).unwrap();
+        record("me", ProposalSource::Ambient, &first, &second);
+
+        let adopted = recover_unadvanced_baseline(&store, "me", base).unwrap();
+        assert_eq!(adopted.id, second.id);
+        assert_eq!(store.baseline_id().as_deref(), Some(second.id.as_str()));
     }
 
     #[test]

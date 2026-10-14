@@ -229,6 +229,14 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     )
     .await?;
 
+    // The per-Circle savers also save when cancelled, but in detached tasks
+    // the process can exit under. Save here, where the exit waits for it.
+    for state in daemon.list() {
+        if let Err(e) = crate::lifecycle::save_control(&state, &state.circle_dir).await {
+            warn!("[control] {} final save failed: {e}", state.circle_name);
+        }
+    }
+
     info!("Enoxian stopped");
     Ok(())
 }

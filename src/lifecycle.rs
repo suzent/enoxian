@@ -734,7 +734,10 @@ const CONTROL_SAVE_RETRY: std::time::Duration = std::time::Duration::from_millis
 /// holds a write on it. One attempt every 30 seconds lost that race often
 /// enough to log a warning every few minutes, and at shutdown it could drop
 /// the last 30 seconds of state.
-async fn save_control(state: &AppState, circle_dir: &std::path::Path) -> anyhow::Result<()> {
+pub(crate) async fn save_control(
+    state: &AppState,
+    circle_dir: &std::path::Path,
+) -> anyhow::Result<()> {
     let mut tries = 0;
     loop {
         tries += 1;
