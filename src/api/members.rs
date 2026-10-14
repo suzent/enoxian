@@ -186,6 +186,24 @@ pub async fn add_member(
             Ok(txn) => txn,
             Err(_) => return super::circle_busy(),
         };
+        // A device asking to join needs the MLS step that only approval
+        // takes. Adding it here wrote a member entry over its own, without an
+        // owner or agent name, and left it outside the group and pending.
+        if txn
+            .get_map(MLS_PENDING_KEY)
+            .is_some_and(|pending| pending.contains_key(&txn, req.peer_id.as_str()))
+        {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": format!(
+                        "{} is waiting to join; approve it instead: enox member approve {}",
+                        req.peer_id, req.peer_id
+                    ),
+                })),
+            )
+                .into_response();
+        }
         let map = txn.get_or_insert_map(MEMBER_LIST_KEY);
         map.insert(&mut txn, req.peer_id.as_str(), json_str.as_str());
     }
@@ -1164,6 +1182,37 @@ mod tests {
         assert_eq!(epoch(&fx), admitted_epoch);
         assert_eq!(commit_count(&fx), 1);
         assert!(!map_has(&fx, MLS_PENDING_KEY, &peer));
+    }
+
+    /// Adding a device that is waiting to join would skip the MLS step only
+    /// approval takes; it is refused with a pointer to `approve`.
+    #[tokio::test]
+    async fn add_refuses_a_pending_device() {
+        let fx = fixture();
+        let peer = candidate(&fx, "alice");
+        {
+            let mut txn = fx.state.control.transact_mut();
+            let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
+            pending.insert(&mut txn, peer.as_str(), "{}");
+        }
+        let resp = add_member(
+            State(fx.daemon.clone()),
+            Path(CIRCLE.into()),
+            Json(AddMemberRequest {
+                peer_id: peer.clone(),
+                owner: Some("alice".into()),
+                agent_id: None,
+                device_label: None,
+                agents: None,
+                role: None,
+                admin_signature: sign(&fx.admin, &format!("add:{peer}:member:owner:alice")),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert!(!map_has(&fx, MEMBER_LIST_KEY, &peer), "nothing written");
+        assert!(map_has(&fx, MLS_PENDING_KEY, &peer), "still pending");
     }
 
     /// A device that left and entered again keeps its peer id but publishes a

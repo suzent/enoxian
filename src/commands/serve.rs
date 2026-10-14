@@ -36,6 +36,8 @@ fn start_circle_detached(cfg: config::CircleConfig, daemon: DaemonState) {
 }
 
 pub async fn run(args: ServeArgs) -> Result<()> {
+    raise_open_file_limit();
+
     // Managed services (launchd, systemd --user) start with a bare PATH, so
     // pull in what the user's login shell resolves before any agent-adapter
     // probing or spawning happens. See `agent::probe::adopt_login_shell_path`.
@@ -227,6 +229,14 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     )
     .await?;
 
+    // The per-Circle savers also save when cancelled, but in detached tasks
+    // the process can exit under. Save here, where the exit waits for it.
+    for state in daemon.list() {
+        if let Err(e) = crate::lifecycle::save_control(&state, &state.circle_dir).await {
+            warn!("[control] {} final save failed: {e}", state.circle_name);
+        }
+    }
+
     info!("Enoxian stopped");
     Ok(())
 }
@@ -361,6 +371,48 @@ fn hostname_label() -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "device".to_string())
 }
+
+/// The soft open-file limit the daemon raises itself to, capped by the hard
+/// limit. macOS refuses anything above `OPEN_MAX` (10240) here even when the
+/// hard limit reads "unlimited".
+#[cfg(unix)]
+const OPEN_FILE_TARGET: libc::rlim_t = 10_240;
+
+/// Raise the soft open-file limit towards the hard one.
+///
+/// launchd starts services with a soft limit of 256. Each Circle holds an
+/// Iroh endpoint (UDP sockets, relay connections, address probes), sync and
+/// API sockets, and the files a workspace scan has open, so a few Circles
+/// starting or catching up at once went past it: the proposal engine stopped
+/// and the API refused connections with "Too many open files".
+#[cfg(unix)]
+fn raise_open_file_limit() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit/setrlimit only read and write the struct passed in.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return;
+    }
+    let target = OPEN_FILE_TARGET.min(limit.rlim_max);
+    if limit.rlim_cur >= target {
+        return;
+    }
+    let before = limit.rlim_cur;
+    limit.rlim_cur = target;
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } == 0 {
+        info!("Open-file limit raised from {before} to {target}");
+    } else {
+        tracing::warn!(
+            "could not raise the open-file limit from {before}: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn raise_open_file_limit() {}
 
 #[cfg(test)]
 mod tests {
