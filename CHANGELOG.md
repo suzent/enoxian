@@ -77,6 +77,10 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- When the same workspace history entry arrived twice at once, which is
+  common because peers forward a device's entries back to it, one copy
+  failed with "committing workspace event" and was logged as rejected; if
+  that was the device's own entry, its proposal engine stopped.
 - A device that met a peer it had not seen (one joining, or coming back
   after a restart) could stop sending chat, presence and membership changes
   to its other peers until they reconnected: what the meeting wrote into the
