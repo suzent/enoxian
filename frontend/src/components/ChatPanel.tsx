@@ -2,7 +2,7 @@ import type { RightPanelTab } from './RightPanel'
 import { createPortal } from 'react-dom'
 import { Users } from 'lucide-react'
 import ExecutionStatus from './ExecutionStatus'
-import { Fragment, useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { Fragment, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import type { Attachment, ChatActivity, ChatMessage, EngagementView, Member, Presence } from '../types'
 import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, getEngagement, exitEngagement, MAX_ATTACHMENT_BYTES } from '../api'
 import { useApp } from '../context/AppContext'
@@ -286,6 +286,23 @@ interface Draft {
 }
 
 const EMPTY_DRAFT: Draft = { nodes: [], attachments: [] }
+
+/** Most names an activity strip group lists. Past this a row of names is
+ *  harder to read than a number, so the group just counts them. */
+const ACTIVITY_NAMES_SHOWN = 3
+
+function activityVerb(kind: ChatActivity['kind'], count: number, terse: boolean) {
+  if (kind === 'working') return terse ? 'working' : count > 1 ? 'are working…' : 'is working…'
+  if (kind === 'typing') return terse ? 'typing' : count > 1 ? 'are typing…' : 'is typing…'
+  if (kind === 'skipped') return terse ? 'skipped' : 'not triggered'
+  return ''
+}
+
+/** How terse the activity strip gets, step by step, to stay on one line. */
+const ACTIVITY_COUNTED = 1
+const ACTIVITY_TERSE = 2
+const ACTIVITY_NO_SEEN = 3
+const ACTIVITY_NO_TYPING = 4
 
 export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityContainer, onActivityNavigate, onMessage, variant = 'rail', hideActiveCircleGlyph = false }: Props) {
   const { activeCircleId, circles, status } = useApp()
@@ -871,6 +888,81 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
     return `${actor} is working…`
   }
 
+  // Several agents reading the room start, pass and finish together. One
+  // sentence each truncates into noise, so the strip says each thing once —
+  // who is working, who is typing, who passed — and names the agents in it.
+  // The full per-actor sentences stay in the tooltip.
+  const activityGroups = (['working', 'typing', 'skipped', 'seen'] as const)
+    .map(kind => {
+      const seen = new Set<string>()
+      const actors = liveActivities
+        .filter(activity => activity.kind === kind)
+        .filter(activity => {
+          const key = `${activity.actor_id}@${activity.peer_id}`
+          if (seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
+        .map(activity => {
+          const label = getSenderLabel(activity.actor_id, activity.peer_id)
+          const host = activity.peer_id ? members.find(member => member.peer_id === activity.peer_id) : undefined
+          return {
+            key: activity.activity_id,
+            name: label.agent ?? label.user,
+            agent: !!label.agent,
+            device: (label.agent ? host?.device_label : label.device) || null,
+            detail: activity.detail ?? null,
+            description: describeActivity(activity),
+          }
+        })
+      // A device name only tells agents apart when the same name runs on
+      // more than one device; otherwise it is clutter.
+      const names = actors.map(actor => actor.name)
+      return {
+        kind,
+        actors: actors.map(actor => ({
+          ...actor,
+          device: names.filter(name => name === actor.name).length > 1 ? actor.device : null,
+        })),
+      }
+    })
+    .filter(group => group.actors.length > 0)
+
+  // The strip stays one line. When everything does not fit, it gets terser in
+  // steps instead of wrapping: every group of more than one becomes a count,
+  // then the wording shrinks to "6 working · 4 skipped", then "seen by" goes,
+  // then typing. A group is dropped whole rather than cut to "4 ag"; whatever
+  // still does not fit is ellipsized, and the stop button is never cut.
+  const activityRef = useRef<HTMLDivElement>(null)
+  const [activityDensity, setActivityDensity] = useState(0)
+  const [activityWidth, setActivityWidth] = useState(0)
+  // Anything that changes what fits starts the steps again from the top.
+  const activityKey = activityGroups.map(group => `${group.kind}:${group.actors.map(actor => actor.key).join(',')}`).join('|')
+    + `|${runningCascadeRoot ? 'stop' : ''}|${activityWidth}`
+  const measuredActivityKey = useRef('')
+  useLayoutEffect(() => {
+    if (measuredActivityKey.current !== activityKey) {
+      measuredActivityKey.current = activityKey
+      if (activityDensity !== 0) { setActivityDensity(0); return }
+    }
+    const strip = activityRef.current
+    if (!strip || activityDensity >= ACTIVITY_NO_TYPING) return
+    // Measured at natural size: shrinking flex items would otherwise hide
+    // the overflow this is looking for.
+    strip.classList.add('chat-activity--measuring')
+    const overflowing = strip.scrollWidth > strip.clientWidth + 1
+    strip.classList.remove('chat-activity--measuring')
+    if (overflowing) setActivityDensity(activityDensity + 1)
+  }, [activityDensity, activityKey])
+  const hasActivity = activityGroups.length > 0
+  useEffect(() => {
+    const strip = activityRef.current
+    if (!strip || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => setActivityWidth(strip.clientWidth))
+    observer.observe(strip)
+    return () => observer.disconnect()
+  }, [hasActivity])
+
   return (
     <main className={`app-chat-panel flex min-h-0 flex-col z-10 overflow-hidden ${variant === 'main' ? 'chat-main sys-window' : 'border-r-2 border-obsidian bg-alabaster/85'}`}>
       {variant !== 'main' && (
@@ -1022,17 +1114,47 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
             </button>
           </div>
         )}
-        {liveActivities.length > 0 && (
-          <div className="chat-activity" role="status" aria-live="polite">
-            {liveActivities.slice(0, 3).map(activity => (
-              <span key={activity.activity_id} className={`chat-activity__item chat-activity__item--${activity.kind}`}>
-                <i aria-hidden="true" />
-                <span className="chat-activity__text" title={describeActivity(activity)}>
-                  {describeActivity(activity)}
+        {activityGroups.length > 0 && (
+          <div ref={activityRef} className="chat-activity" role="status" aria-live="polite">
+            {activityGroups.filter(group =>
+              !(group.kind === 'seen' && activityDensity >= ACTIVITY_NO_SEEN)
+              && !(group.kind === 'typing' && activityDensity >= ACTIVITY_NO_TYPING),
+            ).map(group => {
+              const terse = activityDensity >= ACTIVITY_TERSE
+              const counted = group.actors.length > (activityDensity >= ACTIVITY_COUNTED ? 1 : ACTIVITY_NAMES_SHOWN)
+              const noun = group.actors.every(actor => actor.agent) ? 'agents' : 'members'
+              return (
+                <span
+                  key={group.kind}
+                  className={`chat-activity__group chat-activity__group--${group.kind}`}
+                  title={group.actors.map(actor => actor.description).join('\n')}
+                >
+                  <i className="chat-activity__pulse" aria-hidden="true" />
+                  {group.kind === 'seen' && <span className="chat-activity__verb">seen by</span>}
+                  {counted ? (
+                    <span className="chat-activity__count">{terse ? group.actors.length : `${group.actors.length} ${noun}`}</span>
+                  ) : (
+                    <span className="chat-activity__names">
+                      {group.actors.map(actor => (
+                        <span key={actor.key} className="chat-activity__name">
+                          {actor.agent && !terse && <AgentAvatar identity={actor.name} />}
+                          <span className="chat-activity__label">{actor.name}</span>
+                          {actor.device && <span className="chat-activity__device">{actor.device}</span>}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                  {group.kind !== 'seen' && (
+                    <span className="chat-activity__verb">
+                      {activityVerb(group.kind, group.actors.length, terse)}
+                      {group.kind === 'skipped' && group.actors.length === 1 && group.actors[0].detail && activityDensity === 0
+                        ? <span className="chat-activity__detail"> · {group.actors[0].detail}</span>
+                        : null}
+                    </span>
+                  )}
                 </span>
-              </span>
-            ))}
-            {liveActivities.length > 3 && <span className="chat-activity__more">+{liveActivities.length - 3} active</span>}
+              )
+            })}
             {runningCascadeRoot && (
               <button
                 type="button"
