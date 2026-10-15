@@ -319,7 +319,7 @@ async fn run_inner(
                     Msg::Event(envelope) => {
                         peer_known.insert(envelope.event.id.clone());
                         if let Err(error) = apply_envelope(state, &events, &proposals, &envelope) {
-                            warn!("[event-sync] rejected live {}: {error}", envelope.event.id);
+                            warn!("[event-sync] rejected live {}: {error:#}", envelope.event.id);
                         }
                     }
                     _ => anyhow::bail!("unexpected event-sync message after reconciliation"),

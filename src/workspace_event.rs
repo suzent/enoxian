@@ -187,8 +187,20 @@ impl EventStore {
     }
 
     /// Append a local or remote event. Returns false for an identical replay.
+    ///
+    /// The same event often arrives twice at once: a peer forwards this
+    /// device's own event straight back while it is still being written, or two
+    /// peers both forward one. Both copies used to find no file, write the same
+    /// temporary name, and race to rename it, so the loser failed with
+    /// "committing workspace event" — and when the loser was the local append,
+    /// the proposal engine stopped. Check, write and rename under one lock so
+    /// the second copy sees the first and is a replay.
     pub fn append(&self, event: &WorkspaceEvent) -> Result<bool> {
+        static APPEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         self.validate(event)?;
+        let _guard = APPEND_LOCK
+            .lock()
+            .map_err(|_| anyhow::anyhow!("workspace event store poisoned"))?;
         let path = self.events_dir().join(format!("{}.json", event.id));
         if path.exists() {
             let existing: WorkspaceEvent = serde_json::from_slice(&std::fs::read(&path)?)?;
@@ -538,6 +550,39 @@ mod tests {
         assert!(!store.append(&event).unwrap());
         assert_eq!(store.materialize().current_snapshot, Some(snapshot));
         assert_eq!(store.frontier(), vec![event.id]);
+    }
+
+    /// Copies of one event arriving together store it once, and every copy
+    /// succeeds.
+    #[test]
+    fn concurrent_copies_of_an_event_are_replays_not_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(EventStore::open(dir.path(), "circle").unwrap());
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = EventStore::open(source_dir.path(), "circle").unwrap();
+        for _ in 0..20 {
+            let event = source
+                .append_local(
+                    "peer-a",
+                    "laptop",
+                    WorkspaceEventKind::SnapshotRecorded {
+                        snapshot_id: snapshot_id(),
+                        parent_snapshot: None,
+                    },
+                )
+                .unwrap();
+            let results: Vec<_> = (0..8)
+                .map(|_| {
+                    let (store, event) = (store.clone(), event.clone());
+                    std::thread::spawn(move || store.append(&event))
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|handle| handle.join().unwrap().unwrap())
+                .collect();
+            assert_eq!(results.iter().filter(|new| **new).count(), 1);
+        }
+        assert_eq!(store.ids().len(), 20);
     }
 
     #[test]
