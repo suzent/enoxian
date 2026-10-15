@@ -74,6 +74,10 @@ refuses to publish a version whose section is missing or empty.
   `connectivity` is `{ direct_addr, relays }`.
 - `enox --version` names the optional features a binary was built with, for
   example `0.11.0 (dev, b8cdb9b, iroh-transport)`.
+- When several agents read the room, the status line above the chat box
+  says each thing once ("claude, codex, gemini are working…"), counts them
+  past three ("5 agents are working…"), and stays on one line, getting terser
+  as the window narrows. The stop-chain button always stays visible.
 
 ### Fixed
 
