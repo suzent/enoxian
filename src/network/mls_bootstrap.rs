@@ -162,11 +162,26 @@ async fn snapshot(state: &AppState, receiver: &PeerId) -> Result<Snapshot> {
     anyhow::bail!("circle state busy after retries; could not build MLS bootstrap snapshot")
 }
 
+/// Send what a bootstrap write created to every peer.
+///
+/// Bootstrap writes carry the "p2p" origin so the observers that act on a
+/// peer's changes (approval, chat, presence) treat them as such. But the items
+/// are new, authored by this device, and the control doc's forwarder skips
+/// "p2p" writes — so peers never received them. Every later change from this
+/// device follows them in its update sequence, and Yjs holds an update back
+/// until all before it have arrived: this device's chat, presence and
+/// membership then stopped reaching its peers until the next full catch-up,
+/// with nothing logged on either side.
+fn forward(state: &AppState, update: Vec<u8>) {
+    let _ = state.all_updates.send(("__control__".to_string(), update));
+}
+
 /// Merge every incoming map under one write transaction, retrying on contention.
 async fn merge_maps(state: &AppState, groups: &[(&str, &[(String, String)])]) -> Result<()> {
     for attempt in 0..CONTENTION_RETRIES {
         {
             if let Ok(mut txn) = state.control.try_transact_mut_with("p2p") {
+                let mut wrote = false;
                 for (key, entries) in groups {
                     let map = txn.get_or_insert_map(*key);
                     for (entry_key, value) in entries.iter() {
@@ -175,8 +190,14 @@ async fn merge_maps(state: &AppState, groups: &[(&str, &[(String, String)])]) ->
                             .is_some_and(|current| current.to_string(&txn) == *value);
                         if !unchanged {
                             map.insert(&mut txn, entry_key.as_str(), value.as_str());
+                            wrote = true;
                         }
                     }
+                }
+                let update = wrote.then(|| txn.encode_update_v1());
+                drop(txn);
+                if let Some(update) = update {
+                    forward(state, update);
                 }
                 return Ok(());
             }
@@ -312,6 +333,9 @@ async fn append_commit(state: &AppState, json: String) -> Result<()> {
                     .any(|value| value.to_string(&txn) == json);
                 if !exists {
                     commits_ref.push_back(&mut txn, json);
+                    let update = txn.encode_update_v1();
+                    drop(txn);
+                    forward(state, update);
                 }
                 return Ok(());
             }
@@ -519,6 +543,64 @@ mod tests {
             .await
             .unwrap()
             .is_err());
+    }
+
+    /// A peer that only gets what this device sends live must still see a
+    /// change made after a bootstrap write. The bootstrap write used to stay
+    /// local, and the peer held every later update from this device back.
+    #[tokio::test]
+    async fn bootstrap_writes_reach_peers_so_later_changes_apply() {
+        use yrs::{updates::decoder::Decode, Map, ReadTxn, Transact, Update};
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(
+            "circle".into(),
+            "test".into(),
+            dir.path().into(),
+            dir.path().into(),
+            String::new(),
+            "agent".into(),
+            1,
+            libp2p_identity::Keypair::generate_ed25519()
+                .public()
+                .to_peer_id()
+                .to_string(),
+            crate::config::JoinPolicy::Auto,
+            "owner".into(),
+            crate::mls::new_mls_state(crate::mls::MlsIdentity::generate("local").unwrap(), None),
+        );
+        let mut sent = state.all_updates.subscribe();
+
+        let entries = [("peer-b".to_string(), "{}".to_string())];
+        merge_maps(&state, &[(MLS_PENDING_KEY, &entries[..])])
+            .await
+            .unwrap();
+        append_commit(&state, "commit-1".into()).await.unwrap();
+        {
+            let mut txn = state.control.transact_mut();
+            let presence = txn.get_or_insert_map("presence");
+            presence.insert(&mut txn, "agent", "here");
+        }
+
+        let peer = yrs::Doc::new();
+        while let Ok((path, update)) = sent.try_recv() {
+            assert_eq!(path, "__control__");
+            peer.transact_mut()
+                .apply_update(Update::decode_v1(&update).unwrap())
+                .unwrap();
+        }
+        let txn = peer.transact();
+        let get = |key: &str, field: &str| {
+            txn.get_map(key)
+                .and_then(|map| map.get(&txn, field))
+                .map(|v| v.to_string(&txn))
+        };
+        assert_eq!(
+            get("presence", "agent").as_deref(),
+            Some("here"),
+            "the later change applied"
+        );
+        assert_eq!(get(MLS_PENDING_KEY, "peer-b").as_deref(), Some("{}"));
+        assert_eq!(txn.get_array(MLS_COMMITS_KEY).map(|a| a.len(&txn)), Some(1));
     }
 
     #[tokio::test]
