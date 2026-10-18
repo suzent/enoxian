@@ -1324,7 +1324,10 @@ pub(crate) async fn consume_welcome(welcome_hex: String, mls: SharedMlsState, st
 }
 
 /// Give this device a new MLS identity and publish a KeyPackage and binding
-/// for it, so the admin can admit it again. Only for a device without a group.
+/// for it, with its join request, so the admin can admit it again. Only for a
+/// device without a group. The request goes back in too: once the broken
+/// admission's member entry arrived, the approval observer removed it, and
+/// the admin only acts on peers that are pending.
 async fn replace_mls_identity(
     mls: &mut crate::mls::MlsState,
     state: &AppState,
@@ -1341,6 +1344,7 @@ async fn replace_mls_identity(
         identity.signer.public(),
     )?;
     mls.identity = identity;
+    let request = state.join_request.lock().unwrap().clone();
     for attempt in 0..PENDING_REMOVE_RETRIES {
         if let Ok(mut txn) = yrs::Transact::try_transact_mut(&*state.control) {
             use yrs::WriteTxn;
@@ -1354,6 +1358,13 @@ async fn replace_mls_identity(
                 state.peer_id.as_str(),
                 binding.as_str(),
             );
+            if let Some(request) = request.as_deref() {
+                txn.get_or_insert_map(MLS_PENDING_KEY).insert(
+                    &mut txn,
+                    state.peer_id.as_str(),
+                    request,
+                );
+            }
             return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(
