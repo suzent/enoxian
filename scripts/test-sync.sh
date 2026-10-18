@@ -3,8 +3,9 @@
 # for a second physical device.
 #
 # Verifies: circle creation, join, presence, file sync, content sync, PSK
-# stability across member ops, stable peer IDs across a restart, and a removed
-# device being readmitted (#260).
+# stability across member ops, stable peer IDs across a restart, a removed
+# device being readmitted (#260), and leaving and rejoining, as a member and
+# as the admin after handing admin over.
 #
 # Usage: ./scripts/test-sync.sh
 # Requires: cargo (the script builds what it needs)
@@ -298,6 +299,50 @@ enox1 --circle "$CIRCLE_NAME" member approve "$D2_ID" > /dev/null || fail "appro
 echo "written after offline readmission" > "$D1_WS/after-offline-readmit.txt"
 wait_for "after-offline-readmit.txt never reached daemon 2" 150 d2_has_file "after-offline-readmit.txt"
 ok "sync resumed after an offline readmission"
+
+section "Leave and rejoin"
+# A device that leaves keeps its peer ID, and comes back under it when it
+# enters again with a new invite. It has to be admitted again like any joiner.
+# Leaving used to fail with "Directory not empty" while the Circle's tasks
+# were still writing into its directory.
+d1_has_file() { [[ -f "$D1_WS/$1" ]]; }
+echo "before leaving" > "$D2_WS/before-leave.txt"
+wait_for "before-leave.txt never reached daemon 1" 60 d1_has_file "before-leave.txt"
+ok "daemon 2 syncing before it leaves"
+LEAVE_OUT=$(enox2 --circle "$CIRCLE_NAME" leave --yes 2>&1) || { echo "$LEAVE_OUT"; fail "leave failed"; }
+ok "daemon 2 left"
+REINVITE=$(enox1 invite "$CIRCLE_NAME" --long 2>&1 | grep -oE 'enoxian://[^ ]+' | head -1)
+[[ -n "$REINVITE" ]] || fail "no second invite"
+enox2 enter "$REINVITE" --dir "$D2_WS" --peer "$D1_PEER" > /dev/null || fail "re-enter failed"
+ok "daemon 2 entered again"
+echo "after rejoining" > "$D1_WS/after-rejoin.txt"
+wait_for "after-rejoin.txt never reached the rejoined daemon 2" 120 d2_has_file "after-rejoin.txt"
+ok "sync resumed with the rejoined device"
+
+section "Admin leaves, hands over, and rejoins"
+# The new admin joined by Welcome. Its Welcomes used to lack the ratchet tree,
+# so after a handover nobody could be admitted, the former admin included.
+d2_has_iroh_addr() { curl2 "/circles/$CIRCLE_ID/api/status" | grep -q quic-v1/p2p; }
+wait_for "daemon 2 reported no Iroh address" 30 d2_has_iroh_addr
+D2_PEER=$(curl2 "/circles/$CIRCLE_ID/api/status" | python3 -c "
+import sys, json
+addrs = json.load(sys.stdin)['p2p']['direct_addrs']
+udp = [a for a in addrs if '/udp/' in a and '/p2p/' in a]
+a = udp[0] if udp else ''
+print('/ip4/127.0.0.1/udp/' + a.split('/udp/')[1] if a else '')
+")
+OUT=$(enox1 --circle "$CIRCLE_NAME" leave --yes 2>&1) || { echo "$OUT"; fail "admin leave failed"; }
+ok "daemon 1 (admin) left"
+d2_is_admin() { [[ -f "$D2_STATE/circles/$CIRCLE_ID/admin.key" ]]; }
+wait_for "daemon 2 never became admin" 30 d2_is_admin
+ok "daemon 2 holds admin.key"
+INV2=$(enox2 invite "$CIRCLE_NAME" --long 2>&1 | grep -oE 'enoxian://[^ ]+' | head -1)
+[[ -n "$INV2" ]] || fail "new admin made no invite"
+enox1 enter "$INV2" --dir "$D1_WS" --peer "$D2_PEER" > /dev/null || fail "admin re-enter failed"
+ok "daemon 1 entered again"
+echo "after admin rejoined" > "$D2_WS/after-admin-rejoin.txt"
+wait_for "after-admin-rejoin.txt never reached the rejoined daemon 1" 120 d1_has_file "after-admin-rejoin.txt"
+ok "sync resumed with the rejoined former admin"
 
 trap - ERR
 echo

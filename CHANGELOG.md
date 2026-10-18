@@ -81,6 +81,17 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- After an admin handed admin over, nobody could join or be readmitted: a
+  device that had joined by invite made welcomes without the group's ratchet
+  tree. Devices now keep that setting when they join, and existing members
+  get it when they start.
+- A device that left a Circle could not rejoin it. Leaving failed with
+  "Directory not empty" while the Circle was still shutting down, or left
+  state behind; it now waits for the Circle to stop. A device whose welcome
+  it can no longer open, because an earlier attempt or a restart lost its
+  keys, now asks to join again with new keys instead of waiting forever.
+- A stopped Circle (after leaving, disabling it or switching force relay) is
+  freed instead of kept in memory.
 - When the same workspace history entry arrived twice at once, which is
   common because peers forward a device's entries back to it, one copy
   failed with "committing workspace event" and was logged as rejected; if

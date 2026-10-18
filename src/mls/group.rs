@@ -27,6 +27,20 @@ pub struct MlsGroupManager {
     pub group: MlsGroup,
 }
 
+/// How every device keeps its group after joining.
+///
+/// The ratchet tree has to travel inside each Welcome, because nothing sends
+/// it separately. `create` turns that on, but joining used the default
+/// configuration, which turns it off — so a device that joined by Welcome made
+/// Welcomes without the tree. Once admin passed to such a device, every
+/// newcomer and every readmitted device failed with `MissingRatchetTree`, and
+/// the failed attempt spent its KeyPackage, so it could not recover.
+fn join_config() -> MlsGroupJoinConfig {
+    MlsGroupJoinConfig::builder()
+        .use_ratchet_tree_extension(true)
+        .build()
+}
+
 impl MlsGroupManager {
     // ── Creator: called once at `enox init` ──────────────────────────────────
 
@@ -73,7 +87,7 @@ impl MlsGroupManager {
 
         let group = StagedWelcome::new_from_welcome(
             &identity.provider,
-            &MlsGroupJoinConfig::default(),
+            &join_config(),
             welcome,
             ratchet_tree,
         )
@@ -390,8 +404,16 @@ impl MlsGroupManager {
 
         let group = MlsGroup::load(identity.provider.storage(), &group_id)
             .map_err(|e| anyhow::anyhow!("load MLS group: {e:?}"))?;
-
-        Ok(group.map(|g| Self { group: g }))
+        let Some(mut group) = group else {
+            return Ok(None);
+        };
+        // Groups joined before `join_config` existed make Welcomes without
+        // the ratchet tree; give every loaded group the setting it should have
+        // (openmls offers no way to read it back, and setting it is idempotent).
+        group
+            .set_configuration(identity.provider.storage(), &join_config())
+            .map_err(|e| anyhow::anyhow!("update MLS group configuration: {e:?}"))?;
+        Ok(Some(Self { group }))
     }
 }
 
@@ -421,6 +443,56 @@ mod tests {
         assert_ne!(epoch_one, epoch_two);
         bob_group.apply_commit(&bob, &carol_commit).unwrap();
         assert_eq!(epoch_two, bob_group.content_secret(&bob).unwrap());
+    }
+
+    /// A device that joined by Welcome admits the next one: its Welcome
+    /// carries the ratchet tree. This is what an admin handover to a member
+    /// relies on.
+    #[test]
+    fn a_member_that_joined_by_welcome_can_admit_the_next() {
+        let alice = MlsIdentity::generate("alice").unwrap();
+        let bob = MlsIdentity::generate("bob").unwrap();
+        let carol = MlsIdentity::generate("carol").unwrap();
+        let mut alice_group = MlsGroupManager::create(&alice).unwrap();
+        let (_, bob_welcome, _) = alice_group
+            .add_member(&alice, &bob.generate_key_package().unwrap())
+            .unwrap();
+        let mut bob_group = MlsGroupManager::join_from_welcome(&bob, &bob_welcome, None).unwrap();
+
+        let (_, carol_welcome, _) = bob_group
+            .add_member(&bob, &carol.generate_key_package().unwrap())
+            .unwrap();
+        let carol_group = MlsGroupManager::join_from_welcome(&carol, &carol_welcome, None)
+            .expect("the Welcome must carry the ratchet tree");
+        assert_eq!(carol_group.epoch(), bob_group.epoch());
+    }
+
+    /// A group stored before joins kept the ratchet tree setting gets it on
+    /// load, so existing members can admit others after an upgrade.
+    #[test]
+    fn a_stored_group_without_the_ratchet_tree_setting_gets_it_on_load() {
+        let alice = MlsIdentity::generate("alice").unwrap();
+        let bob = MlsIdentity::generate("bob").unwrap();
+        let mut alice_group = MlsGroupManager::create(&alice).unwrap();
+        let (_, bob_welcome, _) = alice_group
+            .add_member(&alice, &bob.generate_key_package().unwrap())
+            .unwrap();
+        let mut bob_group = MlsGroupManager::join_from_welcome(&bob, &bob_welcome, None).unwrap();
+        // As a group joined by an older build was stored.
+        bob_group
+            .group
+            .set_configuration(bob.provider.storage(), &MlsGroupJoinConfig::default())
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        bob_group.save(&bob, dir.path()).unwrap();
+
+        let mut loaded = MlsGroupManager::load(&bob, dir.path()).unwrap().unwrap();
+        let carol = MlsIdentity::generate("carol").unwrap();
+        let (_, carol_welcome, _) = loaded
+            .add_member(&bob, &carol.generate_key_package().unwrap())
+            .unwrap();
+        MlsGroupManager::join_from_welcome(&carol, &carol_welcome, None)
+            .expect("the reloaded group's Welcome must carry the ratchet tree");
     }
 
     #[test]
