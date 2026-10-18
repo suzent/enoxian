@@ -89,7 +89,8 @@ refuses to publish a version whose section is missing or empty.
   "Directory not empty" while the Circle was still shutting down, or left
   state behind; it now waits for the Circle to stop. A device whose welcome
   it can no longer open, because an earlier attempt or a restart lost its
-  keys, now asks to join again with new keys instead of waiting forever.
+  keys, now asks to join again with new keys instead of waiting forever,
+  and the invite that admitted it still admits it (no other device).
 - A stopped Circle (after leaving, disabling it or switching force relay) is
   freed instead of kept in memory.
 - When the same workspace history entry arrived twice at once, which is
