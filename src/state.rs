@@ -40,6 +40,17 @@ pub struct PeerConnection {
 }
 
 /// Shared state — Clone is cheap (all fields are Arc).
+/// A control-doc observer's way to the Circle's state; empty once the Circle
+/// has stopped. See [`AppState::callback_handle`].
+#[derive(Clone)]
+pub struct CallbackHandle(Arc<RwLock<Option<AppState>>>);
+
+impl CallbackHandle {
+    pub fn get(&self) -> Option<AppState> {
+        self.0.read().ok().and_then(|slot| slot.clone())
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub circle_id: String,
@@ -129,7 +140,13 @@ pub struct AppState {
     /// Opens outbound streams on this circle's transport, for requests that
     /// start outside the connection loop — handing the admin key over on
     /// leave. Set once the transport is up; absent in tests and before start.
-    net: Arc<std::sync::OnceLock<Arc<dyn crate::network::net::NetHandle>>>,
+    net: Arc<RwLock<Option<Arc<dyn crate::network::net::NetHandle>>>>,
+    /// This state, for control-doc observers to reach. They outlive the
+    /// Circle (the doc keeps them), so they hold this slot rather than the
+    /// state itself, and it is emptied when the Circle stops. Capturing the
+    /// state directly tied the doc to the state that owns it: a stopped Circle
+    /// was never freed, and nothing could tell when its tasks had exited.
+    callback_slot: Arc<RwLock<Option<AppState>>>,
     /// Agent turns running in this Circle on this device: what each is doing,
     /// and a way to stop it. Local and in memory; no peer needs it.
     pub live_runs: crate::agent::liveness::LiveRuns,
@@ -587,7 +604,8 @@ impl AppState {
             sync_sessions: Arc::new(DashMap::new()),
             approval_errors: Arc::new(DashMap::new()),
             join_request: Arc::new(std::sync::Mutex::new(None)),
-            net: Arc::new(std::sync::OnceLock::new()),
+            net: Arc::new(RwLock::new(None)),
+            callback_slot: Arc::new(RwLock::new(None)),
             live_runs: Default::default(),
             admission_log: Arc::new(crate::agent::decisions::AdmissionLog::new()),
             join_policy,
@@ -778,12 +796,42 @@ impl AppState {
     }
 
     pub fn set_net(&self, net: Arc<dyn crate::network::net::NetHandle>) {
-        let _ = self.net.set(net);
+        if let Ok(mut slot) = self.net.write() {
+            *slot = Some(net);
+        }
     }
 
-    /// A handle for opening streams to connected peers, once the transport runs.
+    /// Drop the transport handle when the Circle stops. The handle holds this
+    /// state, so keeping it formed a cycle: a stopped Circle's state and
+    /// endpoint were never freed, and nothing could tell when its tasks had
+    /// all exited.
+    pub fn clear_net(&self) {
+        if let Ok(mut slot) = self.net.write() {
+            *slot = None;
+        }
+    }
+
+    /// A handle for a control-doc observer to reach this state while the
+    /// Circle runs. See `callback_slot`.
+    pub fn callback_handle(&self) -> CallbackHandle {
+        if let Ok(mut slot) = self.callback_slot.write() {
+            if slot.is_none() {
+                *slot = Some(self.clone());
+            }
+        }
+        CallbackHandle(self.callback_slot.clone())
+    }
+
+    /// The Circle is stopping: observers can no longer reach its state.
+    pub fn release_callbacks(&self) {
+        if let Ok(mut slot) = self.callback_slot.write() {
+            *slot = None;
+        }
+    }
+
+    /// A handle for opening streams to connected peers, while the transport runs.
     pub fn net(&self) -> Option<Arc<dyn crate::network::net::NetHandle>> {
-        self.net.get().cloned()
+        self.net.read().ok().and_then(|slot| slot.clone())
     }
 
     /// Whether this device holds at least one live connection to `peer_id`.

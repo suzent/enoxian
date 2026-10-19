@@ -507,6 +507,7 @@ impl IrohNet {
             });
         }
         mark_peer_offline_on_shutdown(&self.0.state);
+        self.0.state.clear_net();
         self.0.endpoint.close().await;
     }
 

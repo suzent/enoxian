@@ -412,7 +412,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         }
 
         // Case 2: arrives later via P2P sync. Observe and evict immediately.
-        let state_for_self_evict = state.clone();
+        let state_for_self_evict = state.callback_handle();
         let self_evict_sub = pending_map.observe(
             move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
                 let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
@@ -425,7 +425,9 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                     }
                     if let yrs::types::EntryChange::Inserted(_) = change {
                         // Our own peer ID was just inserted by a remote — remove it.
-                        let s = state_for_self_evict.clone();
+                        let Some(s) = state_for_self_evict.get() else {
+                            return;
+                        };
                         let peer_str = self_peer_str.clone();
                         tokio::spawn(async move {
                             remove_pending_entry(&s, peer_str.as_str(), "self-evict").await;
@@ -446,7 +448,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
         if !is_local_admin {
             let member_map = state.control.get_or_insert_map(MEMBER_LIST_KEY);
             let self_peer_str = peer_id.to_string();
-            let state_for_approval = state.clone();
+            let state_for_approval = state.callback_handle();
             let approval_sub = member_map.observe(
                 move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
                     let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
@@ -460,7 +462,9 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         if approval_clears_pending(change) {
                             // The admin wrote our member entry via P2P sync — drop
                             // our own pending entry.
-                            let s = state_for_approval.clone();
+                            let Some(s) = state_for_approval.get() else {
+                                return;
+                            };
                             let peer_str = self_peer_str.clone();
                             tokio::spawn(async move {
                                 remove_pending_entry(&s, peer_str.as_str(), "approved via P2P")
@@ -538,7 +542,7 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
             let welcomes_map = state.control.get_or_insert_map(MLS_WELCOMES_KEY);
             let our_peer_id_str = peer_id.to_string();
             let mls_w = mls.clone();
-            let state_w = state.clone();
+            let state_w = state.callback_handle();
             let welcome_sub = welcomes_map.observe(
                 move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
                     use yrs::types::EntryChange;
@@ -548,8 +552,10 @@ pub async fn spawn_circle(config: CircleConfig, daemon: DaemonState) -> Result<(
                         }
                         if let EntryChange::Inserted(yrs::Out::Any(yrs::Any::String(s))) = change {
                             let welcome_hex = s.to_string();
+                            let Some(state) = state_w.get() else {
+                                return;
+                            };
                             let mls = mls_w.clone();
-                            let state = state_w.clone();
                             tokio::spawn(async move {
                                 consume_welcome(welcome_hex, mls, state).await;
                             });
@@ -764,6 +770,9 @@ fn spawn_control_persist(
                     if let Err(e) = save_control(&state, &circle_dir).await {
                         warn!("[control] {} shutdown save failed: {e}", state.circle_name);
                     }
+                    // Observers outlive the Circle; cut them off from its
+                    // state so a stopped Circle can be freed.
+                    state.release_callbacks();
                     break;
                 }
                 _ = interval.tick() => {
@@ -878,6 +887,14 @@ pub(crate) fn distrusted_identity<T: yrs::ReadTxn>(
     Some(user)
 }
 
+/// What is stored against a redeemed invite's nonce. Entries written before
+/// this existed hold a bare timestamp and name no device, so they admit no one.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct InviteRedemption {
+    peer: String,
+    at: chrono::DateTime<chrono::Utc>,
+}
+
 fn grant_admits<T: yrs::ReadTxn>(
     txn: &T,
     circle_id: &str,
@@ -909,13 +926,22 @@ fn grant_admits<T: yrs::ReadTxn>(
         .map_err(|e| format!("invite grant names no usable issuer: {e}"))?;
 
     // An invite admits one device. Without this, an invite that legitimately
-    // admitted someone once would keep working.
-    let already_used = txn
+    // admitted someone once would keep working. The device it admitted may
+    // present it again — after leaving and entering again, or when its first
+    // Welcome could not be opened — which admits no one new.
+    let redeemed_by = txn
         .get_map(INVITE_NONCES_KEY)
         .and_then(|used| used.get(txn, grant.nonce.as_str()))
-        .is_some();
-    if already_used {
-        return Err("invite already redeemed".into());
+        .map(|value| match value {
+            Out::Any(Any::String(s)) => serde_json::from_str::<InviteRedemption>(&s)
+                .ok()
+                .map(|r| r.peer),
+            _ => None,
+        });
+    match redeemed_by {
+        None => {}
+        Some(Some(peer)) if peer == peer_id => {}
+        Some(_) => return Err("invite already redeemed".into()),
     }
 
     // The issuer must still be a member in good standing. This is the check the
@@ -1184,11 +1210,12 @@ async fn auto_approve(peer_id_str: String, state: AppState, mls: crate::mls::Sha
                 // invite cannot admit twice even under a concurrent redemption.
                 if let Some(grant) = presented.as_ref() {
                     let used = txn.get_or_insert_map(INVITE_NONCES_KEY);
-                    used.insert(
-                        &mut txn,
-                        grant.nonce.as_str(),
-                        chrono::Utc::now().to_rfc3339().as_str(),
-                    );
+                    let redemption = serde_json::to_string(&InviteRedemption {
+                        peer: peer_id_str.clone(),
+                        at: chrono::Utc::now(),
+                    })
+                    .unwrap_or_default();
+                    used.insert(&mut txn, grant.nonce.as_str(), redemption.as_str());
                 }
                 drop(txn);
 
@@ -1239,6 +1266,9 @@ pub(crate) async fn consume_welcome(welcome_hex: String, mls: SharedMlsState, st
     if current.is_some() && mls_locked.last_welcome.as_deref() == Some(welcome_hex.as_str()) {
         return;
     }
+    if current.is_none() && mls_locked.rotated_for.as_deref() == Some(welcome_hex.as_str()) {
+        return;
+    }
     mls_locked.last_welcome = Some(welcome_hex.clone());
     let identity_ptr = &mls_locked.identity as *const MlsIdentity;
     let identity = unsafe { &*identity_ptr };
@@ -1265,6 +1295,20 @@ pub(crate) async fn consume_welcome(welcome_hex: String, mls: SharedMlsState, st
             } else {
                 warn!("[mls] join_from_welcome failed: {e}");
             }
+            if current.is_none() && format!("{e:#}").contains("NoMatchingKeyPackage") {
+                // The admin added a leaf with keys this device no longer holds:
+                // the KeyPackage was spent by an earlier failed attempt, or lost
+                // when the daemon restarted while the request was pending. To
+                // the admin that leaf now looks current, so it never sends
+                // another Welcome. New keys make the leaf stale, and the admin
+                // readmits this device with them.
+                if let Err(e) = replace_mls_identity(&mut mls_locked, &state).await {
+                    warn!("[mls] could not replace the MLS identity: {e:#}");
+                } else {
+                    mls_locked.rotated_for = Some(welcome_hex);
+                    info!("[mls] a Welcome for keys this device no longer holds; asked to join again with new keys");
+                }
+            }
             return;
         }
     };
@@ -1277,6 +1321,58 @@ pub(crate) async fn consume_welcome(welcome_hex: String, mls: SharedMlsState, st
     } else {
         info!("[mls] joined group via Welcome (membership tracked; transport PSK stays stable)");
     }
+}
+
+/// Give this device a new MLS identity and publish a KeyPackage and binding
+/// for it, with its join request, so the admin can admit it again. Only for a
+/// device without a group. The request goes back in too: once the broken
+/// admission's member entry arrived, the approval observer removed it, and
+/// the admin only acts on peers that are pending.
+async fn replace_mls_identity(
+    mls: &mut crate::mls::MlsState,
+    state: &AppState,
+) -> anyhow::Result<()> {
+    use yrs::Map;
+    let config = config::load(&state.circle_id)?;
+    let keypair = crate::crypto::keypair_from_hex(&config.keypair_proto_hex)?;
+    let identity = MlsIdentity::generate(&state.peer_id)?;
+    identity.save(&state.circle_dir)?;
+    let kp_hex = hex::encode(identity.generate_key_package()?);
+    let binding = crate::identity::sign_key_package_binding(
+        &keypair,
+        &state.circle_id,
+        identity.signer.public(),
+    )?;
+    mls.identity = identity;
+    let request = state.join_request.lock().unwrap().clone();
+    for attempt in 0..PENDING_REMOVE_RETRIES {
+        if let Ok(mut txn) = yrs::Transact::try_transact_mut(&*state.control) {
+            use yrs::WriteTxn;
+            txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY).insert(
+                &mut txn,
+                state.peer_id.as_str(),
+                kp_hex.as_str(),
+            );
+            txn.get_or_insert_map(MLS_KEY_PACKAGE_BINDINGS_KEY).insert(
+                &mut txn,
+                state.peer_id.as_str(),
+                binding.as_str(),
+            );
+            if let Some(request) = request.as_deref() {
+                txn.get_or_insert_map(MLS_PENDING_KEY).insert(
+                    &mut txn,
+                    state.peer_id.as_str(),
+                    request,
+                );
+            }
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(
+            50 * (u64::from(attempt) + 1),
+        ))
+        .await;
+    }
+    anyhow::bail!("circle state busy; new KeyPackage not published")
 }
 
 /// Where this device notes the `gen` of the readmission it was last admitted
@@ -1866,7 +1962,7 @@ mod tests {
         (state, dir)
     }
 
-    fn seed_valid_request(state: &AppState, peer: &str) {
+    fn seed_valid_request(state: &AppState, peer: &str) -> crate::control::JoinGrant {
         let issuer = libp2p_identity::Keypair::generate_ed25519();
         let expires_at = chrono::Utc::now() + chrono::Duration::hours(1);
         let grant = crate::invite::sign_grant(
@@ -1875,6 +1971,22 @@ mod tests {
             expires_at,
         )
         .unwrap();
+        let grant = crate::control::JoinGrant {
+            inviter_pubkey_hex: grant.inviter_pubkey_hex,
+            nonce: grant.nonce,
+            sig: grant.sig,
+            expires_at,
+        };
+        {
+            let mut txn = state.control.transact_mut();
+            let members = txn.get_or_insert_map(MEMBER_LIST_KEY);
+            members.insert(&mut txn, issuer.public().to_peer_id().to_string(), "{}");
+        }
+        seed_request_with(state, peer, &grant);
+        grant
+    }
+
+    fn seed_request_with(state: &AppState, peer: &str, grant: &crate::control::JoinGrant) {
         let entry = PendingEntry {
             peer_id: peer.into(),
             owner: "owner".into(),
@@ -1883,16 +1995,9 @@ mod tests {
             agents: vec![],
             owner_sig: String::new(),
             requested_at: chrono::Utc::now(),
-            join_grant: Some(crate::control::JoinGrant {
-                inviter_pubkey_hex: grant.inviter_pubkey_hex,
-                nonce: grant.nonce,
-                sig: grant.sig,
-                expires_at,
-            }),
+            join_grant: Some(grant.clone()),
         };
         let mut txn = state.control.transact_mut();
-        let members = txn.get_or_insert_map(MEMBER_LIST_KEY);
-        members.insert(&mut txn, issuer.public().to_peer_id().to_string(), "{}");
         let pending = txn.get_or_insert_map(MLS_PENDING_KEY);
         pending.insert(&mut txn, peer, serde_json::to_string(&entry).unwrap());
     }
@@ -1977,6 +2082,80 @@ mod tests {
         retry_pending_approvals(&state).await;
         assert!(!is_pending(&state, &peer));
         assert!(state.mls.lock().await.current_epoch() > admitted);
+    }
+
+    /// The device an invite admitted can present it again with new keys —
+    /// after leaving and entering again, or when its Welcome could not be
+    /// opened — and is admitted; any other device presenting it is refused.
+    #[tokio::test]
+    async fn a_redeemed_invite_readmits_its_own_device_only() {
+        let (state, _dir) = automatic_state().await;
+        let peer_key = libp2p_identity::Keypair::generate_ed25519();
+        let peer = peer_key.public().to_peer_id().to_string();
+        let publish = |who: &str,
+                       key: &libp2p_identity::Keypair,
+                       identity: &crate::mls::MlsIdentity,
+                       kp: Vec<u8>| {
+            let binding = crate::identity::sign_key_package_binding(
+                key,
+                &state.circle_id,
+                identity.signer.public(),
+            )
+            .unwrap();
+            let mut txn = state.control.transact_mut();
+            let packages = txn.get_or_insert_map(MLS_KEY_PACKAGES_KEY);
+            packages.insert(&mut txn, who, hex::encode(kp));
+            let bindings = txn.get_or_insert_map(MLS_KEY_PACKAGE_BINDINGS_KEY);
+            bindings.insert(&mut txn, who, binding);
+        };
+
+        let first = crate::mls::MlsIdentity::generate(&peer).unwrap();
+        publish(
+            &peer,
+            &peer_key,
+            &first,
+            first.generate_key_package_from(7200).unwrap(),
+        );
+        let grant = seed_valid_request(&state, &peer);
+        retry_pending_approvals(&state).await;
+        assert!(!is_pending(&state, &peer));
+        let admitted = state.mls.lock().await.current_epoch();
+
+        // Back with new keys and the same invite.
+        let again = crate::mls::MlsIdentity::generate(&peer).unwrap();
+        publish(
+            &peer,
+            &peer_key,
+            &again,
+            again.generate_key_package().unwrap(),
+        );
+        seed_request_with(&state, &peer, &grant);
+        retry_pending_approvals(&state).await;
+        assert!(
+            !is_pending(&state, &peer),
+            "its own invite readmits it: {:?}",
+            state.approval_errors.get(&peer).map(|e| e.clone())
+        );
+        assert!(state.mls.lock().await.current_epoch() > admitted);
+
+        // Someone else with that invite.
+        let other_key = libp2p_identity::Keypair::generate_ed25519();
+        let other = other_key.public().to_peer_id().to_string();
+        let theirs = crate::mls::MlsIdentity::generate(&other).unwrap();
+        publish(
+            &other,
+            &other_key,
+            &theirs,
+            theirs.generate_key_package().unwrap(),
+        );
+        seed_request_with(&state, &other, &grant);
+        retry_pending_approvals(&state).await;
+        assert!(is_pending(&state, &other));
+        assert!(state
+            .approval_errors
+            .get(&other)
+            .unwrap()
+            .contains("already redeemed"));
     }
 
     #[tokio::test]

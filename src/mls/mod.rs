@@ -23,6 +23,10 @@ pub struct MlsState {
     /// The last Welcome this device tried, so one already handled is not
     /// joined again every time a peer resends it. In memory only.
     pub(crate) last_welcome: Option<String>,
+    /// The Welcome this device last replaced its MLS identity over, because
+    /// none of its KeyPackages could open it. Peers keep resending that
+    /// Welcome; it must not cost another identity each time. In memory only.
+    pub(crate) rotated_for: Option<String>,
 }
 
 pub type SharedMlsState = Arc<Mutex<MlsState>>;
@@ -68,6 +72,7 @@ pub fn new_mls_state(identity: MlsIdentity, group: Option<MlsGroupManager>) -> S
         group,
         epoch_secrets: BTreeMap::new(),
         last_welcome: None,
+        rotated_for: None,
     };
     let _ = state.refresh_content_secret();
     Arc::new(Mutex::new(state))
@@ -251,6 +256,7 @@ mod tests {
             group: None,
             epoch_secrets: BTreeMap::new(),
             last_welcome: None,
+            rotated_for: None,
         }
     }
 
@@ -294,6 +300,7 @@ mod tests {
             group: Some(group),
             epoch_secrets: BTreeMap::new(),
             last_welcome: None,
+            rotated_for: None,
         }
     }
 

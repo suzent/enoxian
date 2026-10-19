@@ -365,23 +365,70 @@ pub async fn leave_circle(
         }
     };
 
-    daemon.stop_circle(&circle_id);
-
-    if let Ok(dir) = config::circle_dir(&circle_id) {
-        if dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&dir) {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({
-                        "error": format!("failed to remove local Circle configuration: {e}")
-                    })),
-                )
-                    .into_response();
-            }
-        }
+    if let Err(e) = remove_circle_locally(&daemon, &circle_id).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": format!("failed to remove local Circle configuration: {e}")
+            })),
+        )
+            .into_response();
     }
 
     Json(json!({ "status": "left", "admin_handed_to": successor })).into_response()
+}
+
+/// How long leaving waits for a stopped Circle's tasks to exit.
+const LEAVE_QUIESCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Stop a Circle and delete its local state, once nothing is writing to it.
+///
+/// Stopping only cancels the Circle's tasks; several write into its directory
+/// on the way out (the final control save, MLS and peer state). Deleting the
+/// directory under them failed with "Directory not empty" and left most of it
+/// behind — `config.toml` included, so the daemon's sweep started the Circle
+/// again — and a write landing just after a successful delete brought back
+/// stale membership state for the next time the device entered.
+async fn remove_circle_locally(daemon: &DaemonState, circle_id: &str) -> anyhow::Result<()> {
+    let dir = config::circle_dir(circle_id)?;
+    // Gone first, so the sweep that starts newly added Circles cannot start
+    // this one again while it shuts down.
+    match std::fs::remove_file(dir.join("config.toml")) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    let state = daemon.get(circle_id);
+    daemon.stop_circle(circle_id);
+    if let Some(state) = state {
+        // Every task of the Circle holds a clone of its state. When only this
+        // one is left, they have all exited and nothing will write again.
+        let deadline = tokio::time::Instant::now() + LEAVE_QUIESCE;
+        while std::sync::Arc::strong_count(&state.control) > 1
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        if std::sync::Arc::strong_count(&state.control) > 1 {
+            tracing::warn!(
+                "[leave] {} still had tasks running after {}s; removing its state anyway",
+                state.circle_name,
+                LEAVE_QUIESCE.as_secs()
+            );
+        }
+    }
+    let mut tries = 0;
+    loop {
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if tries >= 20 => return Err(e.into()),
+            Err(_) => {
+                tries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
 }
 
 /// Leaving deletes `admin.key`, and nothing can make another. An admin that
