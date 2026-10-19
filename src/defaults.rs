@@ -16,7 +16,10 @@ pub const DEFAULT_RENDEZVOUS: Option<&str> = Some("relay.enoxian.com");
 /// than this tell their user to upgrade instead of failing to connect without
 /// saying why — the point being a transport change that old and new clients
 /// cannot speak across. `None` while every client release is still served.
-pub const MIN_CLIENT_VERSION: Option<&str> = None;
+///
+/// 0.12.0 replaced libp2p with Iroh: a 0.11 client can reach neither a 0.12
+/// device nor this server's relay.
+pub const MIN_CLIENT_VERSION: Option<&str> = Some("0.12.0");
 
 /// Iroh relays run for enoxian. A Circle whose `iroh_relays` is empty uses
 /// these together with Iroh's public relays (four regions), so a device homes
