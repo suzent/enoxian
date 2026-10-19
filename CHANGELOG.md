@@ -52,19 +52,24 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
-- **Every Circle now connects over Iroh, and libp2p is gone from the
-  client.** Devices on 0.11 or earlier can no longer reach devices on this
-  version, so every device in a Circle has to upgrade. Identities, members,
-  Circle keys and invites carry over; nothing needs to be re-created, and
-  invites minted by older versions still work. Connections are direct where
-  the network allows it and go through enoxian's or Iroh's public relays
-  otherwise.
+- **Every Circle now connects over Iroh, and libp2p is gone from client and
+  server. Upgrade every device in a Circle together.** Devices on 0.11 or
+  earlier can no longer reach devices on this version, or the relay at
+  relay.enoxian.com once it runs this version; they show an upgrade notice.
+  Identities, members, Circle keys and invites carry over; nothing needs to
+  be re-created, and invites minted by older versions still work.
+  Connections are direct where the network allows it and go through
+  enoxian's or Iroh's public relays otherwise. To go back, reinstall 0.11.0
+  on every device of the Circle; configurations are not rewritten, but with
+  relay.enoxian.com on this version those devices can only connect directly.
 - `enox invite --relay` now takes an Iroh relay URL to put in the invite.
 - `enox bootstrap serve` no longer runs the libp2p rendezvous and circuit
   relay, so it stops listening on UDP `--port` and TCP `--relay-port`. It
   serves HTTP on `--port` and, with `--iroh-relay`, the Iroh relay. Its peer id
   is unchanged, and `--relay-port` is still accepted (and ignored) so existing
-  service files keep starting.
+  service files keep starting. A self-hosted server needs `--iroh-relay` and
+  ports 80, 443 and 7842/udp to relay for Circles; see the rendezvous setup
+  guide.
 - Settings → Connectivity lists the relays a Circle falls back on, and invite
   links are tagged DIRECT and RELAY only. In the API, `/status` reports
   `endpoint_id`, `relays`, `home_relay` and `direct_addrs` under `p2p`
