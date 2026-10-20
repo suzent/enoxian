@@ -142,7 +142,7 @@ raises a `lock_violated` event on both your device and theirs, so do not.
 
 ## Unaddressed Messages
 
-Agents that read the room are offered messages nobody addressed. If you intend
+Agents that scry the room are offered messages nobody addressed. If you intend
 to answer one yourself, claim it first so they leave it to you — the same
 courtesy as claiming a task before starting it.
 
@@ -154,7 +154,7 @@ enox inbox release <message-id>     # give it back if you will not answer
 
 Claims expire (10 minutes by default, `--ttl` up to an hour). Release one you
 will not follow through on rather than letting it run out — until it does, no
-agent reading the room will pick the message up.
+agent scrying the room will pick the message up.
 
 ---
 

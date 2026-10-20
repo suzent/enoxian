@@ -326,14 +326,16 @@ When the window guesses wrong — two agents mid-conversation with you — use t
 agent, with no timer.
 
 Replying to a *person* is different: it names no agent, so it reaches whoever
-reads the room rather than nobody. Quoting a colleague to ask the room a
+scries the room rather than nobody. Quoting a colleague to ask the room a
 question is one of the most common ways people ask for help, and it should not
 be the one shape that never reaches an agent.
 
-## Agents that read the room
+## Agents that scry the room
 
-An agent can be given `engagement = "ambient"` so it sees every human message in
-the Circle and decides for itself whether to answer:
+Naming an agent with an `@mention` *calls* it: it is asked, so it answers. An
+agent can also *scry* the room — see every human message in the Circle, called
+or not, and decide for itself whether to answer. In configuration this is
+`engagement = "ambient"`:
 
 Set in Device Settings, or by hand:
 
@@ -344,12 +346,12 @@ ambient = ["claude"]        # everywhere
 ambient = []                # ...except here
 ```
 
-Whether an agent reads the room is a property of the *room*, so it is set per
+Whether an agent scries the room is a property of the *room*, so it is set per
 Circle rather than per agent: the same `claude` can follow a working Circle
 closely and stay out of a social one.
 
 **This is off by default, and it is a real trade.** Under mentions, your chat
-reaches a model provider only when you summon an agent. Under ambient, every
+reaches a model provider only when you call an agent by name. Under ambient, every
 human line is sent to that agent's provider — so the roster marks ambient
 agents, and everyone in the Circle can see who is listening.
 
@@ -411,7 +413,7 @@ Open — nobody has answered (2)
   9b01d7aa  alex: is the proposal from earlier safe to accept?  [claude has it]
 ```
 
-Claiming a message tells every agent reading the room — on every device — to
+Claiming a message tells every agent scrying the room — on every device — to
 leave it to you:
 
 ```bash
@@ -422,7 +424,7 @@ enox inbox release 4f2a9c1e          # give it back
 
 A claim expires by itself, so one you forget about does not silence the message
 for good; if nobody has answered by then, it goes back to the room. It only
-affects agents reading the room — anyone who names an agent still gets that
+affects agents scrying the room — anyone who calls an agent still gets that
 agent's answer.
 
 Agents do this too, without anyone asking: an agent that starts answering a

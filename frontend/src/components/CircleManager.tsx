@@ -97,7 +97,7 @@ export default function CircleManager({ onRitual }: Props) {
                 ? 'bg-obsidian text-alabaster hover:text-slate' 
                 : 'bg-alabaster text-slate hover:bg-slate/10'
             }`}
-            title={activeCircle.disabled ? 'Summon the circle into manifest reality.' : 'Return the circle to the void.'}
+            title={activeCircle.disabled ? 'Draw the circle into being.' : 'Return the circle to the void.'}
           >
             {/* The Void Monolith Glyph */}
             <span className="font-mono text-[12px] font-bold">

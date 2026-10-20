@@ -322,7 +322,7 @@ agent's tokens is the device that decides what they are spent on. A remote peer
 cannot opt another device's agent into anything.
 
 **Mentions (default).** Chat reaches a provider only when someone deliberately
-summons an agent, plus the recent-context window that mention carries.
+calls an agent by name, plus the recent-context window that mention carries.
 
 **Follow-up routing.** The same, for a few minutes after a reply, without the
 mention. It changes when an agent is woken, not what it can see.

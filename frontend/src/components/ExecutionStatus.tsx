@@ -51,11 +51,11 @@ function readinessWarnings(readiness?: Readiness): string[] {
   if (readiness.reaction !== 'push')
     warnings.push('This device is set to pull, so it never launches an agent on its own.')
   if (readiness.ambient.length === 0 && readiness.engagement_window_secs <= 0)
-    warnings.push('No agent reads this room, and follow-ups are off — only an @mention reaches an agent here.')
+    warnings.push('No agent scries this room, and follow-ups are off — only an @mention reaches an agent here.')
   else if (readiness.ambient.length === 0)
-    warnings.push('No agent reads this room. A message that names nobody only routes as a follow-up.')
+    warnings.push('No agent scries this room. A message that names nobody only routes as a follow-up.')
   if (readiness.ambient_unconfigured.length > 0)
-    warnings.push(`Listed as reading the room but not configured on this device, so ignored: ${readiness.ambient_unconfigured.join(', ')}.`)
+    warnings.push(`Listed as scrying the room but not configured on this device, so ignored: ${readiness.ambient_unconfigured.join(', ')}.`)
   return warnings
 }
 
@@ -147,7 +147,7 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
           <span className="agent-activity__status">{label}</span>
         </div>
         <div className="agent-activity__device" title={host?.owner ? `${host.owner} · ${device}` : device}>{device}{local && host?.device_label ? ' · this device' : ''}</div>
-        <div className="agent-activity__meta">{ambient ? 'Read the room' : 'Addressed request'}
+        <div className="agent-activity__meta">{ambient ? 'Scrying the room' : 'Addressed request'}
           {run.updated_at != null && <time dateTime={new Date(run.updated_at * 1000).toISOString()} title="Last status update from this device">{new Date(run.updated_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>}
 
         </div>

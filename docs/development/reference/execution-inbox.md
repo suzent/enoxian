@@ -193,7 +193,7 @@ fail-closed condition for the affected Circle, not an automatic deletion or rese
 
 ### Listening selection and activity
 
-Read-the-room selection rotates least-recently-offered agents rather than using
+Selection among agents that scry the room rotates least-recently-offered agents rather than using
 fixed configuration order. `ambient_responders` (1–32, default 1) sets the number
 of listeners considered per human message, bounded by eligible agents.
 `ambient_rotate_count` (default false) cycles that count from one up to the limit.

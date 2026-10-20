@@ -311,7 +311,7 @@ export interface Readiness {
   engagement_window_secs: number
   ambient_backlog_tail: number
   ambient_max_attempts: number
-  /** Listed as reading the room but not configured as an agent here, so inert. */
+  /** Listed as scrying the room but not configured as an agent here, so inert. */
   ambient_unconfigured: string[]
 }
 
