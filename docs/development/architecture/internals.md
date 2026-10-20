@@ -121,7 +121,7 @@ whose user dismissed it.
 delegation cascade. The `spent` field on the wire can only shrink a budget,
 never extend one.
 
-**Unaddressed turns are framed as such.** An agent reading the room is told the
+**Unaddressed turns are framed as such.** An agent scrying the room is told the
 message was overheard, that the room is a group conversation mostly not aimed at
 it, and which other agents were shown the same message. The prompt used to open
 by asserting an `@mention` and then deny it in a trailing paragraph, which asks a

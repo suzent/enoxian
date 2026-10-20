@@ -888,7 +888,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
     return `${actor} is working…`
   }
 
-  // Several agents reading the room start, pass and finish together. One
+  // Several agents scrying the room start, pass and finish together. One
   // sentence each truncates into noise, so the strip says each thing once —
   // who is working, who is typing, who passed — and names the agents in it.
   // The full per-actor sentences stay in the tooltip.

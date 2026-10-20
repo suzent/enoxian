@@ -86,8 +86,8 @@ export default function EngagementSettings({
           <span>{effective.reaction === 'push' ? 'on' : 'off'}</span>
         </label>,
         effective.reaction === 'push'
-          ? 'Mentions and enabled read-the-room agents can start runs here.'
-          : 'Automatic replies are paused on this device, including read-the-room.')}
+          ? 'Called agents, and agents enabled to scry the room, can start runs here.'
+          : 'Automatic replies are paused on this device, including agents that scry the room.')}
 
       {row('engagement_window_secs', 'Unthreaded follow-ups',
         <span className="engagement-number">
@@ -117,7 +117,7 @@ export default function EngagementSettings({
         </span>,
         `Agents may hand work to each other; a chain stops after ${effective.max_relay_turns} turns.`)}
 
-      {row('ambient', 'Agents that read the room',
+      {row('ambient', 'Agents that scry the room',
         <div className="engagement-agents">
           {agentNames.length === 0 && <span className="engagement-row__hint">No agents configured.</span>}
           {agentNames.map(name => {
@@ -130,7 +130,7 @@ export default function EngagementSettings({
                   disabled={busy}
                   onChange={() => {
                     if (!on && !window.confirm(
-                      `Let @${name} read the room?\n\n` +
+                      `Let @${name} scry the room?\n\n` +
                       'New, unaddressed human messages may be sent to this agent’s model provider. ' +
                       'Selected listeners can run, which uses their model providers. ' +
                       'The agent may reply or choose to stay quiet. Everyone can see that it is listening.',

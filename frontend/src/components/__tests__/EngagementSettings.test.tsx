@@ -101,7 +101,7 @@ describe('circle scope', () => {
   })
 })
 
-describe('reading the room', () => {
+describe('scrying the room', () => {
   it('lists one switch per configured agent, off by default', () => {
     render(
       <EngagementSettings agentNames={['claude', 'codex']} global={GLOBAL} circle={null}

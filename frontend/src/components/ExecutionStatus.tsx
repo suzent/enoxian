@@ -55,7 +55,7 @@ function readinessWarnings(readiness?: Readiness): string[] {
   else if (readiness.ambient.length === 0)
     warnings.push('No agent reads this room. A message that names nobody only routes as a follow-up.')
   if (readiness.ambient_unconfigured.length > 0)
-    warnings.push(`Listed as reading the room but not configured on this device, so ignored: ${readiness.ambient_unconfigured.join(', ')}.`)
+    warnings.push(`Listed as scrying the room but not configured on this device, so ignored: ${readiness.ambient_unconfigured.join(', ')}.`)
   return warnings
 }
 
@@ -147,7 +147,7 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
           <span className="agent-activity__status">{label}</span>
         </div>
         <div className="agent-activity__device" title={host?.owner ? `${host.owner} · ${device}` : device}>{device}{local && host?.device_label ? ' · this device' : ''}</div>
-        <div className="agent-activity__meta">{ambient ? 'Read the room' : 'Addressed request'}
+        <div className="agent-activity__meta">{ambient ? 'Scrying the room' : 'Called by name'}
           {run.updated_at != null && <time dateTime={new Date(run.updated_at * 1000).toISOString()} title="Last status update from this device">{new Date(run.updated_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>}
 
         </div>

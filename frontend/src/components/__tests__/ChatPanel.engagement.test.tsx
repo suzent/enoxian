@@ -151,7 +151,7 @@ describe('explicit reply-to', () => {
 })
 
 describe('the activity strip', () => {
-  it('says each kind of activity once when several agents read the room', async () => {
+  it('says each kind of activity once when several agents scry the room', async () => {
     getEngagement.mockResolvedValue({ agent: null, window_secs: 180 })
     const soon = Math.floor(Date.now() / 1000) + 60
     const activity = (actor: string, kind: string, detail?: string) => ({

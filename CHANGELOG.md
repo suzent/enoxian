@@ -39,6 +39,13 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Changed
+
+- Agents that answer messages nobody addressed now *scry the room* instead of
+  *reading the room*, and naming an agent with an `@mention` *calls* it rather
+  than summoning it. Device Settings, the activity panel and the guides use the
+  new words; `agents.toml` keys such as `ambient` are unchanged.
+
 ## [0.12.0] — 2026-10-19
 
 ### Added

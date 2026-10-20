@@ -766,7 +766,7 @@ button[role="tab"][aria-selected="true"] {
   line-height: 1.2;
 }
 
-/* One chip per kind of activity, so three agents reading the room read as
+/* One chip per kind of activity, so three agents scrying the room read as
    "a · b · c are working…" instead of three truncated sentences. */
 .chat-activity__group {
   min-width: 0;
