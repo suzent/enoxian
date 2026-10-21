@@ -637,7 +637,7 @@ command = ["claude-agent-acp"]
 "#;
         let cfg = AgentConfig::from_toml(text).unwrap();
         let global = cfg.resolved("");
-        assert!(global.ambient.is_empty(), "reading the room stays opt-in");
+        assert!(global.ambient.is_empty(), "scrying the room stays opt-in");
         assert_eq!(
             global.max_relay_turns,
             crate::agent::relay::DEFAULT_MAX_RELAY_TURNS
