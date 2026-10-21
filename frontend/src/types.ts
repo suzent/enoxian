@@ -326,6 +326,27 @@ export interface RunActivity {
   stopping: boolean
 }
 
+/** What a turn on this device used, as its agent reported it over ACP
+ *  (`usage_update`, and the prompt response's `usage`). Never estimated;
+ *  absent when the agent said nothing. A cost is the agent's figure, not a
+ *  bill: on a subscription it may be the API-price equivalent. */
+export interface RunUsage {
+  context_used: number
+  context_size: number
+  /** What the turn's prompts used, when the agent reports it. */
+  tokens?: { input: number; output: number; cached_read: number; cached_write: number; total: number }
+  /** What the turn cost, when the agent reports it. */
+  cost?: { amount: number; currency: string }
+}
+
+/** One of this device's runs from the last two days, for the daily total. */
+export interface RunSpend {
+  run_id: string
+  ambient: boolean
+  updated_at: number
+  usage: RunUsage
+}
+
 export interface ExecutionRun {
   admitted_at?: number
   updated_at?: number

@@ -1801,6 +1801,21 @@ fn mark_seen(state: &AppState, agent_id: &str, message_id: &str, delivered: &[St
     }
 }
 
+/// Record on the execution inbox what a running attempt used.
+pub(crate) fn record_usage(state: &AppState, run_id: &str, usage: super::usage::TurnUsage) {
+    let inbox = state
+        .execution_inbox
+        .read()
+        .unwrap()
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade);
+    if let Some(inbox) = inbox {
+        if let Err(error) = inbox.record_usage(run_id, usage) {
+            tracing::debug!("[agent] failed to record usage for {run_id}: {error}");
+        }
+    }
+}
+
 fn publish_agent_activity(
     state: &AppState,
     agent_id: &str,

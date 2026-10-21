@@ -39,6 +39,22 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- The activity panel shows what each agent turn on this device cost, how many
+  tokens it used and how full its context was, plus a line totalling today's
+  spend for agents that scry the room and for addressed requests. The figures
+  are whatever the agent reports over ACP; enoxian estimates nothing, and a
+  turn whose agent reports no cost is counted apart rather than as free. A
+  reported cost is the agent's figure, not a bill: on a subscription it may be
+  the API-price equivalent. Spend is shown only on the device whose agent ran
+  and is never shared with the Circle.
+
+### Fixed
+
+- An agent's reply is no longer cut short when the agent reports usage in the
+  middle of its answer; only the part after the report used to be posted.
+
 ### Changed
 
 - Agents that answer messages nobody addressed now *scry the room* instead of

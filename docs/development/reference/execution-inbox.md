@@ -103,13 +103,36 @@ run summaries, newest admission first. Query parameters:
 
 The response includes `peer_id`, `activated_at`, `runs`, and `next_cursor`. Each run
 has `run_id`, `message_id`, `agent_id`, `status`, `detail`, `admitted_at`, `updated_at`,
-`relay_root`, `reply_to`, and `ambient`. It excludes prompt bodies, commands and
+`relay_root`, `reply_to`, `ambient`, and `usage` when the agent reported any (see
+below). It excludes prompt bodies, commands and
 credentials. Reading status never opens the inbox for ownership or performs crash
 recovery. This endpoint reports the receiving device's full local history.
 
 `GET /circles/<id>/api/chat/deliveries` returns up to 100 recent sanitized receipts
 from replicated control state, plus the local `peer_id`. Remote receipts are last
 known states, not a live connectivity guarantee. Unreceived requests have no receipt.
+Alongside the receipts it returns this device's own spend, never a peer's: `usage`,
+keyed by run ID, for the listed runs, and `spend`, every run of the last two days
+that reported usage (`run_id`, `ambient`, `updated_at`, `usage`), which the
+activity panel totals by day.
+
+### Usage
+
+An ACP turn's `usage` is what its agent reported: from `usage_update` session
+updates, `context_used` and `context_size` (tokens; `0` of `0` when none came) and
+`cost` (`{amount, currency}`); from the `usage` of each `session/prompt` response,
+`tokens` (`input`, `output`, `cached_read`, `cached_write`, `total`, summed over the
+turn's prompts including a hold). A reported cost is the agent's figure, not a
+bill. Agents report a running cost, and may interleave reports without one, so the
+latest report that carried a cost is used. The spec calls it cumulative for the
+session but does not say whether it survives the agent process, and the Claude
+adapter's starts again when a session is reloaded in a new process. enoxian runs
+one agent process per turn, so `cost` is the last cost reported after the prompt,
+less any reported before it while the session loaded; never a figure carried over
+from an earlier turn. A negative difference, or one across currencies, is omitted
+rather than guessed. Usage is recorded by the driver on the
+attempt that ran, whether it completed, failed or was stopped, survives restart, is cleared for a retry, and is never written
+into the replicated receipt.
 
 `POST /circles/<id>/api/chat/executions/<run-id>` accepts `{"action":"retry"}` or
 `{"action":"cancel"}`. Mutations use the owning inbox, persist before acknowledgement,

@@ -80,6 +80,10 @@ pub struct Entry {
     pub detail: Option<String>,
     pub admitted_at: i64,
     pub updated_at: i64,
+    /// What the attempt used, if its agent reported it. This device's own
+    /// account: shown in its activity panel, never published with the receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<super::usage::TurnUsage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -340,6 +344,7 @@ impl Inbox {
         entry.detail = Some(format!("explicit retry of {run_id}"));
         entry.admitted_at = now;
         entry.updated_at = now;
+        entry.usage = None;
         let mut next = current.clone();
         if entry.request.delegated() {
             let relay = entry.request.relay.as_ref().unwrap();
@@ -375,6 +380,7 @@ impl Inbox {
             detail: Some("legacy handled marker; execution outcome unknown".into()),
             admitted_at: now,
             updated_at: now,
+            usage: None,
         });
         self.persist(&next)?;
         *current = next;
@@ -409,6 +415,7 @@ impl Inbox {
             detail: None,
             admitted_at: now,
             updated_at: now,
+            usage: None,
         };
         let mut displaced = Vec::new();
         if aggregate.values().sum::<usize>() >= device_limit {
@@ -511,6 +518,23 @@ impl Inbox {
         }
         entry.detail = detail;
         entry.updated_at = chrono::Utc::now().timestamp();
+        self.persist(&next)?;
+        *current = next;
+        Ok(())
+    }
+
+    /// Record what a running attempt used. A no-op once it has ended.
+    pub fn record_usage(&self, run_id: &str, usage: super::usage::TurnUsage) -> Result<()> {
+        let mut current = self.snapshot.lock().unwrap();
+        let mut next = current.clone();
+        let Some(entry) = next
+            .entries
+            .iter_mut()
+            .find(|e| e.run_id == run_id && e.status == Status::Running)
+        else {
+            return Ok(());
+        };
+        entry.usage = Some(usage);
         self.persist(&next)?;
         *current = next;
         Ok(())
@@ -685,6 +709,45 @@ pub(crate) mod tests {
             Admission::Accepted { entry, .. } => entry,
             _ => panic!("expected admission"),
         }
+    }
+
+    fn usage(cost: f64) -> crate::agent::usage::TurnUsage {
+        crate::agent::usage::TurnUsage {
+            context_used: 1_000,
+            context_size: 200_000,
+            tokens: None,
+            cost: Some(crate::agent::usage::Cost {
+                amount: cost,
+                currency: "USD".into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn usage_belongs_to_the_attempt_that_spent_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let entry = accepted(&inbox, request("m1", "claude"));
+        // Nothing is running yet, so there is nothing to charge.
+        inbox.record_usage(&entry.run_id, usage(9.0)).unwrap();
+        assert_eq!(inbox.entries()[0].usage, None);
+
+        inbox
+            .transition(&entry.run_id, Status::Pending, Status::Running, None, 101)
+            .unwrap();
+        inbox.record_usage(&entry.run_id, usage(0.03)).unwrap();
+        inbox
+            .transition(&entry.run_id, Status::Running, Status::Failed, None, 102)
+            .unwrap();
+        // Once ended, the figure stands, and it survives a restart.
+        inbox.record_usage(&entry.run_id, usage(9.0)).unwrap();
+        drop(inbox);
+        let inbox = Inbox::open(dir.path(), 200).unwrap();
+        assert_eq!(inbox.entries()[0].usage, Some(usage(0.03)));
+
+        // A retry is a new attempt and starts with nothing spent.
+        let retry = inbox.retry(&entry.run_id, 20, 201).unwrap();
+        assert_eq!(retry.usage, None);
     }
 
     #[test]

@@ -91,6 +91,7 @@ pub async fn list(
                 "reply_to": e.request.message.reply_to,
                 "ambient": e.request.ambient,
                 "activity": state.live_runs.get(&e.run_id).map(|run| run.snapshot(now)),
+                "usage": e.usage,
             })
         })
         .collect();
@@ -193,6 +194,9 @@ pub async fn update(
 pub const RECEIPTS_KEY: &str = "execution_receipts";
 const TERMINAL_RECEIPTS_PER_DEVICE: usize = 100;
 const RECEIPT_RETENTION_SECS: i64 = 30 * 24 * 60 * 60;
+/// How far back the activity panel's spend list reaches. Two days, so "today"
+/// is covered in any time zone the browser is in.
+const SPEND_WINDOW_SECS: i64 = 2 * 24 * 60 * 60;
 
 fn recent_receipts(
     entries: Vec<crate::agent::inbox::Entry>,
@@ -313,10 +317,42 @@ pub async fn deliveries(
         .filter_map(|run| run["run_id"].as_str())
         .filter_map(|id| Some((id.to_string(), state.live_runs.get(id)?.snapshot(now))))
         .collect();
+    // What this device's own runs used, as their agents reported it. Local for
+    // the same reason: a peer has no business knowing what this machine spent.
+    // `usage` covers the runs listed above; `spend` is every run of the last
+    // two days, so a day's total is not cut short by the 100 receipts listed.
+    // The inbox keeps its terminal entries for good, so neither is its whole
+    // history.
+    let listed: std::collections::HashSet<&str> = runs
+        .iter()
+        .filter_map(|run| run["run_id"].as_str())
+        .collect();
+    let entries = state
+        .execution_inbox
+        .read()
+        .unwrap()
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade)
+        .map(|inbox| inbox.entries())
+        .unwrap_or_default();
+    let mut usage = serde_json::Map::new();
+    let mut spend = Vec::new();
+    for e in entries {
+        let Some(used) = e.usage else { continue };
+        if e.updated_at >= now - SPEND_WINDOW_SECS {
+            spend.push(json!({"run_id": e.run_id, "ambient": e.request.ambient,
+                "updated_at": e.updated_at, "usage": used}));
+        }
+        if listed.contains(e.run_id.as_str()) {
+            usage.insert(e.run_id, json!(used));
+        }
+    }
     Json(json!({
         "peer_id": state.peer_id,
         "runs": runs,
         "activity": activity,
+        "usage": usage,
+        "spend": spend,
         "readiness": readiness(&state),
         "skips": state.admission_log.recent(30),
     }))
@@ -404,6 +440,48 @@ mod tests {
             .await
             .unwrap();
         (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    /// What a run cost is this device's business: shown in its own panel,
+    /// never in the receipt every member replicates.
+    #[tokio::test]
+    async fn usage_is_reported_locally_and_never_published() {
+        let (daemon, state, inbox, _dir) = circle();
+        inbox.admit(request("m", "claude"), 20, 100).unwrap();
+        let entry = inbox.entries().remove(0);
+        inbox
+            .transition(
+                &entry.run_id,
+                Status::Pending,
+                Status::Running,
+                None,
+                chrono::Utc::now().timestamp(),
+            )
+            .unwrap();
+        let spent = crate::agent::usage::TurnUsage {
+            context_used: 41_000,
+            context_size: 200_000,
+            tokens: None,
+            cost: Some(crate::agent::usage::Cost {
+                amount: 0.03,
+                currency: "USD".into(),
+            }),
+        };
+        inbox.record_usage(&entry.run_id, spent).unwrap();
+        publish(&state, &inbox).unwrap();
+
+        let resp = deliveries(State(daemon.clone()), Path("c1".into())).await;
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page["usage"][&entry.run_id]["cost"]["amount"], 0.03);
+        assert_eq!(page["spend"][0]["run_id"], entry.run_id.as_str());
+        assert_eq!(page["spend"][0]["usage"]["cost"]["amount"], 0.03);
+        let receipt = &page["runs"][0];
+        assert_eq!(receipt["run_id"], entry.run_id.as_str());
+        assert!(receipt.get("usage").is_none(), "{receipt}");
+        assert!(!receipt.to_string().contains("41000"), "{receipt}");
     }
 
     #[tokio::test]

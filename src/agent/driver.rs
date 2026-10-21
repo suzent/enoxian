@@ -56,6 +56,8 @@ pub struct LaunchOutcome {
     /// a stopped turn, and its conversation is still kept, so the next turn
     /// picks up where this one stopped.
     pub stopped: Option<super::liveness::StopCause>,
+    /// What the turn used, if the agent reported it (ACP driver only).
+    pub usage: Option<super::usage::TurnUsage>,
 }
 
 /// Permission hook that defers every ACP permission request to a fixed policy
@@ -109,6 +111,8 @@ struct PolicyHooks {
     /// When false, streamed text is ignored (during `session/load` history
     /// replay, before the current prompt turn).
     capturing: Arc<AtomicBool>,
+    /// The agent's `usage_update` reports, split at the prompt.
+    usage: Arc<Mutex<super::usage::Meter>>,
 }
 
 impl ClientHooks for PolicyHooks {
@@ -191,6 +195,16 @@ impl ClientHooks for PolicyHooks {
         }
     }
     fn on_update(&self, update: &Value) {
+        // Usage is bookkeeping, not output: it neither ends the message being
+        // streamed (it can arrive between two chunks of the final answer) nor
+        // waits for capture, since a report replayed by `session/load` is the
+        // baseline the turn's own cost is measured from.
+        if let Some(report) = super::usage::parse(update) {
+            if let Ok(mut meter) = self.usage.lock() {
+                meter.observe(report, self.capturing.load(Ordering::Relaxed));
+            }
+            return;
+        }
         if !self.capturing.load(Ordering::Relaxed) {
             return;
         }
@@ -354,7 +368,7 @@ pub async fn launch_cancellable(
     let run_result = match req.cmd.driver {
         Driver::Argv => run_argv(req.cmd, req.task, &run_dir, actor, &mut lease, &stop)
             .await
-            .map(|detail| (detail, None, None)),
+            .map(|detail| (detail, None, None, None)),
         Driver::Acp => run_acp(
             req.cmd,
             req.initiator,
@@ -371,10 +385,10 @@ pub async fn launch_cancellable(
             live_run.clone(),
         )
         .await
-        .map(|r| (r.detail, r.reply, r.acp_session_id)),
+        .map(|r| (r.detail, r.reply, r.acp_session_id, r.usage)),
     };
 
-    if let Ok((_, _, Some(sid))) = &run_result {
+    if let Ok((_, _, Some(sid), _)) = &run_result {
         super::memory::save_session(req.circle_dir, req.agent_name, sid)?;
     }
     lease.finish()?;
@@ -384,7 +398,7 @@ pub async fn launch_cancellable(
         }
     }
     let stopped = live_run.as_ref().and_then(|run| run.stop_cause());
-    let (detail, reply, acp_session_id) = run_result?;
+    let (detail, reply, acp_session_id, usage) = run_result?;
     Ok(LaunchOutcome {
         session_id: session.session_id,
         mode,
@@ -392,6 +406,7 @@ pub async fn launch_cancellable(
         reply: if stopped.is_some() { None } else { reply },
         acp_session_id,
         stopped,
+        usage,
     })
 }
 
@@ -399,6 +414,7 @@ struct AcpRun {
     detail: String,
     reply: Option<String>,
     acp_session_id: Option<String>,
+    usage: Option<super::usage::TurnUsage>,
 }
 
 struct ProcessTree(u32);
@@ -461,6 +477,7 @@ async fn run_acp(
     // Start with capture OFF so the history replayed during session/load is not
     // mistaken for the current reply. Turned on just before we prompt.
     let capturing = Arc::new(AtomicBool::new(false));
+    let usage = Arc::new(Mutex::new(super::usage::Meter::default()));
     let hooks = PolicyHooks {
         coordination: coordination.clone(),
         workspace: workspace.canonicalize()?,
@@ -469,6 +486,7 @@ async fn run_acp(
         allow: true,
         reply: reply.clone(),
         capturing: capturing.clone(),
+        usage: usage.clone(),
     };
 
     // No time limit on the turn. An unaddressed one that holds this agent's
@@ -497,6 +515,7 @@ async fn run_acp(
                 detail: "stop_reason=cancelled (before the agent finished starting)".into(),
                 reply: None,
                 acp_session_id: None,
+                usage: None,
             });
         }
     };
@@ -519,6 +538,9 @@ async fn run_acp(
         task.to_string()
     };
     let result = acp.prompt_until(&prompt, &stop).await;
+    if let Ok(turn) = &result {
+        usage.lock().unwrap().add_tokens(turn.tokens);
+    }
     // The reply is the agent's final message this turn (see ReplyBuf).
     let draft = std::mem::take(&mut *reply.lock().unwrap()).into_reply();
 
@@ -532,6 +554,7 @@ async fn run_acp(
             hold_draft(
                 &mut acp,
                 &reply,
+                &usage,
                 initiator,
                 trigger_id,
                 coordination.as_ref(),
@@ -544,12 +567,20 @@ async fn run_acp(
     };
 
     let acp_session_id = acp.session_id().map(str::to_string);
+    let usage = usage.lock().unwrap().turn();
+    // Recorded here rather than by the caller, so a turn that fails below is
+    // still charged for what it spent; a stopped one or a PASS is recorded the
+    // same way.
+    if let (Some(state), Some(usage)) = (&coordination, &usage) {
+        super::reaction::record_usage(state, &lease.record.session.session_id, usage.clone());
+    }
     acp.shutdown().await;
     let turn = match result {
         // Stopped, and killed for not winding down in time. Still a stop: the
         // conversation is kept so whoever goes next can resume it.
         Err(error) if stop.is_cancelled() => super::acp::TurnResult {
             stop_reason: format!("cancelled ({error})"),
+            tokens: None,
         },
         result => result.context("ACP prompt turn failed")?,
     };
@@ -572,6 +603,7 @@ async fn run_acp(
         detail: format!("stop_reason={}{outcome}", turn.stop_reason),
         reply: posted,
         acp_session_id,
+        usage,
     })
 }
 
@@ -586,6 +618,7 @@ async fn run_acp(
 async fn hold_draft<H: super::acp::ClientHooks>(
     acp: &mut AcpSession<H>,
     reply: &Arc<Mutex<ReplyBuf>>,
+    usage: &Arc<Mutex<super::usage::Meter>>,
     initiator: Initiator,
     trigger_id: Option<&str>,
     coordination: Option<&crate::state::AppState>,
@@ -616,11 +649,15 @@ async fn hold_draft<H: super::acp::ClientHooks>(
         .prompt_until(&super::ambient::hold_instruction(&answers), stop)
         .await
     {
-        Ok(_) => Some(super::ambient::hold_decision(
-            &std::mem::take(&mut *reply.lock().unwrap())
-                .into_reply()
-                .unwrap_or_default(),
-        )),
+        Ok(turn) => Some({
+            // The hold is part of the turn, and so is what it cost.
+            usage.lock().unwrap().add_tokens(turn.tokens);
+            super::ambient::hold_decision(
+                &std::mem::take(&mut *reply.lock().unwrap())
+                    .into_reply()
+                    .unwrap_or_default(),
+            )
+        }),
         // A failed hold must not swallow a reply the agent already wrote.
         Err(error) => {
             tracing::debug!("[agent] hold turn failed, posting the draft: {error}");
@@ -690,6 +727,120 @@ mod tests {
             resumable_session(Some(&memory), Some("fallback")),
             Some("fallback")
         );
+    }
+
+    /// A usage report in the middle of the answer is recorded, and does not
+    /// cut the answer in two: the reply is the agent's last message, so a
+    /// report treated as a message boundary would post only "wer".
+    #[tokio::test]
+    async fn usage_is_recorded_and_does_not_split_the_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let cmd: AgentCommand = serde_json::from_value(serde_json::json!({
+            "command": super::super::acp::tests::fake_agent_command(),
+            "driver": "acp",
+        }))
+        .unwrap();
+        let agent = "fake-acp:metered";
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            launch(LaunchRequest {
+                run_id: None,
+                trigger_id: None,
+                coordination: None,
+                agent_name: agent,
+                cmd: &cmd,
+                task: "ask",
+                workspace: dir.path(),
+                base_snapshot: "",
+                circle_id: "c1",
+                circle_dir: dir.path(),
+                actor_token: None,
+                relay_path: vec![],
+                initiator: Initiator::Local,
+                resume: None,
+                withheld: &[],
+            }),
+        )
+        .await
+        .expect("the turn ends")
+        .unwrap();
+
+        assert_eq!(outcome.reply.as_deref(), Some("the answer"));
+        let usage = outcome.usage.expect("the agent reported usage");
+        assert_eq!((usage.context_used, usage.context_size), (41_000, 200_000));
+        // Nothing was reported before the prompt, so all of it is this turn's.
+        let usd = super::super::usage::Cost {
+            amount: 0.03,
+            currency: "USD".into(),
+        };
+        assert_eq!(usage.cost, Some(usd));
+        assert_eq!(usage.tokens.map(|t| t.total), Some(31_524));
+    }
+
+    /// A turn that fails after spending is still charged for it: the error
+    /// leaves no outcome to carry the usage, so the driver records it itself.
+    #[tokio::test]
+    async fn a_failed_turn_keeps_what_it_spent() {
+        use super::super::inbox::{Inbox, Status};
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::state::AppState::new(
+            "c1".into(),
+            "circle".into(),
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            String::new(),
+            "label".into(),
+            1,
+            "peer".into(),
+            crate::config::JoinPolicy::Manual,
+            "owner".into(),
+            crate::mls::new_mls_state(crate::mls::MlsIdentity::generate("peer").unwrap(), None),
+        );
+        let inbox = Arc::new(Inbox::open(dir.path(), 100).unwrap());
+        *state.execution_inbox.write().unwrap() = Some(Arc::downgrade(&inbox));
+        inbox
+            .admit(
+                super::super::inbox::tests::request("m", "fake-acp:metered-fail"),
+                20,
+                100,
+            )
+            .unwrap();
+        let run_id = inbox.entries()[0].run_id.clone();
+        inbox
+            .transition(&run_id, Status::Pending, Status::Running, None, 101)
+            .unwrap();
+        let cmd: AgentCommand = serde_json::from_value(serde_json::json!({
+            "command": super::super::acp::tests::fake_agent_command(),
+            "driver": "acp",
+        }))
+        .unwrap();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            launch(LaunchRequest {
+                run_id: Some(&run_id),
+                trigger_id: None,
+                coordination: Some(state.clone()),
+                agent_name: "fake-acp:metered-fail",
+                cmd: &cmd,
+                task: "ask",
+                workspace: dir.path(),
+                base_snapshot: "",
+                circle_id: "c1",
+                circle_dir: dir.path(),
+                actor_token: None,
+                relay_path: vec![],
+                initiator: Initiator::Local,
+                resume: None,
+                withheld: &[],
+            }),
+        )
+        .await
+        .expect("the turn ends");
+
+        assert!(result.is_err(), "the turn failed");
+        let cost = inbox.entries()[0].usage.clone().and_then(|u| u.cost);
+        assert_eq!(cost.map(|c| c.amount), Some(0.8));
     }
 
     /// End to end through the driver, against the fake ACP agent: a turn
