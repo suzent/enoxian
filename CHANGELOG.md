@@ -46,6 +46,12 @@ refuses to publish a version whose section is missing or empty.
   than summoning it. Device Settings, the activity panel and the guides use the
   new words; `agents.toml` keys such as `ambient` are unchanged.
 
+### Security
+
+- Updated the bundled TLS certificate dependencies (`rustls-webpki` 0.103.16,
+  `webpki-roots` and `webpki-root-certs` 1.0.10), so certificates issued through
+  distrusted intermediates, including the emSign ones, are no longer accepted.
+
 ## [0.12.0] — 2026-10-19
 
 ### Added
