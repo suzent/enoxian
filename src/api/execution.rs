@@ -80,6 +80,19 @@ pub async fn list(
         .next()
         .and_then(|_| page.last().map(|e| e.run_id.clone()));
     let now = chrono::Utc::now().timestamp();
+    // What became of each run: its proposals as they stand, and whether a pass
+    // was followed by someone calling an agent. Derived now rather than stored,
+    // so a decision synced from another device is already reflected. Local, like
+    // usage. Not computed for the activity panel's frequent poll.
+    let proposals = crate::proposal::store::ProposalStore::open(&state.workspace)
+        .map(|store| store.list_proposals())
+        .unwrap_or_default();
+    let mut outcomes = crate::agent::outcome::derive(
+        &page,
+        &proposals,
+        &state.transcript(),
+        &crate::agent::label::Roster::load(&state),
+    );
     let runs: Vec<_> = page
         .into_iter()
         .map(|e| {
@@ -92,6 +105,7 @@ pub async fn list(
                 "ambient": e.request.ambient,
                 "activity": state.live_runs.get(&e.run_id).map(|run| run.snapshot(now)),
                 "usage": e.usage,
+                "outcome": outcomes.remove(&e.run_id),
             })
         })
         .collect();
@@ -440,6 +454,88 @@ mod tests {
             .await
             .unwrap();
         (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    /// A listed run says what became of it: a pass that someone followed by
+    /// calling an agent, and the status its proposals have now.
+    #[tokio::test]
+    async fn listed_runs_carry_what_became_of_them() {
+        use crate::proposal::model::{Proposal, ProposalStatus};
+        use yrs::{Any, Array, Transact, WriteTxn};
+        let (daemon, state, inbox, _dir) = circle();
+        let mut asked = request("m", "claude");
+        asked.ambient = true;
+        asked.message.mentions.clear();
+        asked.message.thread_root = Some("m".into());
+        let message = asked.message.clone();
+        inbox.admit(asked, 20, 100).unwrap();
+        inbox.admit(request("m2", "codex"), 20, 100).unwrap();
+        let entries = inbox.entries();
+        let (passed, wrote) = (entries[0].run_id.clone(), entries[1].run_id.clone());
+        for (run, detail) in [
+            (&passed, Some(crate::agent::reaction::PASSED_DETAIL.into())),
+            (&wrote, None),
+        ] {
+            inbox
+                .transition(run, Status::Pending, Status::Running, None, 101)
+                .unwrap();
+            inbox
+                .transition(run, Status::Running, Status::Completed, detail, 102)
+                .unwrap();
+        }
+        let mut call = message.clone();
+        call.id = "call".into();
+        call.ts = message.ts + 60;
+        call.mentions = vec!["codex".into()];
+        {
+            let mut txn = state.control.transact_mut();
+            let chat = txn.get_or_insert_array(crate::control::CHAT_KEY);
+            for m in [&message, &call] {
+                chat.push_back(
+                    &mut txn,
+                    Any::String(serde_json::to_string(m).unwrap().into()),
+                );
+            }
+        }
+        let store = crate::proposal::store::ProposalStore::open(&state.workspace).unwrap();
+        let mut proposal =
+            Proposal::ambient("c1".into(), "s0".into(), "s1".into(), vec!["a.md".into()]);
+        proposal.session_id = Some(wrote.clone());
+        proposal.status = ProposalStatus::Rejected;
+        store.save_proposal(&proposal).unwrap();
+
+        let resp = list(
+            State(daemon.clone()),
+            Path("c1".into()),
+            Query(QueryArgs {
+                before: None,
+                limit: None,
+                message_id: None,
+            }),
+        )
+        .await;
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let run = |id: &str| {
+            page["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["run_id"] == id)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            run(&passed)["outcome"]["called_after_pass"]["message_id"],
+            "call"
+        );
+        assert_eq!(
+            run(&passed)["outcome"]["called_after_pass"]["after_secs"],
+            60
+        );
+        assert_eq!(run(&wrote)["outcome"]["proposals"][0]["status"], "rejected");
     }
 
     /// What a run cost is this device's business: shown in its own panel,

@@ -71,6 +71,11 @@ impl Roster {
         }
     }
 
+    /// Who owns the device `peer`, if the member list says.
+    pub fn owner(&self, peer: &str) -> Option<&str> {
+        self.by_peer.get(peer).map(|(owner, _)| owner.as_str())
+    }
+
     /// The name to show for whoever posted `message`.
     ///
     /// Only agents are qualified. A person's `agent_id` already carries a

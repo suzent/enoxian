@@ -1695,7 +1695,7 @@ async fn react(
             true,
             Some("nothing to add".to_string()),
         );
-        return Ok(Some("No reply needed".into()));
+        return Ok(Some(PASSED_DETAIL.into()));
     }
     if let Some(reply) = outcome
         .reply
@@ -1815,6 +1815,10 @@ pub(crate) fn record_usage(state: &AppState, run_id: &str, usage: super::usage::
         }
     }
 }
+
+/// The `detail` of an unaddressed turn that passed, a withdrawn veiled draft
+/// included. The activity panel shows it as is.
+pub(crate) const PASSED_DETAIL: &str = "No reply needed";
 
 fn publish_agent_activity(
     state: &AppState,

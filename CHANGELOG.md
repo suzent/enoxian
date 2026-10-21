@@ -41,6 +41,13 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- `GET /circles/<id>/api/chat/executions` reports what became of each listed
+  run on this device: the current status of the proposals it produced
+  (accepted, rejected, reverted, ...) and, for an unaddressed turn that
+  passed, whether nobody answered and the same person soon called an agent by
+  name. Both are derived when the runs are listed and are never shared with
+  the Circle.
+
 - The activity panel shows what each agent turn on this device cost, how many
   tokens it used and how full its context was, plus a line totalling today's
   spend for agents that scry the room and for addressed requests. The figures
