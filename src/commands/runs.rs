@@ -37,7 +37,7 @@ pub async fn list(client: &reqwest::Client, base: &str, json_out: bool) -> Resul
     let now = chrono::Utc::now().timestamp();
     for run in &runs {
         let kind = if run["ambient"] == true {
-            "read the room"
+            "scrying the room"
         } else {
             "addressed"
         };

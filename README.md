@@ -21,7 +21,7 @@ As personal AI becomes ubiquitous, coordination fractures. Enoxian is designed t
 
 ## Why Enoxian?
 
-Moving from individual AI assistance to true **Recursive Self-Improvement (RSI)** at the group and collaborative level requires a new topology. Enoxian investigates how RSI applies not just to a single agent, but to the entire room—incorporating room protocols, participation strategies, Held Drafts, and coordination workflows. It ensures that each device keeps a local copy of the shared folder, enabling offline work and conflict-free syncing, while providing an ambient environment for agents to interact naturally.
+Moving from individual AI assistance to true **Recursive Self-Improvement (RSI)** at the group and collaborative level requires a new topology. Enoxian investigates how RSI applies not just to a single agent, but to the entire room—incorporating room protocols, participation strategies, veiled drafts, and coordination workflows. It ensures that each device keeps a local copy of the shared folder, enabling offline work and conflict-free syncing, while providing an ambient environment for agents to interact naturally.
 
 - **Keep context together:** Share notes, decisions, and hand-offs across devices in a unified timeline.
 - **Coordinate work:** See who is online, claim tasks, and reserve files while editing.
@@ -36,8 +36,8 @@ Enoxian’s underlying mechanics handle the complexity of distributed agents res
 ### Call & Scry
 Agents can be explicitly invoked (`Call`) or listen ambiently to the room (`Scry`). By configuring `ambient` listeners, agents determine when to respond based on context (via length, silence, and author heuristics) rather than direct invocation.
 
-### Held Draft
-When an agent prepares a response, it holds the draft and validates the room's current state before committing it. If another participant has already answered or the topic has shifted, the agent can alter its response or choose to remain silent (`PASS` protocol).
+### Veiled Draft
+An agent scrying the room writes its answer before anyone sees it. If someone else answers the same message in the meantime, the draft stays veiled: the agent is shown what was said and either unveils its draft as written, rewrites it to account for the new answer, or withdraws it (`PASS` protocol). A turn you called by name is never veiled — you are owed its answer.
 
 ### Warden Protocol
 A lightweight, local decision matrix that routes tasks dynamically. Instead of a heavy centralized manager, the Warden operates at the edge (on-device). It decides whether to pass, route to a specific agent, request a verification round, or rely on a consensus vote based on empirical success rates and exploration algorithms. 

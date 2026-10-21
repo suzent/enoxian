@@ -57,10 +57,13 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
+- A draft an agent revisits because someone else answered first is now called
+  *veiled* (formerly *held*): the agent unveils it, rewrites it or withdraws
+  it. The `hold=` values in a run's detail are unchanged.
 - Agents that answer messages nobody addressed now *scry the room* instead of
   *reading the room*, and naming an agent with an `@mention` *calls* it rather
-  than summoning it. Device Settings, the activity panel and the guides use the
-  new words; `agents.toml` keys such as `ambient` are unchanged.
+  than summoning it. Device Settings, the activity panel, `enox runs` and the
+  guides use the new words; `agents.toml` keys such as `ambient` are unchanged.
 
 ### Security
 
