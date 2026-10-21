@@ -39,7 +39,10 @@ model gets guessed wrong.
    agent arrives, which is what the limit was for; see *How long a turn may
    run* in the agents guide.
 
-## 2. Held Draft — shipped
+## 2. Veiled drafts — shipped
+
+Called Held Draft until the vocabulary moved to Enochian terms; the code and
+the `hold=` values in a run's `detail` keep the old name.
 
 > **Shipped.** `driver::hold_draft` runs the hold as a second prompt on the live
 > session, `ambient::hold_decision` reads `PASS` / `SEND` / revision, and the
@@ -175,13 +178,13 @@ checks do: if you named an agent, you are owed its answer.
 
 ### 3.4 What it does and does not buy
 
-With Held Draft in place, claims are mostly about **cost**, not noise: Held
-Draft already stops a second agent posting a duplicate, but only after it has
+With veiled drafts in place, claims are mostly about **cost**, not noise: a
+veiled draft already stops a second agent posting a duplicate, but only after it has
 spent a full turn producing one. A claim stops the turn before it starts.
 
 It cannot help in the tightest race — two devices receiving a message in the
 same instant both start before either's claim propagates. That case still
-reaches Held Draft, which is the right layer for it.
+reaches the veiled draft, which is the right layer for it.
 
 The more distinctive use is the one pull exists for: an agent that was never
 pushed a message — a CLI agent in a terminal, or a person — takes one, and every
