@@ -318,6 +318,7 @@ export const getExecutions = (id: string) => get<{
   peer_id?: string
   runs: import('./types').ExecutionRun[]
   activity?: Record<string, import('./types').RunActivity>
+  usage?: Record<string, import('./types').RunUsage>
   readiness?: import('./types').Readiness
   skips?: import('./types').AdmissionSkip[]
 }>(`${api(id)}/chat/deliveries`)

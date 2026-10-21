@@ -156,6 +156,27 @@ it already changed in the workspace stays, and is reviewed like any other
 change. An argv agent has no protocol to be asked through, so stopping one
 ends its process.
 
+#### What a run cost
+
+An ACP agent may report usage as it works: how much of its context window is
+in use, how many tokens each prompt took and, if it knows, what its session
+has cost so far. The activity panel shows that under each turn this device
+ran ("$0.03 · 33k tokens · context 33k / 1M"), and totals today's turns at the
+top, split into agents scrying the room and addressed requests. It is a
+record of what the agent said, not an estimate: an agent that reports nothing
+shows nothing, and a turn without a cost is counted apart rather than as
+free. A turn that passed or was stopped still shows what it spent.
+
+A reported cost is the agent's own figure, not a bill. An agent signed in to
+a subscription may report what the turn would have cost at API prices. Which
+agents report what depends on their ACP adapter: the Claude adapter reports
+context, tokens and cost; at the time of writing the Codex adapter reports
+none of them.
+
+Spend is this device's own business. It is kept in the device's execution
+inbox and is never part of what the Circle replicates, so other members see
+that your agent ran, not what it cost you.
+
 Built-in managed adapter plugins:
 
 - **Claude Code via ACP bridge** — `claude-agent-acp`. The adapter is only the
@@ -507,8 +528,9 @@ useful for testing or scripted runs:
 enox agent run claude "add a MIT license file"
 ```
 
-It resumes the agent's remembered session, prints the reply, and the file
-changes become a proposal exactly as a mention would. (It does not inject the
+It resumes the agent's remembered session, prints the reply and whatever usage
+the agent reported, and the file changes become a proposal exactly as a
+mention would. (It does not inject the
 full world context, since it runs standalone without the live circle state.)
 
 ---

@@ -91,6 +91,7 @@ pub async fn list(
                 "reply_to": e.request.message.reply_to,
                 "ambient": e.request.ambient,
                 "activity": state.live_runs.get(&e.run_id).map(|run| run.snapshot(now)),
+                "usage": e.usage,
             })
         })
         .collect();
@@ -313,10 +314,27 @@ pub async fn deliveries(
         .filter_map(|run| run["run_id"].as_str())
         .filter_map(|id| Some((id.to_string(), state.live_runs.get(id)?.snapshot(now))))
         .collect();
+    // What this device's own runs used, as their agents reported it. Local for
+    // the same reason: a peer has no business knowing what this machine spent.
+    let usage: serde_json::Map<String, serde_json::Value> = state
+        .execution_inbox
+        .read()
+        .unwrap()
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade)
+        .map(|inbox| {
+            inbox
+                .entries()
+                .into_iter()
+                .filter_map(|e| Some((e.run_id, serde_json::to_value(e.usage?).ok()?)))
+                .collect()
+        })
+        .unwrap_or_default();
     Json(json!({
         "peer_id": state.peer_id,
         "runs": runs,
         "activity": activity,
+        "usage": usage,
         "readiness": readiness(&state),
         "skips": state.admission_log.recent(30),
     }))
@@ -404,6 +422,40 @@ mod tests {
             .await
             .unwrap();
         (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    /// What a run cost is this device's business: shown in its own panel,
+    /// never in the receipt every member replicates.
+    #[tokio::test]
+    async fn usage_is_reported_locally_and_never_published() {
+        let (daemon, state, inbox, _dir) = circle();
+        inbox.admit(request("m", "claude"), 20, 100).unwrap();
+        let entry = inbox.entries().remove(0);
+        inbox
+            .transition(&entry.run_id, Status::Pending, Status::Running, None, 101)
+            .unwrap();
+        let spent = crate::agent::usage::TurnUsage {
+            context_used: 41_000,
+            context_size: 200_000,
+            tokens: None,
+            cost: Some(crate::agent::usage::Cost {
+                amount: 0.03,
+                currency: "USD".into(),
+            }),
+        };
+        inbox.record_usage(&entry.run_id, spent).unwrap();
+        publish(&state, &inbox).unwrap();
+
+        let resp = deliveries(State(daemon.clone()), Path("c1".into())).await;
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page["usage"][&entry.run_id]["cost"]["amount"], 0.03);
+        let receipt = &page["runs"][0];
+        assert_eq!(receipt["run_id"], entry.run_id.as_str());
+        assert!(receipt.get("usage").is_none(), "{receipt}");
+        assert!(!receipt.to_string().contains("41000"), "{receipt}");
     }
 
     #[tokio::test]

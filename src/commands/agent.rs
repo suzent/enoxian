@@ -251,6 +251,9 @@ pub async fn run(
     .context("agent run failed")?;
 
     println!("✓ agent finished ({})", outcome.detail);
+    if let Some(usage) = &outcome.usage {
+        println!("  {}", describe_usage(usage));
+    }
     if let Some(reply) = &outcome.reply {
         println!("\n{reply}\n");
     }
@@ -260,6 +263,25 @@ pub async fn run(
     );
     println!("  run `enox proposal list` to review.");
     Ok(())
+}
+
+/// One line on what a run used, as the agent reported it.
+fn describe_usage(usage: &crate::agent::usage::TurnUsage) -> String {
+    let mut parts = Vec::new();
+    match &usage.cost {
+        Some(c) => parts.push(format!("cost {:.4} {}", c.amount, c.currency)),
+        None => parts.push("cost not reported".into()),
+    }
+    if let Some(t) = usage.tokens {
+        parts.push(format!("{} tokens", t.total));
+    }
+    if usage.context_size > 0 {
+        parts.push(format!(
+            "context {} / {}",
+            usage.context_used, usage.context_size
+        ));
+    }
+    format!("used: {} (as reported by the agent)", parts.join(" · "))
 }
 
 /// Resolve a circle selector (name or id, or the sole circle if omitted) to its

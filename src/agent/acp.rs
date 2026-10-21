@@ -110,6 +110,8 @@ pub fn agent_message_text(update: &Value) -> Option<String> {
 pub struct TurnResult {
     /// The agent's stop reason (e.g. "end_turn", "completed", "cancelled").
     pub stop_reason: String,
+    /// The tokens the prompt used, if the agent reported them.
+    pub tokens: Option<super::usage::Tokens>,
 }
 
 /// A live ACP session against a spawned agent subprocess.
@@ -378,7 +380,10 @@ impl<H: ClientHooks> AcpSession<H> {
             .and_then(Value::as_str)
             .unwrap_or("completed")
             .to_string();
-        Ok(TurnResult { stop_reason })
+        Ok(TurnResult {
+            stop_reason,
+            tokens: super::usage::parse_tokens(&result),
+        })
     }
 
     /// Terminate the agent subprocess.
@@ -867,6 +872,29 @@ pub(crate) mod tests {
                     out.write_all(format!("{chunk}\n{done}\n").as_bytes())
                         .unwrap();
                     out.flush().unwrap();
+                }
+                // A usage report between two chunks of the answer, as an
+                // agent that reports usage as it goes does.
+                Some("session/prompt") if mode == "metered" => {
+                    let update = |update: Value| {
+                        json!({"jsonrpc": "2.0", "method": "session/update",
+                        "params": {"sessionId": "fake-session", "update": update}})
+                    };
+                    let chunk = |text: &str| {
+                        update(json!({"sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": text}}))
+                    };
+                    send(chunk("the ans"));
+                    send(update(
+                        json!({"sessionUpdate": "usage_update", "used": 41_000,
+                        "size": 200_000, "cost": {"amount": 0.03, "currency": "USD"}}),
+                    ));
+                    send(chunk("wer"));
+                    send(
+                        json!({"jsonrpc": "2.0", "id": id, "result": {"stopReason": "end_turn",
+                        "usage": {"inputTokens": 2, "outputTokens": 4, "totalTokens": 31_524,
+                        "cachedReadTokens": 0, "cachedWriteTokens": 31_518}}}),
+                    );
                 }
                 // Start a long tool call and say nothing more, as an agent in
                 // the middle of a build does.

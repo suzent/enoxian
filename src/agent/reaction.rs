@@ -1653,6 +1653,10 @@ async fn react(
         outcome.session_id,
         outcome.detail
     );
+    // Before the branches below: a stopped turn or a PASS was still paid for.
+    if let Some(usage) = outcome.usage.clone() {
+        record_usage(state, run_id, usage);
+    }
 
     // A stopped turn posts nothing. What it was shown is still in the agent's
     // conversation, which the next turn resumes, so it counts as seen.
@@ -1798,6 +1802,20 @@ fn mark_seen(state: &AppState, agent_id: &str, message_id: &str, delivered: &[St
         super::memory::save_seen(&state.circle_dir, agent_id, message_id, delivered.to_vec())
     {
         tracing::debug!("[agent] failed to persist seen-mark for `{agent_id}`: {e}");
+    }
+}
+
+fn record_usage(state: &AppState, run_id: &str, usage: super::usage::TurnUsage) {
+    let inbox = state
+        .execution_inbox
+        .read()
+        .unwrap()
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade);
+    if let Some(inbox) = inbox {
+        if let Err(error) = inbox.record_usage(run_id, usage) {
+            tracing::debug!("[agent] failed to record usage for {run_id}: {error}");
+        }
     }
 }
 

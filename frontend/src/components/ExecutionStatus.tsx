@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getExecutions, updateExecution } from '../api'
-import type { AdmissionSkip, ChatMessage, ExecutionRun, Member, Readiness, RunActivity } from '../types'
+import type { AdmissionSkip, ChatMessage, ExecutionRun, Member, Readiness, RunActivity, RunUsage } from '../types'
 
 const retryable = new Set(['failed', 'interrupted', 'expired', 'cancelled'])
 const statusLabels: Record<ExecutionRun['status'], string> = {
@@ -38,6 +38,62 @@ export function describeActivity(activity: RunActivity, now: number): { text: st
   }
 }
 
+function money(amount: number, currency: string) {
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: amount < 1 ? 4 : 2 }).format(amount)
+  } catch {
+    return `${amount.toFixed(4)} ${currency}`
+  }
+}
+
+function tokens(n: number) {
+  if (n >= 1_000_000) return `${Number((n / 1_000_000).toFixed(1))}M`
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n)
+}
+
+/** One line on what a finished or running turn used, as its agent reported it. */
+export function describeUsage(usage: RunUsage): string {
+  const context = usage.context_size > 0 ? `context ${tokens(usage.context_used)} / ${tokens(usage.context_size)}` : undefined
+  const cost = usage.cost ? money(usage.cost.amount, usage.cost.currency) : 'cost not reported'
+  const used = usage.tokens ? `${tokens(usage.tokens.total)} tokens` : undefined
+  return [cost, used, context].filter(Boolean).join(' · ')
+}
+
+const REPORTED = 'As reported by the agent, not a bill: on a subscription it may be what the turn would cost at API prices. Only this device sees it.'
+
+function usageTitle(usage: RunUsage): string {
+  const t = usage.tokens
+  if (!t) return REPORTED
+  return `${t.input} input, ${t.output} output, ${t.cached_read} read from cache, ${t.cached_write} written to cache. ${REPORTED}`
+}
+
+/** Today's spend on this device, scrying vs addressed. Only runs this device
+ *  executed carry usage; turns whose agent reported no cost are counted apart
+ *  rather than as free. */
+export function usageToday(runs: ExecutionRun[], usage: Record<string, RunUsage>, selfPeer: string | undefined, now: Date): string | undefined {
+  const midnight = new Date(now); midnight.setHours(0, 0, 0, 0)
+  const since = midnight.getTime() / 1000
+  const mine = runs.filter(r => r.peer_id === selfPeer && (r.updated_at ?? 0) >= since && usage[r.run_id])
+  if (mine.length === 0) return undefined
+  const part = (ambient: boolean, label: string) => {
+    const group = mine.filter(r => (r.ambient || r.agent_id.startsWith('~ambient:')) === ambient)
+    if (group.length === 0) return undefined
+    const sums = new Map<string, number>()
+    for (const r of group) {
+      const cost = usage[r.run_id].cost
+      if (cost) sums.set(cost.currency, (sums.get(cost.currency) ?? 0) + cost.amount)
+    }
+    const total = [...sums].map(([currency, amount]) => money(amount, currency)).join(' + ') || 'no cost reported'
+    return `${label} ${total} (${group.length} ${group.length === 1 ? 'turn' : 'turns'})`
+  }
+  const unpriced = mine.filter(r => !usage[r.run_id].cost).length
+  return [
+    part(true, 'scrying'),
+    part(false, 'addressed'),
+    unpriced > 0 ? `${unpriced} without a cost` : undefined,
+  ].filter(Boolean).join(' · ')
+}
+
 function normalizedAgent(run: ExecutionRun) {
   return run.agent_id.replace(/^~ambient:/, '')
 }
@@ -66,6 +122,7 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
   const [selfPeer, setSelfPeer] = useState<string | undefined>()
   const [runs, setRuns] = useState<ExecutionRun[]>([])
   const [activity, setActivity] = useState<Record<string, RunActivity>>({})
+  const [usage, setUsage] = useState<Record<string, RunUsage>>({})
   const [skips, setSkips] = useState<AdmissionSkip[]>([])
   const [readiness, setReadiness] = useState<Readiness | undefined>()
   const [error, setError] = useState<string | null>(null)
@@ -75,14 +132,14 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
     const current = ++generation.current
     let disposed = false
     let loading = false
-    setRuns([]); setActivity({}); setSkips([]); setReadiness(undefined); setSelfPeer(undefined); setError(null); setBusy(null)
+    setRuns([]); setActivity({}); setUsage({}); setSkips([]); setReadiness(undefined); setSelfPeer(undefined); setError(null); setBusy(null)
     const refresh = async () => {
       if (loading) return
       loading = true
       try {
         const page = await getExecutions(circleId)
         if (!disposed && generation.current === current) {
-          setRuns(page.runs); setActivity(page.activity ?? {}); setSkips(page.skips ?? []); setReadiness(page.readiness)
+          setRuns(page.runs); setActivity(page.activity ?? {}); setUsage(page.usage ?? {}); setSkips(page.skips ?? []); setReadiness(page.readiness)
           setSelfPeer(page.peer_id); setError(null)
         }
       } catch {
@@ -102,7 +159,7 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
       await updateExecution(circleId, run.run_id, action)
       const page = await getExecutions(circleId)
       if (generation.current === current) {
-        setRuns(page.runs); setActivity(page.activity ?? {}); setSkips(page.skips ?? []); setReadiness(page.readiness)
+        setRuns(page.runs); setActivity(page.activity ?? {}); setUsage(page.usage ?? {}); setSkips(page.skips ?? []); setReadiness(page.readiness)
         setSelfPeer(page.peer_id); setError(null)
       }
     } catch (e) {
@@ -155,6 +212,7 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
           : <span className="agent-activity__unavailable">Message unavailable</span>}
         {run.status === 'running' && live && <p className={`agent-activity__live${live.quiet ? ' agent-activity__live--quiet' : ''}`}>{live.text}</p>}
         {run.detail && run.detail !== label && <p className="agent-activity__detail">{run.detail}</p>}
+        {local && usage[run.run_id] && <p className="agent-activity__usage" title={usageTitle(usage[run.run_id])}>{describeUsage(usage[run.run_id])}</p>}
         <div className="agent-activity__actions">
           {local && run.status === 'running' && running && <button type="button" className="underline underline-offset-2" disabled={busy !== null || running.stopping} onClick={() => void act(run, 'cancel')}>{running.stopping ? 'Stopping…' : busy === run.run_id ? 'Updating…' : 'Stop'}</button>}
           {local && run.status === 'pending' && <button type="button" className="underline underline-offset-2" disabled={busy !== null} onClick={() => void act(run, 'cancel')}>{busy === run.run_id ? 'Updating…' : 'Cancel request'}</button>}
@@ -165,6 +223,7 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
     })}
   </ul>
   const warnings = readinessWarnings(readiness)
+  const spent = usageToday(runs, usage, selfPeer, new Date())
   // A run that exists is a better answer than a reason it might not have, so a
   // message with either is only ever listed once, under its run.
   const ran = new Set(runs.map(r => r.message_id))
@@ -176,6 +235,7 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
     </header>
     {error && <p role="status" className="agent-activity__error">{error}</p>}
     {warnings.map(warning => <p key={warning} className="agent-activity__readiness">{warning}</p>)}
+    {spent && <p className="agent-activity__spend" title="What this device's agents reported spending since midnight — their figures, not a bill; on a subscription they may be API-price equivalents. Agents that report no cost are counted apart, not as free. Only this device sees it.">Today on this device: {spent}</p>}
     {active.length > 0 ? <>
       <p className="agent-activity__summary">{active.filter(r => r.status === 'running').length} working · {active.filter(r => r.status === 'pending').length} waiting</p>
       {rows(active)}

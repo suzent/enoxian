@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 const getExecutions = vi.fn()
 const updateExecution = vi.fn(async () => ({}))
 vi.mock('../../api', () => ({ getExecutions, updateExecution }))
-const { default: ExecutionStatus, describeActivity, QUIET_HINT_SECS } = await import('../ExecutionStatus')
+const { default: ExecutionStatus, describeActivity, describeUsage, usageToday, QUIET_HINT_SECS } = await import('../ExecutionStatus')
 beforeEach(() => { cleanup(); vi.clearAllMocks(); getExecutions.mockResolvedValue({ peer_id: 'local', runs: [
   { run_id: 'r1', message_id: 'm1', agent_id: 'claude', peer_id: 'local', status: 'interrupted', ambient: false },
   { run_id: 'r2', message_id: 'm2', agent_id: 'codex', peer_id: 'remote', status: 'failed', ambient: false },
@@ -122,5 +122,49 @@ describe('describeActivity', () => {
   })
   it('says when a turn is stopping', () => {
     expect(describeActivity({ ...base, idle_secs: 0, stopping: true }, 5).text).toBe('Stopping…')
+  })
+  it('shows what a turn on this device used, and nothing for another device', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    getExecutions.mockResolvedValue({ peer_id: 'local', runs: [
+      { run_id: 'mine', message_id: 'm1', agent_id: 'claude', peer_id: 'local', status: 'completed', ambient: true, updated_at: now },
+      { run_id: 'theirs', message_id: 'm2', agent_id: 'codex', peer_id: 'remote', status: 'completed', ambient: true, updated_at: now },
+    ], usage: {
+      mine: { context_used: 41_000, context_size: 200_000, cost: { amount: 0.03, currency: 'USD' } },
+      theirs: { context_used: 1, context_size: 2, cost: { amount: 9, currency: 'USD' } },
+    } })
+    render(<ExecutionStatus circleId="circle" />)
+    await userEvent.click(await screen.findByText(/Recent history/))
+    expect(screen.getByText(/context 41k \/ 200k/)).toBeTruthy()
+    expect(screen.getByText(/Today on this device: scrying .*0\.03.* \(1 turn\)/)).toBeTruthy()
+    expect(screen.queryByText(/context 0k/)).toBeNull()
+  })
+})
+
+describe('usage', () => {
+  it('says what was reported and no more', () => {
+    expect(describeUsage({ context_used: 41_000, context_size: 200_000, cost: { amount: 0.03, currency: 'USD' } })).toMatch(/0\.03.* · context 41k \/ 200k/)
+    expect(describeUsage({ context_used: 900, context_size: 0 })).toBe('cost not reported')
+    expect(describeUsage({ context_used: 33_477, context_size: 1_000_000, cost: { amount: 0.335, currency: 'USD' },
+      tokens: { input: 2, output: 4, cached_read: 0, cached_write: 33_471, total: 33_477 } })).toMatch(/0\.335.* · 33k tokens · context 33k \/ 1M$/)
+  })
+  it('totals today by kind and counts unpriced turns apart', () => {
+    const now = new Date()
+    const t = Math.floor(now.getTime() / 1000)
+    const yesterday = t - 2 * 86_400
+    const runs = [
+      { run_id: 'a', message_id: 'm', agent_id: 'claude', peer_id: 'me', status: 'completed' as const, ambient: true, updated_at: t },
+      { run_id: 'b', message_id: 'm', agent_id: 'claude', peer_id: 'me', status: 'completed' as const, ambient: true, updated_at: t },
+      { run_id: 'c', message_id: 'm', agent_id: 'codex', peer_id: 'me', status: 'completed' as const, ambient: false, updated_at: t },
+      { run_id: 'old', message_id: 'm', agent_id: 'claude', peer_id: 'me', status: 'completed' as const, ambient: true, updated_at: yesterday },
+    ]
+    const usage = {
+      a: { context_used: 1, context_size: 2, cost: { amount: 0.1, currency: 'USD' } },
+      b: { context_used: 1, context_size: 2, cost: { amount: 0.2, currency: 'USD' } },
+      c: { context_used: 1, context_size: 2 },
+      old: { context_used: 1, context_size: 2, cost: { amount: 5, currency: 'USD' } },
+    }
+    const line = usageToday(runs, usage, 'me', now)!
+    expect(line).toMatch(/^scrying .*0\.30.* \(2 turns\) · addressed no cost reported \(1 turn\) · 1 without a cost$/)
+    expect(usageToday(runs, usage, 'someone-else', now)).toBeUndefined()
   })
 })
