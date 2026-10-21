@@ -97,7 +97,6 @@ pub fn derive(
         .collect()
 }
 
-/// Did this unaddressed turn pass, go unanswered, and get followed by a call?
 /// Whether `a` and `b` were posted by one person. By owner when the member list
 /// knows both devices, since a person posts from several; otherwise only the
 /// same device under the same name counts.
@@ -108,6 +107,7 @@ fn same_person(a: &ChatMessage, b: &ChatMessage, roster: &Roster) -> bool {
     }
 }
 
+/// Did this unaddressed turn pass, go unanswered, and get followed by a call?
 fn called_after_pass(
     entry: &Entry,
     transcript: &[ChatMessage],
