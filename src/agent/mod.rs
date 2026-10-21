@@ -27,6 +27,7 @@ pub mod ledger;
 pub mod liveness;
 pub mod memory;
 pub mod mention;
+pub mod outcome;
 pub mod plugin;
 pub mod probe;
 pub mod reaction;

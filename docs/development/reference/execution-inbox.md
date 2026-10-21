@@ -103,7 +103,8 @@ run summaries, newest admission first. Query parameters:
 
 The response includes `peer_id`, `activated_at`, `runs`, and `next_cursor`. Each run
 has `run_id`, `message_id`, `agent_id`, `status`, `detail`, `admitted_at`, `updated_at`,
-`relay_root`, `reply_to`, `ambient`, and `usage` when the agent reported any (see
+`relay_root`, `reply_to`, `ambient`, `usage` when the agent reported any, and
+`outcome` when there is something to say about what became of the run (both
 below). It excludes prompt bodies, commands and
 credentials. Reading status never opens the inbox for ownership or performs crash
 recovery. This endpoint reports the receiving device's full local history.
@@ -137,6 +138,25 @@ into the replicated receipt.
 `POST /circles/<id>/api/chat/executions/<run-id>` accepts `{"action":"retry"}` or
 `{"action":"cancel"}`. Mutations use the owning inbox, persist before acknowledgement,
 and apply only on the recipient device. Launch-time policy and stop checks still apply.
+
+### Outcome
+
+A run's `outcome` is derived when the page is listed, from what this device can
+see afterwards, rather than stored with the run:
+
+- `proposals`: each proposal the run produced (its `session_id` is the run ID),
+  with its `id`, current `status` (`pending`, `accepted`, `rejected`,
+  `reverted`, ...) and number of `changed_paths`. The status is this device's
+  proposal store, which includes decisions synced from other devices. A
+  proposal removed by garbage collection drops out.
+- `called_after_pass`: on an unaddressed turn that passed, set when no agent
+  answered the message and the same person then called an agent by name in the
+  same thread (or in reply to it) within ten minutes. It carries the calling
+  `message_id`, the `agents` called, and `after_secs`. This is often a missed
+  answer, but is reported as the observation it is.
+
+Outcomes are this device's own and are not part of the replicated receipt or the
+activity panel's `deliveries` poll.
 
 ## Parallel execution and attribution
 
