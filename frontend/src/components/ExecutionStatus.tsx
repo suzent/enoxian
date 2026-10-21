@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getExecutions, updateExecution } from '../api'
-import type { AdmissionSkip, ChatMessage, ExecutionRun, Member, Readiness, RunActivity, RunUsage } from '../types'
+import type { AdmissionSkip, ChatMessage, ExecutionRun, Member, Readiness, RunActivity, RunSpend, RunUsage } from '../types'
 
 const retryable = new Set(['failed', 'interrupted', 'expired', 'cancelled'])
 const statusLabels: Record<ExecutionRun['status'], string> = {
@@ -67,26 +67,25 @@ function usageTitle(usage: RunUsage): string {
   return `${t.input} input, ${t.output} output, ${t.cached_read} read from cache, ${t.cached_write} written to cache. ${REPORTED}`
 }
 
-/** Today's spend on this device, scrying vs addressed. Only runs this device
- *  executed carry usage; turns whose agent reported no cost are counted apart
- *  rather than as free. */
-export function usageToday(runs: ExecutionRun[], usage: Record<string, RunUsage>, selfPeer: string | undefined, now: Date): string | undefined {
+/** Today's spend on this device, scrying vs addressed. `spend` is every run
+ *  this device executed in the last two days, straight from its own inbox, so
+ *  the total is not limited to the runs listed. Turns whose agent reported no
+ *  cost are counted apart rather than as free. */
+export function usageToday(spend: RunSpend[], now: Date): string | undefined {
   const midnight = new Date(now); midnight.setHours(0, 0, 0, 0)
-  const since = midnight.getTime() / 1000
-  const mine = runs.filter(r => r.peer_id === selfPeer && (r.updated_at ?? 0) >= since && usage[r.run_id])
-  if (mine.length === 0) return undefined
+  const today = spend.filter(s => s.updated_at >= midnight.getTime() / 1000)
+  if (today.length === 0) return undefined
   const part = (ambient: boolean, label: string) => {
-    const group = mine.filter(r => (r.ambient || r.agent_id.startsWith('~ambient:')) === ambient)
+    const group = today.filter(s => s.ambient === ambient)
     if (group.length === 0) return undefined
     const sums = new Map<string, number>()
-    for (const r of group) {
-      const cost = usage[r.run_id].cost
+    for (const { usage: { cost } } of group) {
       if (cost) sums.set(cost.currency, (sums.get(cost.currency) ?? 0) + cost.amount)
     }
     const total = [...sums].map(([currency, amount]) => money(amount, currency)).join(' + ') || 'no cost reported'
     return `${label} ${total} (${group.length} ${group.length === 1 ? 'turn' : 'turns'})`
   }
-  const unpriced = mine.filter(r => !usage[r.run_id].cost).length
+  const unpriced = today.filter(s => !s.usage.cost).length
   return [
     part(true, 'scrying'),
     part(false, 'addressed'),
@@ -123,6 +122,7 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
   const [runs, setRuns] = useState<ExecutionRun[]>([])
   const [activity, setActivity] = useState<Record<string, RunActivity>>({})
   const [usage, setUsage] = useState<Record<string, RunUsage>>({})
+  const [spend, setSpend] = useState<RunSpend[]>([])
   const [skips, setSkips] = useState<AdmissionSkip[]>([])
   const [readiness, setReadiness] = useState<Readiness | undefined>()
   const [error, setError] = useState<string | null>(null)
@@ -132,14 +132,14 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
     const current = ++generation.current
     let disposed = false
     let loading = false
-    setRuns([]); setActivity({}); setUsage({}); setSkips([]); setReadiness(undefined); setSelfPeer(undefined); setError(null); setBusy(null)
+    setRuns([]); setActivity({}); setUsage({}); setSpend([]); setSkips([]); setReadiness(undefined); setSelfPeer(undefined); setError(null); setBusy(null)
     const refresh = async () => {
       if (loading) return
       loading = true
       try {
         const page = await getExecutions(circleId)
         if (!disposed && generation.current === current) {
-          setRuns(page.runs); setActivity(page.activity ?? {}); setUsage(page.usage ?? {}); setSkips(page.skips ?? []); setReadiness(page.readiness)
+          setRuns(page.runs); setActivity(page.activity ?? {}); setUsage(page.usage ?? {}); setSpend(page.spend ?? []); setSkips(page.skips ?? []); setReadiness(page.readiness)
           setSelfPeer(page.peer_id); setError(null)
         }
       } catch {
@@ -159,7 +159,7 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
       await updateExecution(circleId, run.run_id, action)
       const page = await getExecutions(circleId)
       if (generation.current === current) {
-        setRuns(page.runs); setActivity(page.activity ?? {}); setUsage(page.usage ?? {}); setSkips(page.skips ?? []); setReadiness(page.readiness)
+        setRuns(page.runs); setActivity(page.activity ?? {}); setUsage(page.usage ?? {}); setSpend(page.spend ?? []); setSkips(page.skips ?? []); setReadiness(page.readiness)
         setSelfPeer(page.peer_id); setError(null)
       }
     } catch (e) {
@@ -223,7 +223,7 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
     })}
   </ul>
   const warnings = readinessWarnings(readiness)
-  const spent = usageToday(runs, usage, selfPeer, new Date())
+  const spent = usageToday(spend, new Date())
   // A run that exists is a better answer than a reason it might not have, so a
   // message with either is only ever listed once, under its run.
   const ran = new Set(runs.map(r => r.message_id))

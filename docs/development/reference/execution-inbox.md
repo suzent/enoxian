@@ -111,8 +111,10 @@ recovery. This endpoint reports the receiving device's full local history.
 `GET /circles/<id>/api/chat/deliveries` returns up to 100 recent sanitized receipts
 from replicated control state, plus the local `peer_id`. Remote receipts are last
 known states, not a live connectivity guarantee. Unreceived requests have no receipt.
-Alongside the receipts it returns `usage`, keyed by run ID, for this device's own
-runs only.
+Alongside the receipts it returns this device's own spend, never a peer's: `usage`,
+keyed by run ID, for the listed runs, and `spend`, every run of the last two days
+that reported usage (`run_id`, `ambient`, `updated_at`, `usage`), which the
+activity panel totals by day.
 
 ### Usage
 
@@ -128,8 +130,8 @@ adapter's starts again when a session is reloaded in a new process. enoxian runs
 one agent process per turn, so `cost` is the last cost reported after the prompt,
 less any reported before it while the session loaded; never a figure carried over
 from an earlier turn. A negative difference, or one across currencies, is omitted
-rather than guessed. Usage is recorded on the
-attempt that ran, survives restart, is cleared for a retry, and is never written
+rather than guessed. Usage is recorded by the driver on the
+attempt that ran, whether it completed, failed or was stopped, survives restart, is cleared for a retry, and is never written
 into the replicated receipt.
 
 `POST /circles/<id>/api/chat/executions/<run-id>` accepts `{"action":"retry"}` or

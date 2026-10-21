@@ -339,6 +339,14 @@ export interface RunUsage {
   cost?: { amount: number; currency: string }
 }
 
+/** One of this device's runs from the last two days, for the daily total. */
+export interface RunSpend {
+  run_id: string
+  ambient: boolean
+  updated_at: number
+  usage: RunUsage
+}
+
 export interface ExecutionRun {
   admitted_at?: number
   updated_at?: number

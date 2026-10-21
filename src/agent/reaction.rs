@@ -1653,10 +1653,6 @@ async fn react(
         outcome.session_id,
         outcome.detail
     );
-    // Before the branches below: a stopped turn or a PASS was still paid for.
-    if let Some(usage) = outcome.usage.clone() {
-        record_usage(state, run_id, usage);
-    }
 
     // A stopped turn posts nothing. What it was shown is still in the agent's
     // conversation, which the next turn resumes, so it counts as seen.
@@ -1805,7 +1801,8 @@ fn mark_seen(state: &AppState, agent_id: &str, message_id: &str, delivered: &[St
     }
 }
 
-fn record_usage(state: &AppState, run_id: &str, usage: super::usage::TurnUsage) {
+/// Record on the execution inbox what a running attempt used.
+pub(crate) fn record_usage(state: &AppState, run_id: &str, usage: super::usage::TurnUsage) {
     let inbox = state
         .execution_inbox
         .read()

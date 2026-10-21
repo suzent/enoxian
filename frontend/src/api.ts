@@ -319,6 +319,7 @@ export const getExecutions = (id: string) => get<{
   runs: import('./types').ExecutionRun[]
   activity?: Record<string, import('./types').RunActivity>
   usage?: Record<string, import('./types').RunUsage>
+  spend?: import('./types').RunSpend[]
   readiness?: import('./types').Readiness
   skips?: import('./types').AdmissionSkip[]
 }>(`${api(id)}/chat/deliveries`)

@@ -131,7 +131,9 @@ describe('describeActivity', () => {
     ], usage: {
       mine: { context_used: 41_000, context_size: 200_000, cost: { amount: 0.03, currency: 'USD' } },
       theirs: { context_used: 1, context_size: 2, cost: { amount: 9, currency: 'USD' } },
-    } })
+    }, spend: [
+      { run_id: 'mine', ambient: true, updated_at: now, usage: { context_used: 41_000, context_size: 200_000, cost: { amount: 0.03, currency: 'USD' } } },
+    ] })
     render(<ExecutionStatus circleId="circle" />)
     await userEvent.click(await screen.findByText(/Recent history/))
     expect(screen.getByText(/context 41k \/ 200k/)).toBeTruthy()
@@ -150,21 +152,14 @@ describe('usage', () => {
   it('totals today by kind and counts unpriced turns apart', () => {
     const now = new Date()
     const t = Math.floor(now.getTime() / 1000)
-    const yesterday = t - 2 * 86_400
-    const runs = [
-      { run_id: 'a', message_id: 'm', agent_id: 'claude', peer_id: 'me', status: 'completed' as const, ambient: true, updated_at: t },
-      { run_id: 'b', message_id: 'm', agent_id: 'claude', peer_id: 'me', status: 'completed' as const, ambient: true, updated_at: t },
-      { run_id: 'c', message_id: 'm', agent_id: 'codex', peer_id: 'me', status: 'completed' as const, ambient: false, updated_at: t },
-      { run_id: 'old', message_id: 'm', agent_id: 'claude', peer_id: 'me', status: 'completed' as const, ambient: true, updated_at: yesterday },
+    const priced = (amount: number) => ({ context_used: 1, context_size: 2, cost: { amount, currency: 'USD' } })
+    const spend = [
+      { run_id: 'a', ambient: true, updated_at: t, usage: priced(0.1) },
+      { run_id: 'b', ambient: true, updated_at: t, usage: priced(0.2) },
+      { run_id: 'c', ambient: false, updated_at: t, usage: { context_used: 1, context_size: 2 } },
+      { run_id: 'old', ambient: true, updated_at: t - 2 * 86_400, usage: priced(5) },
     ]
-    const usage = {
-      a: { context_used: 1, context_size: 2, cost: { amount: 0.1, currency: 'USD' } },
-      b: { context_used: 1, context_size: 2, cost: { amount: 0.2, currency: 'USD' } },
-      c: { context_used: 1, context_size: 2 },
-      old: { context_used: 1, context_size: 2, cost: { amount: 5, currency: 'USD' } },
-    }
-    const line = usageToday(runs, usage, 'me', now)!
-    expect(line).toMatch(/^scrying .*0\.30.* \(2 turns\) · addressed no cost reported \(1 turn\) · 1 without a cost$/)
-    expect(usageToday(runs, usage, 'someone-else', now)).toBeUndefined()
+    expect(usageToday(spend, now)).toMatch(/^scrying .*0\.30.* \(2 turns\) · addressed no cost reported \(1 turn\) · 1 without a cost$/)
+    expect(usageToday(spend.slice(3), now)).toBeUndefined()
   })
 })

@@ -896,6 +896,16 @@ pub(crate) mod tests {
                         "cachedReadTokens": 0, "cachedWriteTokens": 31_518}}}),
                     );
                 }
+                // Spend something, then fail the turn.
+                Some("session/prompt") if mode == "metered-fail" => {
+                    send(
+                        json!({"jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": "fake-session", "update": {"sessionUpdate": "usage_update",
+                        "used": 9_000, "size": 200_000, "cost": {"amount": 0.8, "currency": "USD"}}}}),
+                    );
+                    send(json!({"jsonrpc": "2.0", "id": id,
+                        "error": {"code": -32603, "message": "model overloaded"}}));
+                }
                 // Start a long tool call and say nothing more, as an agent in
                 // the middle of a build does.
                 Some("session/prompt") => {

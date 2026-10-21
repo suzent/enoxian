@@ -568,6 +568,12 @@ async fn run_acp(
 
     let acp_session_id = acp.session_id().map(str::to_string);
     let usage = usage.lock().unwrap().turn();
+    // Recorded here rather than by the caller, so a turn that fails below is
+    // still charged for what it spent; a stopped one or a PASS is recorded the
+    // same way.
+    if let (Some(state), Some(usage)) = (&coordination, &usage) {
+        super::reaction::record_usage(state, &lease.record.session.session_id, usage.clone());
+    }
     acp.shutdown().await;
     let turn = match result {
         // Stopped, and killed for not winding down in time. Still a stop: the
@@ -769,6 +775,72 @@ mod tests {
         };
         assert_eq!(usage.cost, Some(usd));
         assert_eq!(usage.tokens.map(|t| t.total), Some(31_524));
+    }
+
+    /// A turn that fails after spending is still charged for it: the error
+    /// leaves no outcome to carry the usage, so the driver records it itself.
+    #[tokio::test]
+    async fn a_failed_turn_keeps_what_it_spent() {
+        use super::super::inbox::{Inbox, Status};
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::state::AppState::new(
+            "c1".into(),
+            "circle".into(),
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            String::new(),
+            "label".into(),
+            1,
+            "peer".into(),
+            crate::config::JoinPolicy::Manual,
+            "owner".into(),
+            crate::mls::new_mls_state(crate::mls::MlsIdentity::generate("peer").unwrap(), None),
+        );
+        let inbox = Arc::new(Inbox::open(dir.path(), 100).unwrap());
+        *state.execution_inbox.write().unwrap() = Some(Arc::downgrade(&inbox));
+        inbox
+            .admit(
+                super::super::inbox::tests::request("m", "fake-acp:metered-fail"),
+                20,
+                100,
+            )
+            .unwrap();
+        let run_id = inbox.entries()[0].run_id.clone();
+        inbox
+            .transition(&run_id, Status::Pending, Status::Running, None, 101)
+            .unwrap();
+        let cmd: AgentCommand = serde_json::from_value(serde_json::json!({
+            "command": super::super::acp::tests::fake_agent_command(),
+            "driver": "acp",
+        }))
+        .unwrap();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            launch(LaunchRequest {
+                run_id: Some(&run_id),
+                trigger_id: None,
+                coordination: Some(state.clone()),
+                agent_name: "fake-acp:metered-fail",
+                cmd: &cmd,
+                task: "ask",
+                workspace: dir.path(),
+                base_snapshot: "",
+                circle_id: "c1",
+                circle_dir: dir.path(),
+                actor_token: None,
+                relay_path: vec![],
+                initiator: Initiator::Local,
+                resume: None,
+                withheld: &[],
+            }),
+        )
+        .await
+        .expect("the turn ends");
+
+        assert!(result.is_err(), "the turn failed");
+        let cost = inbox.entries()[0].usage.clone().and_then(|u| u.cost);
+        assert_eq!(cost.map(|c| c.amount), Some(0.8));
     }
 
     /// End to end through the driver, against the fake ACP agent: a turn
