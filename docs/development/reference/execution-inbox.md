@@ -150,8 +150,11 @@ see afterwards, rather than stored with the run:
   proposal store, which includes decisions synced from other devices. A
   proposal removed by garbage collection drops out.
 - `called_after_pass`: on an unaddressed turn that passed, set when no agent
-  answered the message and the same person then called an agent by name in the
-  same thread (or in reply to it) within ten minutes. It carries the calling
+  answered the message and the same person then called an agent by name, in
+  reply to it or in its thread, within ten minutes. The same person means the
+  same owner on the member list, so a call from their other device counts; a
+  device the list does not know matches only itself. A new top-level message is
+  not matched, since nothing ties it to the one that passed. It carries the calling
   `message_id`, the `agents` called, and `after_secs`. This is often a missed
   answer, but is reported as the observation it is.
 

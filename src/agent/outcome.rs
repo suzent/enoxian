@@ -13,7 +13,10 @@
 //!   hook on each of the paths a status can change by.
 //! - **Called after a pass.** Every agent scrying the room passed on a message,
 //!   nobody answered it, and soon after the same person called an agent by
-//!   name in the same thread. That is often a miss — the message wanted an
+//!   name in reply to it or in its thread. "The same person" is the same
+//!   owner on the member list, so a call from their other device counts; a
+//!   new top-level message is not matched, since nothing ties it to the one
+//!   that passed. That is often a miss — the message wanted an
 //!   answer — but not always, so it is reported as what it is, not as a verdict.
 //!
 //! Like usage, these are this device's own observations about its own runs and
@@ -25,6 +28,7 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 use super::inbox::{Entry, Status};
+use super::label::Roster;
 use crate::control::{Author, ChatMessage};
 use crate::proposal::model::{Proposal, ProposalStatus};
 
@@ -69,6 +73,7 @@ pub fn derive(
     entries: &[&Entry],
     proposals: &[Proposal],
     transcript: &[ChatMessage],
+    roster: &Roster,
 ) -> HashMap<String, RunOutcome> {
     let mut by_run: HashMap<&str, Vec<ProposalOutcome>> = HashMap::new();
     for p in proposals {
@@ -85,7 +90,7 @@ pub fn derive(
         .filter_map(|entry| {
             let outcome = RunOutcome {
                 proposals: by_run.remove(entry.run_id.as_str()).unwrap_or_default(),
-                called_after_pass: called_after_pass(entry, transcript),
+                called_after_pass: called_after_pass(entry, transcript, roster),
             };
             (!outcome.is_empty()).then(|| (entry.run_id.clone(), outcome))
         })
@@ -93,7 +98,21 @@ pub fn derive(
 }
 
 /// Did this unaddressed turn pass, go unanswered, and get followed by a call?
-fn called_after_pass(entry: &Entry, transcript: &[ChatMessage]) -> Option<CalledAfterPass> {
+/// Whether `a` and `b` were posted by one person. By owner when the member list
+/// knows both devices, since a person posts from several; otherwise only the
+/// same device under the same name counts.
+fn same_person(a: &ChatMessage, b: &ChatMessage, roster: &Roster) -> bool {
+    match (roster.owner(&a.peer_id), roster.owner(&b.peer_id)) {
+        (Some(x), Some(y)) => x == y,
+        _ => a.peer_id == b.peer_id && a.agent_id == b.agent_id,
+    }
+}
+
+fn called_after_pass(
+    entry: &Entry,
+    transcript: &[ChatMessage],
+    roster: &Roster,
+) -> Option<CalledAfterPass> {
     let asked = &entry.request.message;
     let passed = entry.request.ambient
         && entry.status == Status::Completed
@@ -113,13 +132,14 @@ fn called_after_pass(entry: &Entry, transcript: &[ChatMessage]) -> Option<Called
         .filter(|m| {
             m.id != asked.id
                 && m.author == Author::Human
-                && m.peer_id == asked.peer_id
-                && m.agent_id == asked.agent_id
+                && same_person(m, asked, roster)
                 && !m.mentions.is_empty()
                 && m.ts > asked.ts
                 && m.ts - asked.ts <= CALLED_AFTER_PASS_WINDOW_SECS
+                // Messages from before threads had roots carry none, and two
+                // of those are not therefore in one thread.
                 && (m.reply_to.as_deref() == Some(asked.id.as_str())
-                    || m.thread_root == asked.thread_root)
+                    || (m.thread_root.is_some() && m.thread_root == asked.thread_root))
         })
         .min_by_key(|m| m.ts)
         .map(|m| CalledAfterPass {
@@ -160,6 +180,8 @@ mod tests {
         let mut req = request("m1", "claude");
         req.ambient = true;
         req.message.mentions.clear();
+        // A top-level message is the root of its own thread.
+        req.message.thread_root = Some("m1".into());
         Entry {
             run_id: "run-1".into(),
             request: req,
@@ -188,22 +210,35 @@ mod tests {
             proposal("p1", "run-1", ProposalStatus::Reverted),
             proposal("p2", "other-run", ProposalStatus::Accepted),
         ];
-        let outcomes = derive(&[&entry], &proposals, &[]);
+        let outcomes = derive(&[&entry], &proposals, &[], &Roster::default());
         let outcome = &outcomes["run-1"];
         assert_eq!(outcome.proposals.len(), 1);
         assert_eq!(outcome.proposals[0].status, ProposalStatus::Reverted);
         assert_eq!(outcome.called_after_pass, None);
     }
 
+    /// A follow-up in the passed message's thread, by its author.
+    fn follow_up(id: &str, ts: i64, agent: &str) -> ChatMessage {
+        let mut m = message(id, Author::Human, ts, &[agent]);
+        m.thread_root = Some("m1".into());
+        m
+    }
+
+    fn outcomes(entry: &Entry, transcript: &[ChatMessage]) -> HashMap<String, RunOutcome> {
+        derive(&[entry], &[], transcript, &Roster::default())
+    }
+
     #[test]
     fn a_call_soon_after_an_unanswered_pass_is_reported() {
         let entry = passed();
+        let mut unrelated = message("unrelated", Author::Human, 120, &[]);
+        unrelated.thread_root = Some("m1".into());
         let transcript = [
             entry.request.message.clone(),
-            message("unrelated", Author::Human, 120, &[]),
-            message("call", Author::Human, 190, &["claude"]),
+            unrelated,
+            follow_up("call", 190, "claude"),
         ];
-        let outcome = &derive(&[&entry], &[], &transcript)["run-1"];
+        let outcome = &outcomes(&entry, &transcript)["run-1"];
         let call = outcome.called_after_pass.as_ref().unwrap();
         assert_eq!(call.message_id, "call");
         assert_eq!(call.agents, ["claude"]);
@@ -214,42 +249,69 @@ mod tests {
     fn a_pass_is_not_a_miss_when_it_was_answered_or_nobody_followed_up() {
         let entry = passed();
         let asked = entry.request.message.clone();
-        let call = message("call", Author::Human, 190, &["claude"]);
+        let call = follow_up("call", 190, "claude");
 
         // Another agent answered the message.
         let mut answer = message("answer", Author::Agent, 150, &[]);
         answer.reply_to = Some(asked.id.clone());
-        let answered = [asked.clone(), answer, call.clone()];
-        assert!(derive(&[&entry], &[], &answered).is_empty());
+        assert!(outcomes(&entry, &[asked.clone(), answer, call.clone()]).is_empty());
 
         // The call came too late to be about it.
         let mut late = call.clone();
         late.ts = asked.ts + CALLED_AFTER_PASS_WINDOW_SECS + 1;
-        assert!(derive(&[&entry], &[], &[asked.clone(), late]).is_empty());
+        assert!(outcomes(&entry, &[asked.clone(), late]).is_empty());
 
-        // Someone else called, or it was in another thread.
+        // Someone else called, or it was a new top-level message.
         let mut other_person = call.clone();
         other_person.peer_id = "someone-else".into();
-        let mut other_thread = call.clone();
-        other_thread.thread_root = Some("elsewhere".into());
-        assert!(derive(&[&entry], &[], &[asked.clone(), other_person, other_thread]).is_empty());
+        let mut top_level = call.clone();
+        top_level.thread_root = Some("call".into());
+        assert!(outcomes(&entry, &[asked.clone(), other_person, top_level]).is_empty());
 
         // The turn answered rather than passed.
         let mut replied = entry.clone();
         replied.detail = None;
-        assert!(derive(&[&replied], &[], &[asked, call]).is_empty());
+        assert!(outcomes(&replied, &[asked, call]).is_empty());
+    }
+
+    /// Messages from before threads had roots carry none; two of those are
+    /// not therefore in one thread.
+    #[test]
+    fn rootless_messages_are_not_one_thread() {
+        let mut entry = passed();
+        entry.request.message.thread_root = None;
+        let call = message("call", Author::Human, 190, &["claude"]);
+        assert!(outcomes(&entry, &[entry.request.message.clone(), call]).is_empty());
     }
 
     #[test]
     fn a_reply_to_the_passed_message_counts_whatever_its_thread() {
-        let entry = passed();
+        let mut entry = passed();
+        entry.request.message.thread_root = None;
         let mut call = message("call", Author::Human, 130, &["codex"]);
         call.reply_to = Some("m1".into());
-        call.thread_root = Some("m1".into());
-        let outcome = &derive(&[&entry], &[], &[entry.request.message.clone(), call])["run-1"];
+        let outcome = &outcomes(&entry, &[entry.request.message.clone(), call])["run-1"];
         assert_eq!(
             outcome.called_after_pass.as_ref().unwrap().message_id,
             "call"
         );
+    }
+
+    /// A person posts from more than one device; the member list ties them.
+    #[test]
+    fn the_same_owner_on_another_device_is_the_same_person() {
+        let entry = passed();
+        let mut call = follow_up("call", 190, "claude");
+        call.peer_id = "phone".into();
+        call.agent_id = "human-phone".into();
+        let transcript = [entry.request.message.clone(), call];
+        let roster = Roster::with(&[("sender", "suzy", "laptop"), ("phone", "suzy", "phone")]);
+        assert!(derive(&[&entry], &[], &transcript, &roster)["run-1"]
+            .called_after_pass
+            .is_some());
+        let roster = Roster::with(&[("sender", "suzy", "laptop"), ("phone", "alex", "phone")]);
+        assert!(derive(&[&entry], &[], &transcript, &roster).is_empty());
+        // Without the member list, only the same device counts.
+        assert!(outcomes(&entry, &transcript).is_empty());
     }
 }

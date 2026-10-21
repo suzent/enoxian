@@ -87,7 +87,12 @@ pub async fn list(
     let proposals = crate::proposal::store::ProposalStore::open(&state.workspace)
         .map(|store| store.list_proposals())
         .unwrap_or_default();
-    let mut outcomes = crate::agent::outcome::derive(&page, &proposals, &state.transcript());
+    let mut outcomes = crate::agent::outcome::derive(
+        &page,
+        &proposals,
+        &state.transcript(),
+        &crate::agent::label::Roster::load(&state),
+    );
     let runs: Vec<_> = page
         .into_iter()
         .map(|e| {
@@ -461,6 +466,7 @@ mod tests {
         let mut asked = request("m", "claude");
         asked.ambient = true;
         asked.message.mentions.clear();
+        asked.message.thread_root = Some("m".into());
         let message = asked.message.clone();
         inbox.admit(asked, 20, 100).unwrap();
         inbox.admit(request("m2", "codex"), 20, 100).unwrap();
