@@ -335,9 +335,13 @@ async fn resolve(
     let note = match (unanimous, answers.len()) {
         (true, 1) => String::new(),
         (true, n) => format!("\n\n_Blind vote: {n} of {n} answers agreed._"),
-        (false, n) => format!(
+        (false, n) if top.len() * 2 > n => format!(
             "\n\n_Blind vote: the answers differed; this is the one {} of {n} agreed on._",
             top.len()
+        ),
+        (false, n) => format!(
+            "\n\n_Blind vote: the {n} answers did not agree, and nobody was left to break the \
+             tie; this is the first one given._"
         ),
     };
     post(state, agent, &format!("{text}{note}"), request).await;

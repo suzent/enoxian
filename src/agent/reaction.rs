@@ -1128,6 +1128,8 @@ fn warden_offer(
         note(state, &message.id, None, "waiting for the warden to decide");
         return false;
     };
+    // Decided: "waiting" is no longer a reason anything did not run.
+    state.admission_log.clear_message(&message.id);
     let choice = decision.choice.clone();
     let selected: Vec<String> = match (choice.admit, choice.mode) {
         (true, Some(_)) => choice
@@ -1179,13 +1181,48 @@ fn warden_offer(
         message,
         now,
         &selected,
-        Some(super::warden::Assignment {
+        Some(vote_pool(
             mode,
-            max: choice.max_listeners,
-            pool: choice.agents,
-        }),
+            choice.max_listeners,
+            choice.agents,
+            listeners,
+            settings.ambient_responders,
+            spec,
+        )),
     );
     true
+}
+
+/// What a warden-assigned turn carries, with a vote's tie-breakers.
+///
+/// The quiet window keeps an agent that just spoke from opening a message, so
+/// the warden chooses the first voters without it. A tie-breaking voter is
+/// different: its answer is blind, and it posts only when it sides with an
+/// earlier voter, whose answer is the one posted. So a vote may grow into the
+/// quiet listeners too, after everyone the warden ranked.
+fn vote_pool(
+    mode: super::warden::spec::ModeKind,
+    max: usize,
+    ranked: Vec<String>,
+    listeners: &[String],
+    ceiling: usize,
+    spec: &super::warden::spec::WardenSpec,
+) -> super::warden::Assignment {
+    if mode != super::warden::spec::ModeKind::Vote {
+        return super::warden::Assignment {
+            mode,
+            max,
+            pool: ranked,
+        };
+    }
+    let mut pool = ranked;
+    for listener in listeners {
+        if !pool.iter().any(|p| p.eq_ignore_ascii_case(listener)) {
+            pool.push(listener.clone());
+        }
+    }
+    let max = max.max(spec.vote.max.min(ceiling).min(pool.len()));
+    super::warden::Assignment { mode, max, pool }
 }
 
 /// FNV-1a over the message id.
@@ -3555,6 +3592,60 @@ mod tests {
         assert_eq!(votes[0].action, "added_voter");
         assert_eq!(votes[0].added.as_deref(), Some(c));
         assert_eq!(votes[1].action, "posted");
+    }
+
+    #[tokio::test]
+    async fn a_tie_is_broken_by_a_listener_that_has_just_spoken() {
+        use super::super::warden::WardenMode;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = super::super::inbox::Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let (a, b, c) = (
+            "fake-acp:say-true#a",
+            "fake-acp:say-false#b",
+            "fake-acp:say-true#c",
+        );
+        let cfg = voting_config(&[a, b, c], WardenMode::Act);
+        // `c` answered something a moment ago: the quiet window keeps it from
+        // opening the vote, not from breaking a tie.
+        let mut spoke = room_message("earlier", "an earlier answer");
+        spoke.author = crate::control::Author::Agent;
+        spoke.agent_id = c.into();
+        spoke.peer_id = state.peer_id.clone();
+        add_chat(&state, &spoke);
+        offer_room(
+            &state,
+            &handled,
+            &inbox,
+            &ledger,
+            &wake,
+            &cfg,
+            &room_message("q", &hard_question()),
+        );
+        let opened: Vec<String> = inbox
+            .entries()
+            .iter()
+            .map(|e| e.request.agent.clone())
+            .collect();
+        assert_eq!(opened, vec![a, b]);
+
+        run_until_idle(&state, &inbox, &cfg).await;
+
+        let voters: Vec<String> = inbox
+            .entries()
+            .iter()
+            .map(|e| e.request.agent.clone())
+            .collect();
+        assert_eq!(voters, vec![a, b, c]);
+        let replies = agent_replies(&state, "q");
+        assert_eq!(replies.len(), 1);
+        assert_eq!(
+            replies[0].agent_id, a,
+            "the earlier voter on the winning side posts"
+        );
+        assert!(replies[0].text.contains("the one 2 of 3 agreed on"));
     }
 
     #[tokio::test]

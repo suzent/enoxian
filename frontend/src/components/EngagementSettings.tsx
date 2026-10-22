@@ -160,9 +160,9 @@ export default function EngagementSettings({
         <select className="border px-2 py-1" aria-label="Warden" disabled={busy}
           value={effective.warden_mode ?? 'off'}
           onChange={e => onChange({ warden_mode: e.target.value as 'off' | 'shadow' | 'act' })}>
-          <option value="off">Off — listeners take turns</option>
-          <option value="shadow">Shadow — record its choices only</option>
-          <option value="act">On — it decides who answers</option>
+          <option value="off">Off</option>
+          <option value="shadow">Shadow</option>
+          <option value="act">On</option>
         </select>,
         effective.warden_mode === 'act'
           ? 'For each message nobody addressed, the warden decides whether an agent should answer, and how: one listener, several together, or a blind vote where two answer independently and one answer is posted. Choose its decider in the settings for all Circles.'
