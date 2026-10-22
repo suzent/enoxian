@@ -443,10 +443,16 @@ mod tests {
         create(dir.path(), "bob", "spark", "gemini").unwrap();
         create(dir.path(), "suzy", "jessair", "claude").unwrap();
         let brief = brief_section(&state, "claude");
-        assert!(brief.contains("Your card is agents/suzy/jessair/claude.md"), "{brief}");
+        assert!(
+            brief.contains("Your card is agents/suzy/jessair/claude.md"),
+            "{brief}"
+        );
         assert!(brief.contains("@bob/spark/codex — Runs the test suite on the GPU box"));
         assert!(!brief.contains("@bob/spark/gemini"));
-        assert!(!brief.contains("@suzy/jessair/claude —"), "never listed as someone else");
+        assert!(
+            !brief.contains("@suzy/jessair/claude —"),
+            "never listed as someone else"
+        );
         assert_eq!(local_summary(&state, "claude"), "claude (on suzy/jessair)");
     }
 
@@ -461,7 +467,9 @@ mod tests {
         let (_, created) = create(dir.path(), "suzy", "jessair", "claude").unwrap();
         assert!(!created, "an existing card is never overwritten");
         assert_eq!(
-            read(dir.path(), "suzy", "jessair", "claude").unwrap().summary,
+            read(dir.path(), "suzy", "jessair", "claude")
+                .unwrap()
+                .summary,
             "mine"
         );
     }
