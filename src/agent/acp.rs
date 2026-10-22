@@ -26,17 +26,62 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use super::liveness::Activity;
 
-/// The ACP protocol version we implement. Agents may echo it as a string or an
-/// integer; we accept either on the response and never hard-fail on a mismatch
-/// (forward-compat: a newer agent still speaks v1 methods).
+/// Supported major protocol version.
 const PROTOCOL_VERSION: u32 = 1;
+
+const MAX_FRAME: usize = 1024 * 1024;
+const MAX_BUFFER: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, thiserror::Error)]
+#[error("ACP request failed (code {code}): {message}")]
+pub struct RpcError {
+    pub code: i64,
+    pub message: String,
+}
+
+pub fn auth_required(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<RpcError>()
+        .is_some_and(|error| error.code == -32000)
+}
+
+struct Inbound {
+    value: Value,
+    _budget: OwnedSemaphorePermit,
+}
+
+async fn read_frame<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Option<(Value, usize)>> {
+    loop {
+        let mut line = Vec::new();
+        let n = (&mut *reader)
+            .take((MAX_FRAME + 1) as u64)
+            .read_until(b'\n', &mut line)
+            .await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        if n > MAX_FRAME {
+            bail!("ACP frame exceeds 1 MiB");
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        // The subprocess fixture runs inside Rust's test harness.
+        #[cfg(test)]
+        if line.starts_with(b"running 1 test") {
+            continue;
+        }
+        let value = serde_json::from_slice(&line).context("Invalid ACP JSON frame")?;
+        return Ok(Some((value, n)));
+    }
+}
 
 /// Decision returned by the permission callback the driver installs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,9 +164,14 @@ pub struct AcpSession<H: ClientHooks> {
     child: Child,
     stdin: ChildStdin,
     /// Responses to requests we sent, delivered by the reader task.
-    resp_rx: mpsc::UnboundedReceiver<Value>,
+    resp_rx: mpsc::Receiver<Inbound>,
     /// Agent-initiated requests/notifications, delivered by the reader task.
-    req_rx: mpsc::UnboundedReceiver<Value>,
+    req_rx: mpsc::Receiver<Inbound>,
+    transport_error: Arc<Mutex<Option<String>>>,
+    reader: tokio::task::JoinHandle<()>,
+    stderr_reader: tokio::task::JoinHandle<()>,
+    pub auth_methods: Vec<Value>,
+    output_bytes: usize,
     session_id: Option<String>,
     /// Whether the agent advertised the `loadSession` capability at init.
     load_session_cap: bool,
@@ -167,9 +217,8 @@ impl<H: ClientHooks> AcpSession<H> {
     ///
     /// `resume` is a prior `sessionId` to continue. When present and the agent
     /// advertises the `loadSession` capability, we call `session/load` to
-    /// restore the conversation. If loading fails (e.g. the agent no longer
-    /// knows that session after a restart), we fall back to `session/new` — so
-    /// resume is best-effort continuity, never a hard dependency.
+    /// restore the conversation. Errors preserve the saved session rather than
+    /// silently replacing it with an empty conversation.
     pub async fn start(
         command: &[String],
         workspace: &Path,
@@ -178,6 +227,37 @@ impl<H: ClientHooks> AcpSession<H> {
         agent_id: &str,
         circle_id: &str,
         actor_token: Option<&str>,
+    ) -> Result<Self> {
+        let mut session = Self::connect(
+            command,
+            workspace,
+            hooks,
+            agent_id,
+            circle_id,
+            actor_token,
+            false,
+        )
+        .await?;
+        match resume {
+            Some(prior) if session.load_session_cap => {
+                session.load_session(prior).await.context(
+                    "Could not restore ACP session; the saved conversation was not replaced",
+                )?;
+                session.resumed = true;
+            }
+            _ => session.new_session().await?,
+        }
+        Ok(session)
+    }
+
+    pub async fn connect(
+        command: &[String],
+        workspace: &Path,
+        hooks: H,
+        agent_id: &str,
+        circle_id: &str,
+        actor_token: Option<&str>,
+        terminal_auth: bool,
     ) -> Result<Self> {
         let (program, args) = command
             .split_first()
@@ -203,38 +283,38 @@ impl<H: ClientHooks> AcpSession<H> {
         let stdout = child.stdout.take().context("child stdout missing")?;
         let stderr = child.stderr.take().context("child stderr missing")?;
 
-        // Drain stderr to the log so a crashing agent is diagnosable.
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                tracing::debug!("[acp:agent-stderr] {line}");
-            }
+        // Drain without logging credential-bearing provider output.
+        let stderr_reader = tokio::spawn(async move {
+            let _ = tokio::io::copy(&mut BufReader::new(stderr), &mut tokio::io::sink()).await;
         });
-
-        // Reader task: split incoming JSON-RPC into responses (have `id` + no
-        // `method`) vs inbound requests/notifications (have `method`). Responses
-        // go to resp_rx; requests are handled inline because they may need a
-        // reply we must write back to stdin — so we forward *raw* request lines
-        // on a second channel and service them in `request loop` below.
-        let (resp_tx, resp_rx) = mpsc::unbounded_channel::<Value>();
-        let (req_tx, req_rx) = mpsc::unbounded_channel::<Value>();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
+        let (resp_tx, resp_rx) = mpsc::channel::<Inbound>(8);
+        let (req_tx, req_rx) = mpsc::channel::<Inbound>(256);
+        let transport_error = Arc::new(Mutex::new(None));
+        let error = transport_error.clone();
+        let reader = tokio::spawn(async move {
+            let budget = Arc::new(Semaphore::new(MAX_BUFFER));
+            let mut input = BufReader::new(stdout);
+            let result: Result<()> = async {
+                while let Some((value, bytes)) = read_frame(&mut input).await? {
+                    let permit = budget
+                        .clone()
+                        .try_acquire_many_owned(bytes as u32)
+                        .map_err(|_| anyhow!("ACP queued output exceeds 16 MiB"))?;
+                    let is_request = value.get("method").is_some();
+                    let frame = Inbound {
+                        value,
+                        _budget: permit,
+                    };
+                    let channel = if is_request { &req_tx } else { &resp_tx };
+                    channel
+                        .try_send(frame)
+                        .map_err(|_| anyhow!("ACP message queue overflow"))?;
                 }
-                match serde_json::from_str::<Value>(line) {
-                    Ok(msg) => {
-                        if msg.get("method").is_some() {
-                            let _ = req_tx.send(msg);
-                        } else {
-                            let _ = resp_tx.send(msg);
-                        }
-                    }
-                    Err(e) => tracing::warn!("[acp] unparseable line from agent: {e}: {line}"),
-                }
+                Ok(())
+            }
+            .await;
+            if let Err(reason) = result {
+                *error.lock().unwrap() = Some(reason.to_string());
             }
         });
 
@@ -243,6 +323,11 @@ impl<H: ClientHooks> AcpSession<H> {
             stdin,
             resp_rx,
             req_rx,
+            transport_error,
+            reader,
+            stderr_reader,
+            auth_methods: Vec::new(),
+            output_bytes: 0,
             session_id: None,
             load_session_cap: false,
             resumed: false,
@@ -254,52 +339,44 @@ impl<H: ClientHooks> AcpSession<H> {
             cancelling: false,
         };
 
-        session.initialize().await?;
-
-        // Try to resume a prior conversation; fall back to a fresh session.
-        match resume {
-            Some(prior) if session.load_session_cap => match session.load_session(prior).await {
-                Ok(()) => {
-                    session.resumed = true;
-                    tracing::info!("[acp] resumed session {prior}");
-                }
-                Err(e) => {
-                    tracing::warn!("[acp] resume of {prior} failed ({e}); starting fresh");
-                    session.new_session().await?;
-                }
-            },
-            Some(prior) => {
-                tracing::info!("[acp] agent lacks loadSession; ignoring prior session {prior}");
-                session.new_session().await?;
-            }
-            None => session.new_session().await?,
-        }
+        session.initialize(terminal_auth).await?;
         Ok(session)
     }
 
-    async fn initialize(&mut self) -> Result<()> {
+    async fn initialize(&mut self, terminal_auth: bool) -> Result<()> {
         let result = self
             .call(
                 "initialize",
                 json!({
                     "protocolVersion": PROTOCOL_VERSION,
+                    "clientInfo": {"name": "enoxian", "version": env!("CARGO_PKG_VERSION")},
                     "clientCapabilities": {
                         "fs": { "readTextFile": true, "writeTextFile": true },
-                        "terminal": false
+                        "terminal": false,
+                        "auth": { "terminal": terminal_auth }
                     }
                 }),
             )
             .await?;
+        let version = result.get("protocolVersion");
+        let major = version.and_then(Value::as_u64).or_else(|| {
+            version
+                .and_then(Value::as_str)
+                .and_then(|value| value.parse::<u64>().ok())
+        });
+        if major != Some(PROTOCOL_VERSION as u64) {
+            bail!("Unsupported ACP protocol version");
+        }
+        self.auth_methods = result
+            .get("authMethods")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         self.load_session_cap = result
             .get("agentCapabilities")
             .and_then(|c| c.get("loadSession"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        tracing::info!(
-            "[acp] initialized (loadSession={}): {}",
-            self.load_session_cap,
-            compact(&result)
-        );
         Ok(())
     }
 
@@ -325,7 +402,7 @@ impl<H: ClientHooks> AcpSession<H> {
         self.session_id.as_deref()
     }
 
-    async fn new_session(&mut self) -> Result<()> {
+    pub async fn new_session(&mut self) -> Result<()> {
         let cwd = self
             .workspace
             .to_str()
@@ -365,6 +442,7 @@ impl<H: ClientHooks> AcpSession<H> {
             .clone()
             .ok_or_else(|| anyhow!("prompt before session/new"))?;
         self.cancelling = false;
+        self.output_bytes = 0;
         let result = self
             .exchange(
                 "session/prompt",
@@ -384,6 +462,25 @@ impl<H: ClientHooks> AcpSession<H> {
             stop_reason,
             tokens: super::usage::parse_tokens(&result),
         })
+    }
+
+    pub async fn authenticate(&mut self, method_id: &str) -> Result<()> {
+        let method = self
+            .auth_methods
+            .iter()
+            .find(|m| m["id"].as_str() == Some(method_id))
+            .context("Authentication method was not advertised")?;
+        if method
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("agent")
+            != "agent"
+        {
+            bail!("This method requires terminal authentication");
+        }
+        self.exchange("authenticate", json!({"methodId": method_id}), None)
+            .await?;
+        Ok(())
     }
 
     /// Terminate the agent subprocess.
@@ -434,8 +531,12 @@ impl<H: ClientHooks> AcpSession<H> {
 
         let never = CancellationToken::new();
         let stop = stop.unwrap_or(&never);
+        let mut requests_open = true;
         let mut grace: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
         loop {
+            if let Some(error) = self.transport_error.lock().unwrap().as_ref() {
+                bail!("{error}");
+            }
             tokio::select! {
                 _ = stop.cancelled(), if !self.cancelling => {
                     self.cancelling = true;
@@ -450,17 +551,24 @@ impl<H: ClientHooks> AcpSession<H> {
                 }
                 // A message from the agent that is our response or an out-of-band one.
                 resp = self.resp_rx.recv() => {
-                    let resp = resp.ok_or_else(|| anyhow!("agent closed the connection during `{method}`"))?;
+                    let resp = resp.ok_or_else(|| anyhow!(self.transport_error.lock().unwrap().clone()
+                        .unwrap_or_else(|| format!("agent closed the connection during `{method}`"))))?.value;
                     if resp.get("id").and_then(Value::as_u64) == Some(id) {
                         // The reader routes lines in order, so whatever the
                         // agent sent before this response is already queued.
                         // `select!` may have picked the response first; the
                         // last reply chunk is often among those (#251).
                         while let Ok(req) = self.req_rx.try_recv() {
-                            self.service(req).await?;
+                            self.service(req.value).await?;
+                        }
+                        if let Some(error) = self.transport_error.lock().unwrap().as_ref() {
+                            bail!("{error}");
                         }
                         if let Some(err) = resp.get("error") {
-                            return Err(anyhow!("agent error on `{method}`: {}", compact(err)));
+                            return Err(RpcError {
+                                code: err["code"].as_i64().unwrap_or(-32603),
+                                message: err["message"].as_str().unwrap_or("Agent request failed").to_string(),
+                            }.into());
                         }
                         return Ok(resp.get("result").cloned().unwrap_or(Value::Null));
                     }
@@ -468,9 +576,10 @@ impl<H: ClientHooks> AcpSession<H> {
                     // serial flow) — ignore.
                 }
                 // An agent-initiated request/notification we must service.
-                req = self.req_rx.recv() => {
-                    if let Some(req) = req {
-                        self.service(req).await?;
+                req = self.req_rx.recv(), if requests_open => {
+                    match req {
+                        Some(req) => self.service(req.value).await?,
+                        None => requests_open = false,
                     }
                 }
             }
@@ -514,6 +623,10 @@ impl<H: ClientHooks> AcpSession<H> {
 
         match method {
             "session/update" => {
+                self.output_bytes += serde_json::to_vec(&params)?.len();
+                if self.output_bytes > MAX_BUFFER {
+                    bail!("ACP turn output exceeds 16 MiB");
+                }
                 self.hooks
                     .on_update(&params.get("update").cloned().unwrap_or(Value::Null));
                 // Notification — no reply.
@@ -561,7 +674,15 @@ impl<H: ClientHooks> AcpSession<H> {
                 // expects a response; ignore pure notifications.
                 if id.is_some() {
                     tracing::debug!("[acp] unhandled agent method `{other}` — replying not-found");
-                    self.reply(id, Err(anyhow!("method not found"))).await?;
+                    self.reply(
+                        id,
+                        Err(RpcError {
+                            code: -32601,
+                            message: "Method not found".into(),
+                        }
+                        .into()),
+                    )
+                    .await?;
                 }
             }
         }
@@ -571,8 +692,15 @@ impl<H: ClientHooks> AcpSession<H> {
     /// Read a workspace file for the agent. Confined to the workspace.
     fn fs_read(&self, params: &Value) -> Result<Value> {
         let abs = self.resolve_in_workspace(params.get("path").and_then(Value::as_str))?;
-        let content = std::fs::read_to_string(&abs)
-            .with_context(|| format!("fs/read_text_file: {}", abs.display()))?;
+        let file = std::fs::File::open(&abs)?;
+        let mut content = String::new();
+        std::io::Read::read_to_string(
+            &mut std::io::Read::take(file, (MAX_FRAME + 1) as u64),
+            &mut content,
+        )?;
+        if content.len() > MAX_FRAME {
+            bail!("File exceeds ACP read limit of 1 MiB");
+        }
 
         // Optional line/limit windowing.
         let line = params.get("line").and_then(Value::as_u64);
@@ -631,7 +759,7 @@ impl<H: ClientHooks> AcpSession<H> {
             Err(e) => json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "error": { "code": -32000, "message": e.to_string() }
+                "error": { "code": e.downcast_ref::<RpcError>().map_or(-32603, |error| error.code), "message": e.to_string() }
             }),
         };
         self.send(msg).await
@@ -648,6 +776,8 @@ impl<H: ClientHooks> AcpSession<H> {
 
 impl<H: ClientHooks> Drop for AcpSession<H> {
     fn drop(&mut self) {
+        self.reader.abort();
+        self.stderr_reader.abort();
         if let Some(pid) = self.child.id() {
             super::spawn::kill_tree(pid);
         }
@@ -655,7 +785,7 @@ impl<H: ClientHooks> Drop for AcpSession<H> {
 }
 
 /// Choose the first offered permission option whose `kind` matches one of the
-/// preferred kinds, falling back to the first option of any kind.
+/// preferred kinds. No matching option means cancellation.
 fn pick_option(params: &Value, preferred_kinds: &[&str]) -> Option<String> {
     let options = params.get("options").and_then(Value::as_array)?;
     for want in preferred_kinds {
@@ -667,10 +797,7 @@ fn pick_option(params: &Value, preferred_kinds: &[&str]) -> Option<String> {
             }
         }
     }
-    options
-        .first()
-        .and_then(|o| o.get("optionId").and_then(Value::as_str))
-        .map(str::to_string)
+    None
 }
 
 /// Lexical path normalization (resolves `.` / `..` without hitting disk).
@@ -734,7 +861,7 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
-    fn pick_option_prefers_kind_then_falls_back() {
+    fn pick_option_never_reverses_the_decision() {
         let params = json!({
             "options": [
                 { "optionId": "a", "name": "Allow once", "kind": "allow_once" },
@@ -743,8 +870,8 @@ pub(crate) mod tests {
         });
         assert_eq!(pick_option(&params, &["allow_once"]).as_deref(), Some("a"));
         assert_eq!(pick_option(&params, &["reject_once"]).as_deref(), Some("r"));
-        // Unknown preference falls back to the first option.
-        assert_eq!(pick_option(&params, &["nope"]).as_deref(), Some("a"));
+        // An unmatched decision must not select an unrelated option.
+        assert_eq!(pick_option(&params, &["nope"]), None);
     }
 
     #[test]
@@ -846,6 +973,7 @@ pub(crate) mod tests {
             out.flush().unwrap();
         };
         let mut prompt = None;
+        let mut authenticated = false;
         for line in std::io::stdin().lock().lines() {
             let Ok(line) = line else { break };
             let Ok(msg) = serde_json::from_str::<Value>(&line) else {
@@ -855,6 +983,28 @@ pub(crate) mod tests {
             match msg["method"].as_str() {
                 // An agent that never finishes starting.
                 _ if mode == "mute" => {}
+                Some("initialize") if mode == "string-version" => {
+                    send(json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":"1"}}))
+                }
+                Some("initialize") if mode == "wrong-version" => {
+                    send(json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":2}}))
+                }
+                Some("initialize") if mode == "resume-auth" => send(
+                    json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}),
+                ),
+                Some("session/load") if mode == "resume-auth" => send(
+                    json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"Sign in required"}}),
+                ),
+                Some("initialize") if mode == "auth" => send(
+                    json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":1,"authMethods":[{"id":"login","name":"Browser"},{"id":"terminal","type":"terminal"}]}}),
+                ),
+                Some("authenticate") if mode == "auth" => {
+                    authenticated = true;
+                    send(json!({"jsonrpc":"2.0","id":id,"result":{}}));
+                }
+                Some("session/new") if mode == "auth" && !authenticated => send(
+                    json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"Sign in required"}}),
+                ),
                 Some("initialize") => send(json!({"jsonrpc": "2.0", "id": id,
                     "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": false}}})),
                 Some("session/new") => send(json!({"jsonrpc": "2.0", "id": id,
@@ -924,6 +1074,89 @@ pub(crate) mod tests {
                 _ => {}
             }
         }
+    }
+
+    #[tokio::test]
+    async fn accepts_legacy_string_encoded_major_version() {
+        let (session, _dir) = fake_session("string-version").await;
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn rejects_unsupported_major_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = AcpSession::start(
+            &fake_agent_command(),
+            dir.path(),
+            AllowAll,
+            None,
+            "fake-acp:wrong-version",
+            "circle",
+            None,
+        )
+        .await;
+        assert!(result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Unsupported ACP protocol version"));
+    }
+
+    #[tokio::test]
+    async fn authentication_failure_does_not_replace_saved_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = AcpSession::start(
+            &fake_agent_command(),
+            dir.path(),
+            AllowAll,
+            Some("saved"),
+            "fake-acp:resume-auth",
+            "circle",
+            None,
+        )
+        .await;
+        assert!(auth_required(
+            &result.err().expect("must not silently start fresh")
+        ));
+    }
+
+    #[tokio::test]
+    async fn advertised_agent_login_is_verified_without_a_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = AcpSession::connect(
+            &fake_agent_command(),
+            dir.path(),
+            AllowAll,
+            "fake-acp:auth",
+            "circle",
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(auth_required(&session.new_session().await.unwrap_err()));
+        assert!(session.authenticate("terminal").await.is_err());
+        assert!(session.authenticate("invented").await.is_err());
+        session.authenticate("login").await.unwrap();
+        session.new_session().await.unwrap();
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn framing_rejects_oversized_or_invalid_output_without_echoing_it() {
+        let oversized = vec![b'x'; MAX_FRAME + 100];
+        let error = read_frame(&mut oversized.as_slice()).await.err().unwrap();
+        assert!(error.to_string().contains("exceeds"));
+        let error = read_frame(&mut b"secret-invalid-json\n".as_slice())
+            .await
+            .err()
+            .unwrap();
+        assert!(!error.to_string().contains("secret"));
+        let frame = read_frame(&mut b"\n{\"id\":1,\"result\":{}}\n".as_slice())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame.0["id"], 1);
     }
 
     /// Collects the reply text the way the driver's `ReplyBuf` does.

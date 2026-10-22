@@ -666,7 +666,7 @@ async fn hold_draft<H: super::acp::ClientHooks>(
     }
 }
 
-fn working_dir(workspace: &Path, rel: Option<&str>) -> PathBuf {
+pub(super) fn working_dir(workspace: &Path, rel: Option<&str>) -> PathBuf {
     match rel {
         Some(r) if !r.is_empty() => workspace.join(r),
         _ => workspace.to_path_buf(),

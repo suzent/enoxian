@@ -7,6 +7,7 @@ import { useApp } from '../context/AppContext'
 import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
 import EngagementSettings, { type Patch } from './EngagementSettings'
 import DeviceIdentity from './DeviceIdentity'
+import AgentAuthentication, { useAgentAuthentication } from './AgentAuthentication'
 
 type SettingsTab = 'device' | 'agents' | 'behaviour' | 'connectivity' | 'membership'
 
@@ -45,6 +46,7 @@ export default function DeviceSettings({ onClose, circleId, membership }: Props)
   const activeCircleId = circleId ?? null
   const scope = circleId ? 'circle' : 'global'
   const [activeTab, setActiveTab] = useState<SettingsTab>('behaviour')
+  const auth = useAgentAuthentication(activeTab === 'agents', activeCircleId)
   const [cfg, setCfg] = useState<AgentConfigView | null>(null)
   const [plugins, setPlugins] = useState<AgentPlugin[] | null>(null)
   const [known, setKnown] = useState<DiscoveredAgent[]>([])
@@ -250,6 +252,7 @@ export default function DeviceSettings({ onClose, circleId, membership }: Props)
             </>
           )}
 
+          {activeTab === 'agents' && auth.error && <p role="alert" className="text-[11px] font-mono">{auth.error}</p>}
           {activeTab === 'agents' && cfg && (
             <>
               {plugins && plugins.length > 0 && (
@@ -288,7 +291,7 @@ export default function DeviceSettings({ onClose, circleId, membership }: Props)
                             ? `Node.js ${plugin.node_runtime_version} is too old · requires 22+ with npm`
                             : 'Node.js 22+ with npm required'
                         : ready
-                        ? 'Ready'
+                        ? 'Installed'
                         : plugin.legacy_configured
                           ? 'Runtime download · migrate'
                           : plugin.state === 'ready'
@@ -308,7 +311,7 @@ export default function DeviceSettings({ onClose, circleId, membership }: Props)
                           </div>
                           <div className="flex items-center justify-between gap-2">
                             {ready ? (
-                              <span className="text-[9px] font-bold px-1.5 py-0.5 bg-obsidian text-alabaster">READY</span>
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 bg-obsidian text-alabaster">INSTALLED</span>
                             ) : prerequisitesMissing ? (
                               <button
                                 onClick={() => { setError(null); refresh() }}
@@ -338,6 +341,8 @@ export default function DeviceSettings({ onClose, circleId, membership }: Props)
                           </div>
                         </div>
 
+                        {ready && <AgentAuthentication agent={plugin.agent} state={auth.states[plugin.agent]}
+                          pending={auth.pending[plugin.agent]} onAction={auth.act} />}
                         {runtimeMissing && (
                           <div className="mt-2 border-l-2 border-obsidian/40 pl-2 text-[9px] text-slate leading-relaxed">
                             {native ? (
@@ -438,7 +443,7 @@ export default function DeviceSettings({ onClose, circleId, membership }: Props)
                     // whose program is gone would fail at launch, so say so here
                     // rather than at mention time.
                     const health = agent.status === 'ready'
-                      ? { label: 'READY', ready: true, detail: about }
+                      ? { label: 'INSTALLED', ready: true, detail: about }
                       : agent.status === 'runtime_download'
                         ? { label: 'DOWNLOADS', ready: false, detail: 'Runs a package manager on first use · migrate to a pinned adapter' }
                         : { label: 'MISSING', ready: false, detail: `${agent.command[0] || 'Command'} not found on PATH` }
@@ -450,6 +455,8 @@ export default function DeviceSettings({ onClose, circleId, membership }: Props)
                           <div className={`text-[9px] mt-0.5 ${health.ready ? 'text-obsidian' : 'text-slate'}`}>{health.detail}</div>
                         )}
                         <div className="text-[8px] text-slate truncate" title={agent.command.join(' ')}>{agent.command.join(' ')}</div>
+                        {health.ready && agent.driver === 'acp' && <AgentAuthentication agent={agent.name} state={auth.states[agent.name]}
+                          pending={auth.pending[agent.name]} onAction={auth.act} />}
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <span

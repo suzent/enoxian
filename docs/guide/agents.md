@@ -11,10 +11,36 @@ given device is that device's own local decision.
 
 ---
 
+## Check sign-in on this device
+
+In **Device Settings → Agents**, installation and sign-in have separate statuses.
+Use the refresh icon to check an installed ACP agent without sending a model
+prompt. **SIGN IN** uses the agent's advertised authentication method; if it
+requires a terminal, a real terminal opens on the device running the daemon.
+For supported CLI bridges without an advertised method, enoxian opens the
+product's own login command. Complete login there, then return to the panel.
+
+**CANCEL** stops the check or login. Closing a terminal also ends the attempt.
+After login, enoxian checks a new connection before showing **Signed in**.
+Checks create an empty agent session, so a provider that defers credential
+validation until the first prompt can still reject a later task. No paid test
+prompt is sent. Status is kept only for this daemon session; refresh it after
+signing out or changing credentials outside enoxian.
+
+Within a Circle's settings, relative working directories resolve from that
+Circle's workspace, just as task execution does. Global settings use the
+private `~/.enoxian/auth-workspace` directory as the base instead.
+
+Terminal login requires an interactive desktop on the daemon's device. On a
+headless host, sign in using the provider CLI there and refresh the check.
+Custom agents with only connection-scoped credentials cannot share that login
+with task processes; configure credentials that persist across connections.
+
 ## Set up your first agent
 
-For Claude Code, install and authenticate the official Claude CLI first
-(`claude auth login`), and have Node.js 22+ with npm available. Then:
+For Claude Code, install the official Claude CLI and have Node.js 22+ with npm
+available. Sign in with `claude auth login`, or use **Device Settings → Agents →
+SIGN IN** after installing the adapter. Then:
 
 ```sh
 enox agent install claude
@@ -184,7 +210,7 @@ Built-in managed adapter plugins:
   `claude auth status`, and passes the resolved executable through
   `CLAUDE_CODE_EXECUTABLE`. This preserves the user's Claude subscription,
   `CLAUDE_CONFIG_DIR`, native settings, MCP configuration, and project skills.
-  Install the CLI and run `claude auth login` before `enox agent install claude`.
+  Install the CLI before `enox agent install claude`, then sign in from Device Settings or with `claude auth login`.
   The bridge also requires system Node.js 22 or newer with npm. Enoxian checks
   these prerequisites before installation but does not install or manage them.
 - **Codex** — `codex-acp` (needs OpenAI/ChatGPT
@@ -288,8 +314,10 @@ A run produces up to two independent results:
 ## Conversation memory
 
 ACP agents can resume their conversation in the same Circle. Follow-up messages
-can build on earlier work without repeating the whole context. This is best
-effort: if the agent cannot restore its session, enoxian starts a fresh one.
+can build on earlier work without repeating the whole context. If a supported
+restore fails, enoxian reports the failure and preserves the saved conversation
+instead of silently starting over. For an authentication error, sign in and
+retry. Agents without conversation restore support start a new session.
 
 ---
 

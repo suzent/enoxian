@@ -1,4 +1,5 @@
 pub mod actor;
+pub mod agent_auth;
 pub mod agent_config;
 pub mod attachments;
 pub mod auth;
@@ -214,6 +215,11 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
         .route(
             "/api/agent-config/discover",
             get(agent_config::discover_agents),
+        )
+        .route("/api/agent-auth", get(agent_auth::states))
+        .route(
+            "/api/agent-auth/{id}",
+            post(agent_auth::start).delete(agent_auth::cancel),
         )
         .route("/api/agent-plugins", get(agent_config::list_plugins))
         .route(

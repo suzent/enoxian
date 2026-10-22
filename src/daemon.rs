@@ -27,6 +27,7 @@ pub struct DaemonState {
     start_errors: Arc<DashMap<String, String>>,
     /// Cancelled when `POST /shutdown` is called — triggers graceful server exit.
     pub shutdown_token: CancellationToken,
+    pub acp_auth: crate::agent::authentication::AuthJobs,
 }
 
 /// Holds a workspace for one circle. Released when startup fails or the guard
@@ -79,6 +80,7 @@ impl DaemonState {
             workspaces: Arc::new(DashMap::new()),
             start_errors: Arc::new(DashMap::new()),
             shutdown_token: CancellationToken::new(),
+            acp_auth: Default::default(),
         }
     }
 
