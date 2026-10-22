@@ -8,6 +8,7 @@ import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
 import EngagementSettings, { type Patch } from './EngagementSettings'
 import DeviceIdentity from './DeviceIdentity'
 import AgentAuthentication, { useAgentAuthentication } from './AgentAuthentication'
+import AgentCards from './AgentCards'
 
 type SettingsTab = 'device' | 'agents' | 'behaviour' | 'connectivity' | 'membership'
 
@@ -32,6 +33,8 @@ interface Props {
   onClose: () => void
   circleId?: string
   membership?: ReactNode
+  /** Open a shared-folder file in the editor, closing settings. */
+  onOpenFile?: (path: string) => void
 }
 
 /**
@@ -41,7 +44,7 @@ interface Props {
  * a local process) is gated behind a confirm; adding/removing agents is
  * ordinary launcher config. See docs/concepts/proposals.md.
  */
-export default function DeviceSettings({ onClose, circleId, membership }: Props) {
+export default function DeviceSettings({ onClose, circleId, membership, onOpenFile }: Props) {
   const { circles } = useApp()
   const activeCircleId = circleId ?? null
   const scope = circleId ? 'circle' : 'global'
@@ -248,6 +251,10 @@ export default function DeviceSettings({ onClose, circleId, membership }: Props)
                   />
                 )}
               </section>
+              {scope === 'circle' && activeCircleId && (
+                <AgentCards circleId={activeCircleId}
+                  onOpenFile={onOpenFile && (path => { onOpenFile(path); onClose() })} />
+              )}
 
             </>
           )}

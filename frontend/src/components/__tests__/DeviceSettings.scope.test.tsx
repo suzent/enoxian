@@ -25,6 +25,8 @@ vi.mock('../../api', () => ({
   })),
   setIdentity: vi.fn(async () => ({ status: 'ok' })),
   setForceRelay: vi.fn(),
+  getAgentCards: vi.fn(async () => ({ cards: [] })),
+  createAgentCard: vi.fn(),
 }))
 
 vi.mock('../../context/AppContext', () => ({

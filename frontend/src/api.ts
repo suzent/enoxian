@@ -323,6 +323,19 @@ export const getExecutions = (id: string) => get<{
   readiness?: import('./types').Readiness
   skips?: import('./types').AdmissionSkip[]
 }>(`${api(id)}/chat/deliveries`)
+export interface AgentCard {
+  handle: string
+  owner: string
+  device: string
+  agent: string
+  path: string
+  local: boolean
+  exists: boolean
+  summary: string
+}
+export const getAgentCards = (id: string) => get<{ cards: AgentCard[] }>(`${api(id)}/agent-cards`)
+export const createAgentCard = (id: string, agent: string) =>
+  post<{ path: string; created: boolean }>(`${api(id)}/agent-cards`, { agent })
 export const updateExecution = (id: string, run: string, action: 'retry' | 'cancel') => post(`${api(id)}/chat/executions/${encodeURIComponent(run)}`, { action })
 
 

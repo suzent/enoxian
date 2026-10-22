@@ -491,6 +491,7 @@ fn standing_brief(state: &AppState, agent_id: &str, framing: Framing) -> String 
          accept, reject, or revert — so make focused, clear changes and explain what you did. \
          Your text reply is posted back into the circle chat, so answer conversationally.\n\
          {conventions}\
+         {cards}\
          If another agent is clearly better placed for part of the work, you may hand it over by \
          mentioning it. Whether it actually runs is that device's own decision, only the first \
          agent you mention is woken, and a chain of hand-offs shares a limited budget — so do the \
@@ -505,6 +506,7 @@ fn standing_brief(state: &AppState, agent_id: &str, framing: Framing) -> String 
         roster = roster,
         woken = woken,
         conventions = WORKSPACE_CONVENTIONS,
+        cards = super::cards::brief_section(state, agent_id),
     )
 }
 

@@ -136,6 +136,21 @@ pub async fn create_file(
     }
 
     let content = req.content.unwrap_or_default();
+    // The shared document first, then the file. The other way round, the
+    // watcher can read the new file and fill the document before this does,
+    // and inserting the content again here doubles it. Seeding only an empty
+    // document makes the order safe either way.
+    {
+        let doc = state.get_or_create_doc(&rel);
+        let mut txn = match doc.try_transact_mut() {
+            Ok(txn) => txn,
+            Err(_) => return super::circle_busy(),
+        };
+        let text = txn.get_or_insert_text(rel.as_str());
+        if !content.is_empty() && text.len(&txn) == 0 {
+            text.insert(&mut txn, 0, &content);
+        }
+    }
     if let Err(err) = tokio::fs::write(&full, &content).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -144,15 +159,6 @@ pub async fn create_file(
             .into_response();
     }
 
-    let doc = state.get_or_create_doc(&rel);
-    let mut txn = match doc.try_transact_mut() {
-        Ok(txn) => txn,
-        Err(_) => return super::circle_busy(),
-    };
-    let text = txn.get_or_insert_text(rel.as_str());
-    if !content.is_empty() {
-        text.insert(&mut txn, 0, &content);
-    }
     let _ = state.interactive_writes.send((rel.clone(), None));
     let _ = state
         .events
