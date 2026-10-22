@@ -212,7 +212,9 @@ impl Default for WardenConfig {
             endpoint: None,
             model: None,
             key_env: None,
-            timeout_secs: 3,
+            // Jev usually answers in under a second, but was seen to take
+            // more than three on a long message; the rules decide past this.
+            timeout_secs: 5,
         }
     }
 }
@@ -234,6 +236,25 @@ impl Resolved {
     }
 }
 
+/// A proxy given by its address alone (`https://litellm.example.com/`) means
+/// the decider's usual route on it. Posting to the bare origin answers 405,
+/// which is what someone pasting their proxy's address gets otherwise.
+fn with_default_path(endpoint: &str, default: Option<&str>) -> String {
+    let trimmed = endpoint.trim();
+    let route = default
+        .and_then(|d| reqwest::Url::parse(d).ok())
+        .map(|d| d.path().to_string());
+    match (reqwest::Url::parse(trimmed), route) {
+        // Parsed rather than spliced, so a query or fragment stays after the
+        // route instead of swallowing it.
+        (Ok(mut url), Some(route)) if url.path().trim_matches('/').is_empty() => {
+            url.set_path(&route);
+            url.to_string()
+        }
+        _ => trimmed.to_string(),
+    }
+}
+
 /// Resolve the configured decider, or say why it cannot be used. The caller
 /// falls back to the rules on an error, and records why.
 pub fn resolve(cfg: &WardenConfig) -> Result<Resolved, String> {
@@ -243,6 +264,7 @@ pub fn resolve(cfg: &WardenConfig) -> Result<Resolved, String> {
         .endpoint
         .clone()
         .filter(|e| !e.trim().is_empty())
+        .map(|e| with_default_path(&e, manifest.endpoint.as_deref()))
         .or_else(|| manifest.endpoint.clone());
     let model = cfg
         .model
@@ -698,6 +720,37 @@ mod tests {
         let body = json!({ "answers": { "agent": { "type": "choice", "choice": "claude", "confidence": 0.9 } } });
         let reply = parse_response(Protocol::Systemone, &body, &questions());
         assert_eq!(reply.choice("agent").unwrap().get("claude"), Some(&0.9));
+    }
+
+    #[test]
+    fn a_bare_proxy_address_gets_the_deciders_route() {
+        let default = Some("http://localhost:4000/v1/decisions");
+        assert_eq!(
+            with_default_path("https://litellm.example.com/", default),
+            "https://litellm.example.com/v1/decisions"
+        );
+        assert_eq!(
+            with_default_path("https://litellm.example.com", default),
+            "https://litellm.example.com/v1/decisions"
+        );
+        // A path someone wrote is theirs.
+        assert_eq!(
+            with_default_path("https://proxy.example.com/team/v1/decisions", default),
+            "https://proxy.example.com/team/v1/decisions"
+        );
+        assert_eq!(
+            with_default_path("https://litellm.example.com/", None),
+            "https://litellm.example.com/"
+        );
+        // A query or fragment stays after the route.
+        assert_eq!(
+            with_default_path("https://proxy.example.com?token=x", default),
+            "https://proxy.example.com/v1/decisions?token=x"
+        );
+        assert_eq!(
+            with_default_path("https://proxy.example.com/?token=x#f", default),
+            "https://proxy.example.com/v1/decisions?token=x#f"
+        );
     }
 
     #[test]

@@ -65,7 +65,7 @@ export default function WardenSettings({ circleId }: { circleId?: string | null 
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<{ endpoint: string; model: string; key_env: string; timeout_secs: number }>({
-    endpoint: '', model: '', key_env: '', timeout_secs: 3,
+    endpoint: '', model: '', key_env: '', timeout_secs: 5,
   })
   const [key, setKey] = useState('')
   const [specText, setSpecText] = useState('')
@@ -136,7 +136,7 @@ export default function WardenSettings({ circleId }: { circleId?: string | null 
 
       {asksModel && (
         <div className="space-y-2 py-2 text-xs">
-          <label className="block">Endpoint
+          <label className="block">Endpoint <span className="text-slate">· your proxy's address is enough</span>
             <input className="block w-full border px-2 py-1 mt-1" value={draft.endpoint} disabled={busy}
               placeholder={kind?.endpoint ?? 'https://…'} aria-label="Endpoint"
               onChange={e => setDraft({ ...draft, endpoint: e.target.value })} />
@@ -149,7 +149,7 @@ export default function WardenSettings({ circleId }: { circleId?: string | null 
           <label className="block">Wait at most
             <input type="number" min={1} max={30} className="ml-2 border px-2 py-1 w-16" disabled={busy}
               value={draft.timeout_secs} aria-label="Timeout seconds"
-              onChange={e => setDraft({ ...draft, timeout_secs: Math.min(30, Math.max(1, Number(e.target.value) || 3)) })} />
+              onChange={e => setDraft({ ...draft, timeout_secs: Math.min(30, Math.max(1, Number(e.target.value) || 5)) })} />
             <span className="ml-1">seconds, then the rules decide</span>
           </label>
           <label className="block">Read the key from environment variable (optional)

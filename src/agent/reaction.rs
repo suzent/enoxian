@@ -1194,13 +1194,15 @@ fn warden_offer(
     true
 }
 
-/// What a warden-assigned turn carries, with a vote's tie-breakers.
+/// What a warden-assigned turn carries, with who may join later.
 ///
 /// The quiet window keeps an agent that just spoke from opening a message, so
-/// the warden chooses the first voters without it. A tie-breaking voter is
-/// different: its answer is blind, and it posts only when it sides with an
-/// earlier voter, whose answer is the one posted. So a vote may grow into the
-/// quiet listeners too, after everyone the warden ranked.
+/// the warden chooses the first listeners without it. Joining later is
+/// different. A tie-breaking voter's answer is blind and posts only when it
+/// sides with an earlier voter; a checker speaks only when an answer looks
+/// wrong. So the pool both draw from extends into the quiet listeners too,
+/// after everyone the warden ranked. Seen live: with two of three listeners
+/// just having spoken, a doubtful single answer had nobody left to check it.
 fn vote_pool(
     mode: super::warden::spec::ModeKind,
     max: usize,
@@ -1209,21 +1211,16 @@ fn vote_pool(
     ceiling: usize,
     spec: &super::warden::spec::WardenSpec,
 ) -> super::warden::Assignment {
-    if mode != super::warden::spec::ModeKind::Vote {
-        return super::warden::Assignment {
-            mode,
-            max,
-            pool: ranked,
-            check: false,
-        };
-    }
     let mut pool = ranked;
     for listener in listeners {
         if !pool.iter().any(|p| p.eq_ignore_ascii_case(listener)) {
             pool.push(listener.clone());
         }
     }
-    let max = max.max(spec.vote.max.min(ceiling).min(pool.len()));
+    let max = match mode {
+        super::warden::spec::ModeKind::Vote => max.max(spec.vote.max.min(ceiling).min(pool.len())),
+        _ => max,
+    };
     super::warden::Assignment {
         mode,
         max,
@@ -3818,6 +3815,58 @@ mod tests {
         assert_eq!(check.answered_by, a);
         assert_eq!(check.checker.as_deref(), Some(b));
         assert!(check.p_ok < check.threshold);
+    }
+
+    #[tokio::test]
+    async fn a_listener_that_just_spoke_may_still_check_an_answer() {
+        use super::super::warden::{log, WardenMode};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = super::super::inbox::Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let (a, b) = ("fake-acp:say-true#a", "fake-acp:say-false#b");
+        let mut cfg = voting_config(&[a, b], WardenMode::Act);
+        cfg.warden = super::super::warden::decider::WardenConfig {
+            decider: "litellm-systemone".into(),
+            endpoint: Some(
+                decider_serving(serde_json::json!({
+                    "admit": { "type": "noul", "noul": 0.9 },
+                    "answer_ok": { "type": "noul", "noul": 0.05 },
+                }))
+                .await,
+            ),
+            key_env: Some("PATH".into()),
+            ..Default::default()
+        };
+        // `b` has just answered something else, so the warden opens with `a`
+        // alone — and `b` is still the one to check it.
+        let mut spoke = room_message("earlier", "an earlier answer");
+        spoke.author = crate::control::Author::Agent;
+        spoke.agent_id = b.into();
+        spoke.peer_id = state.peer_id.clone();
+        add_chat(&state, &spoke);
+        let decided = state.warden.ready.notified();
+        offer_room(
+            &state,
+            &handled,
+            &inbox,
+            &ledger,
+            &wake,
+            &cfg,
+            &room_message("q", "Is the retry path idempotent?"),
+        );
+        tokio::time::timeout(LIVENESS, decided).await.unwrap();
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        assert_eq!(inbox.entries().len(), 1);
+
+        run_until_idle(&state, &inbox, &cfg).await;
+
+        let check = log::read_all(dir.path())
+            .into_iter()
+            .find_map(|r| r.verify)
+            .unwrap();
+        assert_eq!(check.checker.as_deref(), Some(b));
     }
 
     #[tokio::test]

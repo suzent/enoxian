@@ -48,7 +48,8 @@ refuses to publish a version whose section is missing or empty.
   disagree). Turn it on per Circle under Behaviour, in `shadow` to record its
   choices beside rotation, or `act` to let it decide. It decides by built-in
   rules, or asks a decision model through a LiteLLM proxy's `/v1/systemone` or
-  `/v1/decisions` route, or any server that speaks one of them. Its key is
+  `/v1/decisions` route (the proxy's address alone is enough), or any server
+  that speaks one of them. Its key is
   stored on this device only and is never shown again. A turn it assigns is
   told it is being asked, so a lone listener no longer passes on a direct
   question. With a decider, a single answer it doubts is checked by the next
