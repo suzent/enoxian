@@ -35,6 +35,11 @@ pub struct Features {
     pub candidates: Vec<Candidate>,
     /// The most listeners this Circle allows on one message.
     pub ceiling: usize,
+    /// Posted by an agent rather than a person. Asked about differently: an
+    /// agent's message needs a reply when it is wrong, asks something, or
+    /// leaves a step undone, not merely when it is a question.
+    #[serde(default)]
+    pub from_agent: bool,
 }
 
 /// What the warden decided to do.
@@ -140,7 +145,11 @@ pub fn input(features: &Features) -> String {
 pub fn questions(spec: &WardenSpec, features: &Features) -> Vec<Question> {
     let mut out = vec![Question {
         name: "admit".into(),
-        instructions: spec.questions.admit.clone(),
+        instructions: if features.from_agent {
+            spec.questions.admit_agent.clone()
+        } else {
+            spec.questions.admit.clone()
+        },
         ask: Ask::YesNo,
     }];
     if features.candidates.len() > 1 {
@@ -219,7 +228,19 @@ fn rules_mode(spec: &WardenSpec, features: &Features) -> Option<ModeKind> {
 /// Decide by the spec's rules alone.
 pub fn by_rules(spec: &WardenSpec, features: &Features, fallback: Option<String>) -> Decision {
     let agents = names(features);
-    let (choice, reason) = match rules_mode(spec, features) {
+    // The rules judge a message by its length, which says nothing about
+    // whether an agent's finished answer needs another agent. Admitting on
+    // length would have agents answer each other until the budget ran out, so
+    // an agent's message needs a decider that can answer `admit_agent`; the
+    // rules, and a decider that did not answer in time, leave it be.
+    let mode = (!features.from_agent)
+        .then(|| rules_mode(spec, features))
+        .flatten();
+    let (choice, reason) = match mode {
+        None if features.from_agent => (
+            declined(agents),
+            "an agent's message needs a decider to judge it".to_string(),
+        ),
         Some(mode) => (
             choice(spec, features, mode, agents),
             format!(
@@ -265,16 +286,25 @@ pub fn from_reply(
 ) -> Decision {
     let mut raw = BTreeMap::new();
     // Calibrated by the spec, with the decider's own figure kept beside it.
-    let mut yes = |name: &str| {
+    // Keyed by what was asked: an agent's message is asked about differently,
+    // so its answers are calibrated apart (`admit:agent`).
+    let mut yes = |name: &str, key: &str| {
         let p = reply.yes(name)?;
-        raw.insert(name.to_string(), p);
-        Some(super::spec::calibrate(spec.calibration.get(name), p))
+        raw.insert(key.to_string(), p);
+        Some(super::spec::calibrate(spec.calibration.get(key), p))
     };
-    let p_admit = yes("admit");
+    let p_admit = yes(
+        "admit",
+        if features.from_agent {
+            "admit:agent"
+        } else {
+            "admit"
+        },
+    );
     let mut success = BTreeMap::new();
     for mode in feasible(spec, features) {
         let name = format!("success:{}", mode.as_str());
-        if let Some(p) = yes(&name) {
+        if let Some(p) = yes(&name, &name) {
             success.insert(mode, p);
         }
     }
@@ -297,7 +327,12 @@ pub fn from_reply(
         p_success.insert(mode.as_str().to_string(), p);
         scores.insert(mode.as_str().to_string(), p - spec.lambda * spec.cost(mode));
     }
-    let admitted = p_admit.is_none_or(|p| p >= spec.admit_threshold);
+    // No answer to `admit` falls back to the rules' view: a person's message
+    // is admitted, an agent's is not (see `by_rules`).
+    let admitted = match p_admit {
+        Some(p) => p >= spec.admit_threshold,
+        None => !features.from_agent,
+    };
     let best = scores
         .iter()
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
@@ -359,6 +394,7 @@ mod tests {
                 })
                 .collect(),
             ceiling,
+            from_agent: false,
         }
     }
 
@@ -495,6 +531,27 @@ mod tests {
         assert!(!d.choice.admit, "0.6 calibrates below the threshold");
         assert_eq!(d.raw["admit"], 0.6);
         assert!(d.p_admit.unwrap() < 0.5);
+    }
+
+    #[test]
+    fn an_agents_message_is_admitted_only_on_a_deciders_word() {
+        let spec = WardenSpec::default();
+        let mut f = features(800, &["a", "b"], 4);
+        f.from_agent = true;
+        let d = by_rules(&spec, &f, None);
+        assert!(
+            !d.choice.admit,
+            "length says nothing about an agent's answer"
+        );
+        let d = from_reply(&spec, &f, "jev", &reply(&[("admit", Answer::Refused)]));
+        assert!(!d.choice.admit, "no answer to admit_agent: leave it be");
+        let d = from_reply(
+            &spec,
+            &f,
+            "jev",
+            &reply(&[("admit", Answer::YesNo { p: 0.9 })]),
+        );
+        assert!(d.choice.admit);
     }
 
     #[test]

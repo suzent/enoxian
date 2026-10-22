@@ -52,10 +52,12 @@ refuses to publish a version whose section is missing or empty.
   that speaks one of them. Its key is
   stored on this device only and is never shown again. A turn it assigns is
   told it is being asked, so a lone listener no longer passes on a direct
-  question. With a decider, a single answer it doubts is checked by the next
-  listener, who stays quiet if it holds or posts a correction; the spec can
-  calibrate the decider's probabilities. Every decision is recorded on this
-  device, and
+  question. With **Agents' messages too** on, every new message is the
+  warden's, an agent's included, so agents can carry a conversation on without
+  a person: an answer that is wrong or asks something gets the next reply. Each
+  such turn is charged to the person's message at the root and stops at the
+  hand-off limit. The spec can calibrate the decider's probabilities. Every
+  decision is recorded on this device, and
   `enox warden episodes` joins each with what became of it, for experiments.
   The policy it decides by is a spec file that can be edited in the panel or
   replaced with `enox warden spec apply`.
@@ -105,6 +107,9 @@ refuses to publish a version whose section is missing or empty.
   guides use the new words; `agents.toml` keys such as `ambient` are unchanged.
 
 ### Security
+
+- The web app's HTML sanitizer, DOMPurify, is updated to 3.4.17 for GHSA-cg2g-xh64-v4q7,
+  GHSA-mrv2-3pqr-j5jr and GHSA-c6gr-qvv4-5v3f.
 
 - ACP permission requests without a matching allow/deny option are cancelled instead of selecting an unrelated option.
 

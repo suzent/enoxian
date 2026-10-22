@@ -65,6 +65,7 @@ pub struct ConfigRequest {
     pub model: Option<String>,
     pub key_env: Option<String>,
     pub timeout_secs: Option<u64>,
+    pub agent_messages: Option<bool>,
 }
 
 fn blank_to_none(value: String) -> Option<String> {
@@ -100,6 +101,9 @@ pub async fn set_config(Json(req): Json<ConfigRequest>) -> axum::response::Respo
                 return Err("timeout_secs must be 1–30".into());
             }
             cfg.warden.timeout_secs = secs;
+        }
+        if let Some(on) = req.agent_messages {
+            cfg.warden.agent_messages = on;
         }
         Ok(())
     })
@@ -151,6 +155,9 @@ pub struct TestRequest {
     pub text: String,
     #[serde(default)]
     pub circle_id: Option<String>,
+    /// Ask as though an agent had posted it.
+    #[serde(default)]
+    pub from_agent: bool,
 }
 
 /// Ask the configured decider about a sample message, exactly as the warden
@@ -195,6 +202,7 @@ pub async fn test(
             })
             .collect(),
         ceiling,
+        from_agent: req.from_agent,
     };
     let questions: Vec<String> = policy::questions(&spec, &features)
         .into_iter()

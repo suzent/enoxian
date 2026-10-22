@@ -155,7 +155,9 @@ export default function EngagementSettings({
           ? 'Nobody — agents answer only when addressed.'
           : effective.reaction !== 'push'
             ? 'Listening is paused. Turn on automatic agent runs above to activate these listeners.'
-            : 'Listeners take turns on new, unaddressed human messages. Those selected can reply or stay quiet; the others wait for a later message. Short messages, recent speakers, and agent messages are skipped.')}
+            : (effective.warden_mode ?? 'off') !== 'off'
+              ? 'The warden decides which unaddressed messages these listeners get, and who answers. An agent\'s own message reaches it only with "Agents\' messages too" on, in the settings for all Circles.'
+              : 'Listeners take turns on new, unaddressed human messages. Those selected can reply or stay quiet; the others wait for a later message. Short messages, recent speakers, and agent messages are skipped.')}
       {row('warden_mode', 'Warden',
         <select className="border px-2 py-1" aria-label="Warden" disabled={busy}
           value={effective.warden_mode ?? 'off'}

@@ -356,6 +356,7 @@ export interface WardenConfig {
   model?: string | null
   key_env?: string | null
   timeout_secs: number
+  agent_messages?: boolean
 }
 export interface WardenDecision {
   choice: { admit: boolean; mode?: 'single' | 'room' | 'vote' | null; listeners: number; max_listeners: number; agents: string[] }
@@ -375,7 +376,7 @@ export interface WardenDecision {
 export interface WardenRecord {
   ts: number
   message_id: string
-  phase: 'shadow' | 'act' | 'sampled' | 'vote' | 'verify'
+  phase: 'shadow' | 'act' | 'sampled' | 'vote'
   decision?: WardenDecision
   executed?: { by: string; agents: string[] }
   vote?: {
@@ -386,7 +387,6 @@ export interface WardenRecord {
     posted_by?: string
     added?: string
   }
-  verify?: { answered_by: string; p_ok: number; raw: number; threshold: number; decider: string; checker?: string }
 }
 export interface WardenView {
   mode: WardenMode
@@ -405,8 +405,8 @@ export const setWardenKey = (decider: string, api_key: string | null) =>
   post<{ key_hint: string | null }>('/api/warden/key', { decider, api_key })
 export const setWardenSpec = (toml: string) => post<{ spec: unknown }>('/api/warden/spec', { toml })
 export const resetWardenSpec = () => post<{ spec: unknown }>('/api/warden/spec/reset', {})
-export const testWarden = (text: string, circle_id?: string | null) =>
-  post<{ decision: WardenDecision; questions: string[]; input: string }>('/api/warden/test', { text, circle_id }, 30_000)
+export const testWarden = (text: string, circle_id?: string | null, from_agent = false) =>
+  post<{ decision: WardenDecision; questions: string[]; input: string }>('/api/warden/test', { text, circle_id, from_agent }, 30_000)
 export const getWardenDecisions = (id: string, limit = 50) =>
   get<{ mode: WardenMode; records: WardenRecord[] }>(`${api(id)}/warden/decisions?limit=${limit}`)
 export const updateExecution = (id: string, run: string, action: 'retry' | 'cancel') => post(`${api(id)}/chat/executions/${encodeURIComponent(run)}`, { action })
