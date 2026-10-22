@@ -145,6 +145,7 @@ pub struct Questions {
     pub room: String,
     pub vote: String,
     pub agree: String,
+    pub answer_ok: String,
 }
 
 impl Default for Questions {
@@ -167,8 +168,63 @@ impl Default for Questions {
             agree: "Do these answers reach the same conclusion? Ignore wording, length and \
                     reasoning; compare only what each one concludes."
                 .into(),
+            answer_ok: "Does this answer get the question right and answer what was asked? Judge \
+                        the conclusion, not the style."
+                .into(),
         }
     }
+}
+
+/// A second look at a single answer, after it is posted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Verify {
+    /// Ask the decider whether a single listener's posted answer is right.
+    /// Needs a decider that answers questions; the rules never verify.
+    pub enabled: bool,
+    /// Below this probability that the answer is right, the next listener is
+    /// asked to check it.
+    pub threshold: f64,
+}
+
+impl Default for Verify {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            threshold: 0.4,
+        }
+    }
+}
+
+/// A decider's raw probability for one question, mapped onto how often it
+/// turned out right. Fitted outside enoxian, from episodes with outcomes, and
+/// written here as points `[raw, calibrated]`, raw ascending; between points
+/// the map is linear, beyond them it is flat.
+pub type Calibration = std::collections::BTreeMap<String, Vec<[f64; 2]>>;
+
+/// Apply `points` to `p`. No points, or a question with none, is the identity.
+pub fn calibrate(points: Option<&Vec<[f64; 2]>>, p: f64) -> f64 {
+    let Some(points) = points.filter(|v| !v.is_empty()) else {
+        return p;
+    };
+    let first = points[0];
+    let last = points[points.len() - 1];
+    if p <= first[0] {
+        return first[1];
+    }
+    if p >= last[0] {
+        return last[1];
+    }
+    for pair in points.windows(2) {
+        let ([x0, y0], [x1, y1]) = (pair[0], pair[1]);
+        if p <= x1 {
+            if x1 <= x0 {
+                return y1;
+            }
+            return y0 + (y1 - y0) * (p - x0) / (x1 - x0);
+        }
+    }
+    last[1]
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -192,6 +248,9 @@ pub struct WardenSpec {
     pub gates: Gates,
     pub rules: Rules,
     pub questions: Questions,
+    pub verify: Verify,
+    /// Per question (`admit`, `agent:<name>`, `success:<mode>`, `answer_ok`).
+    pub calibration: Calibration,
 }
 
 impl Default for WardenSpec {
@@ -207,6 +266,8 @@ impl Default for WardenSpec {
             gates: Gates::default(),
             rules: Rules::default(),
             questions: Questions::default(),
+            verify: Verify::default(),
+            calibration: Calibration::new(),
         }
     }
 }
@@ -256,6 +317,23 @@ impl WardenSpec {
         }
         if self.rules.long_chars == 0 {
             return Err("rules.long_chars must be at least 1".into());
+        }
+        unit("verify.threshold", self.verify.threshold)?;
+        for (question, points) in &self.calibration {
+            let mut previous: Option<[f64; 2]> = None;
+            for point in points {
+                if !point.iter().all(|v| (0.0..=1.0).contains(v)) {
+                    return Err(format!("calibration.{question}: points must be within 0–1"));
+                }
+                if let Some(prev) = previous {
+                    if point[0] < prev[0] || point[1] < prev[1] {
+                        return Err(format!(
+                            "calibration.{question}: points must rise with raw probability"
+                        ));
+                    }
+                }
+                previous = Some(*point);
+            }
         }
         Ok(())
     }
@@ -372,6 +450,23 @@ mod tests {
         ] {
             assert!(WardenSpec::from_toml(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn calibration_interpolates_and_is_flat_beyond_its_points() {
+        let points = vec![[0.2, 0.1], [0.6, 0.3], [0.9, 0.9]];
+        assert_eq!(calibrate(Some(&points), 0.0), 0.1);
+        assert!((calibrate(Some(&points), 0.4) - 0.2).abs() < 1e-9);
+        assert!((calibrate(Some(&points), 0.75) - 0.6).abs() < 1e-9);
+        assert_eq!(calibrate(Some(&points), 1.0), 0.9);
+        assert_eq!(calibrate(None, 0.42), 0.42);
+        let spec =
+            WardenSpec::from_toml("[calibration]\nadmit = [[0.1, 0.0], [0.9, 0.7]]\n").unwrap();
+        assert_eq!(spec.calibration["admit"].len(), 2);
+        assert!(
+            WardenSpec::from_toml("[calibration]\nadmit = [[0.5, 0.6], [0.9, 0.2]]\n").is_err()
+        );
+        assert!(WardenSpec::from_toml("[calibration]\nadmit = [[0.5, 1.6]]\n").is_err());
     }
 
     #[test]

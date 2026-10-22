@@ -50,10 +50,26 @@ A refused or missing answer falls back to the rules for that part only. A mode
 is asked about only when it can run: a vote or a room needs two listeners and a
 Circle ceiling (`ambient_responders`) of at least two.
 
-The second decision point is the blind vote's agreement check: with a decider
-configured and `spec.vote.ask_decider` set, each answer is compared to the
-first of every existing group (`agree`, yes/no); otherwise answers agree when
-their `ANSWER:` lines match after normalization.
+After the first decision, two more points can change what happens:
+
+- **The vote's agreement check.** With a decider configured and
+  `spec.vote.ask_decider` set, each answer is compared to the first of every
+  existing group (`agree`, yes/no). Otherwise answers agree when their
+  `ANSWER:` lines match after normalization.
+- **A second look at a single answer** (`verify.rs`). Once a listener the
+  warden chose alone has posted, the decider is asked whether the answer is
+  right (`answer_ok`). Below `spec.verify.threshold`, the next listener in the
+  warden's ranking is asked to check it: told an answer is there, to pass if it
+  holds and to post a correction if not. Once per message, never for a check,
+  and only with a decider; the rules have no opinion on an answer.
+
+**Calibration.** A general decision model does not know these agents, so the
+spec can map each question's raw probability onto how often it turned out
+right: `[calibration] admit = [[raw, calibrated], …]`, raw ascending, linear
+between points. Keys are `admit`, `agent:<name>`, `success:<mode>` and
+`answer_ok`. Every decision records the calibrated probabilities it acted on,
+and the decider's raw ones under `raw`, so a harness can fit the next
+calibration from episodes and their outcomes, and propose it as part of a spec.
 
 ## What an experiment may change
 
@@ -170,12 +186,10 @@ decision made under the spec records it.
 
 ## Open questions
 
-- **Calibration.** A general decision model does not know these agents; its
-  probabilities should be corrected against past outcomes per decider and
-  mode. That needs a few hundred episodes with outcomes first.
-- **A verifier for single answers.** The vote checks agreement after the fact;
-  a single answer gets no second look. An `answer_ok` question after a single
-  answer, adding a voter when it is low, is the natural next step.
+- **Fitting the calibration.** The spec can hold a calibration, and every
+  decision keeps the decider's raw figures beside the calibrated ones, but
+  nothing fits it yet. That belongs to the harness, from a few hundred
+  episodes with outcomes.
 - **Ballots across restarts.** Ballots are held in memory. A restart mid-vote
   loses them, and the message is left unanswered rather than answered twice.
 - **Lessons.** Choosing which lessons from `AGENTS.md` to put in front of an

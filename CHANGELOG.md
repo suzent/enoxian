@@ -51,7 +51,10 @@ refuses to publish a version whose section is missing or empty.
   `/v1/decisions` route, or any server that speaks one of them. Its key is
   stored on this device only and is never shown again. A turn it assigns is
   told it is being asked, so a lone listener no longer passes on a direct
-  question. Every decision is recorded on this device, and
+  question. With a decider, a single answer it doubts is checked by the next
+  listener, who stays quiet if it holds or posts a correction; the spec can
+  calibrate the decider's probabilities. Every decision is recorded on this
+  device, and
   `enox warden episodes` joins each with what became of it, for experiments.
   The policy it decides by is a spec file that can be edited in the panel or
   replaced with `enox warden spec apply`.

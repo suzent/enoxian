@@ -1159,6 +1159,7 @@ fn warden_offer(
                 agents: selected.clone(),
             }),
             vote: None,
+            verify: None,
         },
     );
     let Some(mode) = choice.mode.filter(|_| !selected.is_empty()) else {
@@ -1213,6 +1214,7 @@ fn vote_pool(
             mode,
             max,
             pool: ranked,
+            check: false,
         };
     }
     let mut pool = ranked;
@@ -1222,7 +1224,12 @@ fn vote_pool(
         }
     }
     let max = max.max(spec.vote.max.min(ceiling).min(pool.len()));
-    super::warden::Assignment { mode, max, pool }
+    super::warden::Assignment {
+        mode,
+        max,
+        pool,
+        check: false,
+    }
 }
 
 /// FNV-1a over the message id.
@@ -1601,6 +1608,10 @@ async fn run_next_cancellable(
         {
             super::warden::vote::settle(state, inbox, request, cfg).await;
         }
+        // A single answer the warden assigned may get a second look.
+        if status == Status::Completed {
+            super::warden::verify::after_answer(state, inbox, request, cfg).await;
+        }
         let _ = crate::api::execution::publish(state, inbox);
         return Ok(status != Status::Pending);
     }
@@ -1728,7 +1739,9 @@ fn launch_rejection(
     // take on a point already made is worse than silence — and this is the last
     // moment the queue can tell. An addressed turn is not covered: if you named
     // this agent, someone else replying does not discharge the request.
-    if request.ambient && answered_by_an_agent(state, &request.message.id) {
+    // A turn the warden asked to check an answer exists because of the answer.
+    let checking = request.warden.as_ref().is_some_and(|a| a.check);
+    if request.ambient && !checking && answered_by_an_agent(state, &request.message.id) {
         return Ok(Some("another agent answered first"));
     }
     // Earlier than an answer: someone started on it. The agents this device
@@ -3646,6 +3659,124 @@ mod tests {
             "the earlier voter on the winning side posts"
         );
         assert!(replies[0].text.contains("the one 2 of 3 agreed on"));
+    }
+
+    /// A System One decider on a local port, answering every question from
+    /// `answers` by name. Serves until the test ends.
+    async fn decider_serving(answers: serde_json::Value) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let answers = answers.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    let body = loop {
+                        let n = socket.read(&mut chunk).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        let text = String::from_utf8_lossy(&buf).to_string();
+                        if let Some(at) = text.find("\r\n\r\n") {
+                            let length: usize = text[..at]
+                                .lines()
+                                .find_map(|l| {
+                                    l.to_ascii_lowercase()
+                                        .strip_prefix("content-length:")
+                                        .map(|v| v.trim().parse().unwrap_or(0))
+                                })
+                                .unwrap_or(0);
+                            if buf.len() >= at + 4 + length {
+                                break text[at + 4..].to_string();
+                            }
+                        }
+                    };
+                    let request: serde_json::Value = serde_json::from_str(&body).unwrap();
+                    let mut out = serde_json::Map::new();
+                    for name in request["questions"].as_object().unwrap().keys() {
+                        if let Some(answer) = answers.get(name) {
+                            out.insert(name.clone(), answer.clone());
+                        }
+                    }
+                    let reply = serde_json::json!({ "answers": out }).to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{reply}",
+                        reply.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{addr}/v1/systemone")
+    }
+
+    #[tokio::test]
+    async fn a_doubtful_single_answer_is_checked_by_the_next_listener() {
+        use super::super::warden::{log, WardenMode};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = super::super::inbox::Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let (a, b) = ("fake-acp:say-true#a", "fake-acp:say-false#b");
+        let mut cfg = voting_config(&[a, b], WardenMode::Act);
+        cfg.warden = super::super::warden::decider::WardenConfig {
+            decider: "litellm-systemone".into(),
+            endpoint: Some(
+                decider_serving(serde_json::json!({
+                    "admit": { "type": "noul", "noul": 0.9 },
+                    "agent": { "type": "choice", "probabilities": { a: 0.8, b: 0.2 } },
+                    "success:single": { "type": "noul", "noul": 0.9 },
+                    "success:vote": { "type": "noul", "noul": 0.6 },
+                    "answer_ok": { "type": "noul", "noul": 0.1 },
+                }))
+                .await,
+            ),
+            // Any variable that is set: the mock takes any key.
+            key_env: Some("PATH".into()),
+            ..Default::default()
+        };
+        let ready = state.warden.ready.clone();
+        let decided = ready.notified();
+        offer_room(
+            &state,
+            &handled,
+            &inbox,
+            &ledger,
+            &wake,
+            &cfg,
+            &room_message("q", "Is the retry path idempotent?"),
+        );
+        assert!(inbox.entries().is_empty(), "waiting for the decider");
+        tokio::time::timeout(LIVENESS, decided).await.unwrap();
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        let entries = inbox.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].request.agent, a, "the decider ranked it first");
+
+        run_until_idle(&state, &inbox, &cfg).await;
+
+        let entries = inbox.entries();
+        assert_eq!(entries.len(), 2, "the next listener was asked to check");
+        assert_eq!(entries[1].request.agent, b);
+        assert!(entries[1].request.warden.as_ref().unwrap().check);
+        assert_eq!(entries[1].status, super::super::inbox::Status::Completed);
+        let replies = agent_replies(&state, "q");
+        assert_eq!(replies.len(), 2, "the answer, then the check's correction");
+        assert!(replies[1].text.contains("ANSWER: false"));
+        let check = log::read_all(dir.path())
+            .into_iter()
+            .find_map(|r| r.verify)
+            .unwrap();
+        assert_eq!(check.answered_by, a);
+        assert_eq!(check.checker.as_deref(), Some(b));
+        assert!(check.p_ok < check.threshold);
     }
 
     #[tokio::test]

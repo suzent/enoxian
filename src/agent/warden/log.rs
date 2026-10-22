@@ -28,6 +28,8 @@ pub enum Phase {
     Sampled,
     /// A round of a blind vote was settled.
     Vote,
+    /// A single answer was checked after it was posted.
+    Verify,
 }
 
 /// What actually ran for a message.
@@ -64,6 +66,25 @@ pub struct VoteRound {
     pub added: Option<String>,
 }
 
+/// The second look at a single answer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Verification {
+    pub answered_by: String,
+    /// Probability the answer is right, calibrated by the spec.
+    pub p_ok: f64,
+    /// What the decider said before calibration.
+    pub raw: f64,
+    pub threshold: f64,
+    pub decider: String,
+    /// The listener asked to check it, when the answer fell below threshold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checker: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {
     pub ts: i64,
@@ -77,6 +98,8 @@ pub struct Record {
     pub executed: Option<Executed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vote: Option<VoteRound>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<Verification>,
 }
 
 pub fn path(circle_dir: &Path) -> PathBuf {
@@ -149,6 +172,7 @@ mod tests {
                 agents: vec!["claude".into()],
             }),
             vote: None,
+            verify: None,
         }
     }
 

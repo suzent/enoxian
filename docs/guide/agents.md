@@ -606,6 +606,11 @@ built-in rules decide that message, and the record says why.
 With a decider configured, each message the warden considers is sent to its
 endpoint. Point it at a proxy you run.
 
+With a decider, a single answer also gets a second look: once it is posted,
+the decider is asked whether it is right, and when it doubts it
+(`verify.threshold`), the next listener is asked to check it — to stay quiet if
+it holds, or post a correction. Turn this off with `verify.enabled = false`.
+
 **Try it** in the panel asks the decider about a sample message and shows the
 probabilities, the choice, the latency and the cost. Nothing runs.
 
@@ -613,7 +618,8 @@ probabilities, the choice, the latency and the cost. Nothing runs.
 
 What the warden decides by is a spec: the ways of answering it may use, the
 admit threshold, λ, the relative cost of each way, vote sizes, the gates (the
-length floor, the quiet window), the built-in rules, and the wording of its
+length floor, the quiet window), the built-in rules, the second look, a
+calibration of the decider's probabilities, and the wording of its
 questions. It lives in `~/.enoxian/warden/spec.toml`; without the file the
 built-in spec applies. Edit it in the panel, or:
 

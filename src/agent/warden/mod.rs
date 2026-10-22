@@ -24,6 +24,7 @@ pub mod episodes;
 pub mod log;
 pub mod policy;
 pub mod spec;
+pub mod verify;
 pub mod vote;
 
 use crate::control::ChatMessage;
@@ -54,6 +55,9 @@ pub struct Assignment {
     /// next unused one.
     #[serde(default)]
     pub pool: Vec<String>,
+    /// This turn checks an answer already posted, rather than answering.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub check: bool,
 }
 
 /// The instruction for a turn the warden assigned, in place of the scry one.
@@ -70,6 +74,9 @@ pub fn instruction(
 ) -> String {
     if assignment.mode == ModeKind::Vote {
         return vote::instruction(co_listeners.len().max(2));
+    }
+    if assignment.check {
+        return verify::instruction();
     }
     let others: Vec<String> = co_listeners
         .iter()
@@ -222,6 +229,7 @@ impl Runtime {
                     decision: Some(decision),
                     executed,
                     vote: None,
+                    verify: None,
                 },
             )
         };
@@ -316,6 +324,7 @@ mod tests {
             mode: ModeKind::Single,
             max: 1,
             pool: vec![],
+            check: false,
         };
         let text = instruction(&single, &["claude".into()], "claude", |n| n.to_string());
         assert!(text.contains("needs an answer"));
@@ -324,6 +333,7 @@ mod tests {
             mode: ModeKind::Room,
             max: 2,
             pool: vec![],
+            check: false,
         };
         let text = instruction(&room, &["claude".into(), "codex".into()], "claude", |n| {
             format!("{n} (on x)")
@@ -333,6 +343,7 @@ mod tests {
             mode: ModeKind::Vote,
             max: 3,
             pool: vec![],
+            check: false,
         };
         assert!(
             instruction(&vote, &["a".into(), "b".into()], "a", |n| n.into()).contains("ANSWER:")

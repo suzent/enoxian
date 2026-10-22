@@ -69,6 +69,11 @@ pub struct Decision {
     pub scores: BTreeMap<String, f64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub p_agent: BTreeMap<String, f64>,
+    /// What the decider said, per question, before the spec's calibration.
+    /// The probabilities above are calibrated; these are what a new
+    /// calibration is fitted from.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub raw: BTreeMap<String, f64>,
     /// One line on why, for the activity panel.
     pub reason: String,
     /// Why the configured decider was not used, when it was not.
@@ -237,6 +242,7 @@ pub fn by_rules(spec: &WardenSpec, features: &Features, fallback: Option<String>
         p_success: BTreeMap::new(),
         scores: BTreeMap::new(),
         p_agent: BTreeMap::new(),
+        raw: BTreeMap::new(),
         reason,
         fallback,
         cost_usd: None,
@@ -257,8 +263,27 @@ pub fn from_reply(
     decider: &str,
     reply: &Reply,
 ) -> Decision {
-    let p_admit = reply.yes("admit");
-    let p_agent = reply.choice("agent").cloned().unwrap_or_default();
+    let mut raw = BTreeMap::new();
+    // Calibrated by the spec, with the decider's own figure kept beside it.
+    let mut yes = |name: &str| {
+        let p = reply.yes(name)?;
+        raw.insert(name.to_string(), p);
+        Some(super::spec::calibrate(spec.calibration.get(name), p))
+    };
+    let p_admit = yes("admit");
+    let mut success = BTreeMap::new();
+    for mode in feasible(spec, features) {
+        let name = format!("success:{}", mode.as_str());
+        if let Some(p) = yes(&name) {
+            success.insert(mode, p);
+        }
+    }
+    let mut p_agent = reply.choice("agent").cloned().unwrap_or_default();
+    for (agent, p) in p_agent.iter_mut() {
+        let name = format!("agent:{agent}");
+        raw.insert(name.clone(), *p);
+        *p = super::spec::calibrate(spec.calibration.get(&name), *p);
+    }
     let mut agents = names(features);
     // Stable: candidates the decider did not score keep rotation order.
     agents.sort_by(|a, b| {
@@ -268,11 +293,9 @@ pub fn from_reply(
     });
     let mut p_success = BTreeMap::new();
     let mut scores = BTreeMap::new();
-    for mode in feasible(spec, features) {
-        if let Some(p) = reply.yes(&format!("success:{}", mode.as_str())) {
-            p_success.insert(mode.as_str().to_string(), p);
-            scores.insert(mode.as_str().to_string(), p - spec.lambda * spec.cost(mode));
-        }
+    for (mode, p) in success {
+        p_success.insert(mode.as_str().to_string(), p);
+        scores.insert(mode.as_str().to_string(), p - spec.lambda * spec.cost(mode));
     }
     let admitted = p_admit.is_none_or(|p| p >= spec.admit_threshold);
     let best = scores
@@ -306,6 +329,7 @@ pub fn from_reply(
         p_success,
         scores,
         p_agent,
+        raw,
         reason,
         fallback: None,
         cost_usd: reply.cost_usd,
@@ -454,6 +478,23 @@ mod tests {
             &reply(&[("agent", Answer::Choice { p })]),
         );
         assert_eq!(d.choice.agents, vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn calibration_moves_the_decision_and_the_raw_figure_is_kept() {
+        let mut spec = WardenSpec::default();
+        // This decider says 0.6 for messages that turned out not to need anyone.
+        spec.calibration
+            .insert("admit".into(), vec![[0.0, 0.0], [0.7, 0.3], [1.0, 1.0]]);
+        let d = from_reply(
+            &spec,
+            &features(100, &["a"], 4),
+            "jev",
+            &reply(&[("admit", Answer::YesNo { p: 0.6 })]),
+        );
+        assert!(!d.choice.admit, "0.6 calibrates below the threshold");
+        assert_eq!(d.raw["admit"], 0.6);
+        assert!(d.p_admit.unwrap() < 0.5);
     }
 
     #[test]

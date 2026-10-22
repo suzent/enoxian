@@ -10,7 +10,7 @@
 //! Local to this device, like every input. Nothing here leaves the machine
 //! unless someone exports it.
 
-use super::log::{self, Executed, Phase, VoteRound};
+use super::log::{self, Executed, Phase, Verification, VoteRound};
 use super::policy::{Decision, Features};
 use crate::agent::inbox::{Entry, Inbox};
 use crate::agent::outcome::RunOutcome;
@@ -51,6 +51,9 @@ pub struct Episode {
     pub judgements: Vec<Judgement>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub votes: Vec<VoteRound>,
+    /// Second looks at a single answer, and whether a checker was asked.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub verifies: Vec<Verification>,
     pub runs: Vec<Run>,
     /// Did any agent reply to the message, on any device?
     pub answered: bool,
@@ -89,6 +92,7 @@ pub fn build(state: &AppState, since: Option<i64>) -> Vec<Episode> {
                     features: None,
                     judgements: Vec::new(),
                     votes: Vec::new(),
+                    verifies: Vec::new(),
                     runs: Vec::new(),
                     answered: false,
                     spend: BTreeMap::new(),
@@ -107,6 +111,9 @@ pub fn build(state: &AppState, since: Option<i64>) -> Vec<Episode> {
         }
         if let Some(vote) = record.vote {
             episode.votes.push(vote);
+        }
+        if let Some(verify) = record.verify {
+            episode.verifies.push(verify);
         }
     }
 

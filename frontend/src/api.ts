@@ -375,7 +375,7 @@ export interface WardenDecision {
 export interface WardenRecord {
   ts: number
   message_id: string
-  phase: 'shadow' | 'act' | 'sampled' | 'vote'
+  phase: 'shadow' | 'act' | 'sampled' | 'vote' | 'verify'
   decision?: WardenDecision
   executed?: { by: string; agents: string[] }
   vote?: {
@@ -386,6 +386,7 @@ export interface WardenRecord {
     posted_by?: string
     added?: string
   }
+  verify?: { answered_by: string; p_ok: number; raw: number; threshold: number; decider: string; checker?: string }
 }
 export interface WardenView {
   mode: WardenMode

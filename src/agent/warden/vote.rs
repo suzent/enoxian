@@ -227,6 +227,7 @@ pub async fn settle(
             decision: None,
             executed: None,
             vote: Some(round),
+            verify: None,
         },
     );
 }
