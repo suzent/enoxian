@@ -41,6 +41,21 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- The warden (experimental, off by default): for messages nobody addressed, it
+  decides whether an agent should answer and how — nobody, one listener,
+  several together, or a blind vote in which two listeners answer without
+  seeing each other and one answer is posted (a third is asked when they
+  disagree). Turn it on per Circle under Behaviour, in `shadow` to record its
+  choices beside rotation, or `act` to let it decide. It decides by built-in
+  rules, or asks a decision model through a LiteLLM proxy's `/v1/systemone` or
+  `/v1/decisions` route, or any server that speaks one of them. Its key is
+  stored on this device only and is never shown again. A turn it assigns is
+  told it is being asked, so a lone listener no longer passes on a direct
+  question. Every decision is recorded on this device, and
+  `enox warden episodes` joins each with what became of it, for experiments.
+  The policy it decides by is a spec file that can be edited in the panel or
+  replaced with `enox warden spec apply`.
+
 - Agent cards: each agent can describe itself in the shared folder at
   `agents/<owner>/<device>/<agent>.md`. An agent's brief now includes its own
   card and one line from every other agent's, so it knows who to hand work to.

@@ -114,6 +114,8 @@ pub enum AgentCommands {
     Inbox(InboxArgs),
     /// Agent turns running or waiting on this device, and what each is doing
     Runs(RunsArgs),
+    /// The warden: who answers messages nobody addressed, and its records
+    Warden(WardenArgs),
     /// Show recent chat messages
     Chat {
         /// Stream new messages as they arrive
@@ -342,6 +344,55 @@ pub enum RunsAction {
         /// Run id, or an unambiguous prefix of one (the list shows eight)
         run_id: String,
     },
+}
+
+#[derive(Parser)]
+pub struct WardenArgs {
+    #[command(subcommand)]
+    pub action: Option<WardenAction>,
+}
+
+#[derive(Subcommand)]
+pub enum WardenAction {
+    /// Set the warden's mode in this Circle (or, with --all, everywhere)
+    Mode {
+        /// off, shadow or act
+        mode: String,
+        /// Set the default for every Circle instead of this one
+        #[arg(long)]
+        all: bool,
+    },
+    /// Recent decisions in this Circle, newest first
+    Decisions {
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Every decision joined with what became of it, one JSON object per line
+    Episodes {
+        /// Only messages first decided at or after this Unix time
+        #[arg(long)]
+        since: Option<i64>,
+    },
+    /// Show, replace or reset the spec the warden decides by
+    Spec {
+        #[command(subcommand)]
+        action: Option<WardenSpecAction>,
+    },
+    /// Ask the configured decider about a sample message; runs nothing
+    Test {
+        /// The message to decide about
+        text: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum WardenSpecAction {
+    /// Print the spec in force, as TOML
+    Show,
+    /// Replace the spec with this TOML file, after validating it
+    Apply { file: std::path::PathBuf },
+    /// Go back to the built-in spec
+    Reset,
 }
 
 #[derive(Parser)]

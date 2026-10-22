@@ -1,0 +1,151 @@
+# The warden
+
+How the warden decides who answers an unaddressed message, what an experiment
+may change about it, and what is still open. For how to use it, see
+[the warden](../../guide/agents.md#the-warden).
+
+## Where it sits
+
+```
+human message
+ ├─ names an agent   → dispatched to that agent; the warden never sees it
+ └─ names no one     → invariant gates: human-authored, not part of an exchange
+                       with an agent, not already answered or claimed
+                     → soft gates: length floor, quiet window   (spec.gates)
+                     → warden: decide                            (spec + decider)
+                     → offer: nobody | single | room | vote
+```
+
+The code is in `src/agent/warden/`:
+
+| File | Role |
+|---|---|
+| `spec.rs` | The policy, as data. Validated whole, replaced whole. |
+| `decider.rs` | Manifests, the two HTTP protocols, keys. Answers questions with probabilities. |
+| `policy.rs` | Which questions to ask; how answers become a choice; the rules. |
+| `mod.rs` | Per-Circle runtime: waiting for a decider without blocking the drain. |
+| `vote.rs` | Blind vote: hold ballots, compare conclusions, post one, or add a voter. |
+| `log.rs` | `warden.jsonl`: every decision, what ran, every vote round. |
+| `episodes.rs` | The log joined with the execution inbox and run outcomes. |
+
+The drain (`reaction::drain_ambient`) is synchronous. With the rules, a
+decision is made inline. With an HTTP decider, the first drain that reaches a
+message starts the request and leaves the message undecided; when the answer
+arrives (or the timeout passes and the rules decide), `Runtime::ready` wakes
+the reaction loop, and the next drain carries the decision out. A message is
+recorded in the scry ledger only once it has been decided, so a restart while
+waiting loses nothing.
+
+## Decisions
+
+The decider is asked, about one message and the six lines before it:
+
+| Question | Type | Used for |
+|---|---|---|
+| `admit` | yes/no | Below `admit_threshold`, nobody answers. |
+| `agent` | choice over listeners, each described by its [card](../../guide/agents.md#agent-cards) | Order of listeners. |
+| `success:<mode>` | yes/no per mode that can run | `p − λ × cost(mode)`, best wins. |
+
+A refused or missing answer falls back to the rules for that part only. A mode
+is asked about only when it can run: a vote or a room needs two listeners and a
+Circle ceiling (`ambient_responders`) of at least two.
+
+The second decision point is the blind vote's agreement check: with a decider
+configured and `spec.vote.ask_decider` set, each answer is compared to the
+first of every existing group (`agree`, yes/no); otherwise answers agree when
+their `ANSWER:` lines match after normalization.
+
+## What an experiment may change
+
+The warden is meant to be improved by experiments, including automated ones
+(RSI: propose a change, test it, keep what wins). What they may touch is fixed
+in three layers.
+
+**Never** — in code, not in the spec, and not adjustable by anything an
+experiment produces:
+
+- Only a person's message reaches the warden. An agent's reply never wakes a
+  listener that was not called, so there is no loop to chase.
+- A call by name bypasses it. The relay ceiling (50) and the device's
+  concurrency hold.
+- Decisions, keys, the log and episodes stay on the device.
+- How an experiment is scored: the outcome signals, the dev/test split, the
+  acceptance gate. An experiment that could change its own score would
+  optimize the score.
+- Review: a spec is applied by a person (`enox warden spec apply`, or the
+  panel), never by the experiment that proposed it.
+
+**By a person, in code** — an experiment can only bring evidence:
+
+- The prompts' framing (`context.rs`, `ambient.rs`, `warden::instruction`).
+- The set of actions (nobody, single, room, vote) and the set of questions.
+- Internal constants: how much history a prompt carries, debounce, requeue
+  limits.
+- The outcome detectors (`outcome.rs`).
+
+**By an experiment, as data** — proposed as a new spec, with evidence:
+
+| What | Where | How it is tested |
+|---|---|---|
+| The spec: allowed modes, `admit_threshold`, `lambda`, costs, vote sizes, gates, rules, question wording | `~/.enoxian/warden/spec.toml` | Offline replay against episodes and benchmark results |
+| Scry parameters: listeners, rotation, backlog tail, attempts | `agents.toml` | Online only: they change what runs |
+| Lessons and collaboration conventions | The Circle's `AGENTS.md` | Online only |
+| Agent cards | `agents/` in the shared folder | With the spec, offline |
+
+Changes to the spec only change *which* existing way of answering is chosen,
+so they can be replayed against a full table of results; that is where an
+experiment should start. Lessons and scry parameters change what agents do,
+so old results no longer apply and every candidate has to run again.
+
+## Episodes
+
+`enox warden episodes` (or `GET /circles/<id>/api/warden/episodes?format=jsonl`)
+prints one object per message the warden has a record of:
+
+```json
+{
+  "message_id": "…",
+  "features": { "text": "…", "weighted_len": 812, "context": ["…"],
+                "candidates": [{ "name": "claude", "summary": "…" }], "ceiling": 3 },
+  "judgements": [{ "phase": "act", "decision": { "choice": { "mode": "vote", … },
+                   "p_admit": 0.93, "p_success": { "single": 0.55, "vote": 0.78 }, … },
+                   "executed": { "by": "warden", "agents": ["claude", "codex"] } }],
+  "votes": [{ "groups": [["claude", "codex"]], "action": "posted", "posted_by": "claude", … }],
+  "runs": [{ "agent": "claude", "status": "completed", "detail": "Voted",
+             "usage": { "cost": { "amount": 0.031, "currency": "USD" }, … },
+             "outcome": { "proposals": [], "called_after_pass": null } }],
+  "answered": true,
+  "spend": { "USD": 0.058 }
+}
+```
+
+`features` is everything the decider saw, so a different spec or decider can
+be replayed on it without the room. The outcome fields are the external
+signals an experiment scores by: a pass followed by someone calling an agent
+by name (`called_after_pass`), proposals accepted or reverted, and spend.
+Correctness on a benchmark comes from the benchmark's grader, joined by
+message id.
+
+A typical loop:
+
+1. Run a Circle in `shadow` (or `act` with the current spec) and collect
+   episodes, or run a benchmark through it.
+2. Offline, replay candidate specs against the episodes and the benchmark's
+   full result table (every mode, every question). Keep the ones no other
+   beats on both accuracy and cost.
+3. Draft the best as a spec file, with the evidence beside it.
+4. A person reviews it and applies it. The version is recorded on every
+   decision from then on, so its effect can be measured.
+
+## Open questions
+
+- **Calibration.** A general decision model does not know these agents; its
+  probabilities should be corrected against past outcomes per decider and
+  mode. That needs a few hundred episodes with outcomes first.
+- **A verifier for single answers.** The vote checks agreement after the fact;
+  a single answer gets no second look. An `answer_ok` question after a single
+  answer, adding a voter when it is low, is the natural next step.
+- **Ballots across restarts.** Ballots are held in memory. A restart mid-vote
+  loses them, and the message is left unanswered rather than answered twice.
+- **Lessons.** Choosing which lessons from `AGENTS.md` to put in front of an
+  agent, by message type, is not done: the brief points at the whole file.

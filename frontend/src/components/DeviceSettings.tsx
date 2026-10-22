@@ -9,6 +9,7 @@ import EngagementSettings, { type Patch } from './EngagementSettings'
 import DeviceIdentity from './DeviceIdentity'
 import AgentAuthentication, { useAgentAuthentication } from './AgentAuthentication'
 import AgentCards from './AgentCards'
+import WardenSettings from './WardenSettings'
 
 type SettingsTab = 'device' | 'agents' | 'behaviour' | 'connectivity' | 'membership'
 
@@ -251,6 +252,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                   />
                 )}
               </section>
+              {scope === 'global' && <WardenSettings />}
               {scope === 'circle' && activeCircleId && (
                 <AgentCards circleId={activeCircleId}
                   onOpenFile={onOpenFile && (path => { onOpenFile(path); onClose() })} />

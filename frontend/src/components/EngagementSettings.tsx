@@ -11,6 +11,7 @@ export type Patch = {
   engagement_window_secs?: number | null
   ambient?: string[] | null
   max_relay_turns?: number | null
+  warden_mode?: 'off' | 'shadow' | 'act' | null
 }
 
 interface Props {
@@ -44,6 +45,9 @@ export default function EngagementSettings({
   // to show which — an inherited value that looks set is how you end up
   // changing the wrong scope.
   const inherits = (key: keyof Patch) => isCircle && over[key] === undefined
+  // With the warden deciding, the listener count is a ceiling and rotation
+  // has nothing left to choose.
+  const warding = effective.warden_mode === 'act'
 
   const row = (key: keyof Patch, label: string, control: React.ReactNode, hint: string) => (
     <div className={`engagement-row${inherits(key) ? ' engagement-row--inherited' : ''}`}>
@@ -152,16 +156,33 @@ export default function EngagementSettings({
           : effective.reaction !== 'push'
             ? 'Listening is paused. Turn on automatic agent runs above to activate these listeners.'
             : 'Listeners take turns on new, unaddressed human messages. Those selected can reply or stay quiet; the others wait for a later message. Short messages, recent speakers, and agent messages are skipped.')}
-      {row('ambient_responders', 'Listeners per message',
+      {row('warden_mode', 'Warden',
+        <select className="border px-2 py-1" aria-label="Warden" disabled={busy}
+          value={effective.warden_mode ?? 'off'}
+          onChange={e => onChange({ warden_mode: e.target.value as 'off' | 'shadow' | 'act' })}>
+          <option value="off">Off — listeners take turns</option>
+          <option value="shadow">Shadow — record its choices only</option>
+          <option value="act">On — it decides who answers</option>
+        </select>,
+        effective.warden_mode === 'act'
+          ? 'For each message nobody addressed, the warden decides whether an agent should answer, and how: one listener, several together, or a blind vote where two answer independently and one answer is posted. Choose its decider in the settings for all Circles.'
+          : effective.warden_mode === 'shadow'
+            ? 'Listeners still take turns as below. The warden records what it would have done, so you can compare before letting it decide.'
+            : 'Experimental. The warden decides who answers messages nobody addressed, instead of taking turns.')}
+      {row('ambient_responders', warding ? 'Most listeners per message' : 'Listeners per message',
         <input type="number" min={1} max={32} aria-label="Listeners per message" className="border px-2 py-1 w-20"
           value={effective.ambient_responders ?? 1} disabled={busy}
           onChange={e => onChange({ ambient_responders: Math.min(32, Math.max(1, Number(e.target.value) || 1)) })} />,
-        'Choose how many listeners may consider each message on this device. Agents take turns fairly; each may reply or stay quiet. Selected requests queue when execution slots are full.')}
+        warding
+          ? `The warden chooses 1 to ${effective.ambient_responders ?? 1} listeners per message. At least 2 lets it run a blind vote.`
+          : 'Choose how many listeners may consider each message on this device. Agents take turns fairly; each may reply or stay quiet. Selected requests queue when execution slots are full.')}
       {row('ambient_rotate_count', 'Vary the number of listeners',
         <label className="engagement-toggle"><input type="checkbox" aria-label="Vary the number of listeners"
-          checked={effective.ambient_rotate_count ?? false} disabled={busy}
+          checked={effective.ambient_rotate_count ?? false} disabled={busy || warding}
           onChange={e => onChange({ ambient_rotate_count: e.target.checked })} /><span>{effective.ambient_rotate_count ? 'on' : 'off'}</span></label>,
-        effective.ambient_rotate_count
+        warding
+          ? 'The warden decides how many listeners each message gets.'
+          : effective.ambient_rotate_count
           ? `Cycle through 1 to ${effective.ambient_responders ?? 1} listeners across messages, limited by who is eligible.`
           : 'Keep the same listener limit while rotating which agents get a turn.')}
       {row('ambient_backlog_tail', 'Messages read after a gap',

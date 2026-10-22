@@ -1,4 +1,4 @@
-import type { Circle, Status, Presence, ChatMessage, Attachment, ChatActivity, EngagementView, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin, ConnectivitySettings, InviteConnectivity } from './types'
+import type { Circle, Status, Presence, ChatMessage, Attachment, ChatActivity, EngagementView, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin, ConnectivitySettings, InviteConnectivity, WardenMode } from './types'
 
 const api = (circleId: string) => `/circles/${circleId}/api`
 
@@ -117,6 +117,7 @@ export const setEngagement = (patch: {
   engagement_window_secs?: number | null
   ambient?: string[] | null
   max_relay_turns?: number | null
+  warden_mode?: WardenMode | null
 }) => post<{ ok: boolean }>('/api/agent-config/engagement', patch)
 export const addAgent = (name: string, driver: string, command: string[], working_dir?: string) =>
   post('/api/agent-config/agents', { name, driver, command, working_dir })
@@ -336,6 +337,77 @@ export interface AgentCard {
 export const getAgentCards = (id: string) => get<{ cards: AgentCard[] }>(`${api(id)}/agent-cards`)
 export const createAgentCard = (id: string, agent: string) =>
   post<{ path: string; created: boolean }>(`${api(id)}/agent-cards`, { agent })
+export interface WardenField { label: string; default?: string | null; secret: boolean }
+export interface WardenKind {
+  id: string
+  name: string
+  description: string
+  protocol: 'rules' | 'systemone' | 'decisions'
+  endpoint?: string | null
+  model?: string | null
+  needs_key: boolean
+  builtin: boolean
+  fields: Record<string, WardenField>
+  key_hint?: string | null
+}
+export interface WardenConfig {
+  decider: string
+  endpoint?: string | null
+  model?: string | null
+  key_env?: string | null
+  timeout_secs: number
+}
+export interface WardenDecision {
+  choice: { admit: boolean; mode?: 'single' | 'room' | 'vote' | null; listeners: number; max_listeners: number; agents: string[] }
+  decider: string
+  spec_version: string
+  p_admit?: number
+  p_success?: Record<string, number>
+  scores?: Record<string, number>
+  p_agent?: Record<string, number>
+  reason: string
+  fallback?: string
+  cost_usd?: number
+  latency_ms?: number
+  input_tokens?: number
+  cached_tokens?: number
+}
+export interface WardenRecord {
+  ts: number
+  message_id: string
+  phase: 'shadow' | 'act' | 'sampled' | 'vote'
+  decision?: WardenDecision
+  executed?: { by: string; agents: string[] }
+  vote?: {
+    ballots: { agent: string; conclusion?: string; result: string }[]
+    groups: string[][]
+    judged_by: string
+    action: string
+    posted_by?: string
+    added?: string
+  }
+}
+export interface WardenView {
+  mode: WardenMode
+  config: WardenConfig
+  problem?: string | null
+  kinds: WardenKind[]
+  spec_toml: string
+  spec: { version: string; modes: string[]; admit_threshold: number; lambda: number; [key: string]: unknown }
+  spec_source: { kind: 'default' | 'file' | 'invalid'; error?: string }
+  spec_path?: string
+}
+export const getWarden = () => get<WardenView>('/api/warden')
+export const setWardenConfig = (patch: Partial<WardenConfig>) =>
+  post<{ ok: boolean; config: WardenConfig }>('/api/warden/config', patch)
+export const setWardenKey = (decider: string, api_key: string | null) =>
+  post<{ key_hint: string | null }>('/api/warden/key', { decider, api_key })
+export const setWardenSpec = (toml: string) => post<{ spec: unknown }>('/api/warden/spec', { toml })
+export const resetWardenSpec = () => post<{ spec: unknown }>('/api/warden/spec/reset', {})
+export const testWarden = (text: string, circle_id?: string | null) =>
+  post<{ decision: WardenDecision; questions: string[]; input: string }>('/api/warden/test', { text, circle_id }, 30_000)
+export const getWardenDecisions = (id: string, limit = 50) =>
+  get<{ mode: WardenMode; records: WardenRecord[] }>(`${api(id)}/warden/decisions?limit=${limit}`)
 export const updateExecution = (id: string, run: string, action: 'retry' | 'cancel') => post(`${api(id)}/chat/executions/${encodeURIComponent(run)}`, { action })
 
 

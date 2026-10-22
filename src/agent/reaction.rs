@@ -94,9 +94,14 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     let mut dirty_since: Option<tokio::time::Instant> = None;
     let debounce = tokio::time::sleep(DRAIN_IDLE);
     tokio::pin!(debounce);
+    // A decision the drain left a message waiting for is ready.
+    let warden_ready = state.warden.ready.clone();
     loop {
         tokio::select! {
             _ = token.cancelled() => break,
+            _ = warden_ready.notified() => {
+                drain_ambient(&state, &handled, &inbox, &ledger, &wake, &AgentConfig::load());
+            }
             result = &mut worker => {
                 result??;
                 // The worker only returns `Ok` when its token was cancelled, and
@@ -205,6 +210,7 @@ fn reconcile_requests_with_config(
             ambient,
             // A legacy marker records that a turn happened, not who else saw it.
             co_listeners: Vec::new(),
+            warden: None,
         };
         if let Err(error) = inbox.record_suppressed(request, message.ts) {
             tracing::warn!("legacy inbox import failed: {error}");
@@ -308,6 +314,7 @@ fn admit_message(
                 implicit: false,
                 ambient: false,
                 co_listeners: Vec::new(),
+                warden: None,
                 addressed_here: scope.is_some(),
             },
         );
@@ -352,6 +359,7 @@ fn admit_message(
                 implicit: true,
                 ambient: false,
                 co_listeners: Vec::new(),
+                warden: None,
                 addressed_here: true,
             },
         );
@@ -377,6 +385,8 @@ struct DispatchRequest<'a> {
     /// Every agent offered this same message, when `ambient` — this one
     /// included. Passed into the prompt so a listener knows it is not alone.
     co_listeners: Vec<String>,
+    /// What the warden asked of this turn, when it chose the listener.
+    warden: Option<super::warden::Assignment>,
     /// Is this dispatch unambiguously meant for *this* device?
     ///
     /// True for a device-scoped mention, a follow-up, and an ambient offer.
@@ -433,6 +443,7 @@ fn dispatch(
         implicit: req.implicit,
         ambient: req.ambient,
         co_listeners: req.co_listeners,
+        warden: req.warden,
     };
     if request.delegated()
         && request.message.peer_id == state.peer_id
@@ -635,6 +646,18 @@ fn drain_ambient(
         announce_unanswered(state, &message.id, reason);
     }
 
+    // With the warden on, its spec sets the soft gates — the length floor and
+    // the quiet window — which are guesses at what is worth a turn rather than
+    // invariants. Off, they stay where scry has always had them.
+    let warden_mode = settings.warden_mode;
+    let spec = match warden_mode {
+        super::warden::WardenMode::Off => super::warden::spec::WardenSpec::default(),
+        _ => super::warden::spec::WardenSpec::load().0,
+    };
+    let min_chars = match warden_mode {
+        super::warden::WardenMode::Off => super::ambient::MIN_AMBIENT_CHARS,
+        _ => spec.gates.min_chars,
+    };
     // The cheap gates run before the tail is chosen, so a backlog ending in
     // "ok thanks" does not spend its one turn there while a real question
     // sits behind it.
@@ -672,9 +695,31 @@ fn drain_ambient(
             Addressing::Unknown => continue,
             Addressing::ToTheRoom => {}
         }
-        match super::ambient::skip_reason(message, mentions_an_agent(message)) {
+        match super::ambient::skip_reason_with(message, mentions_an_agent(message), min_chars) {
             Some(reason) => {
                 ledger.record(&message.id, Decision::Skipped(reason.into()), now);
+                // A sample of what the length floor turns away, put to the
+                // warden anyway, so the floor itself can be measured. Recorded
+                // only; nothing runs.
+                if reason == super::ambient::TOO_SHORT
+                    && warden_mode != super::warden::WardenMode::Off
+                    && super::warden::sampled(&message.id, spec.gates.sample_skipped)
+                {
+                    state.warden.observe(
+                        state.circle_dir.clone(),
+                        &cfg.warden,
+                        &spec,
+                        super::warden::features(
+                            state,
+                            &history,
+                            message,
+                            &listeners,
+                            settings.ambient_responders,
+                        ),
+                        super::warden::log::Phase::Sampled,
+                        None,
+                    );
+                }
                 // Only for messages a person wrote. "not human-authored" is the
                 // rule that makes ambient terminate (§2.1), it fires on every
                 // agent reply, and nobody has ever wondered why their agent did
@@ -731,11 +776,62 @@ fn drain_ambient(
             "part of a backlog; only its most recent messages were read",
         );
     }
-    let decided = collapsed + eligible.len() + reopened.len();
+    let mut decided = collapsed + eligible.len() + reopened.len();
     for message in eligible {
-        offer_to_listeners(
-            state, handled, inbox, ledger, wake, cfg, &listeners, message, now,
-        );
+        match warden_mode {
+            super::warden::WardenMode::Off => {
+                offer_to_listeners(
+                    state, handled, inbox, ledger, wake, cfg, &listeners, message, now,
+                );
+            }
+            super::warden::WardenMode::Shadow => {
+                // What the warden would have been choosing from, read before
+                // rotation offers it to anyone.
+                let candidates = available_listeners(
+                    handled,
+                    inbox,
+                    &history,
+                    &listeners,
+                    message,
+                    now,
+                    spec.gates.quiet_secs,
+                );
+                let features = super::warden::features(
+                    state,
+                    &history,
+                    message,
+                    &candidates,
+                    settings.ambient_responders,
+                );
+                let selected = offer_to_listeners(
+                    state, handled, inbox, ledger, wake, cfg, &listeners, message, now,
+                );
+                state.warden.observe(
+                    state.circle_dir.clone(),
+                    &cfg.warden,
+                    &spec,
+                    features,
+                    super::warden::log::Phase::Shadow,
+                    Some(super::warden::log::Executed {
+                        by: if selected.is_empty() {
+                            "nobody"
+                        } else {
+                            "rotation"
+                        }
+                        .into(),
+                        agents: selected,
+                    }),
+                );
+            }
+            super::warden::WardenMode::Act => {
+                if !warden_offer(
+                    state, handled, inbox, ledger, wake, cfg, &listeners, message, &history, &spec,
+                    now,
+                ) {
+                    decided -= 1;
+                }
+            }
+        }
     }
     decided
 }
@@ -836,11 +932,67 @@ fn unanswered_attempts(entries: &[super::inbox::Entry], message_id: &str) -> Opt
     (out.executed + out.expired > 0).then_some(out)
 }
 
-/// Offer one eligible message to this device's listeners./// Offer one eligible message to this device's listeners.
+/// Listeners free to take `message`, least recently offered first.
 ///
-/// The ledger entry is written before any dispatch, so a panic or a crash
-/// between the two costs the room one turn rather than replaying the selection
-/// on the next drain.
+/// Leaves out an agent that spoke here within `quiet_secs` — it has just had
+/// its say — and one this device already offered the message to.
+#[allow(clippy::too_many_arguments)]
+fn available_listeners(
+    handled: &super::handled::HandledMentions,
+    inbox: &super::inbox::Inbox,
+    history: &[crate::control::ChatMessage],
+    listeners: &[String],
+    message: &crate::control::ChatMessage,
+    now: i64,
+    quiet_secs: i64,
+) -> Vec<String> {
+    let previous = inbox.entries();
+    let mut available: Vec<String> = listeners
+        .iter()
+        // `now` is this device's clock deciding about its own recent past —
+        // "did this agent just speak here" — rather than a comparison against
+        // the author's.
+        .filter(|agent| !super::ambient::spoke_within(history, agent, now, quiet_secs))
+        .filter(|agent| !handled.contains(&message.id, &format!("~ambient:{agent}")))
+        .cloned()
+        .collect();
+    // Least recently offered first, so slow providers and PASS count as turns.
+    // Stable ties preserve the configured order only for never-offered agents.
+    available.sort_by_key(|agent| {
+        previous
+            .iter()
+            .rposition(|e| e.request.ambient && e.request.agent == *agent)
+    });
+    available
+}
+
+/// Settle a message every listener is too recently vocal to take.
+fn all_listeners_quiet(
+    state: &AppState,
+    ledger: &super::ledger::AmbientLedger,
+    message: &crate::control::ChatMessage,
+    listeners: usize,
+    now: i64,
+) {
+    ledger.record(
+        &message.id,
+        super::ledger::Decision::Skipped("every listener had just spoken".into()),
+        now,
+    );
+    note(
+        state,
+        &message.id,
+        None,
+        match listeners {
+            1 => "the only agent reading this room had just spoken",
+            _ => "every agent reading this room had just spoken",
+        },
+    );
+}
+
+/// Offer one eligible message to this device's listeners, in rotation.
+///
+/// Returns who was offered it.
 #[allow(clippy::too_many_arguments)]
 fn offer_to_listeners(
     state: &AppState,
@@ -852,44 +1004,22 @@ fn offer_to_listeners(
     listeners: &[String],
     message: &crate::control::ChatMessage,
     now: i64,
-) {
-    use super::ledger::Decision;
+) -> Vec<String> {
     let settings = cfg.resolved(&state.circle_id);
     let history = state.transcript();
-    let previous = inbox.entries();
-    let mut available: Vec<String> = listeners
-        .iter()
-        // `now` is this device's clock deciding about its own recent past —
-        // "did this agent just speak here" — rather than a comparison against
-        // the author's.
-        .filter(|agent| !super::ambient::spoke_recently(&history, agent, now))
-        .filter(|agent| !handled.contains(&message.id, &format!("~ambient:{agent}")))
-        .cloned()
-        .collect();
+    let available = available_listeners(
+        handled,
+        inbox,
+        &history,
+        listeners,
+        message,
+        now,
+        super::ambient::AMBIENT_QUIET_SECS,
+    );
     if available.is_empty() {
-        ledger.record(
-            &message.id,
-            Decision::Skipped("every listener had just spoken".into()),
-            now,
-        );
-        note(
-            state,
-            &message.id,
-            None,
-            match listeners.len() {
-                1 => "the only agent reading this room had just spoken",
-                _ => "every agent reading this room had just spoken",
-            },
-        );
-        return;
+        all_listeners_quiet(state, ledger, message, listeners.len(), now);
+        return Vec::new();
     }
-    // Least recently offered first, so slow providers and PASS count as turns.
-    // Stable ties preserve the configured order only for never-offered agents.
-    available.sort_by_key(|agent| {
-        previous
-            .iter()
-            .rposition(|e| e.request.ambient && e.request.agent == *agent)
-    });
     let max = settings.ambient_responders.min(available.len());
     // How many listeners this particular message gets, when the count is set
     // to vary. Derived from the message id rather than from a running count of
@@ -902,12 +1032,34 @@ fn offer_to_listeners(
     } else {
         max
     };
-    // Fix the selection before dispatching any of it: each listener's prompt
-    // names the others, which cannot be known while the list is still being
-    // consumed one agent at a time.
     let selected: Vec<String> = available.into_iter().take(count).collect();
-    ledger.record(&message.id, Decision::Offered, now);
-    for agent in &selected {
+    offer_selected(
+        state, handled, inbox, ledger, wake, cfg, message, now, &selected, None,
+    );
+    selected
+}
+
+/// Offer `message` to exactly `selected`, together.
+///
+/// The ledger entry is written before any dispatch, so a panic or a crash
+/// between the two costs the room one turn rather than replaying the selection
+/// on the next drain. The selection is fixed before dispatching any of it:
+/// each listener's prompt names the others.
+#[allow(clippy::too_many_arguments)]
+fn offer_selected(
+    state: &AppState,
+    handled: &super::handled::HandledMentions,
+    inbox: &super::inbox::Inbox,
+    ledger: &super::ledger::AmbientLedger,
+    wake: &tokio::sync::Notify,
+    cfg: &AgentConfig,
+    message: &crate::control::ChatMessage,
+    now: i64,
+    selected: &[String],
+    warden: Option<super::warden::Assignment>,
+) {
+    ledger.record(&message.id, super::ledger::Decision::Offered, now);
+    for agent in selected {
         dispatch(
             state,
             handled,
@@ -924,11 +1076,116 @@ fn offer_to_listeners(
                 relay: Some(super::relay::mint(&message.id, &message.peer_id)),
                 implicit: false,
                 ambient: true,
-                co_listeners: selected.clone(),
+                co_listeners: selected.to_vec(),
+                warden: warden.clone(),
                 addressed_here: true,
             },
         );
     }
+}
+
+/// Offer one eligible message as the warden decides.
+///
+/// Returns `false` when the decision is not ready yet: the message is left
+/// undecided, and the drain that runs when the decider answers takes it up.
+#[allow(clippy::too_many_arguments)]
+fn warden_offer(
+    state: &AppState,
+    handled: &super::handled::HandledMentions,
+    inbox: &super::inbox::Inbox,
+    ledger: &super::ledger::AmbientLedger,
+    wake: &tokio::sync::Notify,
+    cfg: &AgentConfig,
+    listeners: &[String],
+    message: &crate::control::ChatMessage,
+    history: &[crate::control::ChatMessage],
+    spec: &super::warden::spec::WardenSpec,
+    now: i64,
+) -> bool {
+    use super::warden::log;
+    let settings = cfg.resolved(&state.circle_id);
+    let available = available_listeners(
+        handled,
+        inbox,
+        history,
+        listeners,
+        message,
+        now,
+        spec.gates.quiet_secs,
+    );
+    if available.is_empty() {
+        all_listeners_quiet(state, ledger, message, listeners.len(), now);
+        return true;
+    }
+    let features = super::warden::features(
+        state,
+        history,
+        message,
+        &available,
+        settings.ambient_responders,
+    );
+    let Some(decision) = state.warden.decision_for(&cfg.warden, spec, &features) else {
+        note(state, &message.id, None, "waiting for the warden to decide");
+        return false;
+    };
+    let choice = decision.choice.clone();
+    let selected: Vec<String> = match (choice.admit, choice.mode) {
+        (true, Some(_)) => choice
+            .agents
+            .iter()
+            .take(choice.listeners)
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    };
+    let reason = decision.reason.clone();
+    log::append(
+        &state.circle_dir,
+        &log::Record {
+            ts: now,
+            message_id: message.id.clone(),
+            phase: log::Phase::Act,
+            features: Some(features),
+            decision: Some(decision),
+            executed: Some(log::Executed {
+                by: if selected.is_empty() {
+                    "nobody"
+                } else {
+                    "warden"
+                }
+                .into(),
+                agents: selected.clone(),
+            }),
+            vote: None,
+        },
+    );
+    let Some(mode) = choice.mode.filter(|_| !selected.is_empty()) else {
+        let reason = format!("the warden judged no agent needs to answer: {reason}");
+        ledger.record(
+            &message.id,
+            super::ledger::Decision::Skipped(reason.clone()),
+            now,
+        );
+        note(state, &message.id, None, &reason);
+        return true;
+    };
+    offer_selected(
+        state,
+        handled,
+        inbox,
+        ledger,
+        wake,
+        cfg,
+        message,
+        now,
+        &selected,
+        Some(super::warden::Assignment {
+            mode,
+            max: choice.max_listeners,
+            pool: choice.agents,
+        }),
+    );
+    true
 }
 
 /// FNV-1a over the message id.
@@ -1254,6 +1511,7 @@ async fn run_next_cancellable(
                 relay: request.relay.clone(),
                 ambient: request.ambient,
                 co_listeners: &request.co_listeners,
+                warden: request.warden.as_ref(),
             },
             cancel,
         )
@@ -1297,6 +1555,15 @@ async fn run_next_cancellable(
             detail,
             chrono::Utc::now().timestamp(),
         )?;
+        // However a voter's turn ended, its round may now be complete.
+        if status != Status::Pending
+            && request
+                .warden
+                .as_ref()
+                .is_some_and(|a| a.mode == super::warden::spec::ModeKind::Vote)
+        {
+            super::warden::vote::settle(state, inbox, request, cfg).await;
+        }
         let _ = crate::api::execution::publish(state, inbox);
         return Ok(status != Status::Pending);
     }
@@ -1526,6 +1793,8 @@ struct Turn<'a> {
     ambient: bool,
     /// The other agents shown the same message, on an unaddressed turn.
     co_listeners: &'a [String],
+    /// What the warden asked of this turn, when it chose the listener.
+    warden: Option<&'a super::warden::Assignment>,
 }
 
 struct ManagedToken {
@@ -1554,6 +1823,7 @@ async fn react(
         relay,
         ambient,
         co_listeners,
+        warden,
     } = turn;
     publish_agent_activity(state, agent_id, message_id, ChatActivityKind::Working, true);
 
@@ -1569,10 +1839,10 @@ async fn react(
     // Give the agent enough context about where it is. On a resumed session the
     // agent already has history, so we send a lean per-turn header; on a fresh
     // session we include the standing brief about the enoxian environment.
-    let framing = if ambient {
-        super::context::Framing::Overheard
-    } else {
-        super::context::Framing::Addressed
+    let framing = match (ambient, warden) {
+        (true, Some(_)) => super::context::Framing::Assigned,
+        (true, None) => super::context::Framing::Overheard,
+        (false, _) => super::context::Framing::Addressed,
     };
     let delivery = super::context::build_delivery(
         state,
@@ -1590,12 +1860,15 @@ async fn react(
         // all run here; named with it so a namesake on another machine is not
         // mistaken for the one sharing this turn.
         let roster = super::label::Roster::load(state);
-        prompt.push_str(&super::ambient::ambient_instruction(
-            co_listeners,
-            agent_id,
-            |listener| roster.agent(listener, &state.peer_id),
-        ));
+        let name = |listener: &str| roster.agent(listener, &state.peer_id);
+        prompt.push_str(&match warden {
+            Some(assignment) => {
+                super::warden::instruction(assignment, co_listeners, agent_id, name)
+            }
+            None => super::ambient::ambient_instruction(co_listeners, agent_id, name),
+        });
     }
+    let voting = warden.is_some_and(|a| a.mode == super::warden::spec::ModeKind::Vote);
     // Bound to this turn's cascade: an agent that posts with `enox say`
     // instead of its turn reply is still the agent, and still spends from the
     // budget that woke it (#254).
@@ -1670,6 +1943,41 @@ async fn react(
         return Err(super::liveness::TurnStopped(cause).into());
     }
 
+    // A voter's reply is a ballot, not a post: the vote settles which answer
+    // the room sees once every voter is done (see `warden::vote`).
+    if voting {
+        let reply = outcome
+            .reply
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let cast = match reply {
+            Some(text) if !super::ambient::is_pass(text) => {
+                super::warden::vote::Cast::Answer(text.to_string())
+            }
+            _ => super::warden::vote::Cast::Pass,
+        };
+        let passed = cast == super::warden::vote::Cast::Pass;
+        state.warden.votes.cast(message_id, agent_id, cast);
+        if let Some(cursor) = &delivery.cursor {
+            mark_seen(state, agent_id, cursor, &delivery.delivered);
+        }
+        publish_agent_activity_detailed(
+            state,
+            agent_id,
+            message_id,
+            if passed {
+                ChatActivityKind::Skipped
+            } else {
+                ChatActivityKind::Working
+            },
+            passed,
+            passed.then(|| "nothing to add".to_string()),
+        );
+        return Ok(Some(
+            if passed { PASSED_DETAIL } else { VOTED_DETAIL }.into(),
+        ));
+    }
     // Post the agent's streamed reply back into the chat room so the mention
     // reads like a conversation. File changes still surface separately as a
     // proposal (via the ambient engine + pull protocol); this is the
@@ -1819,6 +2127,41 @@ pub(crate) fn record_usage(state: &AppState, run_id: &str, usage: super::usage::
 /// The `detail` of an unaddressed turn that passed, a withdrawn veiled draft
 /// included. The activity panel shows it as is.
 pub(crate) const PASSED_DETAIL: &str = "No reply needed";
+
+/// The `detail` of a blind-vote turn that answered. Whether its answer was the
+/// one posted is in the warden's log, not here.
+pub(crate) const VOTED_DETAIL: &str = "Voted";
+
+/// Post the answer a blind vote settled on, under the voter that wrote it.
+pub(crate) async fn post_vote(
+    state: &AppState,
+    agent_id: &str,
+    text: &str,
+    relay: Option<Relay>,
+    message_id: &str,
+) -> anyhow::Result<String> {
+    let posted = post_when_free(state, agent_id, text, relay, message_id, POST_PATIENCE).await;
+    publish_agent_activity(
+        state,
+        agent_id,
+        message_id,
+        ChatActivityKind::Working,
+        false,
+    );
+    posted
+}
+
+/// Say that a voter's answer was not the one posted.
+pub(crate) fn publish_voted(state: &AppState, agent_id: &str, message_id: &str) {
+    publish_agent_activity_detailed(
+        state,
+        agent_id,
+        message_id,
+        ChatActivityKind::Skipped,
+        true,
+        Some("voted; another answer was posted".to_string()),
+    );
+}
 
 fn publish_agent_activity(
     state: &AppState,
@@ -3066,6 +3409,238 @@ mod tests {
         message
     }
 
+    /// A config whose listeners are fake ACP agents that answer `say-<x>`.
+    fn voting_config(agents: &[&str], mode: super::super::warden::WardenMode) -> AgentConfig {
+        let mut cfg = inbox_config();
+        for agent in agents {
+            cfg.agents.insert(
+                agent.to_string(),
+                serde_json::from_value(serde_json::json!({
+                    "command": super::super::acp::tests::fake_agent_command(),
+                    "driver": "acp",
+                }))
+                .unwrap(),
+            );
+        }
+        cfg.ambient = agents.iter().map(|a| a.to_string()).collect();
+        cfg.ambient_responders = agents.len();
+        cfg.warden_mode = mode;
+        cfg
+    }
+
+    /// Long enough that the default rules choose a vote.
+    fn hard_question() -> String {
+        format!(
+            "Is the following boolean expression true or false? {}",
+            "not ( True and False ) or ( False and not True ) and ".repeat(8)
+        )
+    }
+
+    async fn run_until_idle(
+        state: &AppState,
+        inbox: &super::super::inbox::Inbox,
+        cfg: &AgentConfig,
+    ) {
+        loop {
+            let pending = inbox
+                .entries()
+                .into_iter()
+                .find(|e| e.status == super::super::inbox::Status::Pending);
+            let Some(entry) = pending else { break };
+            tokio::time::timeout(
+                LIVENESS,
+                run_next_for_agent(state, inbox, cfg, Some(&entry.request.agent)),
+            )
+            .await
+            .expect("the turn ends")
+            .unwrap();
+        }
+    }
+
+    fn agent_replies(state: &AppState, message_id: &str) -> Vec<crate::control::ChatMessage> {
+        state
+            .transcript()
+            .into_iter()
+            .filter(|m| is_agent_answer(m, message_id))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_blind_vote_that_agrees_posts_one_answer() {
+        use super::super::warden::{log, WardenMode};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = super::super::inbox::Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let (a, b, c) = (
+            "fake-acp:say-true#a",
+            "fake-acp:say-True.#b",
+            "fake-acp:say-false#c",
+        );
+        let cfg = voting_config(&[a, b, c], WardenMode::Act);
+        let message = room_message("q", &hard_question());
+        offer_room(&state, &handled, &inbox, &ledger, &wake, &cfg, &message);
+
+        // The rules sent a long message to a vote of two, in rotation order.
+        let voters: Vec<String> = inbox
+            .entries()
+            .iter()
+            .map(|e| e.request.agent.clone())
+            .collect();
+        assert_eq!(voters, vec![a, b]);
+        let assignment = inbox.entries()[0].request.warden.clone().unwrap();
+        assert_eq!(assignment.mode, super::super::warden::spec::ModeKind::Vote);
+        assert_eq!(assignment.max, 3);
+
+        run_until_idle(&state, &inbox, &cfg).await;
+
+        let replies = agent_replies(&state, "q");
+        assert_eq!(replies.len(), 1, "one answer, not one per voter");
+        assert_eq!(replies[0].agent_id, a);
+        assert!(replies[0].text.contains("ANSWER: true"));
+        assert!(replies[0]
+            .text
+            .contains("Blind vote: 2 of 2 answers agreed"));
+        assert_eq!(inbox.entries().len(), 2, "agreement needs no third voter");
+
+        let records = log::read_all(dir.path());
+        assert_eq!(records[0].phase, log::Phase::Act);
+        let vote = records.iter().find_map(|r| r.vote.clone()).unwrap();
+        assert_eq!(vote.action, "posted");
+        assert_eq!(vote.groups, vec![vec![a.to_string(), b.to_string()]]);
+    }
+
+    #[tokio::test]
+    async fn a_blind_vote_that_disagrees_adds_a_voter_and_posts_the_majority() {
+        use super::super::warden::{log, WardenMode};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = super::super::inbox::Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let (a, b, c) = (
+            "fake-acp:say-false#a",
+            "fake-acp:say-true#b",
+            "fake-acp:say-true#c",
+        );
+        let cfg = voting_config(&[a, b, c], WardenMode::Act);
+        offer_room(
+            &state,
+            &handled,
+            &inbox,
+            &ledger,
+            &wake,
+            &cfg,
+            &room_message("q", &hard_question()),
+        );
+
+        run_until_idle(&state, &inbox, &cfg).await;
+
+        let voters: Vec<String> = inbox
+            .entries()
+            .iter()
+            .map(|e| e.request.agent.clone())
+            .collect();
+        assert_eq!(voters, vec![a, b, c], "the third candidate was added");
+        let replies = agent_replies(&state, "q");
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].agent_id, b, "the majority's first answer");
+        assert!(replies[0].text.contains("the one 2 of 3 agreed on"));
+        let votes: Vec<_> = log::read_all(dir.path())
+            .into_iter()
+            .filter_map(|r| r.vote)
+            .collect();
+        assert_eq!(votes.len(), 2);
+        assert_eq!(votes[0].action, "added_voter");
+        assert_eq!(votes[0].added.as_deref(), Some(c));
+        assert_eq!(votes[1].action, "posted");
+    }
+
+    #[tokio::test]
+    async fn in_shadow_rotation_runs_and_the_warden_only_records() {
+        use super::super::warden::{log, WardenMode};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = super::super::inbox::Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let (a, b) = ("fake-acp:say-true#a", "fake-acp:say-false#b");
+        let mut cfg = voting_config(&[a, b], WardenMode::Shadow);
+        cfg.ambient_responders = 1;
+        offer_room(
+            &state,
+            &handled,
+            &inbox,
+            &ledger,
+            &wake,
+            &cfg,
+            &room_message("q", &hard_question()),
+        );
+
+        // Rotation: one listener, no assignment.
+        let entries = inbox.entries();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].request.warden.is_none());
+        let records = log::read_all(dir.path());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].phase, log::Phase::Shadow);
+        assert_eq!(records[0].executed.as_ref().unwrap().by, "rotation");
+        assert_eq!(records[0].executed.as_ref().unwrap().agents, vec![a]);
+        // The ceiling of one listener keeps the warden from a vote too.
+        let decision = records[0].decision.as_ref().unwrap();
+        assert_eq!(
+            decision.choice.mode,
+            Some(super::super::warden::spec::ModeKind::Single)
+        );
+    }
+
+    #[test]
+    fn with_the_warden_on_its_spec_sets_the_length_floor() {
+        use super::super::inbox::Inbox;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let mut cfg = inbox_config();
+        cfg.warden_mode = super::super::warden::WardenMode::Act;
+        // The default spec keeps scry's floor: "anyone?" is still too short.
+        offer_room(
+            &state,
+            &handled,
+            &inbox,
+            &ledger,
+            &wake,
+            &cfg,
+            &room_message("short", "anyone?"),
+        );
+        assert!(inbox.entries().is_empty());
+        assert_eq!(
+            state.admission_log.recent(10)[0].reason,
+            "too short to be worth a turn"
+        );
+        // A long one is offered to the one listener, assigned by the warden.
+        offer_room(
+            &state,
+            &handled,
+            &inbox,
+            &ledger,
+            &wake,
+            &cfg,
+            &room_message(
+                "long",
+                "could someone check why the retry path never fires?",
+            ),
+        );
+        let entries = inbox.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].request.warden.as_ref().unwrap().mode,
+            super::super::warden::spec::ModeKind::Single
+        );
+    }
+
     #[test]
     fn a_message_too_short_to_answer_says_so() {
         use super::super::inbox::Inbox;
@@ -3175,6 +3750,7 @@ mod tests {
             implicit: false,
             ambient: false,
             co_listeners: Vec::new(),
+            warden: None,
             addressed_here,
         };
         dispatch(&state, &handled, &inbox, &wake, &pull, req(true));

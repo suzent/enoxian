@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { getExecutions, updateExecution } from '../api'
+import { getExecutions, getWardenDecisions, updateExecution, type WardenRecord } from '../api'
+import { describeDecision } from './WardenSettings'
 import type { AdmissionSkip, ChatMessage, ExecutionRun, Member, Readiness, RunActivity, RunSpend, RunUsage } from '../types'
 
 const retryable = new Set(['failed', 'interrupted', 'expired', 'cancelled'])
@@ -128,6 +129,27 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const generation = useRef(0)
+  // The warden's records, by message: its latest decision, and how a vote went.
+  // Polled slower than runs: decisions are made once per message.
+  const [warden, setWarden] = useState<{ decided: Record<string, WardenRecord>; votes: Record<string, WardenRecord> }>({ decided: {}, votes: {} })
+  useEffect(() => {
+    let disposed = false
+    setWarden({ decided: {}, votes: {} })
+    const refresh = () => getWardenDecisions(circleId, 100).then(page => {
+      if (disposed) return
+      const decided: Record<string, WardenRecord> = {}
+      const votes: Record<string, WardenRecord> = {}
+      // Newest first: keep the first seen for each message.
+      for (const record of page.records) {
+        if (record.vote) { votes[record.message_id] ??= record }
+        else if (record.decision && record.phase !== 'sampled') decided[record.message_id] ??= record
+      }
+      setWarden({ decided, votes })
+    }).catch(() => {})
+    void refresh()
+    const timer = window.setInterval(refresh, 10_000)
+    return () => { disposed = true; window.clearInterval(timer) }
+  }, [circleId])
   useEffect(() => {
     const current = ++generation.current
     let disposed = false
@@ -212,6 +234,14 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
           : <span className="agent-activity__unavailable">Message unavailable</span>}
         {run.status === 'running' && live && <p className={`agent-activity__live${live.quiet ? ' agent-activity__live--quiet' : ''}`}>{live.text}</p>}
         {run.detail && run.detail !== label && <p className="agent-activity__detail">{run.detail}</p>}
+        {ambient && warden.decided[run.message_id]?.decision && <p className="agent-activity__warden" title={warden.decided[run.message_id].decision!.decider}>
+          {warden.decided[run.message_id].phase === 'shadow' ? 'Warden would have chosen: ' : 'Warden: '}
+          {describeDecision(warden.decided[run.message_id].decision!)}
+        </p>}
+        {ambient && warden.votes[run.message_id]?.vote && <p className="agent-activity__warden">
+          Blind vote: {warden.votes[run.message_id].vote!.groups.length === 1 ? 'all agreed' : `${warden.votes[run.message_id].vote!.groups.length} different answers`}
+          {warden.votes[run.message_id].vote!.posted_by ? ` · posted @${warden.votes[run.message_id].vote!.posted_by}'s` : warden.votes[run.message_id].vote!.added ? ` · asked @${warden.votes[run.message_id].vote!.added} too` : ''}
+        </p>}
         {local && usage[run.run_id] && <p className="agent-activity__usage" title={usageTitle(usage[run.run_id])}>{describeUsage(usage[run.run_id])}</p>}
         <div className="agent-activity__actions">
           {local && run.status === 'running' && running && <button type="button" className="underline underline-offset-2" disabled={busy !== null || running.stopping} onClick={() => void act(run, 'cancel')}>{running.stopping ? 'Stopping…' : busy === run.run_id ? 'Updating…' : 'Stop'}</button>}

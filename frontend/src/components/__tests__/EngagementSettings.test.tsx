@@ -61,8 +61,8 @@ describe('circle scope', () => {
       <EngagementSettings agentNames={['claude']} global={GLOBAL} circle={circle()}
         scope="circle" busy={false} onChange={vi.fn()} />,
     )
-    // Eight settings, all inherited.
-    expect(screen.getAllByText('Using default')).toHaveLength(8)
+    // Nine settings, all inherited.
+    expect(screen.getAllByText('Using default')).toHaveLength(9)
     // And the inherited value is visible, not hidden.
     expect(screen.getByLabelText('Follow-up window in seconds')).toHaveValue(180)
   })
@@ -74,7 +74,7 @@ describe('circle scope', () => {
         scope="circle" busy={false} onChange={vi.fn()} />,
     )
     expect(screen.getAllByRole('button', { name: 'Use default' })).toHaveLength(1)
-    expect(screen.getAllByText('Using default')).toHaveLength(7)
+    expect(screen.getAllByText('Using default')).toHaveLength(8)
   })
 
   it('reset clears the override rather than writing a value', async () => {
@@ -179,5 +179,27 @@ describe('listener rotation', () => {
     expect(onChange).toHaveBeenLastCalledWith({ ambient_responders: 2 })
     await userEvent.click(screen.getByLabelText('Vary the number of listeners'))
     expect(onChange).toHaveBeenLastCalledWith({ ambient_rotate_count: true })
+  })
+})
+
+describe('warden', () => {
+  it('turns the warden on in the scope being edited, and hands it the listener count', () => {
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <EngagementSettings agentNames={['claude']} global={GLOBAL} circle={circle()}
+        scope="circle" busy={false} onChange={onChange} />,
+    )
+    fireEvent.change(screen.getByRole('combobox', { name: 'Warden' }), { target: { value: 'act' } })
+    expect(onChange).toHaveBeenCalledWith({ warden_mode: 'act' })
+
+    rerender(
+      <EngagementSettings agentNames={['claude']} global={GLOBAL}
+        circle={circle({ warden_mode: 'act', ambient_responders: 3 })}
+        scope="circle" busy={false} onChange={onChange} />,
+    )
+    // The count becomes a ceiling, and rotation has nothing left to choose.
+    expect(screen.getByText('Most listeners per message')).toBeTruthy()
+    expect(screen.getByText(/chooses 1 to 3 listeners/)).toBeTruthy()
+    expect((screen.getByRole('checkbox', { name: 'Vary the number of listeners' }) as HTMLInputElement).disabled).toBe(true)
   })
 })

@@ -3,7 +3,8 @@ import { render, screen, waitFor, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 const getExecutions = vi.fn()
 const updateExecution = vi.fn(async () => ({}))
-vi.mock('../../api', () => ({ getExecutions, updateExecution }))
+const getWardenDecisions = vi.fn(async () => ({ mode: 'off', records: [] as unknown[] }))
+vi.mock('../../api', () => ({ getExecutions, updateExecution, getWardenDecisions }))
 const { default: ExecutionStatus, describeActivity, describeUsage, usageToday, QUIET_HINT_SECS } = await import('../ExecutionStatus')
 beforeEach(() => { cleanup(); vi.clearAllMocks(); getExecutions.mockResolvedValue({ peer_id: 'local', runs: [
   { run_id: 'r1', message_id: 'm1', agent_id: 'claude', peer_id: 'local', status: 'interrupted', ambient: false },

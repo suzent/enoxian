@@ -19,6 +19,7 @@ pub mod proposals;
 pub mod shutdown;
 pub mod status;
 pub mod tasks;
+pub mod warden;
 pub mod who;
 
 use crate::daemon::DaemonState;
@@ -125,6 +126,14 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
         .route(
             "/circles/{circle_id}/api/chat/deliveries",
             get(execution::deliveries),
+        )
+        .route(
+            "/circles/{circle_id}/api/warden/decisions",
+            get(warden::decisions),
+        )
+        .route(
+            "/circles/{circle_id}/api/warden/episodes",
+            get(warden::episodes),
         )
         .route(
             "/circles/{circle_id}/api/agent-cards",
@@ -240,6 +249,12 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
             post(agent_config::set_engagement),
         )
         .route("/api/agent-config/agents", post(agent_config::add_agent))
+        .route("/api/warden", get(warden::get))
+        .route("/api/warden/config", post(warden::set_config))
+        .route("/api/warden/key", post(warden::set_key))
+        .route("/api/warden/spec", post(warden::set_spec))
+        .route("/api/warden/spec/reset", post(warden::reset_spec))
+        .route("/api/warden/test", post(warden::test))
         .route(
             "/api/agent-config/agents/remove",
             post(agent_config::remove_agent),

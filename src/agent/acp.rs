@@ -1046,6 +1046,19 @@ pub(crate) mod tests {
                         "cachedReadTokens": 0, "cachedWriteTokens": 31_518}}}),
                     );
                 }
+                // Answer with a conclusion line: `say-<x>` concludes `<x>`;
+                // anything after a `#` only tells two such agents apart.
+                Some("session/prompt") if mode.starts_with("say-") => {
+                    let said = mode["say-".len()..].split('#').next().unwrap_or_default();
+                    send(
+                        json!({"jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": "fake-session", "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": format!("Worked it out.\nANSWER: {said}")}}}}),
+                    );
+                    send(json!({"jsonrpc": "2.0", "id": id,
+                        "result": {"stopReason": "end_turn"}}));
+                }
                 // Spend something, then fail the turn.
                 Some("session/prompt") if mode == "metered-fail" => {
                     send(
