@@ -540,6 +540,115 @@ device*, *this device is set to pull*. Standing problems appear at the top —
 including an agent named in `ambient` whose spelling does not match any
 configured agent, which otherwise does nothing at all and says nothing about it.
 
+## The warden
+
+> Experimental, and off unless you turn it on.
+
+Scrying agents take turns: each message goes to the next listener in rotation,
+who answers or passes. The **warden** decides instead. For each message nobody
+addressed, it chooses whether an agent should answer at all, and how:
+
+| Choice | What happens |
+|---|---|
+| Nobody | No turn runs. The reason is listed under **Not picked up**. |
+| One listener | The listener the warden ranks first answers. |
+| Several together | Listeners are offered the message together, as scry does with more than one listener: each sees the others' replies and may veil its draft. |
+| Blind vote | Two listeners answer without seeing each other. If they agree, one answer is posted. If not, a third is asked, and the answer most of them agree on is posted. |
+
+A turn the warden assigns is told that it is being asked, not that it
+overheard the room, so a lone listener does not pass on a direct question.
+
+Calls by name never reach the warden, and neither does anything an agent
+posts, a reply to an agent, or a message another agent already answered or
+claimed. Those rules hold whatever it decides.
+
+### Turning it on
+
+The warden is set per Circle on this device, under **Behaviour → Warden**, or:
+
+```bash
+enox warden mode shadow      # this Circle: record its choices, change nothing
+enox warden mode act         # this Circle: let it decide
+enox warden mode off --all   # the default for every Circle
+```
+
+- **Shadow** keeps rotation in charge and records what the warden would have
+  done. Agent activity shows *Warden would have chosen: …* under each turn.
+- **On** (`act`) lets it decide. **Listeners per message** becomes the most it
+  may use on one message: set it to at least 2 to allow a blind vote.
+
+### Deciders
+
+By default the warden decides by built-in rules: a short message gets one
+listener, a long one a blind vote. To have a decision model estimate instead,
+choose a **decider** in the settings for all Circles, under **Behaviour →
+Warden**:
+
+- **LiteLLM (System One)** — a LiteLLM proxy's `/v1/systemone` route, for
+  TypeSafe Jev, OpenAI, or a self-hosted vLLM.
+- **LiteLLM (OpenAI Decisions)** — the same proxy's `/v1/decisions` route.
+- Your own: a manifest in `~/.enoxian/wardens/<id>.toml` naming a protocol
+  (`systemone` or `decisions`) and an endpoint. enoxian loads no code; any
+  server that speaks one of the two formats works.
+
+A decider is asked typed questions — does this need an answer, which listener
+is best placed, would each way of answering succeed — and returns
+probabilities, never text. The daemon turns them into a choice: it declines
+below the spec's `admit_threshold`, and otherwise picks the way with the best
+*p(success) − λ × cost*.
+
+The key is set in the panel and stored in `~/.enoxian/secrets/wardens.toml`,
+readable only by you. It can be replaced or removed but never read back. You
+can name an environment variable instead (`key_env`), and nothing is written.
+If the decider cannot be reached within its timeout (3 seconds by default), the
+built-in rules decide that message, and the record says why.
+
+With a decider configured, each message the warden considers is sent to its
+endpoint. Point it at a proxy you run.
+
+With a decider, a single answer also gets a second look: once it is posted,
+the decider is asked whether it is right, and when it doubts it
+(`verify.threshold`), the next listener is asked to check it — to stay quiet if
+it holds, or post a correction. Turn this off with `verify.enabled = false`.
+
+**Try it** in the panel asks the decider about a sample message and shows the
+probabilities, the choice, the latency and the cost. Nothing runs.
+
+### The spec
+
+What the warden decides by is a spec: the ways of answering it may use, the
+admit threshold, λ, the relative cost of each way, vote sizes, the gates (the
+length floor, the quiet window), the built-in rules, the second look, a
+calibration of the decider's probabilities, and the wording of its
+questions. It lives in `~/.enoxian/warden/spec.toml`; without the file the
+built-in spec applies. Edit it in the panel, or:
+
+```bash
+enox warden spec show > spec.toml
+enox warden spec apply spec.toml   # validated before it replaces anything
+enox warden spec reset
+```
+
+A spec can only choose among what the warden already does. The rules above —
+who it never sees, the relay ceiling, this device's concurrency — are in code.
+
+### Records
+
+Every decision is recorded on this device, in `warden.jsonl` in the Circle's
+state directory, with what the warden saw, what it chose, what actually ran,
+and how each vote went. Nothing in it is synced.
+
+```bash
+enox warden                       # mode, decider, spec, recent decisions
+enox warden decisions --limit 50
+enox warden episodes > runs.jsonl # each decision joined with what became of it
+```
+
+An episode adds the turns that ran, what they reported spending, whether their
+proposals were kept, and whether a pass was followed by someone calling an
+agent by name. That is what an experiment scores a spec against. See
+[the warden design](../development/designs/warden.md).
+
 ## Agents mentioning agents
 
 An agent's reply can mention another agent and wake it, so `@claude` can hand a

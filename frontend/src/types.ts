@@ -239,7 +239,11 @@ export interface SettingsView {
   ambient: string[]
   /** Ceiling on agent turns in one delegation chain. */
   max_relay_turns: number
+  /** Whether the warden decides who answers unaddressed messages. */
+  warden_mode?: WardenMode
 }
+
+export type WardenMode = 'off' | 'shadow' | 'act'
 
 /** What one Circle sets for itself. An absent field inherits the global value. */
 export interface CircleOverrides {
@@ -251,6 +255,7 @@ export interface CircleOverrides {
   engagement_window_secs?: number
   ambient?: string[]
   max_relay_turns?: number
+  warden_mode?: WardenMode
 }
 
 /** How one Circle addresses this device, from its roster. */

@@ -23,7 +23,7 @@ use crate::control::{Author, ChatMessage};
 /// traffic that dominates the volume.
 ///
 /// Measured in [`weighted_len`] units, not characters — see why there.
-const MIN_AMBIENT_CHARS: usize = 24;
+pub const MIN_AMBIENT_CHARS: usize = 24;
 
 /// What a Han ideograph or Hangul syllable is worth against the threshold.
 ///
@@ -58,7 +58,7 @@ fn char_weight(c: char) -> usize {
 ///
 /// Only the threshold comparison uses this; nothing else about a message is
 /// weighted.
-fn weighted_len(text: &str) -> usize {
+pub fn weighted_len(text: &str) -> usize {
     text.chars().map(char_weight).sum()
 }
 
@@ -66,7 +66,7 @@ fn weighted_len(text: &str) -> usize {
 ///
 /// It has just had its say; volunteering again immediately is the pile-on the
 /// spec warns about, and the room reads as the agent talking to itself.
-const AMBIENT_QUIET_SECS: i64 = 30;
+pub const AMBIENT_QUIET_SECS: i64 = 30;
 
 /// The reply that means "nothing to add" (§2.3).
 pub const PASS_TOKEN: &str = "PASS";
@@ -194,6 +194,18 @@ pub fn is_pass(reply: &str) -> bool {
 /// The cheap checks only — no model, no cost. Returns the reason to skip, for
 /// logging, or `None` to proceed.
 pub fn skip_reason(msg: &ChatMessage, mentions_an_agent: bool) -> Option<&'static str> {
+    skip_reason_with(msg, mentions_an_agent, MIN_AMBIENT_CHARS)
+}
+
+/// The skip reason for a message under the length floor.
+pub const TOO_SHORT: &str = "too short to be worth a turn";
+
+/// [`skip_reason`] with the length floor given, as the warden's spec sets it.
+pub fn skip_reason_with(
+    msg: &ChatMessage,
+    mentions_an_agent: bool,
+    min_chars: usize,
+) -> Option<&'static str> {
     if msg.author != Author::Human {
         // §2.1. The rule that keeps ambient from oscillating.
         return Some("not human-authored");
@@ -202,8 +214,8 @@ pub fn skip_reason(msg: &ChatMessage, mentions_an_agent: bool) -> Option<&'stati
         // Someone was addressed; that is a turn, not idle chat.
         return Some("addressed to an agent");
     }
-    if weighted_len(msg.text.trim()) < MIN_AMBIENT_CHARS && msg.attachments.is_empty() {
-        return Some("too short to be worth a turn");
+    if weighted_len(msg.text.trim()) < min_chars && msg.attachments.is_empty() {
+        return Some(TOO_SHORT);
     }
     None
 }
@@ -212,10 +224,13 @@ pub fn skip_reason(msg: &ChatMessage, mentions_an_agent: bool) -> Option<&'stati
 ///
 /// `history` is chronological.
 pub fn spoke_recently(history: &[ChatMessage], agent: &str, now: i64) -> bool {
+    spoke_within(history, agent, now, AMBIENT_QUIET_SECS)
+}
+
+/// [`spoke_recently`] over a window the caller chooses.
+pub fn spoke_within(history: &[ChatMessage], agent: &str, now: i64, secs: i64) -> bool {
     history.iter().rev().any(|m| {
-        now - m.ts <= AMBIENT_QUIET_SECS
-            && m.author == Author::Agent
-            && m.agent_id.eq_ignore_ascii_case(agent)
+        now - m.ts <= secs && m.author == Author::Agent && m.agent_id.eq_ignore_ascii_case(agent)
     })
 }
 

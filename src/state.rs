@@ -154,6 +154,8 @@ pub struct AppState {
     /// the same reason as `approval_errors`: these are this device's own
     /// reasons for declining to spend, and no peer needs them.
     pub admission_log: Arc<crate::agent::decisions::AdmissionLog>,
+    /// The warden's in-flight decisions and blind-vote ballots here. Local.
+    pub warden: Arc<crate::agent::warden::Runtime>,
     pub join_policy: crate::config::JoinPolicy,
     pub owner: String,
     pub mls: crate::mls::SharedMlsState,
@@ -608,6 +610,7 @@ impl AppState {
             callback_slot: Arc::new(RwLock::new(None)),
             live_runs: Default::default(),
             admission_log: Arc::new(crate::agent::decisions::AdmissionLog::new()),
+            warden: Arc::new(crate::agent::warden::Runtime::default()),
             join_policy,
             owner,
             mls,

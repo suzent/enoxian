@@ -372,6 +372,9 @@ Two further per-circle routes are used by the local UI:
 | `POST` | `/api/agent-config/engagement` | Change engagement settings globally or for one Circle |
 | `POST` | `/circles/<id>/api/chat/attachments` | Upload an image to attach to a message |
 | `GET` | `/circles/<id>/api/blobs/<hash>` | Fetch attachment bytes |
+| `GET`/`POST` | `/circles/<id>/api/agent-cards` | List advertised agents and their cards; write a card template for one of this device's agents (`{"agent"}`) |
+| `GET` | `/circles/<id>/api/warden/decisions` | This device's recent warden decisions here, newest first (`limit`, `message_id`) |
+| `GET` | `/circles/<id>/api/warden/episodes` | Each warden decision joined with its runs, spend and outcomes (`since`; `format=jsonl` for one per line) |
 
 ---
 
@@ -885,6 +888,12 @@ configuration and identity.
 | `GET` | `/api/agent-config/discover` | Probe the machine for installed agent CLIs |
 | `GET` | `/api/agent-plugins` | List built-in and installed agent plugins |
 | `POST` | `/api/agent-plugins/{plugin_id}/install` | Install an agent plugin |
+| `GET` | `/api/warden` | Warden mode, decider config (never the key), decider kinds, and the spec in force |
+| `POST` | `/api/warden/config` | Set `decider`, `endpoint`, `model`, `key_env`, `timeout_secs` |
+| `POST` | `/api/warden/key` | Set or remove (`null`) a decider's API key; write-only |
+| `POST` | `/api/warden/spec` | Replace the spec with `{"toml"}`, validated first |
+| `POST` | `/api/warden/spec/reset` | Return to the built-in spec |
+| `POST` | `/api/warden/test` | Ask the configured decider about `{"text", "circle_id"?}`; runs nothing |
 | `POST` | `/api/init` | Frontend helper for `enox init` |
 | `POST` | `/api/enter` | Frontend helper for `enox enter` |
 

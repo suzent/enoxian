@@ -189,6 +189,9 @@ pub struct EngagementSettings {
     /// [`crate::agent::relay::RELAY_TURNS_CEILING`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_relay_turns: Option<u8>,
+    /// Whether the warden decides who answers unaddressed messages here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warden_mode: Option<super::warden::WardenMode>,
 }
 
 /// Settings with every question answered — what a caller actually works with.
@@ -202,6 +205,7 @@ pub struct ResolvedSettings {
     pub engagement_window_secs: i64,
     pub ambient: Vec<String>,
     pub max_relay_turns: u8,
+    pub warden_mode: super::warden::WardenMode,
 }
 
 impl ResolvedSettings {
@@ -254,6 +258,13 @@ pub struct AgentConfig {
     /// The global ceiling on a delegation chain.
     #[serde(default = "default_max_relay_turns")]
     pub max_relay_turns: u8,
+    /// Whether the warden decides who answers, in every Circle unless one says
+    /// otherwise. Off by default: an experimental feature.
+    #[serde(default)]
+    pub warden_mode: super::warden::WardenMode,
+    /// Which decider the warden asks, and how. Device-wide.
+    #[serde(default)]
+    pub warden: super::warden::decider::WardenConfig,
     /// Per-Circle overrides, keyed by circle id. Anything absent inherits the
     /// global answer above.
     ///
@@ -297,6 +308,7 @@ impl AgentConfig {
             max_relay_turns: over
                 .and_then(|o| o.max_relay_turns)
                 .unwrap_or(self.max_relay_turns),
+            warden_mode: over.and_then(|o| o.warden_mode).unwrap_or(self.warden_mode),
         }
     }
 
@@ -362,6 +374,8 @@ impl Default for AgentConfig {
             engagement_window_secs: DEFAULT_ENGAGEMENT_WINDOW_SECS,
             ambient: Vec::new(),
             max_relay_turns: crate::agent::relay::DEFAULT_MAX_RELAY_TURNS,
+            warden_mode: Default::default(),
+            warden: Default::default(),
             circles: BTreeMap::new(),
             agents: BTreeMap::new(),
         }

@@ -43,6 +43,10 @@ pub struct Request {
     /// Empty on an addressed turn and on entries written before this existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub co_listeners: Vec<String>,
+    /// What the warden asked of this turn, when it chose the listener. `None`
+    /// for an addressed turn and for one rotation chose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warden: Option<super::warden::Assignment>,
 }
 
 impl Request {
@@ -682,6 +686,7 @@ pub(crate) mod tests {
     pub(crate) fn request(id: &str, agent: &str) -> Request {
         Request {
             co_listeners: Vec::new(),
+            warden: None,
             agent: agent.into(),
             mention_key: agent.into(),
             task: "do this".into(),

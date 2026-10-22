@@ -26,6 +26,13 @@ vi.mock('../../api', () => ({
   setIdentity: vi.fn(async () => ({ status: 'ok' })),
   setForceRelay: vi.fn(),
   getAgentCards: vi.fn(async () => ({ cards: [] })),
+  getWarden: vi.fn(async () => ({
+    mode: 'off', config: { decider: 'builtin:rules', timeout_secs: 3 }, problem: null,
+    kinds: [{ id: 'builtin:rules', name: 'Built-in rules', description: '', protocol: 'rules', needs_key: false, builtin: true, fields: {} }],
+    spec_toml: 'version = "builtin-1"\n', spec: { version: 'builtin-1', modes: [], admit_threshold: 0.5, lambda: 0.05 },
+    spec_source: { kind: 'default' },
+  })),
+  setWardenConfig: vi.fn(), setWardenKey: vi.fn(), setWardenSpec: vi.fn(), resetWardenSpec: vi.fn(), testWarden: vi.fn(),
   createAgentCard: vi.fn(),
 }))
 

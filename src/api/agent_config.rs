@@ -75,6 +75,7 @@ struct SettingsView {
     engagement_window_secs: i64,
     ambient: Vec<String>,
     max_relay_turns: u8,
+    warden_mode: crate::agent::warden::WardenMode,
 }
 
 #[derive(Serialize)]
@@ -105,6 +106,7 @@ fn settings_view(s: &crate::agent::config::ResolvedSettings) -> SettingsView {
         engagement_window_secs: s.engagement_window_secs,
         ambient: s.ambient.clone(),
         max_relay_turns: s.max_relay_turns,
+        warden_mode: s.warden_mode,
     }
 }
 
@@ -305,6 +307,9 @@ pub struct SetEngagementRequest {
     pub ambient: Option<Option<Vec<String>>>,
     #[serde(default, deserialize_with = "double_option")]
     pub max_relay_turns: Option<Option<u8>>,
+    /// "off", "shadow" or "act".
+    #[serde(default, deserialize_with = "double_option")]
+    pub warden_mode: Option<Option<crate::agent::warden::WardenMode>>,
 }
 
 /// Distinguish "field absent" from "field set to null".
@@ -420,6 +425,9 @@ pub async fn set_engagement(
                 if let Some(Some(turns)) = req.max_relay_turns {
                     cfg.max_relay_turns = turns;
                 }
+                if let Some(Some(mode)) = req.warden_mode {
+                    cfg.warden_mode = mode;
+                }
             }
             Some(circle_id) => {
                 let over = cfg.circles.entry(circle_id.clone()).or_default();
@@ -449,6 +457,9 @@ pub async fn set_engagement(
                 }
                 if let Some(value) = req.max_relay_turns {
                     over.max_relay_turns = value;
+                }
+                if let Some(value) = req.warden_mode {
+                    over.warden_mode = value;
                 }
                 // An override that overrides nothing is noise in the file.
                 if over == &crate::agent::config::EngagementSettings::default() {

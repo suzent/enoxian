@@ -296,6 +296,10 @@ async fn main() -> anyhow::Result<()> {
                     )
                     .await
                 }
+                AgentCommands::Warden(args) => {
+                    enoxian::commands::warden::run(&client, &root, &base, args.action, cli.json)
+                        .await
+                }
                 AgentCommands::Runs(args) => match args.action {
                     None => enoxian::commands::runs::list(&client, &base, cli.json).await,
                     Some(enoxian::cli::RunsAction::Stop { run_id }) => {

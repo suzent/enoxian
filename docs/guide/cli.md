@@ -388,6 +388,27 @@ posts nothing and is recorded as `cancelled`. A waiting turn is cancelled.
 
 ---
 
+### `warden`
+
+The warden: who answers messages nobody addressed. See
+[the warden](agents.md#the-warden).
+
+```bash
+enox [--circle <NAME>] warden                     # mode here, decider, spec, recent decisions
+enox [--circle <NAME>] warden mode <off|shadow|act> [--all]
+enox [--circle <NAME>] warden decisions [--limit N]
+enox [--circle <NAME>] warden episodes [--since <UNIX>]
+enox warden spec [show|apply <FILE>|reset]
+enox [--circle <NAME>] warden test "<message>"
+```
+
+`mode` sets this Circle on this device; with `--all`, the default for every
+Circle. `episodes` prints one JSON object per line: each decision joined with
+the turns that ran, their reported spend, and their outcomes. `test` asks the
+configured decider about a sample message and runs nothing.
+
+---
+
 ### `who`
 
 Show agent presence — who is online and when they were last seen.

@@ -40,6 +40,7 @@ fn work(id: &str) -> Work {
         agent: "claude".into(),
         mention_key: "claude".into(),
         co_listeners: Vec::new(),
+        warden: None,
         task: "private request body".into(),
         message: ChatMessage {
             thread_root: None,

@@ -35,11 +35,15 @@ pub enum Framing {
     Addressed,
     /// Nobody named the agent; it is being shown the room (§2).
     Overheard,
+    /// Nobody named the agent, but the room's warden judged the message needs
+    /// an answer and chose this agent to give it.
+    Assigned,
 }
 
 impl Framing {
+    /// Not addressed by name, whether overheard or assigned by the warden.
     fn is_overheard(&self) -> bool {
-        *self == Self::Overheard
+        *self != Self::Addressed
     }
 }
 
@@ -393,6 +397,10 @@ fn compose(
              names no agent and you were not addressed. Decide whether it is worth saying \
              anything:\n"
         )),
+        Framing::Assigned => out.push_str(&format!(
+            "MESSAGE posted in circle \"{circle_name}\". {sender} posted this to the room; it \
+             names no agent, and the room's warden chose you to answer it:\n"
+        )),
     }
     out.push_str(task);
     out.push_str(attachments);
@@ -474,12 +482,18 @@ fn standing_brief(state: &AppState, agent_id: &str, framing: Framing) -> String 
     // How this agent came to be running, stated once and accurately. The brief
     // used to assert an @mention unconditionally, including on the turns that
     // exist precisely because nobody mentioned anyone (§5).
-    let woken = if framing.is_overheard() {
-        "This is a group room: several people and agents share it, and most of what is said here \
-         is not addressed to you. You are seeing this message because you are configured to read \
-         the room, not because anyone asked you for anything."
-    } else {
-        "You were woken by an @mention in the circle's chat."
+    let woken = match framing {
+        Framing::Overheard => {
+            "This is a group room: several people and agents share it, and most of what is said \
+             here is not addressed to you. You are seeing this message because you are configured \
+             to read the room, not because anyone asked you for anything."
+        }
+        Framing::Assigned => {
+            "This is a group room: several people and agents share it. Nobody named you, but you \
+             read the room, and its warden judged that this message needs an answer and chose you \
+             to give it."
+        }
+        Framing::Addressed => "You were woken by an @mention in the circle's chat.",
     };
     format!(
         "You are \"{agent}\", an agent participating in an enoxian circle named \"{circle}\".\n\

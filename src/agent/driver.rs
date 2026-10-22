@@ -537,6 +537,14 @@ async fn run_acp(
     } else {
         task.to_string()
     };
+    // Replies already in the room when the turn starts were in front of the
+    // agent as it wrote; only one that arrives meanwhile is news to it.
+    let answered_at_start = match (&coordination, trigger_id) {
+        (Some(state), Some(message_id)) => {
+            super::reaction::answering_agents(state, message_id).len()
+        }
+        _ => 0,
+    };
     let result = acp.prompt_until(&prompt, &stop).await;
     if let Ok(turn) = &result {
         usage.lock().unwrap().add_tokens(turn.tokens);
@@ -559,6 +567,7 @@ async fn run_acp(
                 trigger_id,
                 coordination.as_ref(),
                 text,
+                answered_at_start,
                 &stop,
             )
             .await
@@ -623,6 +632,7 @@ async fn hold_draft<H: super::acp::ClientHooks>(
     trigger_id: Option<&str>,
     coordination: Option<&crate::state::AppState>,
     draft: &str,
+    answered_at_start: usize,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Option<super::ambient::Held> {
     // Addressed work is exempt: naming an agent means you are owed its answer,
@@ -631,10 +641,12 @@ async fn hold_draft<H: super::acp::ClientHooks>(
         return None;
     }
     let (state, message_id) = (coordination?, trigger_id?);
-    // The queue already refuses a turn whose message was answered before it
-    // started, so anything found now arrived while this agent was writing.
+    // Usually nothing had answered when the turn started — the queue refuses a
+    // turn whose message was already answered — but a turn asked to check an
+    // answer starts with one in front of it. Only an answer that arrived while
+    // this agent was writing is a reason to hold its draft.
     let answers = super::reaction::answering_agents(state, message_id);
-    if answers.is_empty() {
+    if answers.len() <= answered_at_start {
         return None;
     }
     tracing::info!(
