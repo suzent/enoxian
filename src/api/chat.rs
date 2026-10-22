@@ -733,12 +733,17 @@ pub async fn exit_engagement(
         }
     };
     // Record *which* reply was on screen, not just when. See `Dismissal`.
-    let cfg = crate::agent::config::AgentConfig::load();
+    // Resolved with the window `get_engagement` showed, or a Circle that
+    // overrides the global answer dismisses a different reply than the one
+    // the token named, and the token comes straight back.
+    let window = crate::agent::config::AgentConfig::load()
+        .resolved(&circle_id)
+        .followup_window_secs();
     let current = crate::agent::engagement::resolve(
         &state.transcript(),
         &state.peer_id,
         chrono::Utc::now().timestamp(),
-        cfg.engagement_window_secs,
+        window,
         state.engagement_dismissed(&state.peer_id).as_ref(),
     );
     match mark_engagement_dismissed(&state, current.map(|e| e.message_id).unwrap_or_default()) {

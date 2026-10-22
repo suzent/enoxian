@@ -250,7 +250,11 @@ describe('who handed a turn over', () => {
 describe('a conversation among agents', () => {
   it('shows how far along it is, with its brake in the same pill', async () => {
     getEngagement.mockResolvedValue({ agent: null, window_secs: 0 })
-    const { getChat, stopRelay } = await import('../../api')
+    const { getChat, getMembers, stopRelay } = await import('../../api')
+    // This device runs beta, so its own limit is the one that applies.
+    ;(getMembers as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { peer_id: 'p1', owner: 'alice', agent_id: 'alice', device_label: 'mac', agents: ['beta'], role: 'admin', added_at: '', signature: '' },
+    ])
     const now = Math.floor(Date.now() / 1000)
     ;(getChat as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: 'a', agent_id: 'alpha', text: 'done?', reply_to: 'q', mentions: [], ts: now, peer_id: 'p1', author: 'agent', relay: { root: 'q', root_peer: 'p1', spent: 1, path: ['alpha'] } },
@@ -262,5 +266,23 @@ describe('a conversation among agents', () => {
     expect(await screen.findByText(/agents talking · turn 2 of 6/)).toBeTruthy()
     await userEvent.click(screen.getByRole('button', { name: 'stop' }))
     await waitFor(() => expect(stopRelay).toHaveBeenCalledWith('c1', 'q'))
+  })
+
+  it('leaves out the limit when another device runs the turn', async () => {
+    getEngagement.mockResolvedValue({ agent: null, window_secs: 0 })
+    const { getChat, getMembers } = await import('../../api')
+    ;(getMembers as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { peer_id: 'p1', owner: 'alice', agent_id: 'alice', device_label: 'mac', agents: [], role: 'admin', added_at: '', signature: '' },
+    ])
+    const now = Math.floor(Date.now() / 1000)
+    ;(getChat as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'a', agent_id: 'alpha', text: 'done?', reply_to: 'q', mentions: [], ts: now, peer_id: 'p1', author: 'agent', relay: { root: 'q', root_peer: 'p1', spent: 7, path: ['alpha'] } },
+    ])
+    getChatActivity.mockResolvedValue([
+      { activity_id: 'w', actor_id: 'beta', peer_id: 'p9', kind: 'working', message_id: 'a', updated_at: now + 60, expires_at: now + 60 },
+    ] as never)
+    render(<ChatPanel />)
+    expect(await screen.findByText(/agents talking · turn 8$/)).toBeTruthy()
+    expect(screen.queryByText(/of 6/)).toBeNull()
   })
 })

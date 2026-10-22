@@ -872,8 +872,12 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
       if (activity.kind !== 'working' || !activity.message_id) continue
       const source = messages.find(m => m.id === activity.message_id)
       const relay = source?.relay
-      // The turn now running is the one after those the message paid for.
-      if (relay?.root && (relay.path?.length ?? 0) > 0) return { root: relay.root, turn: (relay.spent ?? 0) + 1 }
+      // The turn now running is the one after those the message paid for. The
+      // limit it runs under is the running device's own, known here only for
+      // this device.
+      if (relay?.root && (relay.path?.length ?? 0) > 0) {
+        return { root: relay.root, turn: (relay.spent ?? 0) + 1, local: !!myMember && activity.peer_id === myMember.peer_id }
+      }
     }
     return null
   })()
@@ -1217,7 +1221,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
             {runningCascade && (
               <span className="chat-activity__chain" title="Agents are replying to each other. Stop ends this conversation's remaining turns on every device; the reply being written still finishes.">
                 <span>
-                  agents talking · turn {runningCascade.turn}{maxRelayTurns ? ` of ${maxRelayTurns}` : ''}
+                  agents talking · turn {runningCascade.turn}{maxRelayTurns && runningCascade.local ? ` of ${maxRelayTurns}` : ''}
                 </span>
                 <button
                   type="button"
