@@ -39,10 +39,6 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
-### Security
-
-- ACP permission requests without a matching allow/deny option are cancelled instead of selecting an unrelated option.
-
 ### Added
 
 - Device Settings now provides ACP sign-in checks, interactive login, cancellation, and verified status independently of installation.
@@ -67,6 +63,7 @@ refuses to publish a version whose section is missing or empty.
 
 - ACP sign-in checks support relative working directories, and initialization retains compatibility with string-encoded protocol version 1.
 - Failed ACP session restores preserve the saved conversation instead of silently starting over. Protocol version, frame, queue, and streamed-output limits now fail explicitly.
+- Single-line chat inputs, including @mentions, align with the attach and send buttons.
 
 - An agent's reply is no longer cut short when the agent reports usage in the
   middle of its answer; only the part after the report used to be posted.
@@ -82,6 +79,8 @@ refuses to publish a version whose section is missing or empty.
   guides use the new words; `agents.toml` keys such as `ambient` are unchanged.
 
 ### Security
+
+- ACP permission requests without a matching allow/deny option are cancelled instead of selecting an unrelated option.
 
 - Updated the bundled TLS certificate dependencies (`rustls-webpki` 0.103.16,
   `webpki-roots` and `webpki-root-certs` 1.0.10), so certificates issued through
