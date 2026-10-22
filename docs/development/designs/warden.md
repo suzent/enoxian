@@ -137,6 +137,37 @@ A typical loop:
 4. A person reviews it and applies it. The version is recorded on every
    decision from then on, so its effect can be measured.
 
+### From an offline policy to a spec
+
+An offline harness scores policies in its own terms. Its result becomes a spec
+like this:
+
+| Offline policy | Spec |
+|---|---|
+| Two length buckets, short → A, long → B | `rules.long_chars`, `rules.short_mode`, `rules.long_mode`, with `builtin:rules` as the decider |
+| Allowed actions | `modes`: `single`; `vote` for vote-adaptive (two samples, a third on disagreement); `room` with `room_size = 3` for three listeners together |
+| Vote-adaptive's sizes | `vote.start = 2`, `vote.max = 3` |
+| Cost per action, in tokens | `costs.*` as multiples of a single answer's tokens: `vote = tokens(vote) / tokens(single)` |
+| λ per thousand tokens | `lambda = λ × (single's thousand tokens)`, since costs are in single-answer units |
+| Admission threshold | `admit_threshold` (only with a decider that answers `admit`) |
+
+Set `version` to something the harness can find again (`t1-ppc-0007`); every
+decision made under the spec records it.
+
+### Running a benchmark through the warden
+
+1. On the device that runs the listeners: `enox warden mode act`, and set
+   **Listeners per message** to at least the largest vote (`vote.max`).
+2. `enox warden spec apply <spec.toml>`.
+3. Post each question to the Circle without naming an agent. The warden's
+   choice, the turns it ran and the vote are recorded against the question's
+   message id.
+4. The posted answer is the agent reply to that message. A vote's reply ends
+   with an italic *Blind vote: …* line after the voter's own `ANSWER:` line;
+   graders should read the `ANSWER:` line.
+5. `enox warden episodes --since <start>` and join with the grader's results
+   by message id.
+
 ## Open questions
 
 - **Calibration.** A general decision model does not know these agents; its
