@@ -81,13 +81,27 @@ pub async fn create(
             "this device has no label in the Circle yet, so its agents have no handle".into(),
         );
     };
-    match cards::create(&state.workspace, &me.owner, &me.device_label, &req.agent) {
-        Ok((path, created)) => Json(json!({ "path": path, "created": created })).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("could not write the card: {error}") })),
-        )
-            .into_response(),
+    // Through the file API, which seeds the shared document as it writes the
+    // file. Written to disk alone, a card opened in the editor at once would
+    // load as the empty document the watcher had not filled yet — and the
+    // editor would write that back over the template.
+    let path = cards::relative_path(&me.owner, &me.device_label, &req.agent);
+    let content = cards::template(&me.owner, &me.device_label, &req.agent);
+    let resp = super::files::create_file(
+        State(daemon),
+        Path(circle),
+        Json(super::files::CreateFileRequest {
+            path: path.clone(),
+            content: Some(content),
+        }),
+    )
+    .await
+    .into_response();
+    match resp.status() {
+        StatusCode::OK => Json(json!({ "path": path, "created": true })).into_response(),
+        // Already there, perhaps synced in from another device: never replaced.
+        StatusCode::CONFLICT => Json(json!({ "path": path, "created": false })).into_response(),
+        _ => resp,
     }
 }
 

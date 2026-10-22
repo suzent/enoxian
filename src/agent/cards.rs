@@ -182,8 +182,8 @@ pub fn template(owner: &str, device: &str, agent: &str) -> String {
          # @{owner}/{device}/{agent}\n\
          \n\
          <!-- One line in `summary` above is what other agents and the warden see first.\n\
-         \x20    Describe what this agent is, not how well it has done: outcomes are\n\
-         \x20    measured, not written here. Edits are reviewed like any other change. -->\n\
+         Describe what this agent is, not how well it has done: outcomes are measured, not\n\
+         written here. Edits are reviewed like any other change. -->\n\
          \n\
          ## Model\n\
          <!-- Which model or product runs behind this agent. -->\n\
@@ -201,7 +201,10 @@ pub fn template(owner: &str, device: &str, agent: &str) -> String {
 
 /// Write the template for `@owner/device/agent` unless a card is already there.
 ///
-/// Returns the relative path, and whether this call created it.
+/// Returns the relative path, and whether this call created it. Disk only: the
+/// API creates cards through the file API instead, which also seeds the shared
+/// document (see `api::agent_cards`).
+#[cfg(test)]
 pub fn create(
     workspace: &Path,
     owner: &str,
