@@ -61,8 +61,16 @@ describe('MentionInput draft capture and restore', () => {
     const nodes = latestNodes(onChange)
     expect(nodes).toContainEqual({ kind: 'mention', token: 'claude' })
     // The wire format is unchanged by the richer in-memory representation.
-    // The trailing separator is the nbsp insertMention adds after a chip.
-    expect(draftText(nodes)).toBe('ping @claude\u00a0')
+    // The separator insertMention adds after a chip is sent as a plain space.
+    expect(draftText(nodes)).toBe('ping @claude ')
+  })
+
+  it('sends one space after a mention when the next word was typed with one', () => {
+    const nodes: DraftNode[] = [
+      { kind: 'mention', token: 'suzy/mac/alpha' },
+      { kind: 'text', value: '\u00a0 is the retry path idempotent?' },
+    ]
+    expect(draftText(nodes)).toBe('@suzy/mac/alpha is the retry path idempotent?')
   })
 
   it('restores a draft with its chips intact', () => {

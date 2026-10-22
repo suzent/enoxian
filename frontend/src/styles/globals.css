@@ -1174,11 +1174,23 @@ button[role="tab"][aria-selected="true"] {
 }
 
 /* The brake on a running cascade. */
-.chat-activity__stop {
-  margin-left: auto;
+/* A conversation among agents, how far along it is, and its brake: one pill. */
+.chat-activity__chain {
   flex: 0 0 auto;
-  padding: 1px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 2px 1px 8px;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.chat-activity__stop {
+  flex: 0 0 auto;
+  padding: 0 7px;
   border: 1px solid currentColor;
+  border-radius: 999px;
   background: transparent;
   color: var(--fg-obsidian);
   font-family: inherit;
@@ -1502,6 +1514,46 @@ button[role="tab"][aria-selected="true"] {
   background: var(--fg-obsidian);
   color: var(--bg-alabaster);
 }
+
+.chat-composer__field {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+}
+.chat-composer__field > .chat-composer__input { flex: 1; }
+/* With a recipient, the field's frame holds the token and the text together. */
+.chat-composer__field--to {
+  gap: 6px;
+  padding: 0 0 0 6px;
+  border: 1px solid rgba(0,0,0,0.48);
+  background: #fff;
+}
+.chat-composer__field--to:focus-within { border-color: var(--fg-obsidian); }
+.chat-composer__field--to > .chat-composer__input { border: 0; box-shadow: none; padding-left: 2px; }
+.chat-composer__to {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 7px;
+  padding: 1px 2px 1px 6px;
+  background: color-mix(in srgb, var(--fg-obsidian) 8%, transparent);
+  color: var(--fg-obsidian);
+  font-family: var(--font-mono);
+  font-size: var(--ui-tiny);
+  font-weight: 700;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.chat-composer__to button {
+  border: 0;
+  background: transparent;
+  color: var(--fg-slate);
+  font: inherit;
+  padding: 0 4px;
+  cursor: pointer;
+}
+.chat-composer__to button:hover { color: var(--fg-obsidian); }
 
 .chat-composer__attach {
   min-width: 34px;
@@ -4461,6 +4513,14 @@ select option {
   text-decoration: none;
 }
 .chat-message__parent-label { flex: none; font-weight: 500; }
+.chat-message__parent-preview--pending { font-style: italic; opacity: 0.7; }
+/* The message a quote jumped to, picked out for a moment. */
+.chat-message--flash { animation: chat-message-flash 1.6s ease-out; }
+@keyframes chat-message-flash {
+  0%, 30% { background: color-mix(in srgb, var(--fg-obsidian) 10%, transparent); }
+  100% { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .chat-message--flash { animation: none; } }
 .chat-message__parent-label > span { margin-right: 4px; }
 .chat-message__parent-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-message__parent:hover .chat-message__parent-preview { text-decoration: underline; text-underline-offset: 3px; }

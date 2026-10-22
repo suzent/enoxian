@@ -209,6 +209,17 @@ pub struct ResolvedSettings {
 }
 
 impl ResolvedSettings {
+    /// How long a reply keeps the person talking to that agent without a
+    /// mention, here. None while the warden decides: a follow-up routed past it
+    /// is the warden overruled by a guess, and it reads the conversation
+    /// anyway. An explicit reply still goes where it points.
+    pub fn followup_window_secs(&self) -> i64 {
+        match self.warden_mode {
+            super::warden::WardenMode::Act => 0,
+            _ => self.engagement_window_secs,
+        }
+    }
+
     /// Does this agent read the room here?
     pub fn is_ambient(&self, agent: &str) -> bool {
         self.ambient.iter().any(|a| a.eq_ignore_ascii_case(agent))
@@ -534,6 +545,25 @@ ambient = []
         let back = AgentConfig::from_toml(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
         assert_eq!(back.resolved("work"), cfg.resolved("work"));
         assert_eq!(back.resolved("other"), cfg.resolved("other"));
+    }
+
+    #[test]
+    fn the_warden_turns_follow_ups_off_where_it_acts() {
+        let cfg = AgentConfig::from_toml(
+            r#"
+engagement_window_secs = 180
+
+[circles.wardened]
+warden_mode = "act"
+
+[circles.shadowed]
+warden_mode = "shadow"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.resolved("wardened").followup_window_secs(), 0);
+        assert_eq!(cfg.resolved("shadowed").followup_window_secs(), 180);
+        assert_eq!(cfg.resolved("plain").followup_window_secs(), 180);
     }
 
     #[test]

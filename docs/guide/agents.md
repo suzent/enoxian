@@ -387,29 +387,41 @@ it has none configured (or hasn't reconnected since configuring them).
 
 ## Replying without a mention
 
-After an agent answers you, your next message goes back to it for a few
+After an agent answers you, your next message can go back to it for a few
 minutes — no mention needed — and to the *same machine* that ran it. The
-composer says so before you press Enter:
+composer shows who it goes to as a token in the field, before what you type:
 
 ```text
-replying to @claude · no mention needed          [ esc to exit ]
+[ → @claude · mac × ]  Write a reply…
 ```
 
-Esc leaves the conversation; the next message needs a mention again. Mentioning
+Esc, or the ×, leaves the conversation; the next message goes to the room. Mentioning
 any agent also re-arms the window, and windows are per person, so two people can
 hold separate conversations with separate agents in one Circle without
 disturbing each other.
 
 Set `engagement_window_secs` in `agents.toml` to change the timeout, or `0` to
-turn follow-up routing off and require a mention every time.
+turn follow-up routing off and require a mention every time. In a Circle where
+[the warden](#the-warden) decides (`act`), there is no window: your next message
+goes to the warden like any other, and it reads the conversation to choose who
+answers. An explicit reply still goes where you point it.
 
 If the agent is already working, your message is **queued** rather than refused
-— up to four per agent, delivered in order as separate turns. The strip says so:
-`working, your message will be queued`.
+— up to four per agent, delivered in order as separate turns. Hovering the token
+says so.
 
 When the window guesses wrong — two agents mid-conversation with you — use the
 **reply** action on an agent's message instead. That routes to exactly that
-agent, with no timer.
+agent, with no timer, and shows as the same token.
+
+A reply right below the message it answers, or below it among other answers to
+the same message, shows no quote: its place says what it answers. One that has
+something else between it and its message shows one line, `↳ who: …`, and
+clicking it jumps back to that message.
+
+While agents are replying to each other, the line above the composer shows how
+far along that conversation is against the hand-off limit, with **stop** to end
+the rest of it on every device.
 
 Replying to a *person* is different: it names no agent, so it reaches whoever
 scries the room rather than nobody. Quoting a colleague to ask the room a

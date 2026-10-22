@@ -92,7 +92,15 @@ function snapshot(root: HTMLElement): DraftNode[] {
 /** Serialize draft nodes to plaintext: chips → `@token`, text as-is. This is
  *  exactly what the backend receives, so a restored draft sends identically. */
 export function draftText(nodes: DraftNode[]): string {
-  return nodes.map(n => (n.kind === 'mention' ? `@${n.token}` : n.value)).join('')
+  return nodes
+    .map((n, i) => {
+      if (n.kind === 'mention') return `@${n.token}`
+      // Inserting a chip adds a no-break space after it so the caret has
+      // somewhere to land; typing a space next is the person's own. Sent as
+      // is, that is two spaces after every mention.
+      return nodes[i - 1]?.kind === 'mention' ? n.value.replace(/^\u00a0 ?/, ' ') : n.value
+    })
+    .join('')
 }
 
 /** Build a chip element for a committed mention. */

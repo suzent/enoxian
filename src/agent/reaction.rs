@@ -1427,7 +1427,7 @@ fn resolve_followup_in(
         &history,
         &message.peer_id,
         message.ts,
-        cfg.resolved(&state.circle_id).engagement_window_secs,
+        cfg.resolved(&state.circle_id).followup_window_secs(),
         state.engagement_dismissed(&message.peer_id).as_ref(),
     )
 }
