@@ -108,6 +108,9 @@ refuses to publish a version whose section is missing or empty.
 
 ### Security
 
+- The web app's HTML sanitizer, DOMPurify, is updated to 3.4.17 for GHSA-cg2g-xh64-v4q7,
+  GHSA-mrv2-3pqr-j5jr and GHSA-c6gr-qvv4-5v3f.
+
 - ACP permission requests without a matching allow/deny option are cancelled instead of selecting an unrelated option.
 
 - Updated the bundled TLS certificate dependencies (`rustls-webpki` 0.103.16,
