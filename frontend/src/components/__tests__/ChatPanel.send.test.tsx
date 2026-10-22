@@ -12,6 +12,7 @@ import userEvent from '@testing-library/user-event'
 const postChat = vi.fn()
 
 vi.mock('../../api', () => ({
+  getAgentConfigFor: vi.fn(async () => ({ global_settings: { max_relay_turns: 20 }, circle: null })),
   postChat,
   getExecutions: vi.fn(async () => ({ runs: [] })),
   updateExecution: vi.fn(),

@@ -4,7 +4,7 @@ import { Users } from 'lucide-react'
 import ExecutionStatus from './ExecutionStatus'
 import { Fragment, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import type { Attachment, ChatActivity, ChatMessage, EngagementView, Member, Presence } from '../types'
-import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, getEngagement, exitEngagement, MAX_ATTACHMENT_BYTES } from '../api'
+import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, getEngagement, exitEngagement, getAgentConfigFor, MAX_ATTACHMENT_BYTES } from '../api'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 import CircleActivityButton from './CircleActivityButton'
@@ -97,6 +97,35 @@ function relayDelegator(msg: ChatMessage): string | null {
   const path = msg.relay?.path
   if (!path || path.length < 2) return null
   return path[path.length - 2] ?? null
+}
+
+/** A handle as a mention chip shows it: `@agent · device`, or `@agent`. */
+export function chipLabel(handle: string): string {
+  const parts = handle.split('/')
+  return parts.length === 3 ? `@${parts[2]} · ${parts[1]}` : `@${handle}`
+}
+
+/** Did `parent` name `agent` — as `@agent` or a handle ending in it? */
+function namesAgent(parent: ChatMessage, agent: string): boolean {
+  return (parent.mentions ?? []).some(m => m === agent || m.endsWith(`/${agent}`))
+}
+
+/** One line of a message for a reply quote: its first line of text, with a
+ *  handle shortened the way a mention chip shows it. */
+export function quoteLine(text: string): string {
+  const first = text.split('\n').map(line => line.trim()).find(Boolean) ?? ''
+  return first.replace(/@[\w.-]+\/[\w.-]+\/([\w.-]+)/g, '@$1')
+}
+
+/** Does a reply need a quote of what it answers? Not when it sits right below
+ *  it, or below it among other answers to the same message: position already
+ *  says what it is answering. */
+export function needsQuote(messages: ChatMessage[], index: number): boolean {
+  const reply = messages[index]
+  if (!reply?.reply_to) return false
+  const parent = messages.findIndex(m => m.id === reply.reply_to)
+  if (parent < 0 || parent >= index) return true
+  return !messages.slice(parent + 1, index).every(m => m.reply_to === reply.reply_to)
 }
 
 /** What to tell the user when a send fails.
@@ -194,10 +223,15 @@ interface BubbleProps {
   blobNonces: Record<string, number>
   onOpenImage: (hash: string) => void
   replyParent?: ChatMessage
+  /** Who wrote `replyParent`, as the transcript names them. */
+  replyParentName?: string
+  /** Quote what this replies to; false when it sits right under it. */
+  showQuote: boolean
+  onJumpTo?: (id: string) => void
   onReply?: (msg: ChatMessage) => void
 }
 
-function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNonces, onOpenImage, onReply, replyParent }: BubbleProps) {
+function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNonces, onOpenImage, onReply, replyParent, replyParentName, showQuote, onJumpTo }: BubbleProps) {
   if (msg.agent_id === 'system') {
     return (
       <div className="chat-system-event" role="status">
@@ -212,6 +246,10 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
   // agent that posted, so the one before it is the delegator. A turn a person
   // asked for directly has nothing before it, and shows no chip.
   const delegatedBy = relayDelegator(msg)
+  // Handed over means the agent before named this one. Without that, the room's
+  // warden chose this agent to follow on from it, which "via" would misreport.
+  // A parent that has not synced yet keeps the older reading.
+  const handedOver = !!delegatedBy && (!replyParent || namesAgent(replyParent, msg.agent_id))
   const timestamp = formatTime(msg.ts)
   const fullTimestamp = formatFullTimestamp(msg.ts)
 
@@ -226,10 +264,20 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
           : <time className="chat-message__gutter-time" dateTime={new Date(msg.ts * 1000).toISOString()} title={fullTimestamp}>{timestamp}</time>}
       </div>
       <div className="chat-message__body">
-        {msg.reply_to && (
-          <a className="chat-message__parent" href={`#chat-message-${msg.reply_to}`}>
-            <span className="chat-message__parent-label"><span aria-hidden="true">↳</span> Replying to</span>
-            <span className="chat-message__parent-preview">{replyParent?.text.trim() || 'Waiting for the referenced message to sync'}</span>
+        {msg.reply_to && showQuote && (
+          <a
+            className="chat-message__parent"
+            href={`#chat-message-${msg.reply_to}`}
+            onClick={event => {
+              if (!onJumpTo || !replyParent) return
+              event.preventDefault()
+              onJumpTo(msg.reply_to!)
+            }}
+          >
+            <span className="chat-message__parent-label"><span aria-hidden="true">↳</span>{replyParent && replyParentName ? ` ${replyParentName}:` : ''}</span>
+            <span className={`chat-message__parent-preview${replyParent ? '' : ' chat-message__parent-preview--pending'}`}>
+              {replyParent ? quoteLine(replyParent.text) : 'Waiting for the message this replies to'}
+            </span>
           </a>
         )}
         {showSender && (
@@ -237,11 +285,15 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
             <span className="chat-message__owner" title={label.agent ? `Owned by ${label.user}` : undefined}>{label.agent || label.user}</span>
             {label.device && <span className="chat-message__device">· {label.device}</span>}
             {label.agent && <span className="chat-message__agent">AGENT</span>}
-            {delegatedBy && (
+            {delegatedBy && (handedOver ? (
               <span className="chat-message__via" title={`Delegated by @${delegatedBy}. Nobody typed this request.`}>
                 via @{delegatedBy}
               </span>
-            )}
+            ) : (
+              <span className="chat-message__via" title={`The room's warden chose this agent to follow on from ${delegatedBy}. Nobody typed this request.`}>
+                after {delegatedBy}
+              </span>
+            ))}
             <time className="chat-message__time" dateTime={new Date(msg.ts * 1000).toISOString()} title={fullTimestamp} aria-label={fullTimestamp}>
               {timestamp}
             </time>
@@ -815,15 +867,29 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
   //
   // Stopping does not interrupt the turn in flight; it stops every further one,
   // on every device, which is what actually bounds the spend.
-  const runningCascadeRoot = (() => {
+  const runningCascade = (() => {
     for (const activity of liveActivities) {
       if (activity.kind !== 'working' || !activity.message_id) continue
       const source = messages.find(m => m.id === activity.message_id)
       const relay = source?.relay
-      if (relay?.root && (relay.path?.length ?? 0) > 0) return relay.root
+      // The turn now running is the one after those the message paid for.
+      if (relay?.root && (relay.path?.length ?? 0) > 0) return { root: relay.root, turn: (relay.spent ?? 0) + 1 }
     }
     return null
   })()
+  const runningCascadeRoot = runningCascade?.root ?? null
+
+  // How many agent turns one person's message may pay for here, to say how
+  // far along a conversation among agents is.
+  const [maxRelayTurns, setMaxRelayTurns] = useState<number | null>(null)
+  useEffect(() => {
+    if (!activeCircleId) return
+    let live = true
+    getAgentConfigFor(activeCircleId)
+      .then(cfg => { if (live) setMaxRelayTurns(cfg.circle?.effective.max_relay_turns ?? cfg.global_settings.max_relay_turns) })
+      .catch(() => {})
+    return () => { live = false }
+  }, [activeCircleId])
 
   // An explicit reply target, set by the "reply" affordance on an agent
   // message. Outranks the follow-up window: pointing beats guessing.
@@ -858,6 +924,18 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
       refreshEngagement()
     }
   }, [activeCircleId, refreshEngagement])
+
+  // Bring a quoted message into view and mark it for a moment, so the eye
+  // lands on the right one after the jump.
+  const jumpTo = useCallback((id: string) => {
+    const el = document.getElementById(`chat-message-${id}`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.remove('chat-message--flash')
+    void el.offsetWidth
+    el.classList.add('chat-message--flash')
+    window.setTimeout(() => el.classList.remove('chat-message--flash'), 1600)
+  }, [])
 
   const [stoppingRoot, setStoppingRoot] = useState<string | null>(null)
   const haltCascade = useCallback(async (root: string) => {
@@ -1032,6 +1110,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
           const startsNewDay = !prev || calendarDay(prev.ts) !== calendarDay(msg.ts)
           // Same agent name from two devices is two speakers, so the peer is
           // part of the grouping key.
+          const parent = msg.reply_to ? messages.find(m => m.id === msg.reply_to) : undefined
           const showSender = !prev
             || prev.agent_id !== msg.agent_id
             || prev.peer_id !== msg.peer_id
@@ -1053,7 +1132,10 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
                 blobNonces={blobNonces}
                 onOpenImage={setLightboxHash}
                 onReply={startReply}
-                replyParent={messages.find(parent => parent.id === msg.reply_to)}
+                replyParent={parent}
+                replyParentName={parent ? (() => { const l = getSenderLabel(parent.agent_id, parent.peer_id); return l.agent || l.user })() : undefined}
+                showQuote={needsQuote(messages, i)}
+                onJumpTo={jumpTo}
               />
             </Fragment>
           )
@@ -1088,29 +1170,6 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
             </span>
             <button type="button" onClick={() => setDismissedUpgrade(upgradeKey)} title="Hide until the next restart">
               dismiss
-            </button>
-          </div>
-        )}
-        {replyTo && (
-          <div className="chat-engagement" role="status" aria-live="polite">
-            <span>
-              replying to <strong>@{replyTo.agent}</strong> · this message only
-            </span>
-            <button type="button" onClick={() => setReplyTo(null)} title="Cancel this reply">
-              cancel
-            </button>
-          </div>
-        )}
-        {!replyTo && engagement?.agent && (
-          <div className="chat-engagement" role="status" aria-live="polite">
-            <span>
-              replying to <strong>@{engagement.agent}</strong>
-              {liveActivities.some(a => a.actor_id === engagement.agent && a.kind === 'working')
-                ? ' · working, your message will be queued'
-                : ' · no mention needed'}
-            </span>
-            <button type="button" onClick={dismissEngagement} title="Stop replying to this agent (Esc)">
-              esc to exit
             </button>
           </div>
         )}
@@ -1155,16 +1214,20 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
                 </span>
               )
             })}
-            {runningCascadeRoot && (
-              <button
-                type="button"
-                className="chat-activity__stop"
-                onClick={() => haltCascade(runningCascadeRoot)}
-                disabled={stoppingRoot === runningCascadeRoot}
-                title="Agents are handing work to each other. Stop the rest of this chain."
-              >
-                {stoppingRoot === runningCascadeRoot ? 'stopping…' : 'stop chain'}
-              </button>
+            {runningCascade && (
+              <span className="chat-activity__chain" title="Agents are replying to each other. Stop ends this conversation's remaining turns on every device; the reply being written still finishes.">
+                <span>
+                  agents talking · turn {runningCascade.turn}{maxRelayTurns ? ` of ${maxRelayTurns}` : ''}
+                </span>
+                <button
+                  type="button"
+                  className="chat-activity__stop"
+                  onClick={() => haltCascade(runningCascade.root)}
+                  disabled={stoppingRoot === runningCascade.root}
+                >
+                  {stoppingRoot === runningCascade.root ? 'stopped' : 'stop'}
+                </button>
+              </span>
             )}
           </div>
         )}
@@ -1227,15 +1290,39 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
         >
           +
         </button>
+        <div className={`chat-composer__field${replyTo || engagement?.agent ? ' chat-composer__field--to' : ''}`}>
+        {(replyTo || engagement?.agent) && (
+          // Who this message goes to without a mention: a reply you chose, or
+          // the agent that just answered you. A token in the field rather than
+          // a bar above it, removable like any other.
+          <span
+            className="chat-composer__to"
+            title={replyTo
+              ? 'Goes to this agent only. Esc to cancel.'
+              : liveActivities.some(a => a.actor_id === engagement?.agent && a.kind === 'working')
+                ? 'It is still working; your message will wait for it. Esc to send to the room instead.'
+                : 'It just answered you, so this goes to it without a mention. Esc to send to the room instead.'}
+          >
+            <span aria-hidden="true">→</span> {chipLabel(replyTo?.agent ?? engagement?.agent ?? '')}
+            <button
+              type="button"
+              aria-label={`Stop sending to @${replyTo?.agent ?? engagement?.agent}`}
+              onClick={() => (replyTo ? setReplyTo(null) : void dismissEngagement())}
+            >
+              ×
+            </button>
+          </span>
+        )}
         <MentionInput
           ref={inputRef}
           onChange={onInputChange}
           onKeyDown={onInputKeyDown}
-          placeholder={activeCircle?.disabled ? 'Circle disabled — enable to resume' : replyTo?.agent || engagement?.agent ? `Reply to @${replyTo?.agent || engagement?.agent}…` : 'Message the circle...  (@ to mention)'}
+          placeholder={activeCircle?.disabled ? 'Circle disabled — enable to resume' : replyTo?.agent || engagement?.agent ? 'Write a reply…' : 'Message the circle...  (@ to mention)'}
           className={`chat-composer__input${activeCircle?.disabled ? ' chat-composer__input--disabled' : ''}`}
           disabled={activeCircle?.disabled}
           onPaste={onPaste}
         />
+        </div>
         <button onClick={send} disabled={activeCircle?.disabled || Object.keys(uploads).length > 0} className="enox-btn chat-composer__send">
           {activeCircle?.disabled ? 'VOID' : variant === 'main' ? 'SEND' : 'EXEC'}
         </button>

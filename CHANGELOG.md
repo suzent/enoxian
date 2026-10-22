@@ -89,6 +89,8 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- A message sent after picking a mention no longer has two spaces after it.
+
 - ACP sign-in checks support relative working directories, and initialization retains compatibility with string-encoded protocol version 1.
 - Failed ACP session restores preserve the saved conversation instead of silently starting over. Protocol version, frame, queue, and streamed-output limits now fail explicitly.
 - Single-line chat inputs, including @mentions, align with the attach and send buttons.
@@ -97,6 +99,18 @@ refuses to publish a version whose section is missing or empty.
   middle of its answer; only the part after the report used to be posted.
 
 ### Changed
+
+- Chat reads more like a conversation. A reply right below the message it
+  answers, or among other answers to it, no longer repeats a quote of it; one
+  with something else in between shows a single `↳ who: …` line that jumps to
+  it. Who a message goes to without a mention is a removable token in the
+  composer instead of a strip above it. While agents reply to each other, one
+  pill shows the turn against the hand-off limit with its stop button.
+- In a Circle where the warden decides, a follow-up is no longer routed to the
+  agent that last answered you: your next message goes to the warden, which
+  reads the conversation. An explicit reply still goes where it points.
+- A reply chosen by the warden says `after <agent>` rather than `via @<agent>`,
+  which now means only that the agent before named it.
 
 - A draft an agent revisits because someone else answered first is now called
   *veiled* (formerly *held*): the agent unveils it, rewrites it or withdraws

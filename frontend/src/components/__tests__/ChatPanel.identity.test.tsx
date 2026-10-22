@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 let receive: (event: {data: string}) => void
 const old = { id: 'old', agent_id: 'bob', text: 'History', ts: 1, mentions: [] }
 vi.mock('../../api', () => ({
+  getAgentConfigFor: vi.fn(async () => ({ global_settings: { max_relay_turns: 20 }, circle: null })),
   getChat: vi.fn(async () => [old]),
   getMembers: vi.fn(async () => []), getWho: vi.fn(async () => []),
   getChatActivity: vi.fn(async () => []),

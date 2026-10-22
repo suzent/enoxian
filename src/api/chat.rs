@@ -688,13 +688,17 @@ pub async fn get_engagement(
                 .into_response()
         }
     };
-    let cfg = crate::agent::config::AgentConfig::load();
+    // This Circle's window, as routing will apply it: none while the warden
+    // decides, and a Circle's own override over the global answer.
+    let window = crate::agent::config::AgentConfig::load()
+        .resolved(&circle_id)
+        .followup_window_secs();
     let history = state.transcript();
     let engagement = crate::agent::engagement::resolve(
         &history,
         &state.peer_id,
         chrono::Utc::now().timestamp(),
-        cfg.engagement_window_secs,
+        window,
         state.engagement_dismissed(&state.peer_id).as_ref(),
     );
     match engagement {
@@ -702,11 +706,10 @@ pub async fn get_engagement(
             "agent": e.agent,
             "peer_id": e.peer_id,
             "message_id": e.message_id,
-            "window_secs": cfg.engagement_window_secs,
+            "window_secs": window,
         }))
         .into_response(),
-        None => Json(json!({ "agent": null, "window_secs": cfg.engagement_window_secs }))
-            .into_response(),
+        None => Json(json!({ "agent": null, "window_secs": window })).into_response(),
     }
 }
 
