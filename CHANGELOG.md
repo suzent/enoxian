@@ -41,6 +41,13 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Agent cards: each agent can describe itself in the shared folder at
+  `agents/<owner>/<device>/<agent>.md`. An agent's brief now includes its own
+  card and one line from every other agent's, so it knows who to hand work to.
+  A Circle's Behaviour settings list the cards and write a template for any of
+  this device's agents that has none. Cards are ordinary shared files: edits,
+  by a member or by the agent, are reviewed like any other change.
+
 - Device Settings now provides ACP sign-in checks, interactive login, cancellation, and verified status independently of installation.
 
 - `GET /circles/<id>/api/chat/executions` reports what became of each listed

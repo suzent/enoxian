@@ -31,6 +31,8 @@ const ALLOWED: &[(&str, &str)] = &[
         "the agent's own handle, fully qualified",
     ),
     ("To address someone", "handle grammar, no particular agent"),
+    ("\"@{}/{}/{}\"", "a fully qualified handle"),
+    ("@{owner}/{device}/{agent}", "a fully qualified handle"),
 ];
 
 /// What an agent's name looks like inside a `format!`.

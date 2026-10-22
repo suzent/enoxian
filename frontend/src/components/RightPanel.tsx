@@ -803,7 +803,7 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
         <span>Circle settings</span><span className="circle-panel-settings__arrow" aria-hidden="true">→</span>
       </button>}
     </aside>
-    {settingsCircleId && <DeviceSettings key={settingsCircleId} circleId={settingsCircleId} membership={activeCircle && <CircleMembership disabled={!!activeCircle.disabled} onToggle={handleToggleCircleEnabled} onLeave={handleLeaveCircle} />} onClose={() => setSettingsCircleId(null)} />}
+    {settingsCircleId && <DeviceSettings key={settingsCircleId} circleId={settingsCircleId} membership={activeCircle && <CircleMembership disabled={!!activeCircle.disabled} onToggle={handleToggleCircleEnabled} onLeave={handleLeaveCircle} />} onOpenFile={onFileSelect} onClose={() => setSettingsCircleId(null)} />}
 
 
     {/* ── Confirm modal (leave / delete) ──────────────────────────────── */}

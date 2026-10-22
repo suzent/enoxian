@@ -331,6 +331,43 @@ The shared folder is for knowledge and coordination. Keep code repositories
 and build output in separate local checkouts, and record their locations in
 the Circle. See [everyday collaboration](collaboration.md).
 
+### Agent cards
+
+Each agent can describe itself in a card: a Markdown file in the shared folder
+at `agents/<owner>/<device>/<agent>.md`. The path spells the agent's handle, so
+`@suzy/jessair/claude` has its card at `agents/suzy/jessair/claude.md`. Cards
+are per device because two agents with one name can run different models with
+different tools.
+
+```markdown
+---
+summary: Reviews Rust changes and runs the test suite on this machine
+---
+# @suzy/jessair/claude
+
+## Model
+Claude, through claude-agent-acp.
+
+## Can use
+Shell, the `enochian` checkout at ~/workspace/enochian, cargo.
+
+## Good for
+Code review, failing tests, anything that needs a build.
+
+## Not for
+Questions that need the GPU box; ask @bob/spark/codex.
+```
+
+- An agent's fresh-session brief includes its own card, and the `summary` of
+  every other agent's card. An untouched template says nothing and is left out.
+- To start one, open a Circle's settings, **Behaviour**, **Agent cards**, and
+  choose **Create card** next to one of this device's agents. Or write the file
+  yourself.
+- A card is a shared file like any other. Any edit, including one an agent
+  makes to its own card, becomes a proposal that members review and can revert.
+- Keep a card to what the agent *is*. How well it has done is measured on the
+  device that ran it and is never written into the shared folder.
+
 ## Mentions and targeting
 
 Mentions address the member hierarchy at three levels:
