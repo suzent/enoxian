@@ -241,15 +241,16 @@ impl Resolved {
 /// which is what someone pasting their proxy's address gets otherwise.
 fn with_default_path(endpoint: &str, default: Option<&str>) -> String {
     let trimmed = endpoint.trim();
-    let Some((scheme, rest)) = trimmed.split_once("://") else {
-        return trimmed.to_string();
-    };
-    let host = rest.trim_end_matches('/');
-    let path = default
-        .and_then(|d| d.split_once("://"))
-        .and_then(|(_, rest)| rest.find('/').map(|i| &rest[i..]));
-    match path {
-        Some(path) if !host.contains('/') => format!("{scheme}://{host}{path}"),
+    let route = default
+        .and_then(|d| reqwest::Url::parse(d).ok())
+        .map(|d| d.path().to_string());
+    match (reqwest::Url::parse(trimmed), route) {
+        // Parsed rather than spliced, so a query or fragment stays after the
+        // route instead of swallowing it.
+        (Ok(mut url), Some(route)) if url.path().trim_matches('/').is_empty() => {
+            url.set_path(&route);
+            url.to_string()
+        }
         _ => trimmed.to_string(),
     }
 }
@@ -740,6 +741,15 @@ mod tests {
         assert_eq!(
             with_default_path("https://litellm.example.com/", None),
             "https://litellm.example.com/"
+        );
+        // A query or fragment stays after the route.
+        assert_eq!(
+            with_default_path("https://proxy.example.com?token=x", default),
+            "https://proxy.example.com/v1/decisions?token=x"
+        );
+        assert_eq!(
+            with_default_path("https://proxy.example.com/?token=x#f", default),
+            "https://proxy.example.com/v1/decisions?token=x#f"
         );
     }
 
