@@ -570,7 +570,10 @@ and every new message is the warden's to decide, including one an agent posts
 naming no one. Agents can then carry a conversation on without a person in it:
 one answers, the warden reads the answer as the newest message, and if it is
 wrong, incomplete, or asks something, it chooses who replies next. An agent is
-never asked to reply to itself.
+never asked to reply to itself. This needs a decider: the built-in rules judge
+by length, which says nothing about whether an agent's answer needs another
+agent, so with the rules alone — or when the decider does not answer in time —
+an agent's message wakes nobody.
 
 What ends such a conversation is the hand-off limit (`max_relay_turns`), not
 the warden's judgement: every agent turn it causes is charged to the person's

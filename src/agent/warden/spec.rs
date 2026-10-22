@@ -147,6 +147,10 @@ pub struct Questions {
     pub room: String,
     pub vote: String,
     pub agree: String,
+    /// Retired with the second look at a single answer. Read and ignored, so a
+    /// spec saved before still loads.
+    #[serde(default, skip_serializing, rename = "answer_ok")]
+    pub retired_answer_ok: Option<serde::de::IgnoredAny>,
 }
 
 impl Default for Questions {
@@ -174,6 +178,7 @@ impl Default for Questions {
             agree: "Do these answers reach the same conclusion? Ignore wording, length and \
                     reasoning; compare only what each one concludes."
                 .into(),
+            retired_answer_ok: None,
         }
     }
 }
@@ -232,6 +237,9 @@ pub struct WardenSpec {
     pub questions: Questions,
     /// Per question: `admit`, `admit:agent`, `agent:<name>`, `success:<mode>`.
     pub calibration: Calibration,
+    /// Retired with the second look at a single answer; read and ignored.
+    #[serde(default, skip_serializing, rename = "verify")]
+    pub retired_verify: Option<serde::de::IgnoredAny>,
 }
 
 impl Default for WardenSpec {
@@ -252,6 +260,7 @@ impl Default for WardenSpec {
             rules: Rules::default(),
             questions: Questions::default(),
             calibration: Calibration::new(),
+            retired_verify: None,
         }
     }
 }
@@ -419,6 +428,16 @@ mod tests {
         assert_eq!(spec.version, "t1");
         assert_eq!(spec.lambda, 0.2);
         assert_eq!(spec.vote, Vote::default());
+    }
+
+    #[test]
+    fn a_spec_saved_with_retired_fields_still_loads() {
+        let text = "version = \"t1\"\n[questions]\nanswer_ok = \"old\"\n[verify]\nenabled = true\nthreshold = 0.4\n";
+        let spec = WardenSpec::from_toml(text).unwrap();
+        assert_eq!(spec.version, "t1");
+        // Gone again on the next save.
+        let saved = toml::to_string_pretty(&spec).unwrap();
+        assert!(!saved.contains("verify") && !saved.contains("answer_ok"));
     }
 
     #[test]

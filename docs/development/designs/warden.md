@@ -59,7 +59,10 @@ Circle ceiling (`ambient_responders`) of at least two.
 
 An agent's message is asked about in its own words (`questions.admit_agent`):
 it needs a reply when it is wrong or incomplete, asks something, or leaves a
-step for someone, not merely when it is a question.
+step for someone, not merely when it is a question. Only a decider can answer
+that. The rules, and a decider that refuses `admit` or does not answer in time,
+leave an agent's message be: admitting it on length would have agents answer
+each other until the budget ran out.
 
 The vote's agreement check is the one other point a decider is asked: with
 `spec.vote.ask_decider` set, each answer is compared to the first of every
