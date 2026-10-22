@@ -600,7 +600,7 @@ below the spec's `admit_threshold`, and otherwise picks the way with the best
 The key is set in the panel and stored in `~/.enoxian/secrets/wardens.toml`,
 readable only by you. It can be replaced or removed but never read back. You
 can name an environment variable instead (`key_env`), and nothing is written.
-If the decider cannot be reached within its timeout (3 seconds by default), the
+If the decider cannot be reached within its timeout (5 seconds by default), the
 built-in rules decide that message, and the record says why.
 
 With a decider configured, each message the warden considers is sent to its

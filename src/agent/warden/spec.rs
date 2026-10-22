@@ -258,7 +258,11 @@ impl Default for WardenSpec {
         Self {
             version: "builtin-1".into(),
             modes: vec![ModeKind::Single, ModeKind::Vote],
-            admit_threshold: 0.5,
+            // Low on purpose: a question missed costs more than a reply not
+            // needed (#299). Jev, uncalibrated, gave plain questions 0.48 and
+            // 0.63 and chit-chat 0.04 and 0.12; 0.5 dropped one of the
+            // questions. Calibration is the real fix.
+            admit_threshold: 0.3,
             lambda: 0.05,
             room_size: 2,
             vote: Vote::default(),
