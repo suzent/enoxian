@@ -29,6 +29,9 @@ const DRAIN_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(750
 /// The longest a steady stream of messages can hold the drain off.
 const DRAIN_DEBOUNCE_CAP: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// How often this device checks its agents' cards against what it knows.
+const CARDS_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Parked far enough out that an idle Circle never wakes for it; the reconcile
 /// tick is the real heartbeat.
 const DRAIN_IDLE: std::time::Duration = std::time::Duration::from_secs(3600);
@@ -96,6 +99,11 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     tokio::pin!(debounce);
     // A decision the drain left a message waiting for is ready.
     let warden_ready = state.warden.ready.clone();
+    // Keeps this device's agents' cards in the shared folder current: written
+    // once, then only their facts (what model, where, whether it reads the
+    // room) as those change. The first tick is at once.
+    let mut cards = tokio::time::interval(CARDS_EVERY);
+    cards.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             _ = token.cancelled() => break,
@@ -123,6 +131,11 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 // backlog and then hears nothing, which no event would wake.
                 dirty_since = None;
                 drain_ambient(&state, &handled, &inbox, &ledger, &wake, &AgentConfig::load());
+            }
+            _ = cards.tick() => {
+                for path in super::cards::ensure(&state, &AgentConfig::load()) {
+                    tracing::info!("[cards] wrote {path}");
+                }
             }
             _ = &mut debounce, if dirty_since.is_some() => {
                 dirty_since = None;

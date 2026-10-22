@@ -208,6 +208,7 @@ fn agents_md_template(circle_name: &str) -> String {
          file first; edit it to fit how the circle works.\n\
          \n\
          - `devices/<device>.md`: what each device is, what it runs, where its checkouts live\n\
+         - `agents/<owner>/<device>/<agent>.md`: what each agent is, runs on, and is good for\n\
          - `notes/`: shared working text and decisions\n\
          - `handoffs/`: work passed between devices or agents\n\
          \n\
@@ -227,6 +228,7 @@ mod tests {
         let text = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
         assert!(text.starts_with("# Studio\n\nThis folder is the circle's shared knowledge base"));
         assert!(text.contains("- `notes/`: shared working text and decisions\n"));
+        assert!(text.contains("- `agents/<owner>/<device>/<agent>.md`: what each agent is"));
     }
 
     /// `--dir` can point at a folder that already has one. It is left alone.

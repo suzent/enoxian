@@ -335,8 +335,6 @@ export interface AgentCard {
   summary: string
 }
 export const getAgentCards = (id: string) => get<{ cards: AgentCard[] }>(`${api(id)}/agent-cards`)
-export const createAgentCard = (id: string, agent: string) =>
-  post<{ path: string; created: boolean }>(`${api(id)}/agent-cards`, { agent })
 export interface WardenField { label: string; default?: string | null; secret: boolean }
 export interface WardenKind {
   id: string

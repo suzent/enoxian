@@ -520,6 +520,8 @@ async fn run_acp(
         }
     };
     let mut acp = started.context("ACP handshake failed")?;
+    // Kept for the agent's card, which shows what the agent says it runs.
+    super::cards::record_reported(circle_dir, actor.agent_id, acp.reported());
     if let Some(run) = &live {
         acp.set_activity(run.activity.clone());
     }

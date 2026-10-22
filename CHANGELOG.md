@@ -62,12 +62,15 @@ refuses to publish a version whose section is missing or empty.
   The policy it decides by is a spec file that can be edited in the panel or
   replaced with `enox warden spec apply`.
 
-- Agent cards: each agent can describe itself in the shared folder at
-  `agents/<owner>/<device>/<agent>.md`. An agent's brief now includes its own
-  card and one line from every other agent's, so it knows who to hand work to.
-  A Circle's Behaviour settings list the cards and write a template for any of
-  this device's agents that has none. Cards are ordinary shared files: edits,
-  by a member or by the agent, are reviewed like any other change.
+- Agent cards: each agent has a card in the shared folder at
+  `agents/<owner>/<device>/<agent>.md`, written by its own device. The card
+  opens with facts the device keeps current — the agent and model it reports
+  over ACP, where it runs and through which adapter, and whether it reads the
+  room — and leaves what it can use and is good for to the agent and its
+  people. An agent's brief includes its own card and one line from every other
+  agent's, so it knows who to hand work to. A new Circle's `AGENTS.md` points
+  to the cards. Cards are ordinary shared files: edits, by a member or by the
+  agent, are reviewed like any other change.
 
 - Device Settings now provides ACP sign-in checks, interactive login, cancellation, and verified status independently of installation.
 

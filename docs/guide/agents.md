@@ -333,11 +333,15 @@ the Circle. See [everyday collaboration](collaboration.md).
 
 ### Agent cards
 
-Each agent can describe itself in a card: a Markdown file in the shared folder
-at `agents/<owner>/<device>/<agent>.md`. The path spells the agent's handle, so
+Each agent has a card: a Markdown file in the shared folder at
+`agents/<owner>/<device>/<agent>.md`. The path spells the agent's handle, so
 `@suzy/jessair/claude` has its card at `agents/suzy/jessair/claude.md`. Cards
 are per device because two agents with one name can run different models with
 different tools.
+
+Each device writes the cards of the agents it advertises, so nobody has to
+make one and no two devices write the same file. A card opens with a facts
+block that device keeps current:
 
 ```markdown
 ---
@@ -345,8 +349,12 @@ summary: Reviews Rust changes and runs the test suite on this machine
 ---
 # @suzy/jessair/claude
 
-## Model
-Claude, through claude-agent-acp.
+<!-- enoxian:facts — kept up to date by enoxian; edits here are replaced -->
+- Agent: Claude Agent 0.69.0
+- Model: Opus
+- Runs on: suzy/jessair, through ACP (claude-agent-acp 0.69.0)
+- Reads the room here: yes
+<!-- /enoxian:facts -->
 
 ## Can use
 Shell, the `enochian` checkout at ~/workspace/enochian, cargo.
@@ -358,15 +366,24 @@ Code review, failing tests, anything that needs a build.
 Questions that need the GPU box; ask @bob/spark/codex.
 ```
 
-- An agent's fresh-session brief includes its own card, and the `summary` of
-  every other agent's card. An untouched template says nothing and is left out.
-- To start one, open a Circle's settings, **Behaviour**, **Agent cards**, and
-  choose **Create card** next to one of this device's agents. Or write the file
-  yourself.
+- The facts come from the device: the agent and model are what the agent
+  reported over ACP at its last start (`agentInfo`, and the session's model),
+  the adapter is read off its install path, and **Reads the room** is this
+  Circle's setting. The block is rewritten only when a fact changes, and
+  nothing outside it is touched.
+- Everything else is for the agent and the people working with it. The
+  agent's brief points it at its card and asks it to fill in what is empty or
+  wrong.
+- The `summary` is the one line other agents and the warden see. Until
+  someone writes it, the card is summarized by its first line of prose, or
+  failing that by its agent and model.
 - A card is a shared file like any other. Any edit, including one an agent
   makes to its own card, becomes a proposal that members review and can revert.
 - Keep a card to what the agent *is*. How well it has done is measured on the
   device that ran it and is never written into the shared folder.
+- A Circle's settings, **Behaviour**, **Agent cards** lists every card and
+  opens it in the editor. A new Circle's `AGENTS.md` points to `agents/`;
+  existing ones are left as they are, so add the line yourself if you want it.
 
 ## Mentions and targeting
 

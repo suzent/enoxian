@@ -33,7 +33,6 @@ vi.mock('../../api', () => ({
     spec_source: { kind: 'default' },
   })),
   setWardenConfig: vi.fn(), setWardenKey: vi.fn(), setWardenSpec: vi.fn(), resetWardenSpec: vi.fn(), testWarden: vi.fn(),
-  createAgentCard: vi.fn(),
 }))
 
 vi.mock('../../context/AppContext', () => ({
