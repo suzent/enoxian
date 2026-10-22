@@ -194,6 +194,12 @@ export default function WardenSettings({ circleId }: { circleId?: string | null 
           agents can carry a conversation on without a person in it. What stops them is the hand-off
           limit: each human message pays for at most that many agent turns.
         </span>
+        {view.config.agent_messages && (kind?.protocol === 'rules' || view.problem) && (
+          <span role="alert" className="block text-[10px] mt-1 border border-obsidian/40 p-2">
+            Agents' messages need a decider to judge them. With the built-in rules, or until the decider
+            above is usable, no agent's message will be answered.
+          </span>
+        )}
       </label>
 
       <div className="py-2 text-xs">
