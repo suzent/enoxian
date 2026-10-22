@@ -67,20 +67,23 @@ pub async fn create(
     let Some(state) = daemon.get(&circle) else {
         return not_found();
     };
-    if crate::agent::config::AgentConfig::load()
-        .resolve(&req.agent)
-        .is_none()
-    {
-        return bad_request(format!(
-            "no agent named '{}' is configured on this device",
-            req.agent
-        ));
-    }
     let Some(me) = state.self_member().filter(|m| !m.device_label.is_empty()) else {
         return bad_request(
             "this device has no label in the Circle yet, so its agents have no handle".into(),
         );
     };
+    // The same set the list marks as local: what this device advertises, which
+    // includes agents named in `identity.toml` without an `agents.toml` entry.
+    let local = me.agents.iter().any(|a| a.eq_ignore_ascii_case(&req.agent))
+        || crate::agent::config::AgentConfig::load()
+            .resolve(&req.agent)
+            .is_some();
+    if !local {
+        return bad_request(format!(
+            "no agent named '{}' is advertised by this device",
+            req.agent
+        ));
+    }
     // Through the file API, which seeds the shared document as it writes the
     // file. Written to disk alone, a card opened in the editor at once would
     // load as the empty document the watcher had not filled yet — and the
@@ -115,4 +118,91 @@ fn not_found() -> axum::response::Response {
 
 fn bad_request(msg: String) -> axum::response::Response {
     (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yrs::{Any, GetString, Map, ReadTxn, Transact, WriteTxn};
+
+    fn circle(agents: &[&str]) -> (DaemonState, crate::state::AppState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::state::AppState::new(
+            "c1".into(),
+            "circle".into(),
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            String::new(),
+            "label".into(),
+            1,
+            "peer".into(),
+            crate::config::JoinPolicy::Manual,
+            "suzy".into(),
+            crate::mls::new_mls_state(crate::mls::MlsIdentity::generate("peer").unwrap(), None),
+        );
+        {
+            let mut txn = state.control.transact_mut();
+            let map = txn.get_or_insert_map(crate::control::MEMBER_LIST_KEY);
+            let entry = json!({
+                "peer_id": "peer", "owner": "suzy", "agent_id": "suzy",
+                "device_label": "mac", "agents": agents, "role": "member",
+                "added_at": "2026-10-01T00:00:00Z", "signature": "",
+            });
+            map.insert(&mut txn, "peer", Any::String(entry.to_string().into()));
+        }
+        let daemon = DaemonState::new();
+        daemon.insert_circle(
+            "c1".into(),
+            state.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        (daemon, state, dir)
+    }
+
+    async fn post(daemon: &DaemonState, agent: &str) -> (StatusCode, serde_json::Value) {
+        let resp = create(
+            State(daemon.clone()),
+            Path("c1".into()),
+            Json(CreateRequest {
+                agent: agent.into(),
+            }),
+        )
+        .await;
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    /// An agent this device advertises gets a card even with no `agents.toml`
+    /// entry, and the template lands in the shared document exactly once —
+    /// including when the document already holds it, as it does when the
+    /// watcher reads the new file first.
+    #[tokio::test]
+    async fn an_advertised_agent_gets_its_template_once() {
+        let (daemon, state, dir) = circle(&["identity-only-agent"]);
+        let path = cards::relative_path("suzy", "mac", "identity-only-agent");
+        let template = cards::template("suzy", "mac", "identity-only-agent");
+        {
+            let doc = state.get_or_create_doc(&path);
+            let mut txn = doc.transact_mut();
+            let text = txn.get_or_insert_text(path.as_str());
+            yrs::Text::insert(&text, &mut txn, 0, &template);
+        }
+        let (status, body) = post(&daemon, "identity-only-agent").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["created"], true);
+        let doc = state.get_or_create_doc(&path);
+        let txn = doc.transact();
+        let text = txn.get_text(path.as_str()).unwrap().get_string(&txn);
+        assert_eq!(text, template, "not doubled");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(&path)).unwrap(),
+            template
+        );
+
+        let (status, _) = post(&daemon, "someone-elses-agent").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
 }
