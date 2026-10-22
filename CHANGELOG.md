@@ -59,6 +59,8 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Single-line chat inputs, including @mentions, align with the attach and send buttons.
+
 - An agent's reply is no longer cut short when the agent reports usage in the
   middle of its answer; only the part after the report used to be posted.
 

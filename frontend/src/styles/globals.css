@@ -1210,6 +1210,7 @@ button[role="tab"][aria-selected="true"] {
 .chat-composer__input {
   min-width: 0;
   min-height: 36px;
+  line-height: 18px;
   padding: 8px 10px;
   border: 1px solid rgba(0,0,0,0.48);
   background: #fff;
@@ -1217,6 +1218,11 @@ button[role="tab"][aria-selected="true"] {
   font-family: var(--font-mono);
   font-size: var(--ui-small);
   transition: border-color 130ms ease, box-shadow 130ms ease;
+}
+
+/* Keep mention borders within the single-line composer height. */
+.chat-composer__input .mention-chip {
+  line-height: 16px;
 }
 
 .chat-composer__input:focus {
