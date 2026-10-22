@@ -133,7 +133,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
                 drain_ambient(&state, &handled, &inbox, &ledger, &wake, &AgentConfig::load());
             }
             _ = cards.tick() => {
-                for path in super::cards::ensure(&state, &AgentConfig::load()) {
+                for path in super::cards::ensure(&state, &AgentConfig::load()).await {
                     tracing::info!("[cards] wrote {path}");
                 }
             }

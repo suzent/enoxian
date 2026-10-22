@@ -462,7 +462,7 @@ pub fn refresh(text: &str, facts: &Facts) -> Option<String> {
 /// block is rewritten, and only when a fact changed; everything else in it
 /// belongs to the agent and the people working with it. Returns the paths
 /// written.
-pub fn ensure(state: &AppState, cfg: &super::config::AgentConfig) -> Vec<String> {
+pub async fn ensure(state: &AppState, cfg: &super::config::AgentConfig) -> Vec<String> {
     let Some(me) = state.self_member().filter(|m| !m.device_label.is_empty()) else {
         return Vec::new();
     };
@@ -470,7 +470,7 @@ pub fn ensure(state: &AppState, cfg: &super::config::AgentConfig) -> Vec<String>
     for agent in &me.agents {
         let facts = facts_for(state, cfg, &me.owner, &me.device_label, agent);
         let relative = relative_path(&me.owner, &me.device_label, agent);
-        match write_card(state, &relative, &facts) {
+        match write_card(state, &relative, &facts).await {
             Ok(true) => written.push(relative),
             Ok(false) => {}
             Err(error) => tracing::warn!("[cards] could not write {relative}: {error}"),
@@ -483,7 +483,7 @@ pub fn ensure(state: &AppState, cfg: &super::config::AgentConfig) -> Vec<String>
 /// file, the way the file API creates files. The document is the live copy: a
 /// card open in someone's editor may have edits the file has not caught up
 /// with, and only the facts block is touched in it, so those survive.
-fn write_card(state: &AppState, relative: &str, facts: &Facts) -> std::io::Result<bool> {
+async fn write_card(state: &AppState, relative: &str, facts: &Facts) -> std::io::Result<bool> {
     let path = absolute(&state.workspace, relative);
     let on_disk = match std::fs::read_to_string(&path) {
         Ok(text) => Some(text),
@@ -526,6 +526,10 @@ fn write_card(state: &AppState, relative: &str, facts: &Facts) -> std::io::Resul
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&path, &content)?;
+    // The watcher finds the file equal to the document and saves nothing, so
+    // save here: a restart would otherwise rebuild this edit from the file as
+    // new operations, which a peer holding the originals would see twice.
+    crate::store::crdt::save(&state.workspace, relative, &doc).await;
     let _ = state.events.send(crate::control::CircleEvent::FileUpdated {
         path: relative.to_string(),
     });
@@ -939,14 +943,14 @@ mod tests {
         assert_eq!(changed_span("", "x"), (0, 0, "x"));
     }
 
-    #[test]
-    fn ensure_writes_each_card_once_then_only_its_facts() {
+    #[tokio::test]
+    async fn ensure_writes_each_card_once_then_only_its_facts() {
         let (state, dir) = state_with_roster(&[("local", "suzy", "jessair", &["claude"])]);
         let cfg = super::super::config::AgentConfig::from_toml("").unwrap();
         let path = "agents/suzy/jessair/claude.md";
-        assert_eq!(ensure(&state, &cfg), vec![path.to_string()]);
+        assert_eq!(ensure(&state, &cfg).await, vec![path.to_string()]);
         assert_eq!(
-            ensure(&state, &cfg),
+            ensure(&state, &cfg).await,
             Vec::<String>::new(),
             "nothing changed"
         );
@@ -969,7 +973,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(ensure(&state, &cfg), vec![path.to_string()]);
+        assert_eq!(ensure(&state, &cfg).await, vec![path.to_string()]);
         let on_disk = std::fs::read_to_string(dir.path().join(path)).unwrap();
         let in_doc = {
             let txn = doc.transact();
@@ -978,6 +982,10 @@ mod tests {
         assert_eq!(on_disk, in_doc);
         assert!(on_disk.contains("- Model: Opus\n"), "{on_disk}");
         assert!(on_disk.contains("- Reviewing Rust.\n"), "the edit survives");
-        assert_eq!(ensure(&state, &cfg), Vec::<String>::new());
+        assert!(
+            crate::store::crdt::state_path(&state.workspace, path).exists(),
+            "the document is saved, not rebuilt from the file on restart"
+        );
+        assert_eq!(ensure(&state, &cfg).await, Vec::<String>::new());
     }
 }
