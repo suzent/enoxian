@@ -46,7 +46,7 @@ export default function DeviceSettings({ onClose, circleId, membership }: Props)
   const activeCircleId = circleId ?? null
   const scope = circleId ? 'circle' : 'global'
   const [activeTab, setActiveTab] = useState<SettingsTab>('behaviour')
-  const auth = useAgentAuthentication(activeTab === 'agents')
+  const auth = useAgentAuthentication(activeTab === 'agents', activeCircleId)
   const [cfg, setCfg] = useState<AgentConfigView | null>(null)
   const [plugins, setPlugins] = useState<AgentPlugin[] | null>(null)
   const [known, setKnown] = useState<DiscoveredAgent[]>([])

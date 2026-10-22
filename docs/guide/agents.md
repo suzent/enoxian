@@ -27,6 +27,10 @@ validation until the first prompt can still reject a later task. No paid test
 prompt is sent. Status is kept only for this daemon session; refresh it after
 signing out or changing credentials outside enoxian.
 
+Within a Circle's settings, relative working directories resolve from that
+Circle's workspace, just as task execution does. Global settings use the
+private `~/.enoxian/auth-workspace` directory as the base instead.
+
 Terminal login requires an interactive desktop on the daemon's device. On a
 headless host, sign in using the provider CLI there and refresh the check.
 Custom agents with only connection-scoped credentials cannot share that login

@@ -36,13 +36,14 @@ session resume.
 ## Authentication and transport limits
 
 The token-protected local API exposes `GET /api/agent-auth`,
-`POST /api/agent-auth/{id}` (`action: probe|login`, optional `method_id`), and
+`POST /api/agent-auth/{id}` (`action: probe|login`, optional `method_id` and active `circle_id`), and
 `DELETE /api/agent-auth/{id}` to cancel. Only configured ACP commands may run;
 HTTP callers cannot supply commands, arguments, or environment variables.
 Jobs are cancellable, limited to four concurrent operations and five minutes.
 They deny permission requests and file writes and do not submit prompts.
 
-Initialization requires protocol major version 1. The client retains advertised
+Initialization requires protocol major version 1, accepting integer `1` and
+legacy string `"1"` responses. The client retains advertised
 `authMethods`; agent methods use `authenticate`, while terminal methods append
 advertised arguments/environment and run interactively without calling
 `authenticate`. Terminal capability is advertised only when available. Private

@@ -14,6 +14,7 @@ use serde_json::json;
 pub struct Request {
     action: Action,
     method_id: Option<String>,
+    circle_id: Option<String>,
 }
 
 pub async fn states(State(daemon): State<DaemonState>) -> impl IntoResponse {
@@ -34,7 +35,20 @@ pub async fn start(
     {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    match daemon.acp_auth.start(&id, request.action, request.method_id, daemon.shutdown_token.clone()) {
+    let workspace = match request.circle_id {
+        Some(id) => match daemon.circles.get(&id) {
+            Some(circle) => Some(circle.workspace.clone()),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"Circle is not active"})),
+                )
+                    .into_response()
+            }
+        },
+        None => None,
+    };
+    match daemon.acp_auth.start(&id, request.action, request.method_id, daemon.shutdown_token.clone(), workspace.as_deref()) {
         Ok(state) => (StatusCode::ACCEPTED, [(header::CACHE_CONTROL, "no-store")], Json(state)).into_response(),
         Err(_) => (StatusCode::BAD_REQUEST, Json(json!({"error": "Cannot start authentication; check the agent configuration and active jobs"}))).into_response(),
     }

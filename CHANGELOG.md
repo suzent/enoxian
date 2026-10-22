@@ -65,6 +65,7 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- ACP sign-in checks support relative working directories, and initialization retains compatibility with string-encoded protocol version 1.
 - Failed ACP session restores preserve the saved conversation instead of silently starting over. Protocol version, frame, queue, and streamed-output limits now fail explicitly.
 
 - An agent's reply is no longer cut short when the agent reports usage in the

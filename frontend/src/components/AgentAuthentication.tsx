@@ -6,7 +6,7 @@ export function authActive(state?: AgentAuthState): boolean {
   return !!state && ['checking', 'authenticating', 'terminal', 'verifying'].includes(state.status)
 }
 
-export function useAgentAuthentication(enabled: boolean) {
+export function useAgentAuthentication(enabled: boolean, circleId?: string | null) {
   const [states, setStates] = useState<Record<string, AgentAuthState>>({})
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<Record<string, boolean>>({})
@@ -30,14 +30,14 @@ export function useAgentAuthentication(enabled: boolean) {
     try {
       if (action === 'cancel') await cancelAgentAuth(id)
       else {
-        const state = await startAgentAuth(id, action, method)
+        const state = await startAgentAuth(id, action, method, circleId)
         setStates(previous => ({ ...previous, [id]: state }))
       }
       setError(null)
     } catch {
       setError('Could not start or cancel sign-in. Check the agent configuration and retry.')
     } finally { setPending(previous => ({ ...previous, [id]: false })) }
-  }, [])
+  }, [circleId])
   return { states, error, pending, act }
 }
 

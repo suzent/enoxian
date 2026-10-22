@@ -333,8 +333,8 @@ export interface AgentAuthState {
   error: string | null
 }
 export const getAgentAuth = () => get<Record<string, AgentAuthState>>('/api/agent-auth')
-export const startAgentAuth = (id: string, action: 'probe' | 'login', methodId?: string) =>
-  post<AgentAuthState>(`/api/agent-auth/${encodeURIComponent(id)}`, { action, method_id: methodId || null })
+export const startAgentAuth = (id: string, action: 'probe' | 'login', methodId?: string, circleId?: string | null) =>
+  post<AgentAuthState>(`/api/agent-auth/${encodeURIComponent(id)}`, { action, method_id: methodId || null, circle_id: circleId ?? null })
 export const cancelAgentAuth = (id: string) => request<{ ok: boolean }>(`/api/agent-auth/${encodeURIComponent(id)}`, {
   method: 'DELETE', headers: authHeaders(),
 })

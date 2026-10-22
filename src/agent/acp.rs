@@ -358,7 +358,13 @@ impl<H: ClientHooks> AcpSession<H> {
                 }),
             )
             .await?;
-        if result.get("protocolVersion").and_then(Value::as_u64) != Some(PROTOCOL_VERSION as u64) {
+        let version = result.get("protocolVersion");
+        let major = version.and_then(Value::as_u64).or_else(|| {
+            version
+                .and_then(Value::as_str)
+                .and_then(|value| value.parse::<u64>().ok())
+        });
+        if major != Some(PROTOCOL_VERSION as u64) {
             bail!("Unsupported ACP protocol version");
         }
         self.auth_methods = result
@@ -977,6 +983,9 @@ pub(crate) mod tests {
             match msg["method"].as_str() {
                 // An agent that never finishes starting.
                 _ if mode == "mute" => {}
+                Some("initialize") if mode == "string-version" => {
+                    send(json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":"1"}}))
+                }
                 Some("initialize") if mode == "wrong-version" => {
                     send(json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":2}}))
                 }
@@ -1065,6 +1074,12 @@ pub(crate) mod tests {
                 _ => {}
             }
         }
+    }
+
+    #[tokio::test]
+    async fn accepts_legacy_string_encoded_major_version() {
+        let (session, _dir) = fake_session("string-version").await;
+        session.shutdown().await;
     }
 
     #[tokio::test]

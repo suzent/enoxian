@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashMap,
-    path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -88,15 +87,23 @@ impl AuthJobs {
         action: Action,
         method: Option<String>,
         shutdown: CancellationToken,
+        workspace: Option<&std::path::Path>,
     ) -> Result<AuthState> {
         let cfg = AgentConfig::load();
-        let cmd = cfg
+        let mut cmd = cfg
             .agents
             .get(id)
             .context("Agent is not configured")?
             .clone();
         if cmd.driver != Driver::Acp || super::plugin::command_status(&cmd.command) != "ready" {
             bail!("An installed ACP agent is required");
+        }
+        if let Some(workspace) = workspace {
+            cmd.working_dir = Some(
+                super::driver::working_dir(workspace, cmd.working_dir.as_deref())
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
         self.start_command(id, cmd, action, method, shutdown)
     }
@@ -162,12 +169,8 @@ impl AuthJobs {
         action: Action,
         method: Option<String>,
     ) -> Result<Status> {
-        let cwd = match &cmd.working_dir {
-            Some(path) if PathBuf::from(path).is_absolute() => PathBuf::from(path),
-            // No Circle task is running: never guess a relative working directory.
-            Some(_) => bail!("Authentication requires an absolute working directory"),
-            None => crate::config::enoxian_dir()?.join("auth-workspace"),
-        };
+        let base = crate::config::enoxian_dir()?.join("auth-workspace");
+        let cwd = super::driver::working_dir(&base, cmd.working_dir.as_deref());
         tokio::fs::create_dir_all(&cwd).await?;
         let mut session = AcpSession::connect(
             &cmd.command,
@@ -337,6 +340,20 @@ impl ClientHooks for Deny {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn authentication_resolves_relative_absolute_and_default_directories() {
+        let base = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let resolve = super::super::driver::working_dir;
+        assert_eq!(resolve(base.path(), Some("src")), base.path().join("src"));
+        assert_eq!(resolve(base.path(), Some("")), base.path());
+        assert_eq!(resolve(base.path(), None), base.path());
+        assert_eq!(
+            resolve(base.path(), Some(other.path().to_str().unwrap())),
+            other.path()
+        );
+    }
+
     fn command(dir: &std::path::Path) -> AgentCommand {
         AgentCommand {
             command: super::super::acp::tests::fake_agent_command(),
