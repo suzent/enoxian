@@ -1046,6 +1046,17 @@ pub(crate) mod tests {
                         "cachedReadTokens": 0, "cachedWriteTokens": 31_518}}}),
                     );
                 }
+                // Decline, as an unaddressed agent with nothing to add does.
+                Some("session/prompt") if mode.starts_with("pass") => {
+                    send(
+                        json!({"jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": "fake-session", "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "PASS"}}}}),
+                    );
+                    send(json!({"jsonrpc": "2.0", "id": id,
+                        "result": {"stopReason": "end_turn"}}));
+                }
                 // Answer with a conclusion line: `say-<x>` concludes `<x>`;
                 // anything after a `#` only tells two such agents apart.
                 Some("session/prompt") if mode.starts_with("say-") => {

@@ -118,6 +118,9 @@ pub fn append(circle_dir: &Path, record: &Record) {
     let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let path = path(circle_dir);
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > ROTATE_BYTES) {
+        // Removed first: on Windows a rename does not replace its target, so
+        // every rotation after the first would fail and the log would grow.
+        let _ = std::fs::remove_file(previous(circle_dir));
         let _ = std::fs::rename(&path, previous(circle_dir));
     }
     let result = (|| -> std::io::Result<()> {

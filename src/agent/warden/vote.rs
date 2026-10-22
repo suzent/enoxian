@@ -300,7 +300,9 @@ async fn resolve(
         .max_by(|(ia, a), (ib, b)| a.len().cmp(&b.len()).then(ib.cmp(ia)))
         .map(|(_, g)| g.clone())
         .unwrap_or_default();
-    let unanimous = groups.len() == 1;
+    // Agreement needs two answers that agree. One answer beside passes or
+    // failures is not a confirmed result, so the vote still grows if it can.
+    let unanimous = groups.len() == 1 && answers.len() > 1;
     let used: Vec<String> = voters.iter().map(|e| e.request.agent.clone()).collect();
     let next = (voters.len() < assignment.max)
         .then(|| {
@@ -334,7 +336,11 @@ async fn resolve(
     // Agreement, or no one left to ask: post the answer most voters agree on.
     let (agent, text) = &answers[top[0]];
     let note = match (unanimous, answers.len()) {
-        (true, 1) => String::new(),
+        (_, 1) => format!(
+            "\n\n_Blind vote: the only answer; {} other voter{} gave none._",
+            voters.len() - 1,
+            if voters.len() == 2 { "" } else { "s" }
+        ),
         (true, n) => format!("\n\n_Blind vote: {n} of {n} answers agreed._"),
         (false, n) if top.len() * 2 > n => format!(
             "\n\n_Blind vote: the answers differed; this is the one {} of {n} agreed on._",
@@ -345,7 +351,20 @@ async fn resolve(
              tie; this is the first one given._"
         ),
     };
-    post(state, agent, &format!("{text}{note}"), request).await;
+    if !post(state, agent, &format!("{text}{note}"), request).await {
+        // Settled, but not posted. Keep trying in the background rather than
+        // drop the answer the vote paid for; the voters' turns are complete,
+        // so nothing else would ever reopen the message.
+        retry_post(
+            state.clone(),
+            agent.clone(),
+            format!("{text}{note}"),
+            request.clone(),
+        );
+        round.action = "post_retrying".into();
+        round.posted_by = Some(agent.clone());
+        return (true, round);
+    }
     for (other, _) in &answers {
         if other != agent {
             crate::agent::reaction::publish_voted(state, other, &request.message.id);
@@ -356,8 +375,9 @@ async fn resolve(
     (true, round)
 }
 
-async fn post(state: &AppState, agent: &str, text: &str, request: &Request) {
-    if let Err(error) = crate::agent::reaction::post_vote(
+/// Post the settled answer. `false` if it could not be posted.
+async fn post(state: &AppState, agent: &str, text: &str, request: &Request) -> bool {
+    match crate::agent::reaction::post_vote(
         state,
         agent,
         text,
@@ -366,11 +386,60 @@ async fn post(state: &AppState, agent: &str, text: &str, request: &Request) {
     )
     .await
     {
-        tracing::warn!(
-            "[warden] could not post the vote's answer to {}: {error}",
-            request.message.id
-        );
+        Ok(_) => true,
+        Err(error) => {
+            tracing::warn!(
+                "[warden] could not post the vote's answer to {}: {error}",
+                request.message.id
+            );
+            false
+        }
     }
+}
+
+/// How long a settled answer that would not post keeps being retried.
+const POST_RETRY: [u64; 5] = [5, 15, 30, 60, 120];
+
+/// Retry posting a settled answer; record whether it got through, and if it
+/// never does, tell the room rather than leave the message looking ignored.
+fn retry_post(state: AppState, agent: String, text: String, request: Request) {
+    tokio::spawn(async move {
+        let mut posted = false;
+        for wait in POST_RETRY {
+            tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+            if post(&state, &agent, &text, &request).await {
+                posted = true;
+                break;
+            }
+        }
+        super::log::append(
+            &state.circle_dir,
+            &Record {
+                ts: chrono::Utc::now().timestamp(),
+                message_id: request.message.id.clone(),
+                phase: Phase::Vote,
+                features: None,
+                decision: None,
+                executed: None,
+                vote: Some(VoteRound {
+                    ballots: Vec::new(),
+                    groups: Vec::new(),
+                    judged_by: String::new(),
+                    action: if posted { "posted" } else { "post_failed" }.into(),
+                    posted_by: Some(agent.clone()),
+                    added: None,
+                }),
+                verify: None,
+            },
+        );
+        if !posted {
+            crate::agent::reaction::announce_unanswered(
+                &state,
+                &request.message.id,
+                "the agents agreed on an answer, but it could not be posted",
+            );
+        }
+    });
 }
 
 #[cfg(test)]

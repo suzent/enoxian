@@ -1678,7 +1678,7 @@ fn announce(state: &AppState, message_id: &str, prefix: &str, text: String) {
 /// individual ambient failure is *not* announced: it hands the message to the
 /// next listener, so saying "no reply is coming" at that point would be wrong.
 /// Only giving up is final.
-fn announce_unanswered(state: &AppState, message_id: &str, reason: &str) {
+pub(crate) fn announce_unanswered(state: &AppState, message_id: &str, reason: &str) {
     announce(
         state,
         message_id,
@@ -3605,6 +3605,47 @@ mod tests {
         assert_eq!(votes[0].action, "added_voter");
         assert_eq!(votes[0].added.as_deref(), Some(c));
         assert_eq!(votes[1].action, "posted");
+    }
+
+    #[tokio::test]
+    async fn one_answer_beside_a_pass_is_not_agreement() {
+        use super::super::warden::WardenMode;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = super::super::inbox::Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let (a, b, c) = (
+            "fake-acp:say-true#a",
+            "fake-acp:pass#b",
+            "fake-acp:say-true#c",
+        );
+        let cfg = voting_config(&[a, b, c], WardenMode::Act);
+        offer_room(
+            &state,
+            &handled,
+            &inbox,
+            &ledger,
+            &wake,
+            &cfg,
+            &room_message("q", &hard_question()),
+        );
+
+        run_until_idle(&state, &inbox, &cfg).await;
+
+        let voters: Vec<String> = inbox
+            .entries()
+            .iter()
+            .map(|e| e.request.agent.clone())
+            .collect();
+        assert_eq!(voters, vec![a, b, c], "a third voter was asked");
+        let replies = agent_replies(&state, "q");
+        assert_eq!(replies.len(), 1);
+        assert!(
+            replies[0].text.contains("2 of 2 answers agreed"),
+            "{}",
+            replies[0].text
+        );
     }
 
     #[tokio::test]

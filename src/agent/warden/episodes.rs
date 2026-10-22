@@ -79,8 +79,15 @@ pub fn build(state: &AppState, since: Option<i64>) -> Vec<Episode> {
 
     let mut order: Vec<String> = Vec::new();
     let mut by_message: BTreeMap<String, Episode> = BTreeMap::new();
+    // Messages first recorded before `since`. A later record of one — a vote
+    // settling, a check — must not bring it back as a partial episode.
+    let mut before: std::collections::HashSet<String> = std::collections::HashSet::new();
     for record in records {
+        if before.contains(&record.message_id) {
+            continue;
+        }
         if since.is_some_and(|s| record.ts < s) && !by_message.contains_key(&record.message_id) {
+            before.insert(record.message_id.clone());
             continue;
         }
         let episode = by_message
@@ -153,4 +160,51 @@ pub fn build(state: &AppState, since: Option<i64>) -> Vec<Episode> {
         .into_iter()
         .filter_map(|id| by_message.remove(&id))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::log::{append, Record};
+    use super::*;
+
+    fn record(ts: i64, id: &str, phase: Phase) -> Record {
+        Record {
+            ts,
+            message_id: id.into(),
+            phase,
+            features: None,
+            decision: None,
+            executed: None,
+            vote: None,
+            verify: None,
+        }
+    }
+
+    #[test]
+    fn since_leaves_out_a_message_first_seen_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(
+            "c1".into(),
+            "circle".into(),
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            String::new(),
+            "label".into(),
+            1,
+            "peer".into(),
+            crate::config::JoinPolicy::Manual,
+            "owner".into(),
+            crate::mls::new_mls_state(crate::mls::MlsIdentity::generate("peer").unwrap(), None),
+        );
+        append(dir.path(), &record(10, "old", Phase::Act));
+        append(dir.path(), &record(20, "new", Phase::Act));
+        // A vote on the old message settles after the boundary.
+        append(dir.path(), &record(30, "old", Phase::Vote));
+        let ids: Vec<String> = build(&state, Some(15))
+            .into_iter()
+            .map(|e| e.message_id)
+            .collect();
+        assert_eq!(ids, vec!["new"]);
+        assert_eq!(build(&state, None).len(), 2);
+    }
 }

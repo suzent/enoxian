@@ -294,8 +294,10 @@ impl WardenSpec {
         if !(0.0..=10.0).contains(&self.lambda) {
             return Err("lambda must be between 0 and 10".into());
         }
-        if !(1..=8).contains(&self.room_size) {
-            return Err("room_size must be 1–8".into());
+        // A room is several listeners; one is `single`, and a room of one
+        // could never run.
+        if !(2..=8).contains(&self.room_size) {
+            return Err("room_size must be 2–8".into());
         }
         if self.vote.start < 2 || self.vote.max < self.vote.start || self.vote.max > 5 {
             return Err("vote needs 2 ≤ start ≤ max ≤ 5".into());
@@ -444,6 +446,7 @@ mod tests {
             "[vote]\nstart = 1",
             "[vote]\nstart = 3\nmax = 2",
             "room_size = 0",
+            "room_size = 1",
             "[gates]\nsample_skipped = -0.1",
             "unknown_knob = 1",
             "[costs]\nvote = -1.0",
