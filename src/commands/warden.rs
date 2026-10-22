@@ -202,18 +202,6 @@ fn describe(record: &Value) -> String {
         .take(8)
         .collect();
     let phase = record["phase"].as_str().unwrap_or("");
-    if let Some(check) = record.get("verify").filter(|v| !v.is_null()) {
-        return format!(
-            "{id}  verify   {} p_ok={:.2} (threshold {}){}",
-            check["answered_by"].as_str().unwrap_or(""),
-            check["p_ok"].as_f64().unwrap_or_default(),
-            check["threshold"],
-            check["checker"]
-                .as_str()
-                .map(|c| format!(" · asked {c} to check"))
-                .unwrap_or_default()
-        );
-    }
     if let Some(vote) = record.get("vote").filter(|v| !v.is_null()) {
         return format!(
             "{id}  vote     {} — groups {}",

@@ -61,6 +61,15 @@ impl Request {
             && !self.ambient
             && self.relay.as_ref().and_then(super::relay::poster).is_some()
     }
+
+    /// Woken by something an agent posted, by mention or through the warden.
+    ///
+    /// These spend their cascade's budget, which is what ends a conversation
+    /// agents keep going among themselves: every such turn is charged to the
+    /// human message at its root, whatever path or fan-out got it there.
+    pub fn relayed(&self) -> bool {
+        !self.implicit && self.relay.as_ref().and_then(super::relay::poster).is_some()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,7 +359,7 @@ impl Inbox {
         entry.updated_at = now;
         entry.usage = None;
         let mut next = current.clone();
-        if entry.request.delegated() {
+        if entry.request.relayed() {
             let relay = entry.request.relay.as_ref().unwrap();
             let spent = next.charges.entry(relay.root.clone()).or_default();
             anyhow::ensure!(
@@ -477,14 +486,14 @@ impl Inbox {
         }
         // Displaced pending turns never launched, so return their reservations.
         for old in &displaced {
-            if old.request.delegated() {
+            if old.request.relayed() {
                 let root = &old.request.relay.as_ref().unwrap().root;
                 if let Some(spent) = next.charges.get_mut(root) {
                     *spent = spent.saturating_sub(1);
                 }
             }
         }
-        if entry.request.delegated() {
+        if entry.request.relayed() {
             let relay = entry.request.relay.as_ref().unwrap();
             let max = max_relay_turns.min(super::relay::RELAY_TURNS_CEILING);
             let spent = next.charges.entry(relay.root.clone()).or_default();

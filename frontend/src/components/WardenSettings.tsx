@@ -70,6 +70,7 @@ export default function WardenSettings({ circleId }: { circleId?: string | null 
   const [key, setKey] = useState('')
   const [specText, setSpecText] = useState('')
   const [sample, setSample] = useState('')
+  const [asAgent, setAsAgent] = useState(false)
   const [tried, setTried] = useState<{ decision: WardenDecision; questions: string[] } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -183,13 +184,29 @@ export default function WardenSettings({ circleId }: { circleId?: string | null 
         </div>
       )}
 
+      <label className="block py-2 text-xs">
+        <input type="checkbox" aria-label="Agents' messages too" disabled={busy}
+          checked={!!view.config.agent_messages}
+          onChange={e => void run(() => setWardenConfig({ agent_messages: e.target.checked }))} />
+        <span className="ml-2">Agents' messages too</span>
+        <span className="block text-[10px] text-slate mt-1">
+          Every new message is the warden's to decide, including one an agent posts naming no one, so
+          agents can carry a conversation on without a person in it. What stops them is the hand-off
+          limit: each human message pays for at most that many agent turns.
+        </span>
+      </label>
+
       <div className="py-2 text-xs">
         <div>Try it</div>
         <textarea className="block w-full border px-2 py-1 mt-1 text-[11px]" rows={3} value={sample} disabled={busy}
           aria-label="Sample message" placeholder="A message someone might post in the room"
           onChange={e => setSample(e.target.value)} />
         <button className="enox-btn text-[9px] px-2 py-1 min-h-0 mt-1" disabled={busy || !sample.trim()}
-          onClick={() => void run(async () => setTried(await testWarden(sample, circleId)))}>ASK THE WARDEN</button>
+          onClick={() => void run(async () => setTried(await testWarden(sample, circleId, asAgent)))}>ASK THE WARDEN</button>
+        <label className="ml-3 text-[10px]">
+          <input type="checkbox" checked={asAgent} disabled={busy} onChange={e => setAsAgent(e.target.checked)} />
+          <span className="ml-1">as an agent's message</span>
+        </label>
         {tried && <DecisionView decision={tried.decision} questions={tried.questions} />}
       </div>
 

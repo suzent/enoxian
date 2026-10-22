@@ -7,14 +7,21 @@ may change about it, and what is still open. For how to use it, see
 ## Where it sits
 
 ```
-human message
+new message (a person's, or an agent's with agent_messages on)
  ├─ names an agent   → dispatched to that agent; the warden never sees it
- └─ names no one     → invariant gates: human-authored, not part of an exchange
-                       with an agent, not already answered or claimed
+ └─ names no one     → its cascade has budget left (agents' messages)
+                     → not part of a person's exchange with an agent, not
+                       already answered or claimed
                      → soft gates: length floor, quiet window   (spec.gates)
                      → warden: decide                            (spec + decider)
-                     → offer: nobody | single | room | vote
+                     → offer: nobody | single | room | vote, never to the author
 ```
+
+Every new message is one decision. A posted answer is itself the newest
+message: if it is wrong, incomplete, or asks something, the warden decides on
+it like any other, so there is no separate review path. A message that has
+already been answered is left alone because its answer is now the message to
+decide about.
 
 The code is in `src/agent/warden/`:
 
@@ -50,24 +57,20 @@ A refused or missing answer falls back to the rules for that part only. A mode
 is asked about only when it can run: a vote or a room needs two listeners and a
 Circle ceiling (`ambient_responders`) of at least two.
 
-After the first decision, two more points can change what happens:
+An agent's message is asked about in its own words (`questions.admit_agent`):
+it needs a reply when it is wrong or incomplete, asks something, or leaves a
+step for someone, not merely when it is a question.
 
-- **The vote's agreement check.** With a decider configured and
-  `spec.vote.ask_decider` set, each answer is compared to the first of every
-  existing group (`agree`, yes/no). Otherwise answers agree when their
-  `ANSWER:` lines match after normalization.
-- **A second look at a single answer** (`verify.rs`). Once a listener the
-  warden chose alone has posted, the decider is asked whether the answer is
-  right (`answer_ok`). Below `spec.verify.threshold`, the next listener in the
-  warden's ranking is asked to check it: told an answer is there, to pass if it
-  holds and to post a correction if not. Once per message, never for a check,
-  and only with a decider; the rules have no opinion on an answer.
+The vote's agreement check is the one other point a decider is asked: with
+`spec.vote.ask_decider` set, each answer is compared to the first of every
+existing group (`agree`, yes/no). Otherwise answers agree when their `ANSWER:`
+lines match after normalization.
 
 **Calibration.** A general decision model does not know these agents, so the
 spec can map each question's raw probability onto how often it turned out
 right: `[calibration] admit = [[raw, calibrated], …]`, raw ascending, linear
-between points. Keys are `admit`, `agent:<name>`, `success:<mode>` and
-`answer_ok`. Every decision records the calibrated probabilities it acted on,
+between points. Keys are `admit`, `admit:agent` (an agent's message),
+`agent:<name>` and `success:<mode>`. Every decision records the calibrated probabilities it acted on,
 and the decider's raw ones under `raw`, so a harness can fit the next
 calibration from episodes and their outcomes, and propose it as part of a spec.
 
@@ -80,10 +83,14 @@ in three layers.
 **Never** — in code, not in the spec, and not adjustable by anything an
 experiment produces:
 
-- Only a person's message reaches the warden. An agent's reply never wakes a
-  listener that was not called, so there is no loop to chase.
-- A call by name bypasses it. The relay ceiling (50) and the device's
-  concurrency hold.
+- Every agent turn woken by an agent's message, through a mention or the
+  warden, is charged to the person's message at the root of its cascade, and
+  stops at `max_relay_turns` (at most 50). This, not who wrote a message, is
+  what ends a conversation agents carry on among themselves.
+- Whether agents' messages reach the warden at all (`[warden]
+  agent_messages`) is the device's configuration, not the spec's: it widens
+  what can wake an agent.
+- A call by name bypasses the warden, and the device's concurrency holds.
 - Decisions, keys, the log and episodes stay on the device.
 - How an experiment is scored: the outcome signals, the dev/test split, the
   acceptance gate. An experiment that could change its own score would

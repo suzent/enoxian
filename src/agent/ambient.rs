@@ -194,21 +194,29 @@ pub fn is_pass(reply: &str) -> bool {
 /// The cheap checks only — no model, no cost. Returns the reason to skip, for
 /// logging, or `None` to proceed.
 pub fn skip_reason(msg: &ChatMessage, mentions_an_agent: bool) -> Option<&'static str> {
-    skip_reason_with(msg, mentions_an_agent, MIN_AMBIENT_CHARS)
+    skip_reason_with(msg, mentions_an_agent, MIN_AMBIENT_CHARS, false)
 }
 
 /// The skip reason for a message under the length floor.
 pub const TOO_SHORT: &str = "too short to be worth a turn";
 
-/// [`skip_reason`] with the length floor given, as the warden's spec sets it.
+/// [`skip_reason`] with the length floor given, as the warden's spec sets it,
+/// and whether an agent's message may be considered at all.
+///
+/// `agents` is true only under the warden with agent messages on. There the
+/// relay budget, not this rule, is what ends a conversation among agents, and
+/// the caller checks it.
 pub fn skip_reason_with(
     msg: &ChatMessage,
     mentions_an_agent: bool,
     min_chars: usize,
+    agents: bool,
 ) -> Option<&'static str> {
-    if msg.author != Author::Human {
+    match msg.author {
+        Author::Human => {}
+        Author::Agent if agents => {}
         // §2.1. The rule that keeps ambient from oscillating.
-        return Some("not human-authored");
+        _ => return Some("not human-authored"),
     }
     if mentions_an_agent {
         // Someone was addressed; that is a turn, not idle chat.

@@ -131,22 +131,20 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
   const generation = useRef(0)
   // The warden's records, by message: its latest decision, and how a vote went.
   // Polled slower than runs: decisions are made once per message.
-  const [warden, setWarden] = useState<{ decided: Record<string, WardenRecord>; votes: Record<string, WardenRecord>; checks: Record<string, WardenRecord> }>({ decided: {}, votes: {}, checks: {} })
+  const [warden, setWarden] = useState<{ decided: Record<string, WardenRecord>; votes: Record<string, WardenRecord> }>({ decided: {}, votes: {} })
   useEffect(() => {
     let disposed = false
-    setWarden({ decided: {}, votes: {}, checks: {} })
+    setWarden({ decided: {}, votes: {} })
     const refresh = () => getWardenDecisions(circleId, 100).then(page => {
       if (disposed) return
       const decided: Record<string, WardenRecord> = {}
       const votes: Record<string, WardenRecord> = {}
-      const checks: Record<string, WardenRecord> = {}
       // Newest first: keep the first seen for each message.
       for (const record of page.records) {
-        if (record.verify) { checks[record.message_id] ??= record }
-        else if (record.vote) { votes[record.message_id] ??= record }
+        if (record.vote) { votes[record.message_id] ??= record }
         else if (record.decision && record.phase !== 'sampled') decided[record.message_id] ??= record
       }
-      setWarden({ decided, votes, checks })
+      setWarden({ decided, votes })
     }).catch(() => {})
     void refresh()
     const timer = window.setInterval(refresh, 10_000)
@@ -243,10 +241,6 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
         {ambient && warden.votes[run.message_id]?.vote && <p className="agent-activity__warden">
           Blind vote: {warden.votes[run.message_id].vote!.groups.length === 1 ? 'all agreed' : `${warden.votes[run.message_id].vote!.groups.length} different answers`}
           {warden.votes[run.message_id].vote!.posted_by ? ` · posted @${warden.votes[run.message_id].vote!.posted_by}'s` : warden.votes[run.message_id].vote!.added ? ` · asked @${warden.votes[run.message_id].vote!.added} too` : ''}
-        </p>}
-        {ambient && warden.checks[run.message_id]?.verify && run.agent_id === warden.checks[run.message_id].verify!.answered_by && <p className="agent-activity__warden">
-          Checked: {Math.round(warden.checks[run.message_id].verify!.p_ok * 100)}% likely right
-          {warden.checks[run.message_id].verify!.checker ? ` · asked @${warden.checks[run.message_id].verify!.checker} to check it` : ''}
         </p>}
         {local && usage[run.run_id] && <p className="agent-activity__usage" title={usageTitle(usage[run.run_id])}>{describeUsage(usage[run.run_id])}</p>}
         <div className="agent-activity__actions">

@@ -227,7 +227,6 @@ pub async fn settle(
             decision: None,
             executed: None,
             vote: Some(round),
-            verify: None,
         },
     );
 }
@@ -429,7 +428,6 @@ fn retry_post(state: AppState, agent: String, text: String, request: Request) {
                     posted_by: Some(agent.clone()),
                     added: None,
                 }),
-                verify: None,
             },
         );
         if !posted {

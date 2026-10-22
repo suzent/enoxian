@@ -203,6 +203,15 @@ pub struct WardenConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_env: Option<String>,
     pub timeout_secs: u64,
+    /// Let a message an agent posted, naming no one, reach the warden too, so
+    /// a conversation agents start can carry on without a person in it.
+    ///
+    /// Configuration rather than spec, because it widens what can wake an
+    /// agent on this device; a spec only chooses among what is allowed. What
+    /// stops such a conversation is the relay budget, charged to the human
+    /// message at its root, not the warden's judgement.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub agent_messages: bool,
 }
 
 impl Default for WardenConfig {
@@ -215,6 +224,7 @@ impl Default for WardenConfig {
             // Jev usually answers in under a second, but was seen to take
             // more than three on a long message; the rules decide past this.
             timeout_secs: 5,
+            agent_messages: false,
         }
     }
 }

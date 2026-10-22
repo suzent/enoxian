@@ -57,9 +57,16 @@ describe('WardenSettings', () => {
     render(<WardenSettings circleId="c1" />)
     fireEvent.change(await screen.findByLabelText('Sample message'), { target: { value: 'Is this true?' } })
     fireEvent.click(screen.getByRole('button', { name: 'ASK THE WARDEN' }))
-    await waitFor(() => expect(testWarden).toHaveBeenCalledWith('Is this true?', 'c1'))
+    await waitFor(() => expect(testWarden).toHaveBeenCalledWith('Is this true?', 'c1', false))
     expect(await screen.findByText(/blind vote, 2–3 voters/)).toBeTruthy()
     expect(screen.getByText(/Needs an answer: 91%/)).toBeTruthy()
+  })
+
+  it('lets agents\' own messages reach the warden', async () => {
+    getWarden.mockResolvedValue(view('builtin:rules'))
+    render(<WardenSettings />)
+    fireEvent.click(await screen.findByRole('checkbox', { name: "Agents' messages too" }))
+    await waitFor(() => expect(setWardenConfig).toHaveBeenCalledWith({ agent_messages: true }))
   })
 
   it('applies an edited spec', async () => {

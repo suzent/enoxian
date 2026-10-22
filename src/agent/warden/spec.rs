@@ -140,12 +140,13 @@ impl Default for Rules {
 #[serde(default, deny_unknown_fields)]
 pub struct Questions {
     pub admit: String,
+    /// `admit`, for a message an agent posted.
+    pub admit_agent: String,
     pub agent: String,
     pub single: String,
     pub room: String,
     pub vote: String,
     pub agree: String,
-    pub answer_ok: String,
 }
 
 impl Default for Questions {
@@ -154,6 +155,11 @@ impl Default for Questions {
             admit: "This message was posted to a group chat shared by people and AI agents, and \
                     names no one. Does it need an answer from an AI agent — a question, a request, \
                     or a claim worth checking — rather than being chat between people?"
+                .into(),
+            admit_agent: "This message was posted by an AI agent to a group chat shared by people \
+                          and AI agents, and names no one. Does it need a reply from another \
+                          agent — because it is wrong or incomplete, asks something, or leaves a \
+                          step for someone to take — rather than closing the matter?"
                 .into(),
             agent: "Which of these agents is best placed to answer this message?".into(),
             single: "If one capable AI agent answered this message on its own, would its answer \
@@ -168,30 +174,6 @@ impl Default for Questions {
             agree: "Do these answers reach the same conclusion? Ignore wording, length and \
                     reasoning; compare only what each one concludes."
                 .into(),
-            answer_ok: "Does this answer get the question right and answer what was asked? Judge \
-                        the conclusion, not the style."
-                .into(),
-        }
-    }
-}
-
-/// A second look at a single answer, after it is posted.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Verify {
-    /// Ask the decider whether a single listener's posted answer is right.
-    /// Needs a decider that answers questions; the rules never verify.
-    pub enabled: bool,
-    /// Below this probability that the answer is right, the next listener is
-    /// asked to check it.
-    pub threshold: f64,
-}
-
-impl Default for Verify {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            threshold: 0.4,
         }
     }
 }
@@ -248,8 +230,7 @@ pub struct WardenSpec {
     pub gates: Gates,
     pub rules: Rules,
     pub questions: Questions,
-    pub verify: Verify,
-    /// Per question (`admit`, `agent:<name>`, `success:<mode>`, `answer_ok`).
+    /// Per question: `admit`, `admit:agent`, `agent:<name>`, `success:<mode>`.
     pub calibration: Calibration,
 }
 
@@ -270,7 +251,6 @@ impl Default for WardenSpec {
             gates: Gates::default(),
             rules: Rules::default(),
             questions: Questions::default(),
-            verify: Verify::default(),
             calibration: Calibration::new(),
         }
     }
@@ -324,7 +304,6 @@ impl WardenSpec {
         if self.rules.long_chars == 0 {
             return Err("rules.long_chars must be at least 1".into());
         }
-        unit("verify.threshold", self.verify.threshold)?;
         for (question, points) in &self.calibration {
             let mut previous: Option<[f64; 2]> = None;
             for point in points {

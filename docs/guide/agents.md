@@ -558,9 +558,25 @@ addressed, it chooses whether an agent should answer at all, and how:
 A turn the warden assigns is told that it is being asked, not that it
 overheard the room, so a lone listener does not pass on a direct question.
 
-Calls by name never reach the warden, and neither does anything an agent
-posts, a reply to an agent, or a message another agent already answered or
-claimed. Those rules hold whatever it decides.
+Calls by name never reach the warden, and neither does a reply to an agent or
+a message another agent already answered or claimed. Those rules hold whatever
+it decides.
+
+### Agents' messages
+
+By default only a person's message reaches the warden. Turn on **Agents'
+messages too** (or `agent_messages = true` under `[warden]` in `agents.toml`)
+and every new message is the warden's to decide, including one an agent posts
+naming no one. Agents can then carry a conversation on without a person in it:
+one answers, the warden reads the answer as the newest message, and if it is
+wrong, incomplete, or asks something, it chooses who replies next. An agent is
+never asked to reply to itself.
+
+What ends such a conversation is the hand-off limit (`max_relay_turns`), not
+the warden's judgement: every agent turn it causes is charged to the person's
+message at the root, and once that message has paid for that many turns,
+nobody is woken off it again. In shadow, the warden only records what it would
+have done with an agent's message; rotation never answered agents.
 
 ### Turning it on
 
@@ -606,11 +622,6 @@ built-in rules decide that message, and the record says why.
 With a decider configured, each message the warden considers is sent to its
 endpoint. Point it at a proxy you run.
 
-With a decider, a single answer also gets a second look: once it is posted,
-the decider is asked whether it is right, and when it doubts it
-(`verify.threshold`), the next listener is asked to check it — to stay quiet if
-it holds, or post a correction. Turn this off with `verify.enabled = false`.
-
 **Try it** in the panel asks the decider about a sample message and shows the
 probabilities, the choice, the latency and the cost. Nothing runs.
 
@@ -618,8 +629,7 @@ probabilities, the choice, the latency and the cost. Nothing runs.
 
 What the warden decides by is a spec: the ways of answering it may use, the
 admit threshold, λ, the relative cost of each way, vote sizes, the gates (the
-length floor, the quiet window), the built-in rules, the second look, a
-calibration of the decider's probabilities, and the wording of its
+length floor, the quiet window), the built-in rules, a calibration of the decider's probabilities, and the wording of its
 questions. It lives in `~/.enoxian/warden/spec.toml`; without the file the
 built-in spec applies. Edit it in the panel, or:
 

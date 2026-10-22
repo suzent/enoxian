@@ -35,6 +35,11 @@ pub struct Features {
     pub candidates: Vec<Candidate>,
     /// The most listeners this Circle allows on one message.
     pub ceiling: usize,
+    /// Posted by an agent rather than a person. Asked about differently: an
+    /// agent's message needs a reply when it is wrong, asks something, or
+    /// leaves a step undone, not merely when it is a question.
+    #[serde(default)]
+    pub from_agent: bool,
 }
 
 /// What the warden decided to do.
@@ -140,7 +145,11 @@ pub fn input(features: &Features) -> String {
 pub fn questions(spec: &WardenSpec, features: &Features) -> Vec<Question> {
     let mut out = vec![Question {
         name: "admit".into(),
-        instructions: spec.questions.admit.clone(),
+        instructions: if features.from_agent {
+            spec.questions.admit_agent.clone()
+        } else {
+            spec.questions.admit.clone()
+        },
         ask: Ask::YesNo,
     }];
     if features.candidates.len() > 1 {
@@ -265,16 +274,25 @@ pub fn from_reply(
 ) -> Decision {
     let mut raw = BTreeMap::new();
     // Calibrated by the spec, with the decider's own figure kept beside it.
-    let mut yes = |name: &str| {
+    // Keyed by what was asked: an agent's message is asked about differently,
+    // so its answers are calibrated apart (`admit:agent`).
+    let mut yes = |name: &str, key: &str| {
         let p = reply.yes(name)?;
-        raw.insert(name.to_string(), p);
-        Some(super::spec::calibrate(spec.calibration.get(name), p))
+        raw.insert(key.to_string(), p);
+        Some(super::spec::calibrate(spec.calibration.get(key), p))
     };
-    let p_admit = yes("admit");
+    let p_admit = yes(
+        "admit",
+        if features.from_agent {
+            "admit:agent"
+        } else {
+            "admit"
+        },
+    );
     let mut success = BTreeMap::new();
     for mode in feasible(spec, features) {
         let name = format!("success:{}", mode.as_str());
-        if let Some(p) = yes(&name) {
+        if let Some(p) = yes(&name, &name) {
             success.insert(mode, p);
         }
     }
@@ -359,6 +377,7 @@ mod tests {
                 })
                 .collect(),
             ceiling,
+            from_agent: false,
         }
     }
 
