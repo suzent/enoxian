@@ -29,6 +29,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = AgentCli::parse();
+    if let AgentCommands::AcpAuthWorker { directory } = &cli.command {
+        return enoxian::agent::auth_terminal::worker(directory).await;
+    }
     let actor_token = cli.token.clone();
     // Present the local API token on every request (the daemon requires it).
     // Read from ~/.enoxian/api.token, written by the daemon on first start.
@@ -46,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
     let root = daemon_root();
 
     match cli.command {
+        AgentCommands::AcpAuthWorker { .. } => unreachable!(),
         AgentCommands::Init(args) => enoxian::commands::init::run(args).await,
         AgentCommands::Enter(args) => enoxian::commands::enter::run(args, &client).await,
         AgentCommands::Link(args) => enoxian::commands::link::run(args, &client).await,
@@ -202,6 +206,7 @@ async fn main() -> anyhow::Result<()> {
 
             let base = resolve_api_base(cli.circle.as_deref())?;
             match cmd {
+                AgentCommands::AcpAuthWorker { .. } => unreachable!(),
                 AgentCommands::Status => {
                     enoxian::commands::status::run(&client, &base, cli.json).await
                 }

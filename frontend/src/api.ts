@@ -324,3 +324,17 @@ export const getExecutions = (id: string) => get<{
   skips?: import('./types').AdmissionSkip[]
 }>(`${api(id)}/chat/deliveries`)
 export const updateExecution = (id: string, run: string, action: 'retry' | 'cancel') => post(`${api(id)}/chat/executions/${encodeURIComponent(run)}`, { action })
+
+
+export interface AgentAuthMethod { id: string; name: string; kind: string; available: boolean }
+export interface AgentAuthState {
+  status: 'unknown' | 'checking' | 'auth_required' | 'authenticating' | 'terminal' | 'verifying' | 'ready' | 'failed' | 'cancelled'
+  methods: AgentAuthMethod[]
+  error: string | null
+}
+export const getAgentAuth = () => get<Record<string, AgentAuthState>>('/api/agent-auth')
+export const startAgentAuth = (id: string, action: 'probe' | 'login', methodId?: string) =>
+  post<AgentAuthState>(`/api/agent-auth/${encodeURIComponent(id)}`, { action, method_id: methodId || null })
+export const cancelAgentAuth = (id: string) => request<{ ok: boolean }>(`/api/agent-auth/${encodeURIComponent(id)}`, {
+  method: 'DELETE', headers: authHeaders(),
+})

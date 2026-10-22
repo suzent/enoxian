@@ -33,6 +33,31 @@ What the acp driver gives you that argv does not: a real completion signal
 session resume.
 
 
+## Authentication and transport limits
+
+The token-protected local API exposes `GET /api/agent-auth`,
+`POST /api/agent-auth/{id}` (`action: probe|login`, optional `method_id`), and
+`DELETE /api/agent-auth/{id}` to cancel. Only configured ACP commands may run;
+HTTP callers cannot supply commands, arguments, or environment variables.
+Jobs are cancellable, limited to four concurrent operations and five minutes.
+They deny permission requests and file writes and do not submit prompts.
+
+Initialization requires protocol major version 1. The client retains advertised
+`authMethods`; agent methods use `authenticate`, while terminal methods append
+advertised arguments/environment and run interactively without calling
+`authenticate`. Terminal capability is advertised only when available. Private
+terminal handoffs are deleted after consumption, with heartbeat supervision for
+cancellation and daemon exit. Provider output and credentials are not returned
+through the API. Login verification uses a fresh process because actual task
+runs have independent process and actor identities.
+
+Incoming frames and client file reads are limited to 1 MiB, queued frame bytes
+to 16 MiB, and accumulated updates per turn to 16 MiB. Message queues are bounded
+and overflow fails explicitly. This preserves prompt cancellation and avoids
+unbounded memory growth without introducing an inactivity timeout. Queued final
+updates are drained before completing a prompt response. Permission options
+must match the policy decision; otherwise the response is cancelled.
+
 ## Plugin manifests
 
 Plugin manifests are TOML files in `~/.enoxian/plugins/`. A manifest declares
@@ -73,8 +98,11 @@ in this room."
 
 This is **best-effort**: the ACP spec does not guarantee an agent retains
 session state across its own process restarts, so a stored id can fail to load.
-When that happens enoxian falls back to a fresh `session/new` — you lose
-continuity, never the run.
+If an advertised `session/load` fails, the run fails and the saved ID is
+preserved, including on authentication errors. Sign in and retry. If the agent
+has permanently discarded the session, remove that local `.session` file while
+the agent is idle to explicitly start over. Agents without load support still
+open a new session.
 
 ---
 

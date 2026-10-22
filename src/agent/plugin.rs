@@ -644,35 +644,16 @@ fn configure_handle(manifest: &PluginManifest, executable: &Path) -> Result<Agen
 }
 
 /// A bridge cannot work without the CLI it bridges to, so refuse to install one
-/// whose CLI is absent — or, where the CLI can report it, signed out. Failing
-/// here keeps the actionable message on the install action, instead of letting
-/// it surface later as an opaque session error on a chat mention.
+/// whose CLI is absent. Authentication happens separately in device settings,
+/// after the adapter is available to advertise its sign-in methods.
 async fn verify_bridged_runtime(bridge: &super::probe::BridgedCli) -> Result<()> {
-    let cli = super::probe::resolve(bridge.program).with_context(|| {
+    let _cli = super::probe::resolve(bridge.program).with_context(|| {
         format!(
             "the {} CLI is required but was not found on PATH. Install it from {}, then run `{}`",
             bridge.program, bridge.install_url, bridge.login_command
         )
     })?;
 
-    let Some(auth_args) = bridge.auth_status_args else {
-        return Ok(());
-    };
-    let auth_args: Vec<String> = auth_args.iter().map(|arg| (*arg).to_string()).collect();
-    let auth = super::spawn::command(&cli.to_string_lossy(), &auth_args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .with_context(|| format!("failed to check {} authentication", bridge.program))?;
-    if !auth.status.success() {
-        bail!(
-            "the {} CLI is installed but not authenticated. Run `{}`, then retry the install",
-            bridge.program,
-            bridge.login_command
-        );
-    }
     Ok(())
 }
 

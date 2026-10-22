@@ -27,6 +27,8 @@ pub struct AgentCli {
 
 #[derive(Subcommand)]
 pub enum AgentCommands {
+    #[command(hide = true)]
+    AcpAuthWorker { directory: std::path::PathBuf },
     /// Create a new Circle (generates keypair + PSK)
     Init(InitArgs),
     /// Join a Circle using an invite URI or Circle ID + secret
