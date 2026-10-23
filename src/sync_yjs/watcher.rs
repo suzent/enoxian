@@ -424,7 +424,7 @@ async fn ingest_file(state: &AppState, path: &Path, rel: String) -> Option<std::
 }
 
 /// Untrack `rel` and everything beneath it, and tell peers it is gone.
-async fn record_removal(state: &AppState, rel: &str) {
+pub(crate) async fn record_removal(state: &AppState, rel: &str) {
     // One event can stand for a whole tree. Deleting a folder is reported
     // per-file on some platforms and as a single event for the directory on
     // others (moving a folder to the Trash is one rename of the folder).
