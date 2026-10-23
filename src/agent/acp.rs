@@ -185,6 +185,9 @@ pub struct AcpSession<H: ClientHooks> {
     cancel_grace: Duration,
     /// Set once `session/cancel` is sent for the current prompt.
     cancelling: bool,
+    /// What the agent said about itself: product and version at `initialize`,
+    /// model when a session started. Shown on its card.
+    reported: super::cards::Reported,
 }
 
 /// Handshake requests are bounded: an agent that cannot even start is broken,
@@ -337,6 +340,7 @@ impl<H: ClientHooks> AcpSession<H> {
             activity: None,
             cancel_grace: CANCEL_GRACE,
             cancelling: false,
+            reported: Default::default(),
         };
 
         session.initialize(terminal_auth).await?;
@@ -372,6 +376,7 @@ impl<H: ClientHooks> AcpSession<H> {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        self.reported.read_agent_info(&result);
         self.load_session_cap = result
             .get("agentCapabilities")
             .and_then(|c| c.get("loadSession"))
@@ -388,13 +393,20 @@ impl<H: ClientHooks> AcpSession<H> {
             .to_str()
             .ok_or_else(|| anyhow!("workspace path is not valid UTF-8"))?
             .to_string();
-        self.call(
-            "session/load",
-            json!({ "sessionId": session_id, "cwd": cwd, "mcpServers": [] }),
-        )
-        .await?;
+        let result = self
+            .call(
+                "session/load",
+                json!({ "sessionId": session_id, "cwd": cwd, "mcpServers": [] }),
+            )
+            .await?;
+        self.reported.read_session(&result);
         self.session_id = Some(session_id.to_string());
         Ok(())
+    }
+
+    /// What the agent has said about itself so far.
+    pub fn reported(&self) -> &super::cards::Reported {
+        &self.reported
     }
 
     /// The active session id (for persistence so the next run can resume).
@@ -411,6 +423,7 @@ impl<H: ClientHooks> AcpSession<H> {
         let result = self
             .call("session/new", json!({ "cwd": cwd, "mcpServers": [] }))
             .await?;
+        self.reported.read_session(&result);
         let sid = result
             .get("sessionId")
             .and_then(Value::as_str)

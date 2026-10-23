@@ -137,7 +137,7 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
         )
         .route(
             "/circles/{circle_id}/api/agent-cards",
-            get(agent_cards::list).post(agent_cards::create),
+            get(agent_cards::list),
         )
         // Pull: what is waiting for an agent, and taking one of them.
         .route("/circles/{circle_id}/api/inbox", get(inbox::get_inbox))
