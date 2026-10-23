@@ -9,7 +9,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use std::path::{Component, PathBuf};
-use yrs::{Text, Transact, WriteTxn};
+use yrs::{GetString, Text, Transact, WriteTxn};
 
 pub async fn list_files(
     State(daemon): State<DaemonState>,
@@ -171,6 +171,37 @@ pub async fn create_file(
         .into_response()
 }
 
+/// Mark `path`, or every file under it, as written after `deleted_at` (ms):
+/// now, or just past the tombstone when that is not later, as when the
+/// deleting peer's clock runs ahead of ours. Reconcile spares only a file
+/// strictly newer than the tombstone.
+async fn mark_recreated(path: &std::path::Path, deleted_at: i64) {
+    let after =
+        std::time::UNIX_EPOCH + std::time::Duration::from_millis(deleted_at.max(0) as u64 + 1);
+    let when = std::time::SystemTime::now().max(after);
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        if path.is_dir() {
+            if let Ok(mut entries) = tokio::fs::read_dir(&path).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    stack.push(entry.path());
+                }
+            }
+            continue;
+        }
+        let touched = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.set_modified(when));
+        if let Err(error) = touched {
+            tracing::warn!(
+                "[files] could not mark {} re-created: {error}",
+                path.display()
+            );
+        }
+    }
+}
+
 pub async fn rename_file(
     State(daemon): State<DaemonState>,
     Path(circle_id): Path<String>,
@@ -232,24 +263,44 @@ pub async fn rename_file(
             .into_response();
     }
 
-    state.remove_doc(&from);
-    crate::store::crdt::delete(&state.workspace, &from).await;
-    let _ = state.all_deletes.send(from.clone());
+    // The old path is a deletion like any other, tombstone included. Dropping
+    // only the document here also hides the old path from the watcher, whose
+    // rename event then finds nothing tracked there and records nothing; a
+    // peer still holding the file brings it back on its next catch-up.
+    crate::sync_yjs::watcher::record_removal(&state, &from).await;
     let _ = state.interactive_writes.send((from.clone(), None));
-    let _ = state
-        .events
-        .send(CircleEvent::FileDeleted { path: from.clone() });
+
+    // A move into a deleted place is a re-creation there. The tombstone may
+    // name the destination or a folder above it; clearing a folder's would
+    // bring back everything else deleted in it, so the moved file is marked
+    // newer instead, which is what reconcile spares. A rename keeps the old
+    // modification time, so without this the next reconcile deletes it.
+    if let Some(deleted_at) = crate::deletions::covering_ts(&state, &to) {
+        crate::deletions::clear(&state, &to);
+        mark_recreated(&to_full, deleted_at).await;
+    }
 
     if let Ok(content) = tokio::fs::read_to_string(&to_full).await {
         let doc = state.get_or_create_doc(&to);
-        let mut txn = match doc.try_transact_mut() {
-            Ok(txn) => txn,
-            Err(_) => return super::circle_busy(),
-        };
-        let text = txn.get_or_insert_text(to.as_str());
-        if !content.is_empty() {
-            text.insert(&mut txn, 0, &content);
+        {
+            let mut txn = match doc.try_transact_mut() {
+                Ok(txn) => txn,
+                Err(_) => return super::circle_busy(),
+            };
+            let text = txn.get_or_insert_text(to.as_str());
+            // The watcher may have read the moved file first; inserting the
+            // content again would double it.
+            if text.get_string(&txn) != content {
+                let len = text.len(&txn);
+                if len > 0 {
+                    text.remove_range(&mut txn, 0, len);
+                }
+                if !content.is_empty() {
+                    text.insert(&mut txn, 0, &content);
+                }
+            }
         }
+        crate::store::crdt::save(&state.workspace, &to, &doc).await;
     }
     let _ = state.interactive_writes.send((to.clone(), None));
     let _ = state
@@ -313,4 +364,146 @@ pub async fn delete_file(
         Json(json!({ "status": "deleted", "path": rel })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+    use yrs::ReadTxn;
+
+    fn circle() -> (DaemonState, AppState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(
+            "c1".into(),
+            "circle".into(),
+            dir.path().to_path_buf(),
+            dir.path().join(".circle"),
+            String::new(),
+            "label".into(),
+            1,
+            "peer".into(),
+            crate::config::JoinPolicy::Manual,
+            "suzy".into(),
+            crate::mls::new_mls_state(crate::mls::MlsIdentity::generate("peer").unwrap(), None),
+        );
+        let daemon = DaemonState::new();
+        daemon.insert_circle(
+            "c1".into(),
+            state.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        (daemon, state, dir)
+    }
+
+    fn seed(state: &AppState, path: &str, content: &str) {
+        let doc = state.get_or_create_doc(path);
+        let mut txn = doc.transact_mut();
+        let text = txn.get_or_insert_text(path);
+        text.insert(&mut txn, 0, content);
+    }
+
+    fn text_of(state: &AppState, path: &str) -> Option<String> {
+        let doc = state.docs.get(path)?.clone();
+        let txn = doc.transact();
+        Some(txn.get_text(path)?.get_string(&txn))
+    }
+
+    async fn rename(daemon: &DaemonState, from: &str, to: &str) -> StatusCode {
+        rename_file(
+            State(daemon.clone()),
+            Path("c1".into()),
+            Json(RenameFileRequest {
+                from: from.into(),
+                to: to.into(),
+            }),
+        )
+        .await
+        .into_response()
+        .status()
+    }
+
+    /// The old path is tombstoned, so a peer that still has it cannot bring it
+    /// back on its next catch-up.
+    #[tokio::test]
+    async fn a_renamed_file_leaves_a_tombstone_behind() {
+        let (daemon, state, dir) = circle();
+        std::fs::write(dir.path().join("ROADMAP.md"), "# plan\n").unwrap();
+        seed(&state, "ROADMAP.md", "# plan\n");
+
+        assert_eq!(
+            rename(&daemon, "ROADMAP.md", "plan/roadmap.md").await,
+            StatusCode::OK
+        );
+
+        assert!(crate::deletions::is_deleted(&state, "ROADMAP.md"));
+        assert!(text_of(&state, "ROADMAP.md").is_none());
+        assert_eq!(
+            text_of(&state, "plan/roadmap.md").as_deref(),
+            Some("# plan\n")
+        );
+        assert!(crate::store::crdt::state_path(&state.workspace, "plan/roadmap.md").exists());
+    }
+
+    /// The watcher can read the moved file before the API seeds its document.
+    #[tokio::test]
+    async fn a_document_the_watcher_already_filled_is_not_doubled() {
+        let (daemon, state, dir) = circle();
+        std::fs::write(dir.path().join("a.md"), "once\n").unwrap();
+        seed(&state, "a.md", "once\n");
+        seed(&state, "b.md", "once\n");
+
+        assert_eq!(rename(&daemon, "a.md", "b.md").await, StatusCode::OK);
+        assert_eq!(text_of(&state, "b.md").as_deref(), Some("once\n"));
+    }
+
+    /// A rename keeps the file's old modification time, so a move into a
+    /// folder deleted since then would be taken for the deleted file, and so
+    /// would any file not newer than a tombstone from a clock running ahead.
+    #[tokio::test]
+    async fn moving_into_a_deleted_folder_survives_reconcile() {
+        let (daemon, state, dir) = circle();
+        let old = dir.path().join("a.md");
+        std::fs::write(&old, "x\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        seed(&state, "a.md", "x\n");
+        // Deleted by a peer whose clock runs an hour ahead of ours.
+        {
+            use yrs::Map;
+            let deletion = crate::control::Deletion {
+                path: "gone".into(),
+                ts: crate::deletions::now_ms() + 3_600_000,
+                peer_id: "ahead".into(),
+            };
+            let mut txn = state.control.transact_mut();
+            let map = txn.get_or_insert_map(crate::control::DELETIONS_KEY);
+            let json = serde_json::to_string(&deletion).unwrap();
+            map.insert(&mut txn, "gone", yrs::Any::String(json.into()));
+        }
+
+        assert_eq!(rename(&daemon, "a.md", "gone/b.md").await, StatusCode::OK);
+        crate::deletions::reconcile(&state).await;
+
+        assert!(dir.path().join("gone/b.md").exists());
+        assert_eq!(text_of(&state, "gone/b.md").as_deref(), Some("x\n"));
+    }
+
+    /// Moving a file onto a path deleted earlier must not leave that deletion
+    /// standing, or the next reconcile would delete the moved file.
+    #[tokio::test]
+    async fn moving_onto_a_deleted_path_clears_its_tombstone() {
+        let (daemon, state, dir) = circle();
+        std::fs::write(dir.path().join("a.md"), "x\n").unwrap();
+        seed(&state, "a.md", "x\n");
+        crate::deletions::record(&state, "b.md");
+
+        assert_eq!(rename(&daemon, "a.md", "b.md").await, StatusCode::OK);
+        assert!(!crate::deletions::is_deleted(&state, "b.md"));
+        assert!(crate::deletions::is_deleted(&state, "a.md"));
+    }
 }

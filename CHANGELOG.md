@@ -92,6 +92,12 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Renaming or moving a file in the shared folder from the app no longer brings
+  the old path back. The old path was dropped without being recorded as
+  deleted, so another device that still had it re-created it on its next
+  sync. The moved file's content is also no longer doubled when the daemon
+  noticed the move before the rename finished.
+
 - A message sent after picking a mention no longer has two spaces after it.
 
 - ACP sign-in checks support relative working directories, and initialization retains compatibility with string-encoded protocol version 1.

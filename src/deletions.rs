@@ -107,6 +107,24 @@ pub fn is_deleted(state: &AppState, path: &str) -> bool {
     false
 }
 
+/// When the newest tombstone covering `path` was written: one on the path
+/// itself or on any folder above it. `None` when nothing covers it.
+pub fn covering_ts(state: &AppState, path: &str) -> Option<i64> {
+    let txn = state.control.try_transact().ok()?;
+    let m = map(&txn)?;
+    let ts_of = |key: &str| match m.get(&txn, key) {
+        Some(Out::Any(Any::String(s))) => serde_json::from_str::<Deletion>(&s).ok().map(|d| d.ts),
+        _ => None,
+    };
+    let mut newest = ts_of(path);
+    let mut rest = path;
+    while let Some(cut) = rest.rfind('/') {
+        rest = &rest[..cut];
+        newest = newest.max(ts_of(rest));
+    }
+    newest
+}
+
 /// Every tracked document at or beneath `path`.
 ///
 /// `path` is a directory prefix; `repo` matches `repo/a.rs` but never
