@@ -2,7 +2,7 @@
 name = "enoxian"
 version = "0.12.0"
 edition = "2021"
-rust-version = "1.91.0"
+rust-version = "1.94.0"
 publish = false
 description = "Peer-to-peer collaboration layer for humans and AI agents"
 license = "MIT"
@@ -107,3 +107,13 @@ iroh-relay-server = ["dep:iroh-relay", "dep:rustls"]
 [dev-dependencies]
 filetime = "0.2.29"
 tempfile = "3"
+
+# OpenMLS has migrated to patched RustCrypto dependencies upstream, but has not
+# released them yet. Pin the migration commit for RUSTSEC-2026-0387; remove these
+# patches when a crates.io release includes it. Traits/storage share that source
+# so all providers use the same trait types and storage serialization.
+[patch.crates-io]
+openmls_basic_credential = { git = "https://github.com/openmls/openmls", rev = "e0b21a70a55a9014b8de2772b36bf3d638adad51" }
+openmls_rust_crypto = { git = "https://github.com/openmls/openmls", rev = "e0b21a70a55a9014b8de2772b36bf3d638adad51" }
+openmls_traits = { git = "https://github.com/openmls/openmls", rev = "e0b21a70a55a9014b8de2772b36bf3d638adad51" }
+openmls_memory_storage = { git = "https://github.com/openmls/openmls", rev = "e0b21a70a55a9014b8de2772b36bf3d638adad51" }

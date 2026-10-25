@@ -6,7 +6,7 @@ This guide is for people actively developing enoxian across multiple machines.
 
 ## Prerequisites
 
-Install Rust 1.91 or newer with Cargo. Node.js 22+ and npm are needed for
+Install Rust 1.94 or newer with Cargo. Node.js 22+ and npm are needed for
 frontend work and release builds that bundle the web UI. Keep this checkout
 outside a Circle shared folder.
 

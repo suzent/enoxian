@@ -148,6 +148,10 @@ refuses to publish a version whose section is missing or empty.
 
 ### Security
 
+- Updated the MLS cryptography dependencies to remove the vulnerable crypto-bigint
+  0.5 implementation (RUSTSEC-2026-0387), using a pinned upstream OpenMLS fix.
+  Building from source now requires Rust 1.94 or newer.
+
 - The web app's HTML sanitizer, DOMPurify, is updated to 3.4.17 for GHSA-cg2g-xh64-v4q7,
   GHSA-mrv2-3pqr-j5jr and GHSA-c6gr-qvv4-5v3f.
 
