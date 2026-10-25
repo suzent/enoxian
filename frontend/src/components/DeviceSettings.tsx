@@ -13,12 +13,13 @@ import AgentAuthentication, { useAgentAuthentication } from './AgentAuthenticati
 import AgentCards from './AgentCards'
 import WardenSettings from './WardenSettings'
 
-type SettingsTab = 'device' | 'agents' | 'behaviour' | 'connectivity' | 'membership'
+type SettingsTab = 'device' | 'agents' | 'behaviour' | 'connectivity' | 'membership' | 'warden'
 
 const SETTINGS_TABS: readonly SegmentedTabOption<SettingsTab>[] = [
   { value: 'device', content: <><Laptop size={14} aria-hidden="true" />Device</> },
   { value: 'agents', content: <><Bot size={14} aria-hidden="true" />Agents</> },
   { value: 'behaviour', content: <><SlidersHorizontal size={14} aria-hidden="true" />Behaviour</> },
+  { value: 'warden', content: <><SlidersHorizontal size={14} aria-hidden="true" />Warden</> },
   { value: 'membership', content: <><Users size={14} aria-hidden="true" />Membership</> },
   { value: 'connectivity', content: <><RadioTower size={14} aria-hidden="true" />Connectivity</> },
 ]
@@ -64,6 +65,8 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
 
   const [saved, setSaved] = useState(false)
   const [identityDirty, setIdentityDirty] = useState(false)
+  const [wardenDirty, setWardenDirty] = useState(false)
+  const [wardenBusy, setWardenBusy] = useState(false)
   const [discard, setDiscard] = useState<(() => void) | null>(null)
   const requestId = useRef(0)
   const mutationBusy = useRef(false)
@@ -127,8 +130,8 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
   }
 
   const navigate = (action: () => void) => {
-    if (busy) return
-    if (identityDirty || (showAdd && (name.trim() || command.trim()))) setDiscard(() => action)
+    if (busy || wardenBusy) return
+    if (wardenDirty || identityDirty || (showAdd && (name.trim() || command.trim()))) setDiscard(() => action)
     else action()
   }
 
@@ -192,7 +195,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
             ariaLabel="Settings sections"
             orientation="vertical"
             value={activeTab}
-            onChange={tab => navigate(() => { setIdentityDirty(false); setShowAdd(false); setName(''); setCommand(''); setActiveTab(tab) })}
+            onChange={tab => navigate(() => { setIdentityDirty(false); setWardenDirty(false); setShowAdd(false); setName(''); setCommand(''); setActiveTab(tab) })}
             options={SETTINGS_TABS.filter(tab => scope === 'global' ? tab.value !== 'connectivity' && tab.value !== 'membership' : tab.value === 'behaviour' || tab.value === 'connectivity' || (tab.value === 'membership' && !!membership))}
           />
           <p className="settings-sidebar__note">{scope === 'global' ? 'Defaults for this device across all Circles.' : activeTab === 'membership' ? 'Your participation in this Circle on this device.' : 'This device’s preferences in this Circle.'}</p>
@@ -200,10 +203,11 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
           <div className="ritual-panel__body settings-panel-body flex flex-col gap-4">
           <header className="settings-section-heading">
             <span className="settings-section-heading__scope">{scope === 'global' ? 'THIS DEVICE · GLOBAL' : `THIS DEVICE IN ${activeCircle?.circle_name ?? 'CIRCLE'}`}</span>
-            <h2>{{ device: 'Device identity', agents: 'Your agents', behaviour: 'Agent behaviour', membership: 'Circle membership', connectivity: 'Connectivity' }[activeTab]}</h2>
-            <p>{{ device: 'How you and this machine appear to others.', agents: 'Connect the agents available on this machine. Used across all Circles.', behaviour: scope === 'global' ? 'Set how agents respond across all Circles.' : 'Tailor how agents respond in this Circle.', membership: 'Pause participation or leave this Circle on this device.', connectivity: 'Manage how this device connects to the current Circle.' }[activeTab]}</p>
+            <h2>{{ device: 'Device identity', agents: 'Your agents', behaviour: 'Agent behaviour', membership: 'Circle membership', connectivity: 'Connectivity', warden: 'Warden' }[activeTab]}</h2>
+            <p>{{ device: 'How you and this machine appear to others.', agents: 'Connect the agents available on this machine. Used across all Circles.', behaviour: scope === 'global' ? 'Set how agents respond across all Circles.' : 'Tailor how agents respond in this Circle.', membership: 'Pause participation or leave this Circle on this device.', connectivity: 'Manage how this device connects to the current Circle.', warden: 'Choose how unaddressed messages are assessed. Enable Warden in each Circle’s Behaviour settings.' }[activeTab]}</p>
           </header>
           {activeTab === 'membership' && membership}
+          {activeTab === 'warden' && <WardenSettings onDirtyChange={setWardenDirty} onBusyChange={setWardenBusy} />}
           {error && (
             <div className="file-error" role="alert">
               <div>{error}</div>
@@ -575,7 +579,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
           )}
           </div>
         </div>
-      {activeTab !== 'membership' && <div className="settings-save-status" role="status">{busy ? 'Saving changes…' : saved && !error ? 'Changes saved' : {
+      {activeTab !== 'membership' && activeTab !== 'warden' && <div className="settings-save-status" role="status">{busy ? 'Saving changes…' : saved && !error ? 'Changes saved' : {
         device: 'Use Save to update your device identity.',
         agents: 'Agent changes apply across all Circles on this device.',
         behaviour: 'Saved automatically · Press Enter or leave a number field to save.',

@@ -41,6 +41,12 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Warden has a dedicated global settings page with themed controls, grouped
+  connection and test settings, and a collapsible advanced policy editor.
+  Testing a message or saving a key preserves other unsaved drafts; leaving
+  the page or resetting its policy asks before discarding edits.
+
+
 - File actions are available from right-click or the overflow menu, including
   copying the Circle-relative path. New file can import UTF-8 text files
   without overwriting existing files; chat accepts downloadable file

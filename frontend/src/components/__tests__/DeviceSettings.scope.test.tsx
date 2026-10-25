@@ -129,6 +129,18 @@ describe('settings recovery', () => {
 })
 
 describe('separate settings entry points', () => {
+  it('gives Warden a dedicated global page and protects unsaved policy edits', async () => {
+    const close = vi.fn()
+    render(<DeviceSettings onClose={close} />)
+    await userEvent.click(screen.getByRole('tab', { name: 'Warden' }))
+    await userEvent.click(await screen.findByText('Advanced policy'))
+    fireEvent.change(screen.getByLabelText('Warden spec'), { target: { value: 'new policy' } })
+    await userEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(screen.getByRole('dialog', { name: 'Discard unsaved changes?' })).toBeTruthy()
+    expect(close).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByLabelText('Warden spec')).toHaveValue('new policy')
+  })
   it('opens global settings without a scope picker', async () => {
     render(<DeviceSettings onClose={vi.fn()} />)
     expect(await screen.findByText(/Defaults for all Circles/)).toBeTruthy()
