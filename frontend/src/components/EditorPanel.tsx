@@ -17,10 +17,10 @@ import { agentColor, agentColorLight } from '../lib/agentColor'
 import { constrainCursorLabels } from '../lib/constrainCursorLabels'
 import { peerLabel, shortenAgentId } from '../lib/displayName'
 import { renderMarkdown } from '../lib/markdown'
-import { Maximize2, X } from 'lucide-react'
+import { Maximize2, X, ChevronLeft } from 'lucide-react'
 import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
 
-type FileViewMode = 'source' | 'preview'
+export type FileViewMode = 'source' | 'preview'
 
 const PREVIEW_FIRST_VIEWS: readonly SegmentedTabOption<FileViewMode>[] = [
   { value: 'preview', content: 'PREVIEW' },
@@ -30,11 +30,12 @@ const PREVIEW_FIRST_VIEWS: readonly SegmentedTabOption<FileViewMode>[] = [
 interface Props {
   filePath: string | null
   onBack?: () => void
+  initialMode?: FileViewMode
 }
 
 interface FileQuickViewProps {
   filePath: string
-  onOpen: () => void
+  onOpen: (mode: FileViewMode) => void
   onClose: () => void
   full?: boolean
 }
@@ -144,11 +145,15 @@ interface FileSurfaceHeaderProps {
   connectionStatus: YjsConnectionStatus
   onBack?: () => void
   closeLabel?: string
+  backLabel?: string
 }
 
-function FileSurfaceHeader({ filePath, connectionStatus, onBack, closeLabel = 'Close file' }: FileSurfaceHeaderProps) {
+function FileSurfaceHeader({ filePath, connectionStatus, onBack, closeLabel = 'Close file', backLabel }: FileSurfaceHeaderProps) {
   return (
     <div className="file-surface-header">
+      {onBack && backLabel && <button type="button" className="file-surface-return" onClick={onBack} aria-label={closeLabel} title={closeLabel}>
+        <ChevronLeft size={18} aria-hidden="true" />
+      </button>}
       <div className="file-surface-header__meta">
         <strong title={filePath}>{fileName(filePath)}</strong>
         {filePath !== fileName(filePath) && <span title={filePath}>{filePath}</span>}
@@ -156,7 +161,7 @@ function FileSurfaceHeader({ filePath, connectionStatus, onBack, closeLabel = 'C
       <span className={`file-surface-header__status ${connectionStatus}`}>
         {connectionLabel(connectionStatus)}
       </span>
-      {onBack && (
+      {onBack && !backLabel && (
         <button type="button" className="file-surface-header__back" onClick={onBack} aria-label={closeLabel} title={closeLabel}>
           <X size={15} aria-hidden="true" />
         </button>
@@ -190,20 +195,24 @@ function FileSurfaceControls({ kind, value, onChange, ariaLabel, action }: FileS
   )
 }
 
+function DocumentPreview({ kind, source, filePath, compact = false }: {
+  kind: PreviewKind; source: string; filePath: string; compact?: boolean
+}) {
+  const rendered = useMemo(() => kind === 'markdown' ? renderMarkdown(source) : kind === 'html' ? renderHtmlDocument(source) : '', [kind, source])
+  if (kind === 'markdown') return <article className={`markdown-preview${compact ? ' markdown-preview--compact' : ''}`} dangerouslySetInnerHTML={{ __html: rendered }} />
+  if (kind === 'html') return <div className="document-html-preview">
+    <div className="html-preview-notice">Sandboxed preview · scripts and network disabled</div>
+    <iframe title={`Preview of ${fileName(filePath)}`} sandbox="" srcDoc={rendered} />
+  </div>
+  return null
+}
+
 export function FileQuickView({ filePath, onOpen, onClose, full = false }: FileQuickViewProps) {
   const { activeCircleId } = useApp()
   const [documentText, setDocumentText] = useState('')
   const [connectionStatus, setConnectionStatus] = useState<YjsConnectionStatus>('connecting')
   const kind = previewKind(filePath)
   const [viewMode, setViewMode] = useState<FileViewMode>(kind ? 'preview' : 'source')
-  const markdownPreview = useMemo(
-    () => kind === 'markdown' ? renderMarkdown(documentText) : '',
-    [documentText, kind],
-  )
-  const htmlPreview = useMemo(
-    () => kind === 'html' ? renderHtmlDocument(documentText) : '',
-    [documentText, kind],
-  )
 
   useEffect(() => {
     setDocumentText('')
@@ -239,32 +248,28 @@ export function FileQuickView({ filePath, onOpen, onClose, full = false }: FileQ
         filePath={filePath}
         connectionStatus={connectionStatus}
         onBack={onClose}
-        closeLabel={full ? 'Close sidebar file preview' : 'Close file preview'}
+        closeLabel="Back to files"
+        backLabel="Files"
       />
       <FileSurfaceControls
         kind={kind}
         value={viewMode}
         onChange={setViewMode}
         ariaLabel="Sidebar file view"
-        action={<button type="button" className="file-surface-action" onClick={onOpen} title="Open in center editor">
+        action={<button type="button" className="file-surface-action" onClick={() => onOpen(viewMode)} title="Open in center editor">
           <Maximize2 size={13} aria-hidden="true" />
-          <span>CENTER</span>
+          <span>Open in center</span>
         </button>}
       />
       <div className="file-quick-view__body">
         {viewMode === 'source' && <pre className="file-quick-view__source">{documentText}</pre>}
-        {viewMode === 'preview' && kind === 'markdown' && (
-          <article className="markdown-preview markdown-preview--compact" dangerouslySetInnerHTML={{ __html: markdownPreview }} />
-        )}
-        {viewMode === 'preview' && kind === 'html' && (
-          <iframe title={`Sidebar preview of ${fileName(filePath)}`} sandbox="" srcDoc={htmlPreview} />
-        )}
+        {viewMode === 'preview' && <DocumentPreview kind={kind} source={documentText} filePath={filePath} compact />}
       </div>
     </section>
   )
 }
 
-export default function EditorPanel({ filePath, onBack }: Props) {
+export default function EditorPanel({ filePath, onBack, initialMode = 'source' }: Props) {
   const { activeCircleId, status } = useApp()
   const editorRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
@@ -272,22 +277,15 @@ export default function EditorPanel({ filePath, onBack }: Props) {
   const ydocRef = useRef<Y.Doc | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<YjsConnectionStatus>('disconnected')
   const [displayName, setDisplayName] = useState<string>(() => status?.agent_id ?? 'unknown')
-  const [viewMode, setViewMode] = useState<FileViewMode>('source')
+  const [viewMode, setViewMode] = useState<FileViewMode>(initialMode)
   const [documentText, setDocumentText] = useState('')
   const kind = filePath ? previewKind(filePath) : null
-  const markdownPreview = useMemo(
-    () => kind === 'markdown' ? renderMarkdown(documentText) : '',
-    [documentText, kind],
-  )
-  const htmlPreview = useMemo(
-    () => kind === 'html' ? renderHtmlDocument(documentText) : '',
-    [documentText, kind],
-  )
 
   useEffect(() => {
-    setViewMode('source')
-    setDocumentText('')
-  }, [filePath])
+    setViewMode(initialMode)
+  }, [filePath, initialMode])
+
+  useEffect(() => { setDocumentText('') }, [filePath])
 
   useEffect(() => {
     if (!activeCircleId || !status?.agent_id) return
@@ -386,15 +384,9 @@ export default function EditorPanel({ filePath, onBack }: Props) {
         />
         <div className={`ide-document min-h-0 flex-1${viewMode === 'preview' && kind ? ' is-previewing' : ''}`}>
           <div ref={editorRef} className="ide-editor min-h-0 h-full overflow-auto bg-transparent" />
-          {viewMode === 'preview' && kind === 'markdown' && (
-            <div className="file-preview file-preview--markdown">
-              <article className="markdown-preview" dangerouslySetInnerHTML={{ __html: markdownPreview }} />
-            </div>
-          )}
-          {viewMode === 'preview' && kind === 'html' && (
-            <div className="file-preview file-preview--html">
-              <div className="html-preview-notice">SANDBOXED PREVIEW · SCRIPTS AND NETWORK DISABLED</div>
-              <iframe title={`Preview of ${fileName(filePath)}`} sandbox="" srcDoc={htmlPreview} />
+          {viewMode === 'preview' && kind && (
+            <div className={`file-preview file-preview--${kind}`}>
+              <DocumentPreview kind={kind} source={documentText} filePath={filePath} />
             </div>
           )}
         </div>

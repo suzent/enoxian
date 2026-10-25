@@ -51,7 +51,8 @@ export default function Select({ value, options, disabled, onChange, 'aria-label
         className="ui-select__trigger" onClick={() => position ? setPosition(null) : open()}
         onBlur={() => setPosition(null)}
         onKeyDown={event => {
-          if (event.key === 'Tab' || event.key === 'Escape') { setPosition(null); return }
+          if (event.key === 'Escape' && position) { event.preventDefault(); event.stopPropagation(); setPosition(null); return }
+          if (event.key === 'Tab') { setPosition(null); return }
           if (['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' '].includes(event.key)) {
             event.preventDefault()
             if (!position) { open(); return }

@@ -1,4 +1,7 @@
-import { X, UserPlus, FilePlus, ListPlus } from 'lucide-react'
+import { ConfirmDialog } from './ui/Dialog'
+import ActionMenu, { type MenuAnchor } from './ui/ActionMenu'
+import { importWorkspaceFiles } from '../lib/workspaceUpload'
+import { X, UserPlus, FilePlus, ListPlus, Search, ChevronRight, Settings2, MoreHorizontal, Upload, Copy, Pencil, Trash2, PanelLeftOpen } from 'lucide-react'
 import CircleMembership from './CircleMembership'
 import DeviceSettings from './DeviceSettings'
 import InviteLink from './InviteLink'
@@ -6,14 +9,14 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Presence, Task, Member, PendingEntry, Proposal, InviteConnectivity } from '../types'
 import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, createFile, renameFile, deleteFile, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember, enableCircle, disableCircle, leaveCircle, getProposals } from '../api'
 import ProposalsTab from './ProposalsTab'
-import { FileQuickView } from './EditorPanel'
+import { FileQuickView, type FileViewMode } from './EditorPanel'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
 
 interface Props {
   activityRef?: (element: HTMLDivElement | null) => void
-  onFileSelect: (path: string | null) => void
+  onFileSelect: (path: string | null, mode?: FileViewMode) => void
   selectedFile: string | null
   activeTab: RightPanelTab
   onClose: () => void
@@ -39,6 +42,8 @@ const CONNECTION_BADGE: Record<NonNullable<Presence['connections']>[number]['kin
 
 export default function RightPanel({ activityRef, onFileSelect, selectedFile, activeTab, onClose }: Props) {
   const { activeCircleId, circles, reloadCircles, status } = useApp()
+  const [membershipBusy, setMembershipBusy] = useState(false)
+  const [membershipError, setMembershipError] = useState<string | null>(null)
   const [settingsCircleId, setSettingsCircleId] = useState<string | null>(null)
   const [presence, setPresence] = useState<Presence[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
@@ -54,7 +59,14 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('files')
   const [creatingFile, setCreatingFile] = useState(false)
   const [newFilePath, setNewFilePath] = useState('')
+  const [fileQuery, setFileQuery] = useState('')
+  const [collapsedSearchFolders, setCollapsedSearchFolders] = useState<Set<string>>(() => new Set())
   const [fileMenuOpen, setFileMenuOpen] = useState<string | null>(null)
+  const [fileMenuAnchor, setFileMenuAnchor] = useState<MenuAnchor | null>(null)
+  const [newFileAnchor, setNewFileAnchor] = useState<MenuAnchor | null>(null)
+  const [fileNotice, setFileNotice] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const uploadInput = useRef<HTMLInputElement>(null)
   const [fileActionError, setFileActionError] = useState<string | null>(null)
   const [previewFile, setPreviewFile] = useState<string | null>(null)
   const [openFolders, setOpenFolders] = useState<Set<string>>(() => new Set())
@@ -71,6 +83,7 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
   const activeCircleIdRef = useRef<string | null>(activeCircleId)
   activeCircleIdRef.current = activeCircleId
 
+
   useEffect(() => {
     selectedFileRef.current = selectedFile
     if (selectedFile) setPreviewFile(null)
@@ -86,19 +99,14 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
     return () => { inviteRequestRef.current += 1 }
   }, [activeCircleId])
 
-  const openFileInCenter = useCallback((path: string | null) => {
+  const openFileInCenter = useCallback((path: string | null, mode: FileViewMode = 'source') => {
     setPreviewFile(null)
-    onFileSelect(path)
+    onFileSelect(path, mode)
   }, [onFileSelect])
 
   const previewFileInSidebar = useCallback((path: string) => {
-    if (selectedFileRef.current) {
-      openFileInCenter(path)
-      return
-    }
-    onFileSelect(null)
     setPreviewFile(path)
-  }, [onFileSelect, openFileInCenter])
+  }, [])
 
   const refreshFiles = useCallback(() => {
     if (!activeCircleId) return Promise.resolve()
@@ -124,6 +132,11 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
     setProposals([])
     setPreviewFile(null)
     setOpenFolders(new Set())
+    setFileQuery('')
+    setCollapsedSearchFolders(new Set())
+    setFileMenuOpen(null)
+    setFileNotice(null)
+    setNewFileAnchor(null)
     setShowCompletedTasks(false)
     setWorkspaceView('files')
     if (!activeCircleId) return
@@ -371,6 +384,29 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
     }
   }
 
+  const importFiles = async (picked: File[]) => {
+    if (!activeCircleId || !picked.length || importing) return
+    const circleId = activeCircleId
+    setImporting(true)
+    setFileActionError(null)
+    setFileNotice(null)
+    try {
+      const result = await importWorkspaceFiles(circleId, picked)
+      if (activeCircleIdRef.current !== circleId) return
+      setFileNotice(result.imported.length ? 'Uploaded ' + result.imported.length + ' file(s) to this Circle.' : null)
+      setFileActionError(result.errors.length ? result.errors.join('\n') : null)
+      await refreshFiles()
+    } finally { setImporting(false) }
+  }
+
+  const openFileMenu = (path: string | null, trigger?: HTMLElement, point?: { x: number; y: number }) => {
+    setFileMenuOpen(path)
+    if (path && trigger) {
+      const rect = trigger.getBoundingClientRect()
+      setFileMenuAnchor({ ...(point ?? { x: rect.right - 190, y: rect.bottom + 4 }), trigger })
+    }
+  }
+
   const handleRenameFile = (path: string) => {
     if (!activeCircleId) return
     setFileMenuOpen(null)
@@ -416,7 +452,12 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
   }
 
   // Build a simple nested tree from flat paths
-  const fileTree = buildTree(files)
+  const matchingFiles = files.filter(path => path.toLocaleLowerCase().includes(fileQuery.trim().toLocaleLowerCase()))
+  const fileTree = buildTree(matchingFiles)
+  const visibleFolders = fileQuery.trim() ? new Set(matchingFiles.flatMap(path => {
+    const parts = path.split('/')
+    return parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join('/'))
+  }).filter(path => !collapsedSearchFolders.has(path))) : openFolders
 
   const handleInvite = async () => {
     if (!activeCircleId || inviteLoading) return
@@ -443,14 +484,16 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
   }
 
   const handleToggleCircleEnabled = async () => {
-    if (!activeCircle) return
+    if (!activeCircle || membershipBusy) return
+    setMembershipBusy(true)
+    setMembershipError(null)
     try {
       if (activeCircle.disabled) await enableCircle(activeCircle.circle_id)
       else await disableCircle(activeCircle.circle_id)
       await reloadCircles()
     } catch (err: any) {
-      alert(`Error updating circle: ${err.message}`)
-    }
+      setMembershipError(err.message || 'Unable to update participation')
+    } finally { setMembershipBusy(false) }
   }
 
   const handleLeaveCircle = () => {
@@ -711,7 +754,7 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
         previewFile ? (
           <FileQuickView
             filePath={previewFile}
-            onOpen={() => openFileInCenter(previewFile)}
+            onOpen={mode => openFileInCenter(previewFile, mode)}
             onClose={() => setPreviewFile(null)}
             full
           />
@@ -727,19 +770,28 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
           {workspaceView === 'files' && (
         <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
           <div className="context-intro context-intro--files">
-            <p>Shared files in this Circle.</p>
-            <button className="context-action" onClick={() => {
-              if (creatingFile) setNewFilePath('')
-              setCreatingFile(v => !v)
-              setFileActionError(null)
-            }} aria-expanded={creatingFile}><FilePlus size={15} />{creatingFile ? 'Cancel new file' : 'New file'}</button>
+            <span className="workspace-file-count">{files.length} shared {files.length === 1 ? 'file' : 'files'}</span>
+            <button className="context-action" disabled={importing} onClick={event => {
+              const rect = event.currentTarget.getBoundingClientRect()
+              setNewFileAnchor(newFileAnchor ? null : { x: rect.right - 220, y: rect.bottom + 4, trigger: event.currentTarget })
+            }} aria-haspopup="menu" aria-expanded={!!newFileAnchor}><FilePlus size={15} />{importing ? 'Uploading…' : 'New file'}</button>
           </div>
+          <input ref={uploadInput} type="file" multiple hidden aria-label="Upload text files"
+            accept="text/*,.md,.mdx,.txt,.csv,.json,.yaml,.yml,.toml,.py,.rs,.ts,.tsx,.js,.jsx,.css,.html,.xml,.svg,.sh,.go,.java,.c,.cpp,.h"
+            onChange={event => { void importFiles(Array.from(event.target.files ?? [])); event.target.value = '' }} />
+          {fileNotice && <div className="file-operation-notice" role="status">{fileNotice}</div>}
+          <label className="workspace-search">
+            <Search size={15} aria-hidden="true" />
+            <input aria-label="Find a file" placeholder="Find a file…" value={fileQuery}
+              onChange={event => { setFileQuery(event.target.value); setCollapsedSearchFolders(new Set()); setFileMenuOpen(null) }} />
+            {fileQuery && <button type="button" aria-label="Clear file search" onClick={() => setFileQuery('')}><X size={14} /></button>}
+          </label>
           {fileActionError && !creatingFile && <div className="panel-feedback panel-feedback--error" role="alert">{fileActionError}</div>}
           <div className="workspace-files-layout">
           <div className="file-list flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px]">
-            {files.length === 0 && !creatingFile && <PanelEmpty title="No shared files yet" detail="Create a shared file with New file above." />}
+            {files.length === 0 && !creatingFile && <PanelEmpty title="No shared files yet" detail="Create a blank file or upload a text file from New file." />}
             {(files.length > 0 || creatingFile) && (
-              <div className="border border-obsidian/30">
+              <div className="workspace-file-tree">
                 {creatingFile && (
                   <>
                     <form className="file-row file-row--creating" onSubmit={e => { e.preventDefault(); submitFile() }}>
@@ -763,15 +815,17 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
                         aria-describedby={fileActionError ? 'file-create-error' : undefined}
                         spellCheck={false}
                       />
+                      <button type="button" className="file-create-cancel" aria-label="Cancel new file" onClick={() => setCreatingFile(false)}><X size={14} /></button>
                       <button type="submit" className="file-create-commit" disabled={!newFilePath.trim()}>Create</button>
                     </form>
                     {fileActionError && <div id="file-create-error" className="file-create-error" role="alert">{fileActionError}</div>}
                   </>
                 )}
+                {fileQuery.trim() && matchingFiles.length === 0 && <PanelEmpty title="No matching files" detail="Try a different name or folder." />}
                 <FileTree nodes={fileTree} onSelect={previewFileInSidebar} onOpen={openFileInCenter} onRename={handleRenameFile}
-                  onDelete={handleDeleteFile} openMenu={fileMenuOpen} onOpenMenu={setFileMenuOpen}
-                  selected={previewFile} opened={selectedFile} openFolders={openFolders}
-                  onToggleFolder={path => setOpenFolders(current => {
+                  onDelete={handleDeleteFile} openMenu={fileMenuOpen} onOpenMenu={openFileMenu}
+                  selected={previewFile} opened={selectedFile} openFolders={visibleFolders}
+                  onToggleFolder={path => (fileQuery.trim() ? setCollapsedSearchFolders : setOpenFolders)(current => {
                     const next = new Set(current)
                     next.has(path) ? next.delete(path) : next.add(path)
                     return next
@@ -800,30 +854,28 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
       </div>
       {activeCircleId && <button className="circle-panel-settings" onClick={() => setSettingsCircleId(activeCircleId)}
         aria-label={`Settings for ${activeCircle?.circle_name ?? 'Circle'}`}>
-        <span>Circle settings</span><span className="circle-panel-settings__arrow" aria-hidden="true">→</span>
+        <Settings2 size={15} aria-hidden="true" /><span>Circle settings</span><ChevronRight size={14} aria-hidden="true" />
       </button>}
     </aside>
-    {settingsCircleId && <DeviceSettings key={settingsCircleId} circleId={settingsCircleId} membership={activeCircle && <CircleMembership disabled={!!activeCircle.disabled} onToggle={handleToggleCircleEnabled} onLeave={handleLeaveCircle} />} onOpenFile={onFileSelect} onClose={() => setSettingsCircleId(null)} />}
+    {newFileAnchor && <ActionMenu anchor={newFileAnchor} label="New file" onClose={() => setNewFileAnchor(null)} actions={[
+      { label: 'Create blank file', icon: <FilePlus size={15} />, onSelect: () => { setCreatingFile(true); setNewFilePath(''); setFileActionError(null) } },
+      { label: 'Upload text files…', icon: <Upload size={15} />, onSelect: () => uploadInput.current?.click() },
+    ]} />}
+    {fileMenuOpen && fileMenuAnchor && <ActionMenu anchor={fileMenuAnchor} label="File actions" onClose={() => setFileMenuOpen(null)} actions={[
+      { label: 'Open in center', icon: <PanelLeftOpen size={15} />, onSelect: () => openFileInCenter(fileMenuOpen) },
+      { label: 'Copy file path', icon: <Copy size={15} />, onSelect: () => { void navigator.clipboard.writeText(fileMenuOpen).then(() => setFileNotice('Copied Circle-relative path.')).catch(() => setFileActionError('Could not copy the path. Check clipboard permission.')) } },
+      { label: 'Rename', icon: <Pencil size={15} />, onSelect: () => handleRenameFile(fileMenuOpen) },
+      { label: 'Delete', icon: <Trash2 size={15} />, danger: true, onSelect: () => handleDeleteFile(fileMenuOpen) },
+    ]} />}
+    {settingsCircleId && <DeviceSettings key={settingsCircleId} circleId={settingsCircleId} membership={activeCircle && <CircleMembership busy={membershipBusy} error={membershipError} disabled={!!activeCircle.disabled} onToggle={handleToggleCircleEnabled} onLeave={handleLeaveCircle} />} onOpenFile={onFileSelect} onClose={() => setSettingsCircleId(null)} />}
 
 
     {/* ── Confirm modal (leave / delete) ──────────────────────────────── */}
-    {confirmModal && (
-      <div className="ritual-modal-backdrop">
-        <div className="ritual-panel sys-window">
-          <button onClick={() => setConfirmModal(null)} className="ritual-panel__close" aria-label="Close">×</button>
-          <div className="ritual-panel__header">{confirmModal.title}</div>
-          <div className="ritual-panel__body">
-            <div className="ritual-divider" />
-            <code className="block font-mono text-[11px] font-bold border border-obsidian px-2 py-1 mb-3 bg-white truncate">{confirmModal.subject}</code>
-            {confirmModal.body && <p className="font-mono text-[10px] text-slate mb-3 leading-relaxed">{confirmModal.body}</p>}
-            <div className="ritual-actions">
-              <button className="ritual-btn ritual-btn--primary" onClick={confirmModal.onConfirm}>CONFIRM</button>
-              <button className="ritual-btn ritual-btn--secondary" onClick={() => setConfirmModal(null)}>CANCEL</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    )}
+    {confirmModal && <ConfirmDialog title={confirmModal.title} onClose={() => setConfirmModal(null)}
+      onConfirm={confirmModal.onConfirm} confirmLabel={confirmModal.title === 'ERROR' ? 'OK' : 'Confirm'}>
+      <strong className="block break-words">{confirmModal.subject}</strong>
+      {confirmModal.body && <p>{confirmModal.body}</p>}
+    </ConfirmDialog>}
 
     {/* ── Rename modal ────────────────────────────────────────────────── */}
     {renameModal && (
@@ -982,7 +1034,8 @@ function buildTree(paths: string[]): TreeNode[] {
       node = child
     }
   }
-  return root.children
+  const sort = (nodes: TreeNode[]): TreeNode[] => nodes.sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name, undefined, { numeric: true })).map(node => ({ ...node, children: sort(node.children) }))
+  return sort(root.children)
 }
 
 function FileTree({ nodes, onSelect, onOpen, onRename, onDelete, openMenu, onOpenMenu, selected, opened, openFolders, onToggleFolder, depth }: {
@@ -992,7 +1045,7 @@ function FileTree({ nodes, onSelect, onOpen, onRename, onDelete, openMenu, onOpe
   onRename: (path: string) => void
   onDelete: (path: string) => void
   openMenu: string | null
-  onOpenMenu: (path: string | null) => void
+  onOpenMenu: (path: string | null, trigger?: HTMLElement, point?: { x: number; y: number }) => void
   selected: string | null
   opened: string | null
   openFolders: Set<string>
@@ -1006,35 +1059,52 @@ function FileTree({ nodes, onSelect, onOpen, onRename, onDelete, openMenu, onOpe
           <div
             className={`file-row${selected === n.path ? ' selected' : ''}${opened === n.path ? ' is-open-center' : ''}`}
             style={{ paddingLeft: `${depth * 12}px` }}
+            onContextMenu={event => {
+              if (n.isDir) return
+              event.preventDefault()
+              onOpenMenu(n.path, event.currentTarget.querySelector('button')!, { x: event.clientX, y: event.clientY })
+            }}
           >
             <button
               className="file-name"
+              onKeyDown={event => {
+                if (!n.isDir && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
+                  event.preventDefault()
+                  onOpenMenu(n.path, event.currentTarget)
+                }
+              }}
               onClick={() => {
                 if (n.isDir) onToggleFolder(n.path)
                 else { onOpenMenu(null); onSelect(n.path) }
               }}
               onDoubleClick={() => { if (!n.isDir) onOpen(n.path) }}
               title={n.path}
+              aria-expanded={n.isDir ? openFolders.has(n.path) : undefined}
             >
+              {n.isDir ? <ChevronRight size={12} className={openFolders.has(n.path) ? 'file-chevron is-expanded' : 'file-chevron'} aria-hidden="true" /> : <span className="file-chevron-spacer" aria-hidden="true" />}
               <FileIcon name={n.name} isDir={n.isDir} isOpen={openFolders.has(n.path)} />
               <span>{n.name}</span>
             </button>
             {!n.isDir && (
-              <span className="file-actions">
+              <span className="file-actions" onKeyDown={event => {
+                if (event.key === 'Escape' && openMenu === n.path) {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  onOpenMenu(null)
+                  event.currentTarget.querySelector('button')?.focus()
+                }
+              }}>
                 <button
                   className="file-menu-trigger"
-                  onClick={() => onOpenMenu(openMenu === n.path ? null : n.path)}
+                  onClick={event => onOpenMenu(openMenu === n.path ? null : n.path, event.currentTarget)}
                   title={`More actions for ${n.path}`}
                   aria-label={`More actions for ${n.path}`}
+                  aria-haspopup="menu"
+                  aria-expanded={openMenu === n.path}
                 >
-                  ⋮
+                  <MoreHorizontal size={16} />
                 </button>
-                {openMenu === n.path && (
-                  <div className="file-menu file-menu-inline">
-                    <button className="file-menu-item" onClick={() => onRename(n.path)}>Rename</button>
-                    <button className="file-menu-item" onClick={() => onDelete(n.path)}>Delete</button>
-                  </div>
-                )}
+
               </span>
             )}
           </div>

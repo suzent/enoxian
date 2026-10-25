@@ -51,6 +51,8 @@ describe('global scope', () => {
     fireEvent.change(screen.getByLabelText('Maximum agent turns in one chain'), {
       target: { value: '6' },
     })
+    expect(onChange).not.toHaveBeenCalled()
+    fireEvent.blur(screen.getByLabelText('Maximum agent turns in one chain'))
     expect(onChange).toHaveBeenLastCalledWith({ max_relay_turns: 6 })
   })
 })
@@ -118,18 +120,20 @@ describe('scrying the room', () => {
         scope="global" busy={false} onChange={onChange} />,
     )
     await userEvent.click(screen.getByRole('checkbox', { name: '@claude' }))
-    expect(confirmSpy.mock.calls[0][0]).toMatch(/sent to this agent’s model provider/)
+    expect(screen.getByRole('dialog')).toHaveTextContent(/sent to this agent’s model provider/)
+    expect(onChange).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Enable' }))
     expect(onChange).toHaveBeenCalledWith({ ambient: ['claude'] })
   })
 
   it('changes nothing when that question is declined', async () => {
-    confirmSpy.mockReturnValue(false)
     const onChange = vi.fn()
     render(
       <EngagementSettings agentNames={['claude']} global={GLOBAL} circle={null}
         scope="global" busy={false} onChange={onChange} />,
     )
     await userEvent.click(screen.getByRole('checkbox', { name: '@claude' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(onChange).not.toHaveBeenCalled()
   })
 
@@ -175,7 +179,9 @@ describe('listener rotation', () => {
     const onChange = vi.fn()
     render(<EngagementSettings agentNames={['claude', 'codex']} global={GLOBAL}
       circle={circle()} scope="circle" busy={false} onChange={onChange} />)
+    await userEvent.click(screen.getByText('Advanced listener settings'))
     fireEvent.change(screen.getByLabelText('Listeners per message'), { target: { value: '2' } })
+    fireEvent.blur(screen.getByLabelText('Listeners per message'))
     expect(onChange).toHaveBeenLastCalledWith({ ambient_responders: 2 })
     await userEvent.click(screen.getByLabelText('Vary the number of listeners'))
     expect(onChange).toHaveBeenLastCalledWith({ ambient_rotate_count: true })
@@ -183,13 +189,14 @@ describe('listener rotation', () => {
 })
 
 describe('warden', () => {
-  it('turns the warden on in the scope being edited, and hands it the listener count', () => {
+  it('turns the warden on in the scope being edited, and hands it the listener count', async () => {
     const onChange = vi.fn()
     const { rerender } = render(
       <EngagementSettings agentNames={['claude']} global={GLOBAL} circle={circle()}
         scope="circle" busy={false} onChange={onChange} />,
     )
-    fireEvent.change(screen.getByRole('combobox', { name: 'Warden' }), { target: { value: 'act' } })
+    await userEvent.click(screen.getByRole('combobox', { name: 'Warden' }))
+    await userEvent.click(screen.getByRole('option', { name: /^On$/ }))
     expect(onChange).toHaveBeenCalledWith({ warden_mode: 'act' })
 
     rerender(
@@ -197,6 +204,7 @@ describe('warden', () => {
         circle={circle({ warden_mode: 'act', ambient_responders: 3 })}
         scope="circle" busy={false} onChange={onChange} />,
     )
+    await userEvent.click(screen.getByText('Advanced listener settings'))
     // The count becomes a ceiling, and rotation has nothing left to choose.
     expect(screen.getByText('Most listeners per message')).toBeTruthy()
     expect(screen.getByText(/chooses 1 to 3 listeners/)).toBeTruthy()

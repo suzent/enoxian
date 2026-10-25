@@ -1,8 +1,8 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
 import { AppProvider } from './context/AppContext'
 import ChatPanel from './components/ChatPanel'
-import EditorPanel from './components/EditorPanel'
+import EditorPanel, { type FileViewMode } from './components/EditorPanel'
 import RightPanel, { type RightPanelTab } from './components/RightPanel'
 import CircleSidebar from './components/CircleSidebar'
 import SidebarToggles from './components/SidebarToggles'
@@ -12,6 +12,7 @@ import { useApp } from './context/AppContext'
 import { leaveCircle } from './api'
 import { Trash2 } from 'lucide-react'
 import './styles/globals.css'
+import './styles/settings.css'
 
 type MobileDrawer = 'circles' | 'info' | null
 
@@ -57,6 +58,7 @@ function Layout() {
 
   const [activityContainer, setActivityContainer] = useState<HTMLDivElement | null>(null)
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
+  const [fileMode, setFileMode] = useState<FileViewMode>('source')
   const [ritual, setRitual] = useState<{ mode: RitualMode; label?: string; circleId: string } | null>(null)
   const [showLanding, setShowLanding] = useState(false)
   const [revealing, setRevealing] = useState(false)
@@ -97,7 +99,10 @@ function Layout() {
   }, [selectedFile])
 
   useEffect(() => {
-    try { localStorage.setItem(LAYOUT_PREFERENCES_KEY, JSON.stringify(layoutPreferences)) } catch {}
+    const timer = window.setTimeout(() => {
+      try { localStorage.setItem(LAYOUT_PREFERENCES_KEY, JSON.stringify(layoutPreferences)) } catch {}
+    }, 200)
+    return () => window.clearTimeout(timer)
   }, [layoutPreferences])
 
   useEffect(() => {
@@ -111,13 +116,14 @@ function Layout() {
   useEffect(() => {
     if (!mobileDrawer) return
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMobileDrawer(null)
+      if (event.key === 'Escape' && !event.defaultPrevented) setMobileDrawer(null)
     }
     window.addEventListener('keydown', closeOnEscape)
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [mobileDrawer])
 
-  const onFileSelect = useCallback((path: string | null) => {
+  const onFileSelect = useCallback((path: string | null, mode: FileViewMode = 'source') => {
+    setFileMode(mode)
     setSelectedFile(path)
   }, [])
 
@@ -153,57 +159,55 @@ function Layout() {
     }))
   }
 
-  const resizeLeftPanel = useCallback((nextWidth: number) => {
-    setLayoutPreferences(current => ({
-      ...current,
-      leftPanelWidth: Math.min(360, Math.max(220, nextWidth)),
-    }))
-  }, [])
+  const shellRef = useRef<HTMLDivElement>(null)
+  const resizeCleanup = useRef<(() => void) | null>(null)
+  useEffect(() => () => resizeCleanup.current?.(), [])
 
-  const startLeftPanelResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+  const resizePanel = useCallback((side: 'left' | 'right', width: number) => {
+    const otherWidth = shellRef.current?.querySelector(side === 'left' ? '.app-right-panel' : '.app-circles-sidebar')?.getBoundingClientRect().width
+    setLayoutPreferences(current => {
+      const other = side === 'left'
+        ? (current.rightPanelOpen ? otherWidth ?? current.rightPanelWidth : 0)
+        : (current.leftPanelOpen ? otherWidth ?? current.leftPanelWidth : 0)
+      const minimum = side === 'left' ? 220 : 280
+      const maximum = Math.max(minimum, Math.min(side === 'left' ? 360 : 560, window.innerWidth - other - 360))
+      return { ...current, [side === 'left' ? 'leftPanelWidth' : 'rightPanelWidth']: Math.min(maximum, Math.max(minimum, width)) }
+    })
+  }, [])
+  const resizeLeftPanel = (width: number) => resizePanel('left', width)
+  const resizeRightPanel = (width: number) => resizePanel('right', width)
+
+  const startPanelResize = (event: ReactPointerEvent<HTMLDivElement>, side: 'left' | 'right') => {
     if (event.button !== 0) return
     event.preventDefault()
+    resizeCleanup.current?.()
+    const handle = event.currentTarget
+    const panel = handle.parentElement?.querySelector(side === 'left' ? '.app-circles-sidebar' : '.app-right-panel')
+    const startWidth = panel?.getBoundingClientRect().width ?? 0
     const startX = event.clientX
-    const startWidth = layoutPreferences.leftPanelWidth
+    const pointerId = event.pointerId
+    handle.setPointerCapture(pointerId)
     document.body.classList.add('is-resizing-sidebar')
-
-    const move = (moveEvent: PointerEvent) => resizeLeftPanel(startWidth + moveEvent.clientX - startX)
+    const move = (next: PointerEvent) => {
+      if (next.pointerId === pointerId) resizePanel(side, startWidth + (next.clientX - startX) * (side === 'left' ? 1 : -1))
+    }
     const finish = () => {
       document.body.classList.remove('is-resizing-sidebar')
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', finish)
-      window.removeEventListener('pointercancel', finish)
+      handle.removeEventListener('pointermove', move)
+      handle.removeEventListener('pointerup', finish)
+      handle.removeEventListener('pointercancel', finish)
+      handle.removeEventListener('lostpointercapture', finish)
+      window.removeEventListener('blur', finish)
+      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId)
+      resizeCleanup.current = null
     }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', finish)
-    window.addEventListener('pointercancel', finish)
-  }, [layoutPreferences.leftPanelWidth, resizeLeftPanel])
-
-  const resizeRightPanel = useCallback((nextWidth: number) => {
-    setLayoutPreferences(current => ({
-      ...current,
-      rightPanelWidth: Math.min(560, Math.max(280, nextWidth)),
-    }))
-  }, [])
-
-  const startRightPanelResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return
-    event.preventDefault()
-    const startX = event.clientX
-    const startWidth = layoutPreferences.rightPanelWidth
-    document.body.classList.add('is-resizing-sidebar')
-
-    const move = (moveEvent: PointerEvent) => resizeRightPanel(startWidth + startX - moveEvent.clientX)
-    const finish = () => {
-      document.body.classList.remove('is-resizing-sidebar')
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', finish)
-      window.removeEventListener('pointercancel', finish)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', finish)
-    window.addEventListener('pointercancel', finish)
-  }, [layoutPreferences.rightPanelWidth, resizeRightPanel])
+    resizeCleanup.current = finish
+    handle.addEventListener('pointermove', move)
+    handle.addEventListener('pointerup', finish)
+    handle.addEventListener('pointercancel', finish)
+    handle.addEventListener('lostpointercapture', finish)
+    window.addEventListener('blur', finish)
+  }
 
   const handleRemovedLeave = async () => {
     if (!activeCircleId || removedLeaveBusy) return
@@ -247,6 +251,7 @@ function Layout() {
 
       {circles.length > 0 && (
         <div
+          ref={shellRef}
           className={`app-shell relative z-10 grid drawer-${mobileDrawer ?? 'none'}${layoutPreferences.leftPanelOpen ? ' left-panel-open' : ''}${layoutPreferences.rightPanelOpen ? ' right-panel-open' : ''}${isVoid ? ' app-shell--void' : ''}`}
           style={{
             '--left-panel-width': `${layoutPreferences.leftPanelWidth}px`,
@@ -315,7 +320,7 @@ function Layout() {
             aria-valuemax={360}
             aria-valuenow={layoutPreferences.leftPanelWidth}
             tabIndex={0}
-            onPointerDown={startLeftPanelResize}
+            onPointerDown={event => startPanelResize(event, 'left')}
             onKeyDown={event => {
               if (event.key === 'ArrowLeft') { event.preventDefault(); resizeLeftPanel(layoutPreferences.leftPanelWidth - 20) }
               if (event.key === 'ArrowRight') { event.preventDefault(); resizeLeftPanel(layoutPreferences.leftPanelWidth + 20) }
@@ -332,7 +337,7 @@ function Layout() {
                 </div>
                 {selectedFile && (
                   <div key={selectedFile} className="workspace-view workspace-view--file is-active">
-                    <EditorPanel filePath={selectedFile} onBack={() => setSelectedFile(null)} />
+                    <EditorPanel filePath={selectedFile} initialMode={fileMode} onBack={() => setSelectedFile(null)} />
                   </div>
                 )}
               </>
@@ -348,7 +353,7 @@ function Layout() {
             aria-valuemax={560}
             aria-valuenow={layoutPreferences.rightPanelWidth}
             tabIndex={0}
-            onPointerDown={startRightPanelResize}
+            onPointerDown={event => startPanelResize(event, 'right')}
             onKeyDown={event => {
               if (event.key === 'ArrowLeft') { event.preventDefault(); resizeRightPanel(layoutPreferences.rightPanelWidth + 20) }
               if (event.key === 'ArrowRight') { event.preventDefault(); resizeRightPanel(layoutPreferences.rightPanelWidth - 20) }
@@ -374,7 +379,7 @@ function Layout() {
                   </div>
                   {selectedFile && (
                     <div key={selectedFile} className="workspace-view workspace-view--file is-active">
-                      <EditorPanel filePath={selectedFile} onBack={() => setSelectedFile(null)} />
+                      <EditorPanel filePath={selectedFile} initialMode={fileMode} onBack={() => setSelectedFile(null)} />
                     </div>
                   )}
                 </>

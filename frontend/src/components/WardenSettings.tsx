@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import Select from './ui/Select'
+import NumberField from './ui/NumberField'
+import { ConfirmDialog } from './ui/Dialog'
 import {
   getWarden, resetWardenSpec, setWardenConfig, setWardenKey, setWardenSpec, testWarden,
   type WardenDecision, type WardenView,
@@ -60,7 +63,7 @@ function DecisionView({ decision, questions }: { decision: WardenDecision; quest
  * it decides by, and a way to try it on a sample message. Whether it acts in a
  * Circle is set per Circle, under Behaviour.
  */
-export default function WardenSettings({ circleId }: { circleId?: string | null }) {
+export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }: { circleId?: string | null; onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void }) {
   const [view, setView] = useState<WardenView | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -74,59 +77,70 @@ export default function WardenSettings({ circleId }: { circleId?: string | null 
   const [tried, setTried] = useState<{ decision: WardenDecision; questions: string[] } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const refresh = useCallback(() => {
-    getWarden().then(v => {
-      setView(v)
-      setDraft({
-        endpoint: v.config.endpoint ?? '',
-        model: v.config.model ?? '',
-        key_env: v.config.key_env ?? '',
-        timeout_secs: v.config.timeout_secs,
-      })
-      setSpecText(v.spec_toml)
-    }).catch(e => setError(e.message))
-  }, [])
-  useEffect(() => { refresh() }, [refresh])
+  const [confirmation, setConfirmation] = useState<{ title: string; detail: string; action: () => void } | null>(null)
+  const loadingId = useRef(0)
+  const running = useRef(false)
+  const configDraft = (v: WardenView) => ({ endpoint: v.config.endpoint ?? '', model: v.config.model ?? '', key_env: v.config.key_env ?? '', timeout_secs: v.config.timeout_secs })
+  const configDirty = !!view && JSON.stringify(draft) !== JSON.stringify(configDraft(view))
+  const specDirty = !!view && specText !== view.spec_toml
+  useEffect(() => { onDirtyChange?.(configDirty || specDirty || !!key) }, [configDirty, specDirty, key, onDirtyChange])
+  useEffect(() => { onBusyChange?.(busy) }, [busy, onBusyChange])
 
-  const run = async (fn: () => Promise<unknown>, done?: string) => {
+  const refresh = useCallback(async () => {
+    const request = ++loadingId.current
+    setError(null)
+    try {
+      const v = await getWarden()
+      if (request !== loadingId.current) return
+      setView(v)
+      setDraft(configDraft(v))
+      setSpecText(v.spec_toml)
+    } catch (e) { if (request === loadingId.current) setError(e instanceof Error ? e.message : 'Unable to load Warden settings') }
+  }, [])
+  useEffect(() => { void refresh(); return () => { loadingId.current += 1 } }, [refresh])
+
+  const run = async (fn: () => Promise<unknown>, done?: string, reload: 'none' | 'view' | 'config' | 'spec' = 'view') => {
+    if (running.current) return
+    running.current = true
     setBusy(true)
     setError(null)
     setNotice(null)
     try {
       await fn()
+      if (reload !== 'none') {
+        const v = await getWarden()
+        setView(v)
+        // Refresh only what this action saved. Other drafts belong to the user.
+        if (reload === 'config') setDraft(configDraft(v))
+        if (reload === 'spec') setSpecText(v.spec_toml)
+      }
       if (done) setNotice(done)
-      refresh()
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setBusy(false)
-    }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to update Warden') }
+    finally { running.current = false; setBusy(false) }
   }
 
-  if (!view) return error ? <p role="alert" className="text-[11px] font-mono">{error}</p> : null
+  if (!view) return <div className="warden-loading">{error ? <><p role="alert">{error}</p><button className="enox-btn" onClick={() => void refresh()}>Try again</button></> : <p role="status">Loading Warden settings…</p>}</div>
   const kind = view.kinds.find(k => k.id === view.config.decider)
   const asksModel = kind && kind.protocol !== 'rules'
 
   return (
-    <section className="mt-4 font-mono">
-      <div className="flex items-baseline justify-between border-b border-obsidian pb-1 mb-1">
-        <span className="text-[11px] font-bold">WARDEN</span>
-        <span className="text-[8px] text-slate">THIS DEVICE · EXPERIMENTAL</span>
-      </div>
-      <p className="text-[10px] text-slate py-1">
-        The warden decides who answers messages nobody addressed. Turn it on per Circle under
-        Behaviour. Here: what it asks, and the policy it decides by.
-      </p>
+    <section className="warden-settings">
+      <div className="warden-scope-note">Experimental · Settings stay on this device</div>
       {error && <p role="alert" className="text-[11px]">{error}</p>}
-      {notice && <p className="text-[11px]">{notice}</p>}
+      {notice && <p role="status" className="warden-notice">{notice}</p>}
+      {busy && <p role="status" className="warden-notice">Working…</p>}
+      <section className="warden-group">
+      <h3>Decision provider</h3>
 
       <label className="block py-2 text-xs">
         Decider
-        <select className="ml-2 border px-2 py-1" disabled={busy} value={view.config.decider}
-          aria-label="Decider"
-          onChange={e => void run(() => setWardenConfig({ decider: e.target.value }))}>
-          {view.kinds.map(k => <option key={k.id} value={k.id}>{k.name}</option>)}
-        </select>
+        <Select disabled={busy} value={view.config.decider} aria-label="Decider"
+          options={view.kinds.map(k => ({ value: k.id, label: k.name }))}
+          onChange={value => {
+            const change = () => { setKey(''); void run(() => setWardenConfig({ decider: value }), 'Decision provider updated.', 'config') }
+            if (configDirty || key) setConfirmation({ title: 'Change decision provider?', detail: 'Unsaved connection settings and the entered key will be discarded. Your policy draft is kept.', action: change })
+            else change()
+          }} />
         {kind && <span className="block text-[10px] text-slate mt-1">{kind.description}</span>}
       </label>
       {view.problem && (
@@ -148,9 +162,9 @@ export default function WardenSettings({ circleId }: { circleId?: string | null 
               onChange={e => setDraft({ ...draft, model: e.target.value })} />
           </label>
           <label className="block">Wait at most
-            <input type="number" min={1} max={30} className="ml-2 border px-2 py-1 w-16" disabled={busy}
+            <NumberField min={1} max={30} className="ml-2 border px-2 py-1 w-16" disabled={busy}
               value={draft.timeout_secs} aria-label="Timeout seconds"
-              onChange={e => setDraft({ ...draft, timeout_secs: Math.min(30, Math.max(1, Number(e.target.value) || 5)) })} />
+              onCommit={value => setDraft({ ...draft, timeout_secs: value })} />
             <span className="ml-1">seconds, then the rules decide</span>
           </label>
           <label className="block">Read the key from environment variable (optional)
@@ -159,7 +173,7 @@ export default function WardenSettings({ circleId }: { circleId?: string | null 
               onChange={e => setDraft({ ...draft, key_env: e.target.value })} />
           </label>
           <button className="enox-btn text-[9px] px-2 py-1 min-h-0" disabled={busy}
-            onClick={() => void run(() => setWardenConfig(draft), 'Saved.')}>SAVE</button>
+            onClick={() => void run(() => setWardenConfig(draft), 'Connection settings saved.', 'config')}>Save connection</button>
 
           {kind?.needs_key && !draft.key_env && (
             <div className="pt-2">
@@ -169,10 +183,10 @@ export default function WardenSettings({ circleId }: { circleId?: string | null 
                   autoComplete="off" aria-label="API key" placeholder={kind.key_hint ? 'Replace key' : 'Paste key'}
                   onChange={e => setKey(e.target.value)} />
                 <button className="enox-btn text-[9px] px-2 py-1 min-h-0" disabled={busy || !key.trim()}
-                  onClick={() => void run(async () => { await setWardenKey(kind.id, key); setKey('') }, 'Key saved on this device.')}>SET</button>
+                  onClick={() => void run(async () => { await setWardenKey(kind.id, key); setKey('') }, 'Key saved on this device.')}>Save key</button>
                 {kind.key_hint && (
                   <button className="enox-btn text-[9px] px-2 py-1 min-h-0" disabled={busy}
-                    onClick={() => void run(() => setWardenKey(kind.id, null), 'Key removed.')}>REMOVE</button>
+                    onClick={() => setConfirmation({ title: 'Remove saved API key?', detail: 'The decision provider may fall back to built-in rules until a key is configured again.', action: () => void run(() => setWardenKey(kind.id, null), 'Key removed.') })}>Remove key</button>
                 )}
               </div>
               <span className="block text-[10px] text-slate mt-1">
@@ -184,6 +198,9 @@ export default function WardenSettings({ circleId }: { circleId?: string | null 
         </div>
       )}
 
+      </section>
+      <section className="warden-group">
+      <h3>Messages to consider</h3>
       <label className="block py-2 text-xs">
         <input type="checkbox" aria-label="Agents' messages too" disabled={busy}
           checked={!!view.config.agent_messages}
@@ -202,21 +219,24 @@ export default function WardenSettings({ circleId }: { circleId?: string | null 
         )}
       </label>
 
-      <div className="py-2 text-xs">
-        <div>Try it</div>
+      </section>
+      <section className="warden-group">
+        <h3>Try a message</h3>
+        <p className="warden-hint">Uses your saved settings. Shows a decision without posting to the Circle or running agents.</p>
         <textarea className="block w-full border px-2 py-1 mt-1 text-[11px]" rows={3} value={sample} disabled={busy}
           aria-label="Sample message" placeholder="A message someone might post in the room"
           onChange={e => setSample(e.target.value)} />
         <button className="enox-btn text-[9px] px-2 py-1 min-h-0 mt-1" disabled={busy || !sample.trim()}
-          onClick={() => void run(async () => setTried(await testWarden(sample, circleId, asAgent)))}>ASK THE WARDEN</button>
+          onClick={() => void run(async () => setTried(await testWarden(sample, circleId, asAgent)), undefined, 'none')}>Test decision</button>
         <label className="ml-3 text-[10px]">
           <input type="checkbox" checked={asAgent} disabled={busy} onChange={e => setAsAgent(e.target.checked)} />
           <span className="ml-1">as an agent's message</span>
         </label>
         {tried && <DecisionView decision={tried.decision} questions={tried.questions} />}
-      </div>
+      </section>
 
-      <div className="py-2 text-xs">
+      <details className="warden-policy warden-group">
+        <summary>Advanced policy</summary>
         <div className="flex items-baseline justify-between">
           <span>Spec <span className="text-slate">· {String(view.spec.version)} · {view.spec_source.kind === 'file' ? 'from file' : view.spec_source.kind === 'invalid' ? 'file invalid, using built-in' : 'built-in'}</span></span>
         </div>
@@ -226,17 +246,21 @@ export default function WardenSettings({ circleId }: { circleId?: string | null 
           onChange={e => setSpecText(e.target.value)} />
         <div className="flex gap-2 mt-1">
           <button className="enox-btn text-[9px] px-2 py-1 min-h-0" disabled={busy || specText === view.spec_toml}
-            onClick={() => void run(() => setWardenSpec(specText), 'Spec applied.')}>APPLY</button>
+            onClick={() => void run(() => setWardenSpec(specText), 'Policy applied.', 'spec')}>Apply policy</button>
           {view.spec_source.kind !== 'default' && (
             <button className="enox-btn text-[9px] px-2 py-1 min-h-0" disabled={busy}
-              onClick={() => void run(resetWardenSpec, 'Back to the built-in spec.')}>RESET TO BUILT-IN</button>
+              onClick={() => setConfirmation({ title: 'Reset to built-in policy?', detail: 'This replaces the saved custom policy and any policy edits here.', action: () => void run(resetWardenSpec, 'Built-in policy restored.', 'spec') })}>Reset to built-in</button>
           )}
         </div>
         <span className="block text-[10px] text-slate mt-1">
           Validated before it is applied. Kept at {view.spec_path ?? '~/.enoxian/warden/spec.toml'}; an
           experiment can replace it with <code>enox warden spec apply</code>.
         </span>
-      </div>
+      </details>
+      {confirmation && <ConfirmDialog title={confirmation.title} onClose={() => setConfirmation(null)}
+        onConfirm={() => { const action = confirmation.action; setConfirmation(null); action() }}>
+        {confirmation.detail}
+      </ConfirmDialog>}
     </section>
   )
 }

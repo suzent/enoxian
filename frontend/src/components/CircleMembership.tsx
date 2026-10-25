@@ -1,14 +1,17 @@
 import { LogOut, PauseCircle, PlayCircle } from 'lucide-react'
 
 interface Props {
+  busy?: boolean
+  error?: string | null
   disabled: boolean
   onToggle: () => void
   onLeave: () => void
 }
 
-export default function CircleMembership({ disabled, onToggle, onLeave }: Props) {
+export default function CircleMembership({ disabled, onToggle, onLeave, busy, error }: Props) {
   return (
     <div className="circle-membership">
+      {error && <p role="alert" className="file-error">{error}</p>}
       <section className="membership-action" aria-labelledby="membership-participation-title">
         <div className="membership-action__icon" aria-hidden="true">{disabled ? <PlayCircle size={20} /> : <PauseCircle size={20} />}</div>
         <div className="membership-action__copy">
@@ -18,7 +21,7 @@ export default function CircleMembership({ disabled, onToggle, onLeave }: Props)
           </div>
           <p>{disabled ? 'Participation is paused on this device. Enable to resume.' : 'Pause this Circle on this device. You can enable it again anytime.'}</p>
         </div>
-        <button type="button" className="membership-action__button" onClick={onToggle}>{disabled ? 'Enable Circle' : 'Disable Circle'}</button>
+        <button type="button" className="membership-action__button" disabled={busy} onClick={onToggle}>{busy ? 'Updating…' : disabled ? 'Enable Circle' : 'Disable Circle'}</button>
       </section>
       <section className="membership-action membership-action--leave" aria-labelledby="membership-leave-title">
         <div className="membership-action__icon" aria-hidden="true"><LogOut size={20} /></div>
@@ -27,7 +30,7 @@ export default function CircleMembership({ disabled, onToggle, onLeave }: Props)
           <p>Remove this Circle’s configuration from this device. Your workspace files are kept.</p>
           <span className="membership-action__hint">You’ll be asked to confirm before leaving.</span>
         </div>
-        <button type="button" className="membership-action__button membership-action__button--leave" onClick={onLeave}>Leave Circle…</button>
+        <button type="button" className="membership-action__button membership-action__button--leave" disabled={busy} onClick={onLeave}>Leave Circle…</button>
       </section>
     </div>
   )

@@ -20,7 +20,7 @@
 
 # ── Build stage ──────────────────────────────────────────────────────────────
 # Pinned to the same toolchain as CI (see RUST_VERSION in .github/workflows).
-FROM rust:1.91-bookworm AS build
+FROM rust:1.94-bookworm AS build
 WORKDIR /src
 
 # A bootstrap node never serves the WebUI, so skip the npm build entirely and

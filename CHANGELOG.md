@@ -41,6 +41,23 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Warden has a dedicated global settings page with themed controls, grouped
+  connection and test settings, and a collapsible advanced policy editor.
+  Testing a message or saving a key preserves other unsaved drafts; leaving
+  the page or resetting its policy asks before discarding edits.
+
+
+- File actions are available from right-click or the overflow menu, including
+  copying the Circle-relative path. New file can import UTF-8 text files
+  without overwriting existing files; chat accepts downloadable file
+  attachments as well as images.
+- Global and Circle settings share themed controls, keyboard navigation,
+  confirmation dialogs, responsive layouts and clearer save feedback.
+  Sidebar resizing follows the pointer without delayed layout transitions;
+  file previews use one return action and preserve preview/source mode when
+  opened in the center.
+
+
 - The warden (experimental, off by default): for messages nobody addressed, it
   decides whether an agent should answer and how — nobody, one listener,
   several together, or a blind vote in which two listeners answer without
@@ -130,6 +147,10 @@ refuses to publish a version whose section is missing or empty.
   guides use the new words; `agents.toml` keys such as `ambient` are unchanged.
 
 ### Security
+
+- Updated the MLS cryptography dependencies to remove the vulnerable crypto-bigint
+  0.5 implementation (RUSTSEC-2026-0387), using a pinned upstream OpenMLS fix.
+  Building from source now requires Rust 1.94 or newer.
 
 - The web app's HTML sanitizer, DOMPurify, is updated to 3.4.17 for GHSA-cg2g-xh64-v4q7,
   GHSA-mrv2-3pqr-j5jr and GHSA-c6gr-qvv4-5v3f.

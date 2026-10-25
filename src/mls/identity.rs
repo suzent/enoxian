@@ -158,3 +158,56 @@ pub fn unix_now() -> Result<u64> {
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openmls_traits::{crypto::OpenMlsCrypto, signatures::Signer};
+
+    #[test]
+    fn legacy_ed25519_identity_survives_crypto_dependency_upgrade() {
+        // Public RFC 8032 test vector 1, stored in the pre-upgrade JSON format.
+        // This is test material, never a real Circle's private key.
+        let private =
+            hex::decode("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+                .unwrap();
+        let public =
+            hex::decode("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+                .unwrap();
+        let signer_json = serde_json::json!({
+            "private": private,
+            "public": public,
+            "signature_scheme": "ED25519",
+        });
+        let credential = CredentialWithKey {
+            credential: BasicCredential::new(b"legacy-peer".to_vec()).into(),
+            signature_key: public.clone().into(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(MlsIdentity::mls_dir(dir.path())).unwrap();
+        std::fs::write(
+            MlsIdentity::identity_path(dir.path()),
+            serde_json::to_vec(&StoredIdentity {
+                signer_json: signer_json.clone(),
+                credential_with_key_json: serde_json::to_value(credential).unwrap(),
+                peer_id: "legacy-peer".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let identity = MlsIdentity::load_or_generate(dir.path(), "must-not-replace").unwrap();
+        assert_eq!(identity.peer_id, "legacy-peer");
+        let signature = identity.signer.sign(b"").unwrap();
+        assert_eq!(hex::encode(&signature), "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b");
+        identity
+            .provider
+            .crypto()
+            .verify_signature(CIPHERSUITE.signature_algorithm(), b"", &public, &signature)
+            .unwrap();
+        identity.generate_key_package().unwrap();
+        identity.save(dir.path()).unwrap();
+        let reloaded = MlsIdentity::load(dir.path()).unwrap();
+        assert_eq!(serde_json::to_value(&reloaded.signer).unwrap(), signer_json);
+    }
+}

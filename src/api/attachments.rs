@@ -10,8 +10,8 @@
 //! * The content type is **sniffed from magic bytes**, never taken from the
 //!   uploader. A client that labels a payload `image/png` does not get it
 //!   served as one.
-//! * Only a fixed set of raster image formats is accepted. SVG is rejected
-//!   outright — it is a script execution vector, not merely an image.
+//! * Only recognised raster images render inline. All other bytes (including
+//!   SVG and HTML) are served as downloads with an opaque content type.
 //! * Responses carry `nosniff` and a restrictive CSP so a blob cannot be
 //!   coerced into executing in the app's origin.
 //! * Dimensions are parsed from format headers rather than by decoding the
@@ -33,8 +33,10 @@ use serde_json::json;
 /// this is a per-circle bandwidth decision, not just a per-request one.
 pub const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 
-/// Formats we are willing to store and serve. Deliberately raster-only.
-const ALLOWED: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+/// Unrecognised files are always opaque downloads, never executable inline content.
+pub fn attachment_mime(data: &[u8]) -> &'static str {
+    sniff_mime(data).unwrap_or("application/octet-stream")
+}
 
 /// Identify a payload by magic bytes. Returns `None` for anything unrecognised.
 pub fn sniff_mime(data: &[u8]) -> Option<&'static str> {
@@ -146,7 +148,11 @@ pub fn sanitize_name(raw: &str, mime: &str) -> String {
     let base = base.trim().trim_start_matches('.').to_string();
     if base.is_empty() {
         let ext = mime.rsplit('/').next().unwrap_or("bin");
-        format!("image.{ext}")
+        if mime.starts_with("image/") {
+            format!("image.{ext}")
+        } else {
+            "attachment.bin".to_string()
+        }
     } else {
         base
     }
@@ -191,16 +197,7 @@ pub async fn upload_attachment(
             .into_response();
     }
 
-    let Some(mime) = sniff_mime(&body).filter(|m| ALLOWED.contains(m)) else {
-        return (
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            Json(json!({
-                "error": "unsupported attachment type",
-                "allowed": ALLOWED,
-            })),
-        )
-            .into_response();
-    };
+    let mime = attachment_mime(&body);
 
     let blobs = match state.blobs() {
         Ok(b) => b,
@@ -263,14 +260,20 @@ pub async fn get_blob(
     // Re-sniff on the way out. The stored bytes are content-addressed and
     // immutable, but deriving the type here means a blob is never served as
     // something other than what it actually is.
-    let mime = sniff_mime(&bytes)
-        .filter(|m| ALLOWED.contains(m))
-        .unwrap_or("application/octet-stream");
+    let mime = attachment_mime(&bytes);
 
     (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, mime),
+            (
+                header::CONTENT_DISPOSITION,
+                if mime.starts_with("image/") {
+                    "inline"
+                } else {
+                    "attachment"
+                },
+            ),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             // Content-addressed: the bytes for a hash can never change.
             (

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import userEvent from '@testing-library/user-event'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 
 const getWarden = vi.fn()
@@ -38,7 +39,8 @@ describe('WardenSettings', () => {
   it('chooses a decider, and takes a key it never shows again', async () => {
     getWarden.mockResolvedValueOnce(view('builtin:rules')).mockResolvedValue(view('litellm-systemone'))
     render(<WardenSettings />)
-    fireEvent.change(await screen.findByRole('combobox', { name: 'Decider' }), { target: { value: 'litellm-systemone' } })
+    await userEvent.click(await screen.findByRole('combobox', { name: 'Decider' }))
+    await userEvent.click(screen.getByRole('option', { name: 'LiteLLM (System One)' }))
     await waitFor(() => expect(setWardenConfig).toHaveBeenCalledWith({ decider: 'litellm-systemone' }))
     expect(await screen.findByRole('alert')).toBeTruthy()
     expect(screen.getByText(/no API key is set/)).toBeTruthy()
@@ -46,7 +48,7 @@ describe('WardenSettings', () => {
     const input = await screen.findByLabelText('API key') as HTMLInputElement
     expect(input.type).toBe('password')
     fireEvent.change(input, { target: { value: 'sk-secret' } })
-    fireEvent.click(screen.getByRole('button', { name: 'SET' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save key' }))
     await waitFor(() => expect(setWardenKey).toHaveBeenCalledWith('litellm-systemone', 'sk-secret'))
     await waitFor(() => expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe(''))
   })
@@ -56,7 +58,7 @@ describe('WardenSettings', () => {
     testWarden.mockResolvedValue({ decision, questions: ['admit', 'agent', 'success:single', 'success:vote'], input: '' })
     render(<WardenSettings circleId="c1" />)
     fireEvent.change(await screen.findByLabelText('Sample message'), { target: { value: 'Is this true?' } })
-    fireEvent.click(screen.getByRole('button', { name: 'ASK THE WARDEN' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Test decision' }))
     await waitFor(() => expect(testWarden).toHaveBeenCalledWith('Is this true?', 'c1', false))
     expect(await screen.findByText(/blind vote, 2–3 voters/)).toBeTruthy()
     expect(screen.getByText(/Needs an answer: 91%/)).toBeTruthy()
@@ -78,10 +80,50 @@ describe('WardenSettings', () => {
   it('applies an edited spec', async () => {
     getWarden.mockResolvedValue(view('builtin:rules'))
     render(<WardenSettings />)
+    await userEvent.click(await screen.findByText('Advanced policy'))
     const spec = await screen.findByLabelText('Warden spec')
     fireEvent.change(spec, { target: { value: 'version = "mine"\n' } })
-    fireEvent.click(screen.getByRole('button', { name: 'APPLY' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply policy' }))
     await waitFor(() => expect(setWardenSpec).toHaveBeenCalledWith('version = "mine"\n'))
+  })
+
+  it('keeps connection and policy drafts when testing or saving a key', async () => {
+    getWarden.mockResolvedValue(view('litellm-systemone'))
+    testWarden.mockResolvedValue({ decision, questions: [] })
+    const dirty = vi.fn()
+    render(<WardenSettings onDirtyChange={dirty} />)
+    fireEvent.change(await screen.findByLabelText('Endpoint'), { target: { value: 'http://my-proxy:4000' } })
+    await userEvent.click(screen.getByText('Advanced policy'))
+    fireEvent.change(screen.getByLabelText('Warden spec'), { target: { value: 'version = "draft"' } })
+    fireEvent.change(screen.getByLabelText('Sample message'), { target: { value: 'Test only' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Test decision' }))
+    await screen.findByText(/blind vote/)
+    expect(getWarden).toHaveBeenCalledTimes(1)
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'test-secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save key' }))
+    await screen.findByText('Key saved on this device.')
+    expect(screen.getByLabelText('Endpoint')).toHaveValue('http://my-proxy:4000')
+    expect(screen.getByLabelText('Warden spec')).toHaveValue('version = "draft"')
+    expect(dirty).toHaveBeenLastCalledWith(true)
+  })
+
+  it('retries initial loading failures', async () => {
+    getWarden.mockRejectedValueOnce(new Error('Temporarily offline')).mockResolvedValue(view('builtin:rules'))
+    render(<WardenSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('combobox', { name: 'Decider' })).toBeTruthy()
+    expect(screen.queryByText('Temporarily offline')).toBeNull()
+  })
+
+  it('confirms policy reset and preserves edits when cancelled', async () => {
+    getWarden.mockResolvedValue({ ...view('builtin:rules'), spec_source: { kind: 'file' } })
+    render(<WardenSettings />)
+    await userEvent.click(await screen.findByText('Advanced policy'))
+    fireEvent.change(screen.getByLabelText('Warden spec'), { target: { value: 'unsaved policy' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Reset to built-in' }))
+    expect(resetWardenSpec).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByLabelText('Warden spec')).toHaveValue('unsaved policy')
   })
 })
 

@@ -1,6 +1,6 @@
 import type { RightPanelTab } from './RightPanel'
 import { createPortal } from 'react-dom'
-import { Users } from 'lucide-react'
+import { Users, FileText, Download } from 'lucide-react'
 import ExecutionStatus from './ExecutionStatus'
 import { Fragment, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import type { Attachment, ChatActivity, ChatMessage, EngagementView, Member, Presence } from '../types'
@@ -174,6 +174,10 @@ function AttachmentImage({ circleId, att, nonce, onOpen }: AttachmentImageProps)
   // Reserve the real aspect ratio up front so arriving images don't reflow the
   // transcript under the reader.
   const ratio = att.width && att.height ? `${att.width} / ${att.height}` : undefined
+
+  if (!att.mime.startsWith('image/')) return <a className="chat-file-attachment" href={blobUrl(circleId, att.hash)} download={att.name}>
+    <FileText size={22} aria-hidden="true" /><span><strong>{att.name}</strong><small>{formatBytes(att.size)} · Download</small></span><Download size={15} aria-hidden="true" />
+  </a>
 
   if (failed) {
     return (
@@ -390,6 +394,13 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
   // filename -> 0..1. An entry exists only while that file is uploading.
   const [uploads, setUploads] = useState<Record<string, number>>({})
   const [attachError, setAttachError] = useState<string | null>(null)
+  const uploadScope = useRef(new AbortController())
+  useEffect(() => {
+    const controller = new AbortController()
+    uploadScope.current = controller
+    setUploads({})
+    return () => controller.abort()
+  }, [activeCircleId, activeCircle?.disabled])
   // Per-hash counter bumped when the daemon finishes fetching a blob, so an
   // image that 404'd on first render retries.
   const [blobNonces, setBlobNonces] = useState<Record<string, number>>({})
@@ -642,13 +653,10 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
    *  Each upload is independent: one rejected file does not discard the rest. */
   const addFiles = useCallback(async (files: File[]) => {
     if (!activeCircleId || activeCircle?.disabled) return
-    const images = files.filter(f => f.type.startsWith('image/'))
-    if (!images.length) {
-      if (files.length) setAttachError('Only images can be attached.')
-      return
-    }
+    const signal = uploadScope.current.signal
     setAttachError(null)
-    for (const file of images) {
+    for (const file of files) {
+      if (signal.aborted) return
       // Check client-side too, so an oversized paste fails instantly instead of
       // after uploading megabytes the daemon will reject.
       if (file.size > MAX_ATTACHMENT_BYTES) {
@@ -659,14 +667,16 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
       setUploads(prev => ({ ...prev, [key]: 0 }))
       try {
         const att = await uploadAttachment(activeCircleId, file, fraction => {
-          setUploads(prev => (key in prev ? { ...prev, [key]: fraction } : prev))
-        })
+          if (!signal.aborted) setUploads(prev => (key in prev ? { ...prev, [key]: fraction } : prev))
+        }, signal)
+        if (signal.aborted) return
         // Same bytes twice is the same blob — don't stage a duplicate.
         setPending(prev => prev.some(p => p.hash === att.hash) ? prev : [...prev, att])
       } catch (error) {
+        if (signal.aborted) return
         setAttachError(error instanceof Error ? error.message : 'Upload failed.')
       } finally {
-        setUploads(prev => {
+        if (!signal.aborted) setUploads(prev => {
           const next = { ...prev }
           delete next[key]
           return next
@@ -694,7 +704,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
 
   // Every image in the transcript, in order, so the viewer can page through
   // the whole conversation rather than just the message that was clicked.
-  const galleryItems = messages.flatMap(m => m.attachments ?? [])
+  const galleryItems = messages.flatMap(m => m.attachments ?? []).filter(att => att.mime.startsWith('image/'))
   const lightboxIndex = lightboxHash
     ? galleryItems.findIndex(a => a.hash === lightboxHash)
     : -1
@@ -1239,7 +1249,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
           <div className="chat-composer__attachments">
             {pending.map(att => (
               <div key={att.hash} className="chat-staged">
-                <img src={blobUrl(activeCircleId ?? '', att.hash)} alt={att.name} />
+                <>{att.mime.startsWith('image/') ? <img src={blobUrl(activeCircleId ?? '', att.hash)} alt={att.name} /> : <span className="chat-staged__file"><FileText size={18} /><span title={att.name}>{att.name}</span></span>}</>
                 <button
                   type="button"
                   className="chat-staged__remove"
@@ -1275,7 +1285,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/png,image/jpeg,image/gif,image/webp"
+          aria-label="Attach files"
           multiple
           hidden
           onChange={e => {
@@ -1289,8 +1299,8 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
           className="enox-btn chat-composer__attach"
           onClick={() => fileInputRef.current?.click()}
           disabled={activeCircle?.disabled}
-          title="Attach an image"
-          aria-label="Attach an image"
+          title="Attach files"
+          aria-label="Attach files"
         >
           +
         </button>

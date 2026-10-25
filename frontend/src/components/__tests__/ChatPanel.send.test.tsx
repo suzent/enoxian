@@ -96,3 +96,17 @@ describe('Shift+Enter', () => {
     await waitFor(() => expect(postChat).toHaveBeenCalled())
   })
 })
+
+describe('file attachments', () => {
+  it('stages a PDF without sending and includes it when the user sends', async () => {
+    const { uploadAttachment } = await import('../../api')
+    vi.mocked(uploadAttachment).mockResolvedValue({ hash: 'pdf-hash', name: 'brief.pdf', mime: 'application/octet-stream', size: 10 })
+    postChat.mockResolvedValue({ id: 'm1' })
+    render(<ChatPanel />)
+    await userEvent.upload(screen.getByLabelText('Attach files', { selector: 'input' }), new File(['%PDF test'], 'brief.pdf', { type: 'application/pdf' }))
+    expect(await screen.findByText('brief.pdf')).toBeTruthy()
+    expect(postChat).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'EXEC' }))
+    await waitFor(() => expect(postChat).toHaveBeenCalledWith('c1', '', 'alice', [{ hash: 'pdf-hash', name: 'brief.pdf' }], undefined))
+  })
+})

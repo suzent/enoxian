@@ -1,3 +1,4 @@
+import Select from './ui/Select'
 import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { cancelAgentAuth, getAgentAuth, startAgentAuth, type AgentAuthState } from '../api'
@@ -66,11 +67,8 @@ export default function AgentAuthentication({ agent, state, pending, onAction }:
           disabled={busy} onClick={() => void onAction(agent, 'probe')}>
           <RefreshCw size={13} aria-hidden="true" className={state?.status === 'checking' ? 'animate-spin' : ''} />
         </button>
-        {!signedIn && methods.length > 1 && <select aria-label={`@${agent} sign-in method`} value={method} disabled={busy}
-          onChange={event => setMethod(event.target.value)} className="border border-obsidian bg-alabaster text-obsidian text-[10px] p-1 max-w-full">
-          <option value="">Automatic</option>
-          {methods.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-        </select>}
+        {!signedIn && methods.length > 1 && <Select aria-label={`@${agent} sign-in method`} value={method} disabled={busy}
+          onChange={setMethod} options={[{ value: '', label: 'Automatic' }, ...methods.map(item => ({ value: item.id, label: item.name }))]} />}
         <button type="button" disabled={busy} className="enox-btn text-[10px] px-2 py-1 min-h-0"
           onClick={() => void onAction(agent, 'login', methods.some(item => item.id === method) ? method : undefined)}>
           {signedIn ? 'SIGN IN AGAIN' : 'SIGN IN'}
