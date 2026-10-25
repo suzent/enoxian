@@ -6,7 +6,7 @@
  * this device's own answer about that Circle. The panel has to say so.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 const getAgentConfigFor = vi.fn()
@@ -74,13 +74,22 @@ beforeEach(() => {
 describe('settings recovery', () => {
   it('keeps the numeric field mounted during a save', async () => {
     const { setEngagement } = await import('../../api')
+    const user = userEvent.setup()
+    let finishSave!: () => void
+    vi.mocked(setEngagement).mockImplementationOnce(() => new Promise(resolve => {
+      finishSave = () => resolve({ ok: true })
+    }))
     render(<DeviceSettings onClose={vi.fn()} />)
     const input = await screen.findByLabelText('Maximum agent turns in one chain')
-    fireEvent.change(input, { target: { value: '32' } })
+    await user.clear(input)
+    await user.type(input, '32')
     expect(setEngagement).not.toHaveBeenCalled()
-    fireEvent.blur(input)
+    await user.tab()
     await waitFor(() => expect(setEngagement).toHaveBeenCalledWith({ max_relay_turns: 32 }))
     expect(screen.getByLabelText('Maximum agent turns in one chain')).toBe(input)
+    expect(input).toBeDisabled()
+    await act(async () => finishSave())
+    expect(input).not.toBeDisabled()
   })
   it('retries the connectivity request, not an unrelated configuration request', async () => {
     const { getConnectivitySettings } = await import('../../api')
