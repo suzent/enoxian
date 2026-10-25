@@ -162,19 +162,42 @@ async fn blob_response_carries_hardening_headers() {
 }
 
 #[tokio::test]
-async fn rejects_non_image_uploads() {
+async fn non_images_are_downloads_never_inline_content() {
     let (router, _dir) = harness();
-
-    // SVG is the important one: it is an image to a user, a script to a browser.
-    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>"#.to_vec();
-    let (status, _) = send(&router, upload("x.svg", svg)).await;
-    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
-
-    // A .png name on non-PNG bytes must not get through: sniffing decides.
-    let (status, _) = send(&router, upload("evil.png", b"#!/bin/sh\nrm -rf /".to_vec())).await;
-    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
-
-    let (status, _) = send(&router, upload("empty.png", Vec::new())).await;
+    for (name, bytes) in [
+        ("x.svg", b"<svg onload='alert(1)'/>".to_vec()),
+        ("evil.png", b"<html><script>alert(1)</script>".to_vec()),
+        ("report.pdf", b"%PDF-1.7 test".to_vec()),
+    ] {
+        let (status, body) = send(&router, upload(name, bytes.clone())).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let att: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(att["mime"], "application/octet-stream");
+        let hash = att["hash"].as_str().unwrap();
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/circles/{CIRCLE}/api/blobs/{hash}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.headers()["content-type"], "application/octet-stream");
+        assert_eq!(res.headers()["content-disposition"], "attachment");
+        assert_eq!(res.headers()["x-content-type-options"], "nosniff");
+        let served = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(served.as_ref(), bytes.as_slice());
+        let (posted, _) = send(&router, Request::builder().method("POST")
+            .uri(format!("/circles/{CIRCLE}/api/chat"))
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::json!({"text":"", "agent_id":"agent", "attachments":[{"hash":hash,"name":name}]}).to_string())).unwrap()).await;
+        assert_eq!(posted, StatusCode::CREATED);
+    }
+    let (status, _) = send(&router, upload("empty.txt", Vec::new())).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 

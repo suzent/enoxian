@@ -41,6 +41,17 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- File actions are available from right-click or the overflow menu, including
+  copying the Circle-relative path. New file can import UTF-8 text files
+  without overwriting existing files; chat accepts downloadable file
+  attachments as well as images.
+- Global and Circle settings share themed controls, keyboard navigation,
+  confirmation dialogs, responsive layouts and clearer save feedback.
+  Sidebar resizing follows the pointer without delayed layout transitions;
+  file previews use one return action and preserve preview/source mode when
+  opened in the center.
+
+
 - The warden (experimental, off by default): for messages nobody addressed, it
   decides whether an agent should answer and how — nobody, one listener,
   several together, or a blind vote in which two listeners answer without

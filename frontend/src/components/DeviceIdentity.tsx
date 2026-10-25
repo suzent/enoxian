@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { IdentityInfo } from '../api'
 import type { AddressedAs } from '../types'
 
@@ -8,6 +8,7 @@ interface Props {
   addressedAs?: AddressedAs | null
   /** Name of that Circle, for the label. */
   circleName?: string | null
+  onDirtyChange?: (dirty: boolean) => void
   busy: boolean
   onSave: (patch: { device_label?: string; user_handle?: string }) => Promise<void>
 }
@@ -30,7 +31,7 @@ interface Props {
  * silently.
  */
 export default function DeviceIdentity({
-  identity, addressedAs, circleName, busy, onSave,
+  identity, addressedAs, circleName, busy, onSave, onDirtyChange,
 }: Props) {
   const [label, setLabel] = useState(identity.device_label)
   const [handle, setHandle] = useState(identity.user_handle ?? '')
@@ -38,6 +39,8 @@ export default function DeviceIdentity({
   const labelChanged = label.trim() !== identity.device_label
   const handleChanged = handle.trim() !== (identity.user_handle ?? '')
   const dirty = (labelChanged || handleChanged) && label.trim().length > 0
+
+  useEffect(() => { onDirtyChange?.(labelChanged || handleChanged) }, [labelChanged, handleChanged, onDirtyChange])
 
   const save = async () => {
     if (!dirty) return

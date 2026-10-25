@@ -129,8 +129,7 @@ fn resolve_attachments(
             let bytes = blobs
                 .get(&r.hash)
                 .map_err(|_| format!("unknown attachment {}", r.hash))?;
-            let mime = super::attachments::sniff_mime(&bytes)
-                .ok_or_else(|| format!("unsupported attachment {}", r.hash))?;
+            let mime = super::attachments::attachment_mime(&bytes);
             let (width, height) = match super::attachments::image_dimensions(mime, &bytes) {
                 Some((w, h)) => (Some(w), Some(h)),
                 None => (None, None),

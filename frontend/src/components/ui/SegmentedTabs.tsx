@@ -46,6 +46,19 @@ export default function SegmentedTabs<T extends string>({
             type="button"
             role="tab"
             aria-selected={selected}
+            tabIndex={selected ? 0 : -1}
+            onKeyDown={event => {
+              const forward = orientation === 'vertical' ? 'ArrowDown' : 'ArrowRight'
+              const backward = orientation === 'vertical' ? 'ArrowUp' : 'ArrowLeft'
+              if (![forward, backward, 'Home', 'End'].includes(event.key)) return
+              event.preventDefault()
+              const index = options.indexOf(option)
+              const next = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1
+                : (index + (event.key === forward ? 1 : -1) + options.length) % options.length
+              onChange(options[next].value)
+              const buttons = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')
+              buttons?.[next]?.focus()
+            }}
             aria-label={option.ariaLabel}
             title={option.title}
             className={classes}

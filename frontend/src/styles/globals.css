@@ -85,7 +85,7 @@ button[role="tab"][aria-selected="true"] {
   background:
     radial-gradient(circle at 50% 47%, rgba(10,10,10,0.055) 0 0.7px, transparent 0.8px) 0 0 / 5px 5px,
     var(--bg-alabaster);
-  transition: grid-template-columns 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: none;
 }
 
 .circle-removed-notice {
@@ -262,6 +262,8 @@ button[role="tab"][aria-selected="true"] {
 .is-resizing-sidebar .right-panel-resizer::before {
   background: rgba(10,10,10,0.08);
 }
+
+.is-resizing-sidebar .app-shell { transition: none; }
 
 .is-resizing-sidebar,
 .is-resizing-sidebar * {
@@ -2395,8 +2397,9 @@ button[role="tab"][aria-selected="true"] {
   min-height: 100%;
   margin-inline: auto;
   color: var(--fg-obsidian);
-  font-family: var(--font-sans);
-  font-size: 17px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  overflow-wrap: anywhere;
+  font-size: 16px;
   line-height: 1.68;
 }
 
@@ -2482,6 +2485,9 @@ button[role="tab"][aria-selected="true"] {
 }
 
 .markdown-preview table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
   width: 100%;
   border-collapse: collapse;
   font-size: 0.9em;
@@ -3439,7 +3445,7 @@ body {
 }
 
 .file-quick-view--full .markdown-preview--compact {
-  padding: clamp(18px, 5vw, 34px);
+  padding: 20px;
   font-size: 13px;
 }
 
@@ -3447,7 +3453,8 @@ body {
   min-height: 0;
   flex: 1;
   overflow: auto;
-  overflow-x: hidden;
+  overflow-x: auto;
+  container-type: inline-size;
   background-image: radial-gradient(rgba(17,17,17,0.09) 0.55px, transparent 0.55px);
   background-size: 5px 5px;
 }
@@ -3779,41 +3786,6 @@ select option {
   .app-shell:not(.left-panel-open) > .left-panel-resizer,
   .app-shell:not(.right-panel-open) > .right-panel-resizer {
     display: none;
-  }
-}
-
-/* Preserve a useful conversation width at the dock/drawer boundary. */
-@media (max-width: 1279px) and (min-width: 961px) {
-  .app-shell.left-panel-open {
-    --left-track: calc(clamp(180px, var(--left-panel-width, 220px), 23vw) + 12px);
-  }
-
-  .app-shell.right-panel-open {
-    --right-track: calc(clamp(260px, var(--right-panel-width, 320px), 34vw) + 12px);
-  }
-
-  .app-shell.left-panel-open:not(.right-panel-open) {
-    --left-track: calc(clamp(200px, var(--left-panel-width, 240px), 30vw) + 12px);
-  }
-
-  .app-shell:not(.left-panel-open).right-panel-open {
-    --right-track: calc(clamp(280px, var(--right-panel-width, 320px), 40vw) + 12px);
-  }
-
-  .app-shell.left-panel-open.right-panel-open > .app-circles-sidebar {
-    width: clamp(180px, var(--left-panel-width, 220px), 23vw);
-  }
-
-  .app-shell.left-panel-open.right-panel-open > .app-right-panel {
-    width: clamp(260px, var(--right-panel-width, 320px), 34vw);
-  }
-
-  .app-shell.left-panel-open:not(.right-panel-open) > .app-circles-sidebar {
-    width: clamp(200px, var(--left-panel-width, 240px), 30vw);
-  }
-
-  .app-shell:not(.left-panel-open).right-panel-open > .app-right-panel {
-    width: clamp(280px, var(--right-panel-width, 320px), 40vw);
   }
 }
 
@@ -4741,10 +4713,10 @@ input.invite-link-value:focus-visible {
 .app-shell .sidebar-toggle--left, .app-shell .sidebar-toggle--left.is-open { top: 20px; left: 7px; }
 .app-shell .chat-composer { border-top: 1px solid color-mix(in srgb, var(--fg-obsidian) 16%, transparent); }
 @media (min-width: 961px) {
-  .app-shell.left-panel-open { --left-track: var(--left-panel-width, 220px); }
-  .app-shell.right-panel-open { --right-track: var(--right-panel-width, 300px); }
-  .app-shell.left-panel-open > .app-circles-sidebar { width: var(--left-panel-width, 220px); }
-  .app-shell.right-panel-open > .app-right-panel { width: var(--right-panel-width, 300px); }
+  .app-shell.left-panel-open { --left-track: min(var(--left-panel-width, 220px), calc(100vw - 640px)); }
+  .app-shell.right-panel-open { --right-track: min(var(--right-panel-width, 300px), calc(100vw - var(--left-track) - 360px)); }
+  .app-shell.left-panel-open > .app-circles-sidebar { width: var(--left-track); }
+  .app-shell.right-panel-open > .app-right-panel { width: var(--right-track); }
   .app-shell .left-panel-resizer, .app-shell .right-panel-resizer { width: 8px; }
 }
 @media (max-width: 960px) {
@@ -4895,3 +4867,12 @@ input.invite-link-value:focus-visible {
   .membership-action { grid-template-columns: 24px minmax(0, 1fr); padding: 16px; gap: 10px; }
   .membership-action__button { grid-column: 2; justify-self: start; margin-top: 4px; }
 }
+
+.file-surface-return { display: inline-flex; align-items: center; gap: 6px; padding: 8px; font: 12px/1.4 var(--font-mono); cursor: pointer; }
+.file-quick-view .file-surface-header { grid-template-columns: auto minmax(0, 1fr) auto; }
+.file-surface-header__meta strong { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; text-transform: none; }
+.document-html-preview { display: flex; flex-direction: column; min-height: 100%; height: 100%; }
+.document-html-preview iframe { flex: 1; width: 100%; min-height: 240px; border: 0; }
+.markdown-preview--compact h1 { font-size: clamp(20px, 6cqi, 26px); }
+.markdown-preview--compact h2 { font-size: 19px; }
+.file-quick-view--full .markdown-preview--compact { font-size: 14px; line-height: 1.7; }

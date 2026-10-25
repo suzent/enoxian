@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, type ReactNode } from 'react'
-import { Bot, RadioTower, Laptop, Users } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { Bot, RadioTower, Laptop, Users, SlidersHorizontal } from 'lucide-react'
 import type { AgentConfigView, AgentPlugin, ConnectivitySettings, DiscoveredAgent } from '../types'
 import type { IdentityInfo } from '../api'
 import { getAgentConfigFor, getAgentPlugins, discoverAgents, installAgentPlugin, setEngagement, addAgent, removeAgent, getConnectivitySettings, setForceRelay, getIdentity, setIdentity } from '../api'
@@ -7,6 +7,8 @@ import { useApp } from '../context/AppContext'
 import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
 import EngagementSettings, { type Patch } from './EngagementSettings'
 import DeviceIdentity from './DeviceIdentity'
+import Dialog, { ConfirmDialog } from './ui/Dialog'
+import Select from './ui/Select'
 import AgentAuthentication, { useAgentAuthentication } from './AgentAuthentication'
 import AgentCards from './AgentCards'
 import WardenSettings from './WardenSettings'
@@ -14,11 +16,11 @@ import WardenSettings from './WardenSettings'
 type SettingsTab = 'device' | 'agents' | 'behaviour' | 'connectivity' | 'membership'
 
 const SETTINGS_TABS: readonly SegmentedTabOption<SettingsTab>[] = [
-  { value: 'device', content: <><Laptop size={14} aria-hidden="true" />DEVICE</> },
-  { value: 'agents', content: <><Bot size={14} aria-hidden="true" />AGENTS</> },
-  { value: 'behaviour', content: <><Bot size={14} aria-hidden="true" />BEHAVIOUR</> },
-  { value: 'membership', content: <><Users size={14} aria-hidden="true" />MEMBERSHIP</> },
-  { value: 'connectivity', content: <><RadioTower size={14} aria-hidden="true" />CONNECTIVITY</> },
+  { value: 'device', content: <><Laptop size={14} aria-hidden="true" />Device</> },
+  { value: 'agents', content: <><Bot size={14} aria-hidden="true" />Agents</> },
+  { value: 'behaviour', content: <><SlidersHorizontal size={14} aria-hidden="true" />Behaviour</> },
+  { value: 'membership', content: <><Users size={14} aria-hidden="true" />Membership</> },
+  { value: 'connectivity', content: <><RadioTower size={14} aria-hidden="true" />Connectivity</> },
 ]
 
 /** `relay.enoxian.com` for `https://relay.enoxian.com/`. */
@@ -60,56 +62,85 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
   const [busy, setBusy] = useState(false)
   const [installingPlugin, setInstallingPlugin] = useState<string | null>(null)
 
+  const [saved, setSaved] = useState(false)
+  const [identityDirty, setIdentityDirty] = useState(false)
+  const [discard, setDiscard] = useState<(() => void) | null>(null)
+  const requestId = useRef(0)
+  const mutationBusy = useRef(false)
+
   // Add-agent form state.
   const [showAdd, setShowAdd] = useState(false)
   const [name, setName] = useState('')
   const [driver, setDriver] = useState<'acp' | 'argv'>('acp')
   const [command, setCommand] = useState('')
 
-  const refresh = useCallback(() => {
-    setError(null)
-    setCfg(null)
-    setPlugins(null)
-    getAgentConfigFor(activeCircleId).then(setCfg).catch(e => setError(e.message))
-    getAgentPlugins().then(r => setPlugins(r.plugins)).catch(() => setPlugins([]))
-    // Descriptions for agents enoxian knows about, so a custom entry that is
-    // one of them reads like an adapter instead of a bare command line.
-    discoverAgents().then(r => setKnown(r.agents)).catch(() => setKnown([]))
-    getIdentity().then(setIdentityState).catch(() => setIdentityState(null))
-  }, [activeCircleId])
-
-  useEffect(() => { refresh() }, [refresh])
-
-  useEffect(() => {
-    if (activeTab !== 'connectivity' || !activeCircleId) return
-    setConnectivity(null)
-    setError(null)
-    getConnectivitySettings(activeCircleId)
-      .then(setConnectivity)
-      .catch(e => setError(e.message))
-  }, [activeTab, activeCircleId])
-
-
-  const run = async (fn: () => Promise<unknown>) => {
-    setBusy(true)
+  const refresh = useCallback(async () => {
+    const request = ++requestId.current
     setError(null)
     try {
+      if (activeTab === 'connectivity' && activeCircleId) {
+        const next = await getConnectivitySettings(activeCircleId)
+        if (request === requestId.current) setConnectivity(next)
+      } else if (activeTab === 'device') {
+        const next = await getIdentity()
+        if (request === requestId.current) setIdentityState(next)
+      } else if (activeTab === 'agents' || activeTab === 'behaviour') {
+        const next = await getAgentConfigFor(activeCircleId)
+        if (request !== requestId.current) return
+        setCfg(next)
+        if (activeTab === 'agents') {
+          const [adapters, discovered] = await Promise.all([getAgentPlugins(), discoverAgents()])
+          if (request !== requestId.current) return
+          setPlugins(adapters.plugins)
+          setKnown(discovered.agents)
+        }
+      }
+    } catch (e) {
+      if (request === requestId.current) setError(e instanceof Error ? e.message : 'Unable to load settings')
+    }
+  }, [activeCircleId, activeTab])
+
+  useEffect(() => {
+    void refresh()
+    setSaved(false)
+    return () => { requestId.current += 1 }
+  }, [refresh])
+
+  const run = async (fn: () => Promise<unknown>) => {
+    if (mutationBusy.current) return false
+    mutationBusy.current = true
+    setBusy(true)
+    setError(null)
+    setSaved(false)
+    try {
       await fn()
-      refresh()
-    } catch (e: any) {
-      setError(e.message)
+      await refresh()
+      setSaved(true)
+      return true
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to save settings')
+      return false
     } finally {
+      mutationBusy.current = false
       setBusy(false)
     }
+  }
+
+  const navigate = (action: () => void) => {
+    if (busy) return
+    if (identityDirty || (showAdd && (name.trim() || command.trim()))) setDiscard(() => action)
+    else action()
   }
 
   const toggleForceRelay = async () => {
     if (!activeCircleId || !connectivity || busy) return
     setBusy(true)
+    setSaved(false)
     setError(null)
     try {
       const next = await setForceRelay(activeCircleId, !connectivity.force_relay)
       setConnectivity({ ...connectivity, ...next })
+      setSaved(true)
     } catch (e: any) {
       setError(e.message)
       getConnectivitySettings(activeCircleId).then(setConnectivity).catch(() => {})
@@ -130,7 +161,8 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
   const submitAdd = () => {
     const parts = command.trim().split(/\s+/).filter(Boolean)
     if (!name.trim() || parts.length === 0) return
-    run(() => addAgent(name.trim(), driver, parts)).then(() => {
+    run(() => addAgent(name.trim(), driver, parts)).then(success => {
+      if (!success) return
       setName(''); setCommand(''); setDriver('acp'); setShowAdd(false)
     })
   }
@@ -146,10 +178,9 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
   const activeCircle = circles.find(circle => circle.circle_id === activeCircleId)
 
   return (
-    <div className="ritual-modal-backdrop" onClick={onClose}>
-      <div className="ritual-panel sys-window device-settings-panel" onClick={e => e.stopPropagation()}>
-        <button onClick={onClose} className="ritual-panel__close" aria-label="Close">×</button>
-        <div className="ritual-panel__header">{scope === 'global' ? 'GLOBAL SETTINGS' : `${activeCircle?.circle_name ?? 'Circle'} · SETTINGS`}</div>
+    <>
+    <Dialog onClose={() => navigate(onClose)} className="device-settings-panel"
+      title={scope === 'global' ? 'Global settings' : 'Circle settings'} >
         <div className="settings-layout">
           <aside className="settings-sidebar">
             <div className="settings-context">
@@ -161,7 +192,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
             ariaLabel="Settings sections"
             orientation="vertical"
             value={activeTab}
-            onChange={setActiveTab}
+            onChange={tab => navigate(() => { setIdentityDirty(false); setShowAdd(false); setName(''); setCommand(''); setActiveTab(tab) })}
             options={SETTINGS_TABS.filter(tab => scope === 'global' ? tab.value !== 'connectivity' && tab.value !== 'membership' : tab.value === 'behaviour' || tab.value === 'connectivity' || (tab.value === 'membership' && !!membership))}
           />
           <p className="settings-sidebar__note">{scope === 'global' ? 'Defaults for this device across all Circles.' : activeTab === 'membership' ? 'Your participation in this Circle on this device.' : 'This device’s preferences in this Circle.'}</p>
@@ -174,7 +205,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
           </header>
           {activeTab === 'membership' && membership}
           {error && (
-            <div className="file-error">
+            <div className="file-error" role="alert">
               <div>{error}</div>
               <button type="button" className="enox-btn mt-2 text-[9px] px-2 py-1 min-h-0" onClick={refresh}>
                 TRY AGAIN
@@ -194,10 +225,8 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                   addressedAs={cfg?.circle?.addressed_as}
                   circleName={activeCircle?.circle_name}
                   busy={busy}
-                  onSave={async patch => {
-                    await run(() => setIdentity(patch))
-                    await getIdentity().then(setIdentityState).catch(() => {})
-                  }}
+                  onDirtyChange={setIdentityDirty}
+                  onSave={async patch => { if (await run(() => setIdentity(patch))) setIdentityDirty(false) }}
                 />
               </section>
 
@@ -218,29 +247,18 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
           {activeTab === 'behaviour' && cfg && (
             <>
                 <section className="settings-scope">
-                <div className="settings-scope__note">
+                <p className="settings-scope__note">
                   {scope === 'global'
-                    ? 'Applies in every Circle, unless one of them overrides it.'
-                    : activeCircleId
-                      ? <>Applies in <strong>{activeCircle?.circle_name}</strong> only. Anything left inherited follows the settings for all Circles.</>
-                      : 'Open a Circle to give it its own settings.'}
-                  {' '}
-                  {/* A per-Circle setting reads like it belongs to the Circle.
-                      It does not: it is this machine's answer about that
-                      Circle, and nobody else can see or change it. Saying so
-                      here is cheaper than the misunderstanding. */}
-                  <span className="settings-scope__private">
-                    These are this device's settings — never shared with the Circle.
-                  </span>
-                </div>
-                {scope === 'global' && <label className="block py-2 text-xs">
+                    ? 'Defaults for all Circles on this device.'
+                    : 'Only affects this device; never shared with the Circle. Unchanged options follow your global defaults.'}
+                </p>
+                {scope === 'global' && <div className="settings-concurrency">
                   Agents running at once on this device
-                  <select className="ml-2 border px-2 py-1" disabled={busy} value={cfg.max_concurrent_runs ?? 4}
-                    onChange={e => void run(() => setEngagement({ max_concurrent_runs: Number(e.target.value) }))}>
-                    {[1, 2, 4, 8, 16, 32].map(n => <option key={n} value={n}>{n === 1 ? '1 (serial)' : n}</option>)}
-                  </select>
+                  <Select aria-label="Agents running at once on this device" disabled={busy} value={String(cfg.max_concurrent_runs ?? 4)}
+                    onChange={value => void run(() => setEngagement({ max_concurrent_runs: Number(value) }))}
+                    options={[1, 2, 4, 8, 16, 32].map(n => ({ value: String(n), label: n === 1 ? '1 (serial)' : String(n) }))} />
                   <span className="block text-slate">Shared across all Circles on this device. Extra requests wait for a turn. Restart the daemon to apply a new limit.</span>
-                </label>}
+                </div>}
                 {scope === 'circle' && !activeCircleId ? null : (
                   <EngagementSettings
                     agentNames={cfg.agents.map(a => a.name)}
@@ -300,7 +318,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                             ? `Node.js ${plugin.node_runtime_version} is too old · requires 22+ with npm`
                             : 'Node.js 22+ with npm required'
                         : ready
-                        ? 'Installed'
+                        ? 'Ready'
                         : plugin.legacy_configured
                           ? 'Runtime download · migrate'
                           : plugin.state === 'ready'
@@ -320,7 +338,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                           </div>
                           <div className="flex items-center justify-between gap-2">
                             {ready ? (
-                              <span className="text-[9px] font-bold px-1.5 py-0.5 bg-obsidian text-alabaster">INSTALLED</span>
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 bg-obsidian text-alabaster">ENABLED</span>
                             ) : prerequisitesMissing ? (
                               <button
                                 onClick={() => { setError(null); refresh() }}
@@ -342,10 +360,10 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                               <button
                                 onClick={() => run(() => removeAgent(plugin.agent))}
                                 disabled={busy}
-                                className="text-[12px] text-slate hover:text-obsidian px-1 disabled:opacity-50"
+                                className="settings-secondary-action"
                                 title={`Disable @${plugin.agent}`}
                                 aria-label={`Disable @${plugin.agent}`}
-                              >×</button>
+                              >Disable</button>
                             )}
                           </div>
                         </div>
@@ -420,7 +438,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                     <div className="border border-dashed border-obsidian/50 p-2 flex flex-col gap-2 text-[11px]">
                       <input
                         autoFocus value={name} onChange={e => setName(e.target.value)}
-                        placeholder="agent name"
+                        aria-label="Agent name" placeholder="agent name"
                         className="border border-obsidian px-2 py-1 text-[11px] focus:outline-none focus:bg-obsidian/5"
                       />
                       <div className="flex gap-2 items-center">
@@ -439,7 +457,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                           if (native.isComposing || native.keyCode === 229) return
                           if (e.key === 'Enter') submitAdd()
                         }}
-                        placeholder="executable and arguments"
+                        aria-label="Executable and arguments" placeholder="executable and arguments"
                         className="border border-obsidian px-2 py-1 text-[11px] focus:outline-none focus:bg-obsidian/5"
                       />
                       <button onClick={submitAdd} disabled={busy} className="enox-btn self-start text-[9px] px-2 py-1 min-h-0 disabled:opacity-50">ADD</button>
@@ -472,7 +490,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                           className={`text-[8px] font-bold px-1.5 py-0.5 ${health.ready ? 'bg-obsidian text-alabaster' : 'border border-obsidian/40 text-slate'}`}
                           title={health.ready ? 'command[0] resolves on this machine' : 'This agent cannot start until its command resolves'}
                         >{health.label}</span>
-                        <button onClick={() => run(() => removeAgent(agent.name))} disabled={busy} className="text-slate hover:text-obsidian">×</button>
+                        <button onClick={() => run(() => removeAgent(agent.name))} disabled={busy} className="settings-secondary-action" aria-label={`Disable @${agent.name}`}>Disable</button>
                       </div>
                     </div>
                     )
@@ -557,7 +575,17 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
           )}
           </div>
         </div>
-      </div>
-    </div>
+      {activeTab !== 'membership' && <div className="settings-save-status" role="status">{busy ? 'Saving changes…' : saved && !error ? 'Changes saved' : {
+        device: 'Use Save to update your device identity.',
+        agents: 'Agent changes apply across all Circles on this device.',
+        behaviour: 'Saved automatically · Press Enter or leave a number field to save.',
+        connectivity: 'Routing changes restart this Circle on this device.',
+      }[activeTab]}</div>}
+    </Dialog>
+    {discard && <ConfirmDialog title="Discard unsaved changes?" confirmLabel="Discard changes"
+      onClose={() => setDiscard(null)} onConfirm={() => { const action = discard; setDiscard(null); setIdentityDirty(false); action() }}>
+      Your unsaved entries will be lost. Saved settings are kept.
+    </ConfirmDialog>}
+    </>
   )
 }

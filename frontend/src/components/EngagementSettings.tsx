@@ -1,3 +1,7 @@
+import { useState } from 'react'
+import NumberField from './ui/NumberField'
+import Select from './ui/Select'
+import { ConfirmDialog } from './ui/Dialog'
 import type { CircleSettingsView, SettingsView } from '../types'
 
 /** One setting, at one scope. `null` means "inherit" and is only offered on a
@@ -37,6 +41,7 @@ interface Props {
 export default function EngagementSettings({
   agentNames, global, circle, scope, busy, onChange,
 }: Props) {
+  const [confirmation, setConfirmation] = useState<{ title: string; detail: string; patch: Patch } | null>(null)
   const isCircle = scope === 'circle'
   const over = circle?.overrides ?? {}
   const effective = isCircle ? circle?.effective ?? global : global
@@ -50,7 +55,7 @@ export default function EngagementSettings({
   const warding = effective.warden_mode === 'act'
 
   const row = (key: keyof Patch, label: string, control: React.ReactNode, hint: string) => (
-    <div className={`engagement-row${inherits(key) ? ' engagement-row--inherited' : ''}`}>
+    <div className={`engagement-row${key === 'ambient' ? ' engagement-row--agents' : ''}${inherits(key) ? ' engagement-row--inherited' : ''}`}>
       <div className="engagement-row__label">
         <span>{label}</span>
         {isCircle && (
@@ -72,6 +77,8 @@ export default function EngagementSettings({
 
   return (
     <div className="engagement-settings">
+      <section className="settings-option-group">
+      <h3 className="settings-group-title">Automatic responses</h3>
       {row('reaction', 'Run agents when mentioned',
         <label className="engagement-toggle">
           <input
@@ -80,10 +87,12 @@ export default function EngagementSettings({
             checked={effective.reaction === 'push'}
             disabled={busy}
             onChange={e => {
-              if (e.target.checked && !window.confirm(
-                'Run agents on mention?\n\nAnyone in this Circle who @mentions one of your agents ' +
-                'can start it as a process on THIS machine.',
-              )) return
+              if (e.target.checked) {
+                setConfirmation({ title: 'Run agents when mentioned?', detail: scope === 'global'
+                  ? 'Members of Circles using this default can start your agents as processes on this machine by mentioning them.'
+                  : 'Anyone in this Circle who mentions one of your agents can start it as a process on this machine.', patch: { reaction: 'push' } })
+                return
+              }
               onChange({ reaction: e.target.checked ? 'push' : 'pull' })
             }}
           />
@@ -95,11 +104,10 @@ export default function EngagementSettings({
 
       {row('engagement_window_secs', 'Unthreaded follow-ups',
         <span className="engagement-number">
-          <input
-            type="number" min={0} step={30}
+          <NumberField min={0} step={30}
             value={effective.engagement_window_secs}
             disabled={busy}
-            onChange={e => onChange({ engagement_window_secs: Math.max(0, Number(e.target.value) || 0) })}
+            onCommit={value => onChange({ engagement_window_secs: value })}
             aria-label="Follow-up window in seconds"
           />
           <span>sec</span>
@@ -110,17 +118,19 @@ export default function EngagementSettings({
 
       {row('max_relay_turns', 'Hand-off chain limit',
         <span className="engagement-number">
-          <input
-            type="number" min={1} max={50}
+          <NumberField min={1} max={50}
             value={effective.max_relay_turns}
             disabled={busy}
-            onChange={e => onChange({ max_relay_turns: Math.max(1, Number(e.target.value) || 1) })}
+            onCommit={value => onChange({ max_relay_turns: value })}
             aria-label="Maximum agent turns in one chain"
           />
           <span>turns</span>
         </span>,
         `Agents may hand work to each other; a chain stops after ${effective.max_relay_turns} turns.`)}
 
+      </section>
+      <section className="settings-option-group">
+      <h3 className="settings-group-title">Room listeners</h3>
       {row('ambient', 'Agents that scry the room',
         <div className="engagement-agents">
           {agentNames.length === 0 && <span className="engagement-row__hint">No agents configured.</span>}
@@ -133,12 +143,12 @@ export default function EngagementSettings({
                   checked={on}
                   disabled={busy}
                   onChange={() => {
-                    if (!on && !window.confirm(
-                      `Let @${name} scry the room?\n\n` +
-                      'New, unaddressed human messages may be sent to this agent’s model provider. ' +
-                      'Selected listeners can run, which uses their model providers. ' +
-                      'The agent may reply or choose to stay quiet. Everyone can see that it is listening.',
-                    )) return
+                    if (!on) {
+                      setConfirmation({ title: `Let @${name} listen to the room?`,
+                        detail: 'New, unaddressed human messages may be sent to this agent’s model provider. Selected listeners can run, which uses their model providers. The agent may reply or stay quiet. Everyone can see that it is listening.',
+                        patch: { ambient: [...effective.ambient, name] } })
+                      return
+                    }
                     onChange({
                       ambient: on
                         ? effective.ambient.filter(a => a !== name)
@@ -159,22 +169,20 @@ export default function EngagementSettings({
               ? 'The warden decides which unaddressed messages these listeners get, and who answers. An agent\'s own message reaches it only with "Agents\' messages too" on, in the settings for all Circles.'
               : 'Listeners take turns on new, unaddressed human messages. Those selected can reply or stay quiet; the others wait for a later message. Short messages, recent speakers, and agent messages are skipped.')}
       {row('warden_mode', 'Warden',
-        <select className="border px-2 py-1" aria-label="Warden" disabled={busy}
-          value={effective.warden_mode ?? 'off'}
-          onChange={e => onChange({ warden_mode: e.target.value as 'off' | 'shadow' | 'act' })}>
-          <option value="off">Off</option>
-          <option value="shadow">Shadow</option>
-          <option value="act">On</option>
-        </select>,
+        <Select aria-label="Warden" disabled={busy} value={effective.warden_mode ?? 'off'}
+          onChange={value => onChange({ warden_mode: value as 'off' | 'shadow' | 'act' })}
+          options={[{ value: 'off', label: 'Off' }, { value: 'shadow', label: 'Shadow' }, { value: 'act', label: 'On' }]} />,
         effective.warden_mode === 'act'
           ? 'For each message nobody addressed, the warden decides whether an agent should answer, and how: one listener, several together, or a blind vote where two answer independently and one answer is posted. Choose its decider in the settings for all Circles.'
           : effective.warden_mode === 'shadow'
             ? 'Listeners still take turns as below. The warden records what it would have done, so you can compare before letting it decide.'
             : 'Experimental. The warden decides who answers messages nobody addressed, instead of taking turns.')}
+      <details className="settings-advanced">
+      <summary>Advanced listener settings</summary>
       {row('ambient_responders', warding ? 'Most listeners per message' : 'Listeners per message',
-        <input type="number" min={1} max={32} aria-label="Listeners per message" className="border px-2 py-1 w-20"
+        <NumberField min={1} max={32} aria-label="Listeners per message" className="border px-2 py-1 w-20"
           value={effective.ambient_responders ?? 1} disabled={busy}
-          onChange={e => onChange({ ambient_responders: Math.min(32, Math.max(1, Number(e.target.value) || 1)) })} />,
+          onCommit={value => onChange({ ambient_responders: value })} />,
         warding
           ? `The warden chooses 1 to ${effective.ambient_responders ?? 1} listeners per message. At least 2 lets it run a blind vote.`
           : 'Choose how many listeners may consider each message on this device. Agents take turns fairly; each may reply or stay quiet. Selected requests queue when execution slots are full.')}
@@ -188,17 +196,23 @@ export default function EngagementSettings({
           ? `Cycle through 1 to ${effective.ambient_responders ?? 1} listeners across messages, limited by who is eligible.`
           : 'Keep the same listener limit while rotating which agents get a turn.')}
       {row('ambient_backlog_tail', 'Messages read after a gap',
-        <input type="number" min={1} max={16} aria-label="Messages read after a gap" className="border px-2 py-1 w-20"
+        <NumberField min={1} max={16} aria-label="Messages read after a gap" className="border px-2 py-1 w-20"
           value={effective.ambient_backlog_tail ?? 1} disabled={busy}
-          onChange={e => onChange({ ambient_backlog_tail: Math.min(16, Math.max(1, Number(e.target.value) || 1)) })} />,
+          onCommit={value => onChange({ ambient_backlog_tail: value })} />,
         'When this device comes back to a room that has moved on — after a restart, a disconnection, or a peer syncing — this many of the most recent messages still get a turn. The rest are marked as read without one, so catching up costs the same as keeping up.')}
       {row('ambient_max_attempts', 'Tries before giving up',
-        <input type="number" min={1} max={8} aria-label="Tries before giving up" className="border px-2 py-1 w-20"
+        <NumberField min={1} max={8} aria-label="Tries before giving up" className="border px-2 py-1 w-20"
           value={effective.ambient_max_attempts ?? 2} disabled={busy}
-          onChange={e => onChange({ ambient_max_attempts: Math.min(8, Math.max(1, Number(e.target.value) || 2)) })} />,
+          onCommit={value => onChange({ ambient_max_attempts: value })} />,
         'If a listener fails to answer, the message passes to another one. This limits how many tries a single message gets before the room is told nobody could answer it.')}
 
 
+      </details>
+      </section>
+      {confirmation && <ConfirmDialog title={confirmation.title} confirmLabel="Enable" onClose={() => setConfirmation(null)}
+        onConfirm={() => { onChange(confirmation.patch); setConfirmation(null) }}>
+        {confirmation.detail}
+      </ConfirmDialog>}
     </div>
   )
 }
