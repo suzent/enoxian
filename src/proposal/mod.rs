@@ -105,33 +105,6 @@ pub fn validate_workspace_path(raw: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod validation_tests {
-    use super::*;
-    use crate::proposal::model::Proposal;
-
-    #[test]
-    fn proposal_paths_stay_inside_workspace() {
-        assert!(validate_workspace_path("src/main.rs").is_ok());
-        assert!(validate_workspace_path("../other-circle/secret.txt").is_err());
-        assert!(validate_workspace_path("./src/main.rs").is_err());
-        assert!(validate_workspace_path(".enox_proposals/proposals/x.json").is_err());
-        assert!(validate_storage_id("snapshot", "../escape").is_err());
-    }
-
-    #[test]
-    fn proposal_circle_must_match_route_circle() {
-        let proposal = Proposal::ambient(
-            "circle-a".into(),
-            uuid::Uuid::new_v4().to_string(),
-            uuid::Uuid::new_v4().to_string(),
-            vec!["safe.txt".into()],
-        );
-        assert!(validate_for_circle(&proposal, "circle-a").is_ok());
-        assert!(validate_for_circle(&proposal, "circle-b").is_err());
-    }
-}
-
 /// Resolve symlink aliases (including a not-yet-created leaf) and keep native
 /// hooks and cooperative locks on the same workspace-relative key.
 pub fn canonical_workspace_path(workspace: &Path, raw: &Path) -> Result<std::path::PathBuf> {
@@ -197,5 +170,32 @@ mod path_lock_tests {
         let outside = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), root.join("outside")).unwrap();
         assert!(canonical_workspace_path(&root, Path::new("outside/new")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+    use crate::proposal::model::Proposal;
+
+    #[test]
+    fn proposal_paths_stay_inside_workspace() {
+        assert!(validate_workspace_path("src/main.rs").is_ok());
+        assert!(validate_workspace_path("../other-circle/secret.txt").is_err());
+        assert!(validate_workspace_path("./src/main.rs").is_err());
+        assert!(validate_workspace_path(".enox_proposals/proposals/x.json").is_err());
+        assert!(validate_storage_id("snapshot", "../escape").is_err());
+    }
+
+    #[test]
+    fn proposal_circle_must_match_route_circle() {
+        let proposal = Proposal::ambient(
+            "circle-a".into(),
+            uuid::Uuid::new_v4().to_string(),
+            uuid::Uuid::new_v4().to_string(),
+            vec!["safe.txt".into()],
+        );
+        assert!(validate_for_circle(&proposal, "circle-a").is_ok());
+        assert!(validate_for_circle(&proposal, "circle-b").is_err());
     }
 }

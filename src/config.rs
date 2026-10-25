@@ -361,101 +361,6 @@ pub fn load_all() -> Result<Vec<CircleConfig>> {
     Ok(configs)
 }
 
-#[cfg(test)]
-mod workspace_tests {
-    use super::*;
-
-    fn circle(id: &str, name: &str, workspace: &std::path::Path) -> CircleConfig {
-        CircleConfig {
-            join_grant: None,
-            circle_id: id.into(),
-            circle_name: name.into(),
-            psk_hex: String::new(),
-            keypair_proto_hex: String::new(),
-            workspace_dir: workspace.to_string_lossy().into_owned(),
-            admin_pubkey_hex: String::new(),
-            disabled: false,
-            force_relay: false,
-            peers: vec![],
-            relay_addrs: vec![],
-            rendezvous_addrs: vec![],
-            join_policy: JoinPolicy::Auto,
-            owner: String::new(),
-            transport: Default::default(),
-            iroh_relays: vec![],
-        }
-    }
-
-    #[test]
-    fn old_config_defaults_force_relay_to_false() {
-        let raw = r#"
-circle_id = "old-circle"
-circle_name = "Old"
-psk_hex = ""
-keypair_proto_hex = ""
-"#;
-        let config: CircleConfig = toml::from_str(raw).unwrap();
-        assert!(!config.force_relay);
-    }
-
-    #[test]
-    fn old_configs_stay_on_libp2p_and_iroh_is_opt_in() {
-        let raw = r#"
-circle_id = "old-circle"
-circle_name = "Old"
-psk_hex = ""
-keypair_proto_hex = ""
-"#;
-        let config: CircleConfig = toml::from_str(raw).unwrap();
-        assert_eq!(config.transport, Transport::Libp2p);
-        assert!(config.iroh_relays.is_empty());
-
-        let iroh: CircleConfig = toml::from_str(&format!(
-            "{raw}transport = \"iroh\"\niroh_relays = [\"https://relay.example\"]\n"
-        ))
-        .unwrap();
-        assert_eq!(iroh.transport, Transport::Iroh);
-        assert_eq!(iroh.iroh_relays, ["https://relay.example"]);
-    }
-
-    #[test]
-    fn detects_workspace_owned_by_another_circle() {
-        let root = tempfile::tempdir().unwrap();
-        let workspace = root.path().join("shared");
-        std::fs::create_dir_all(&workspace).unwrap();
-        let existing = vec![circle("circle-a", "A", &workspace)];
-
-        let conflict = workspace_conflict(&workspace, "circle-b", &existing)
-            .unwrap()
-            .expect("same workspace must conflict");
-        assert_eq!(conflict.circle_id, "circle-a");
-        assert!(workspace_conflict(&workspace, "circle-a", &existing)
-            .unwrap()
-            .is_none());
-    }
-
-    #[test]
-    fn relative_aliases_normalize_to_the_same_workspace() {
-        let root = tempfile::tempdir().unwrap();
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        let alias = workspace.join("child").join("..");
-        assert!(workspace_paths_equal(&workspace, &alias).unwrap());
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn workspace_comparison_is_case_insensitive_on_windows() {
-        let root = tempfile::tempdir().unwrap();
-        let workspace = root.path().join("CaseSensitiveLookingName");
-        assert!(workspace_paths_equal(
-            &workspace,
-            &PathBuf::from(workspace.to_string_lossy().to_lowercase())
-        )
-        .unwrap());
-    }
-}
-
 // ── Secrets on disk ───────────────────────────────────────────────────────────
 
 /// Write a file that holds key material, readable only by its owner.
@@ -739,5 +644,100 @@ mod secret_file_tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "psk_hex = \"new\"");
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    fn circle(id: &str, name: &str, workspace: &std::path::Path) -> CircleConfig {
+        CircleConfig {
+            join_grant: None,
+            circle_id: id.into(),
+            circle_name: name.into(),
+            psk_hex: String::new(),
+            keypair_proto_hex: String::new(),
+            workspace_dir: workspace.to_string_lossy().into_owned(),
+            admin_pubkey_hex: String::new(),
+            disabled: false,
+            force_relay: false,
+            peers: vec![],
+            relay_addrs: vec![],
+            rendezvous_addrs: vec![],
+            join_policy: JoinPolicy::Auto,
+            owner: String::new(),
+            transport: Default::default(),
+            iroh_relays: vec![],
+        }
+    }
+
+    #[test]
+    fn old_config_defaults_force_relay_to_false() {
+        let raw = r#"
+circle_id = "old-circle"
+circle_name = "Old"
+psk_hex = ""
+keypair_proto_hex = ""
+"#;
+        let config: CircleConfig = toml::from_str(raw).unwrap();
+        assert!(!config.force_relay);
+    }
+
+    #[test]
+    fn old_configs_stay_on_libp2p_and_iroh_is_opt_in() {
+        let raw = r#"
+circle_id = "old-circle"
+circle_name = "Old"
+psk_hex = ""
+keypair_proto_hex = ""
+"#;
+        let config: CircleConfig = toml::from_str(raw).unwrap();
+        assert_eq!(config.transport, Transport::Libp2p);
+        assert!(config.iroh_relays.is_empty());
+
+        let iroh: CircleConfig = toml::from_str(&format!(
+            "{raw}transport = \"iroh\"\niroh_relays = [\"https://relay.example\"]\n"
+        ))
+        .unwrap();
+        assert_eq!(iroh.transport, Transport::Iroh);
+        assert_eq!(iroh.iroh_relays, ["https://relay.example"]);
+    }
+
+    #[test]
+    fn detects_workspace_owned_by_another_circle() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("shared");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let existing = vec![circle("circle-a", "A", &workspace)];
+
+        let conflict = workspace_conflict(&workspace, "circle-b", &existing)
+            .unwrap()
+            .expect("same workspace must conflict");
+        assert_eq!(conflict.circle_id, "circle-a");
+        assert!(workspace_conflict(&workspace, "circle-a", &existing)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn relative_aliases_normalize_to_the_same_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let alias = workspace.join("child").join("..");
+        assert!(workspace_paths_equal(&workspace, &alias).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn workspace_comparison_is_case_insensitive_on_windows() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("CaseSensitiveLookingName");
+        assert!(workspace_paths_equal(
+            &workspace,
+            &PathBuf::from(workspace.to_string_lossy().to_lowercase())
+        )
+        .unwrap());
     }
 }
