@@ -39,24 +39,9 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-10-26
+
 ### Added
-
-- Warden has a dedicated global settings page with themed controls, grouped
-  connection and test settings, and a collapsible advanced policy editor.
-  Testing a message or saving a key preserves other unsaved drafts; leaving
-  the page or resetting its policy asks before discarding edits.
-
-
-- File actions are available from right-click or the overflow menu, including
-  copying the Circle-relative path. New file can import UTF-8 text files
-  without overwriting existing files; chat accepts downloadable file
-  attachments as well as images.
-- Global and Circle settings share themed controls, keyboard navigation,
-  confirmation dialogs, responsive layouts and clearer save feedback.
-  Sidebar resizing follows the pointer without delayed layout transitions;
-  file previews use one return action and preserve preview/source mode when
-  opened in the center.
-
 
 - The warden (experimental, off by default): for messages nobody addressed, it
   decides whether an agent should answer and how — nobody, one listener,
@@ -66,19 +51,21 @@ refuses to publish a version whose section is missing or empty.
   choices beside rotation, or `act` to let it decide. It decides by built-in
   rules, or asks a decision model through a LiteLLM proxy's `/v1/systemone` or
   `/v1/decisions` route (the proxy's address alone is enough), or any server
-  that speaks one of them. Its key is
-  stored on this device only and is never shown again. A turn it assigns is
-  told it is being asked, so a lone listener no longer passes on a direct
-  question. With **Agents' messages too** on, every new message is the
-  warden's, an agent's included, so agents can carry a conversation on without
-  a person: an answer that is wrong or asks something gets the next reply. Each
-  such turn is charged to the person's message at the root and stops at the
-  hand-off limit. The spec can calibrate the decider's probabilities. Every
-  decision is recorded on this device, and
+  that speaks one of them. Its key is stored on this device only and is never
+  shown again. A turn it assigns is told it is being asked, so a lone listener
+  no longer passes on a direct question. With **Agents' messages too** on,
+  every new message is the warden's, an agent's included, so agents can carry
+  a conversation on without a person: an answer that is wrong or asks
+  something gets the next reply. Each such turn is charged to the person's
+  message at the root and stops at the hand-off limit. The spec can calibrate
+  the decider's probabilities. Every decision is recorded on this device, and
   `enox warden episodes` joins each with what became of it, for experiments.
   The policy it decides by is a spec file that can be edited in the panel or
   replaced with `enox warden spec apply`.
-
+- The warden has its own global settings page, with grouped connection and
+  test settings and a collapsible advanced policy editor. Testing a message or
+  saving a key keeps your other unsaved edits; leaving the page or resetting
+  the policy asks before discarding them.
 - Agent cards: each agent has a card in the shared folder at
   `agents/<owner>/<device>/<agent>.md`, written by its own device. The card
   opens with facts the device keeps current — the agent and model it reports
@@ -88,16 +75,6 @@ refuses to publish a version whose section is missing or empty.
   agent's, so it knows who to hand work to. A new Circle's `AGENTS.md` points
   to the cards. Cards are ordinary shared files: edits, by a member or by the
   agent, are reviewed like any other change.
-
-- Device Settings now provides ACP sign-in checks, interactive login, cancellation, and verified status independently of installation.
-
-- `GET /circles/<id>/api/chat/executions` reports what became of each listed
-  run on this device: the current status of the proposals it produced
-  (accepted, rejected, reverted, ...) and, for an unaddressed turn that
-  passed, whether nobody answered and the same person soon called an agent by
-  name. Both are derived when the runs are listed and are never shared with
-  the Circle.
-
 - The activity panel shows what each agent turn on this device cost, how many
   tokens it used and how full its context was, plus a line totalling today's
   spend for agents that scry the room and for addressed requests. The figures
@@ -106,23 +83,19 @@ refuses to publish a version whose section is missing or empty.
   reported cost is the agent's figure, not a bill: on a subscription it may be
   the API-price equivalent. Spend is shown only on the device whose agent ran
   and is never shared with the Circle.
-
-### Fixed
-
-- Renaming or moving a file in the shared folder from the app no longer brings
-  the old path back. The old path was dropped without being recorded as
-  deleted, so another device that still had it re-created it on its next
-  sync. The moved file's content is also no longer doubled when the daemon
-  noticed the move before the rename finished.
-
-- A message sent after picking a mention no longer has two spaces after it.
-
-- ACP sign-in checks support relative working directories, and initialization retains compatibility with string-encoded protocol version 1.
-- Failed ACP session restores preserve the saved conversation instead of silently starting over. Protocol version, frame, queue, and streamed-output limits now fail explicitly.
-- Single-line chat inputs, including @mentions, align with the attach and send buttons.
-
-- An agent's reply is no longer cut short when the agent reports usage in the
-  middle of its answer; only the part after the report used to be posted.
+- Device Settings checks whether an ACP agent is signed in, and can log in
+  interactively or cancel a login, with its status verified independently of
+  whether the agent is installed.
+- File actions are available from right-click or the overflow menu, including
+  copying a file's Circle-relative path. New file can import UTF-8 text files
+  without overwriting existing ones, and chat accepts downloadable file
+  attachments as well as images.
+- `GET /circles/<id>/api/chat/executions` reports what became of each listed
+  run on this device: the current status of the proposals it produced
+  (accepted, rejected, reverted, ...) and, for an unaddressed turn that
+  passed, whether nobody answered and the same person soon called an agent by
+  name. Both are derived when the runs are listed and are never shared with
+  the Circle.
 
 ### Changed
 
@@ -137,7 +110,6 @@ refuses to publish a version whose section is missing or empty.
   reads the conversation. An explicit reply still goes where it points.
 - A reply chosen by the warden says `after <agent>` rather than `via @<agent>`,
   which now means only that the agent before named it.
-
 - A draft an agent revisits because someone else answered first is now called
   *veiled* (formerly *held*): the agent unveils it, rewrites it or withdraws
   it. The `hold=` values in a run's detail are unchanged.
@@ -145,21 +117,43 @@ refuses to publish a version whose section is missing or empty.
   *reading the room*, and naming an agent with an `@mention` *calls* it rather
   than summoning it. Device Settings, the activity panel, `enox runs` and the
   guides use the new words; `agents.toml` keys such as `ambient` are unchanged.
+- Global and Circle settings share themed controls, keyboard navigation,
+  confirmation dialogs, responsive layouts and clearer save feedback. Sidebar
+  resizing follows the pointer without delayed layout transitions, and file
+  previews use one return action and keep their preview/source mode when
+  opened in the center.
+- ACP limits on protocol version, frame size, queue length and streamed output
+  now fail explicitly instead of being exceeded silently.
+
+### Fixed
+
+- Renaming or moving a file in the shared folder from the app no longer brings
+  the old path back. The old path was dropped without being recorded as
+  deleted, so another device that still had it re-created it on its next
+  sync. The moved file's content is also no longer doubled when the daemon
+  noticed the move before the rename finished.
+- An agent's reply is no longer cut short when the agent reports usage in the
+  middle of its answer; only the part after the report used to be posted.
+- A failed ACP session restore keeps the saved conversation instead of
+  silently starting over. ACP sign-in checks accept relative working
+  directories, and initialization accepts a string-encoded protocol version 1.
+- A message sent after picking a mention no longer has two spaces after it.
+- Single-line chat inputs, including @mentions, line up with the attach and
+  send buttons.
 
 ### Security
 
-- Updated the MLS cryptography dependencies to remove the vulnerable crypto-bigint
-  0.5 implementation (RUSTSEC-2026-0387), using a pinned upstream OpenMLS fix.
-  Building from source now requires Rust 1.94 or newer.
-
-- The web app's HTML sanitizer, DOMPurify, is updated to 3.4.17 for GHSA-cg2g-xh64-v4q7,
-  GHSA-mrv2-3pqr-j5jr and GHSA-c6gr-qvv4-5v3f.
-
-- ACP permission requests without a matching allow/deny option are cancelled instead of selecting an unrelated option.
-
+- Updated the MLS cryptography dependencies to remove the vulnerable
+  crypto-bigint 0.5 implementation (RUSTSEC-2026-0387), using a pinned
+  upstream OpenMLS fix. Building from source now requires Rust 1.94 or newer.
+- The web app's HTML sanitizer, DOMPurify, is updated to 3.4.17 for
+  GHSA-cg2g-xh64-v4q7, GHSA-mrv2-3pqr-j5jr and GHSA-c6gr-qvv4-5v3f.
+- ACP permission requests without a matching allow/deny option are cancelled
+  instead of selecting an unrelated option.
 - Updated the bundled TLS certificate dependencies (`rustls-webpki` 0.103.16,
-  `webpki-roots` and `webpki-root-certs` 1.0.10), so certificates issued through
-  distrusted intermediates, including the emSign ones, are no longer accepted.
+  `webpki-roots` and `webpki-root-certs` 1.0.10), so certificates issued
+  through distrusted intermediates, including the emSign ones, are no longer
+  accepted.
 
 ## [0.12.0] — 2026-10-19
 
@@ -1241,7 +1235,8 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/suzent/enoxian/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/suzent/enoxian/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/suzent/enoxian/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/suzent/enoxian/compare/v0.9.2...v0.10.0
