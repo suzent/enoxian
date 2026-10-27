@@ -51,6 +51,11 @@ refuses to publish a version whose section is missing or empty.
   `turn_end` event reports what each turn of an agent this device runs used,
   in tokens and cost, when the agent says. The log stays on the device.
 
+### Fixed
+
+- HTML files previewed in the center editor fill the whole pane again, instead
+  of showing a short strip with the rest of the page cut off.
+
 ## [0.13.1] — 2026-10-27
 
 ### Added
