@@ -41,6 +41,11 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- A new device is walked through two optional steps before entering its
+  Circle: enable the coding agents found on it (or install missing ones),
+  then choose who answers unaddressed messages. TypeSafe Jev and OpenAI
+  Decisions are built-in Warden deciders alongside the built-in rules; paste
+  a key, try a sample message, and turn the Warden on in one step.
 - Warden has a dedicated global settings page with themed controls, grouped
   connection and test settings, and a collapsible advanced policy editor.
   Testing a message or saving a key preserves other unsaved drafts; leaving
