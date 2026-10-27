@@ -585,6 +585,19 @@ async fn run_acp(
     if let (Some(state), Some(usage)) = (&coordination, &usage) {
         super::reaction::record_usage(state, &lease.record.session.session_id, usage.clone());
     }
+    if let Some(state) = &coordination {
+        let stop_reason = match &result {
+            Ok(turn) => turn.stop_reason.clone(),
+            Err(_) if stop.is_cancelled() => "cancelled".into(),
+            Err(_) => "error".into(),
+        };
+        let _ = state.events.send(crate::control::CircleEvent::TurnEnd {
+            agent_id: actor.agent_id.to_string(),
+            run_id: lease.record.session.session_id.clone(),
+            stop_reason,
+            usage: usage.clone(),
+        });
+    }
     acp.shutdown().await;
     let turn = match result {
         // Stopped, and killed for not winding down in time. Still a stop: the

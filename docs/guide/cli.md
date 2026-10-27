@@ -894,8 +894,33 @@ enox [--circle <NAME>] session finish
 Stream all live circle events. Blocks until Ctrl+C.
 
 ```bash
-enox [--circle <NAME>] watch
+enox [--circle <NAME>] watch [--json] [--log <PATH>] [--device <NAME>] [--run-id <ID>]
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Print one JSON object per line instead of the readable form |
+| `--log <PATH>` | Also append each event as a JSON line to `PATH` |
+| `--device <NAME>` | Stamp `NAME` as `device` instead of this device's label |
+| `--run-id <ID>` | Stamp every line with `run_id` |
+
+Each JSON line looks like this:
+
+```json
+{"ts":"2026-10-27T18:00:00.123Z","device":"laptop","peer_id":"12D3KooW…","circle_id":"…",
+ "run_id":"pilot-0","kind":"turn_end","agent":"claude",
+ "usage":{"input":2,"output":4,"cached_read":0,"cached_write":31518,"total":31524,
+          "cost":0.315,"currency":"USD","context_used":33477,"context_size":200000},
+ "payload":{"agent_id":"claude","run_id":"…","stop_reason":"end_turn","usage":{…}}}
+```
+
+`ts` is when this device saw the event (UTC, milliseconds). `kind` is the
+event's type and `payload` the rest of it; `agent` is the agent the event names,
+when it names one. A `turn_end` is raised when an agent this device runs
+finishes a turn, and carries what the agent reported the turn used; figures the
+agent did not report are left out. The log stays on this device: nothing is
+sent to the Circle, so to see a run across devices, run `watch --log` on each
+and merge the files by `ts`.
 
 ---
 

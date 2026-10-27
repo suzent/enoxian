@@ -900,6 +900,17 @@ pub enum CircleEvent {
     WorkspaceEventAppended {
         event_id: String,
     },
+    /// An agent this device runs finished a turn. Carries what the agent said
+    /// the turn used, like the execution inbox entry for the same run: this
+    /// device's own account, raised on this device only and never sent to
+    /// peers. `usage` is absent when the agent reported nothing.
+    TurnEnd {
+        agent_id: String,
+        run_id: String,
+        stop_reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<crate::agent::usage::TurnUsage>,
+    },
 }
 
 #[cfg(test)]

@@ -46,6 +46,11 @@ refuses to publish a version whose section is missing or empty.
   `task_claim_lost` event naming who holds the task, instead of finding out
   only by checking `enox tasks`.
 
+- `enox watch --json` prints one JSON line per event, stamped with the time,
+  device and peer id, and `--log <path>` keeps those lines in a file. A new
+  `turn_end` event reports what each turn of an agent this device runs used,
+  in tokens and cost, when the agent says. The log stays on the device.
+
 ## [0.13.1] — 2026-10-27
 
 ### Added
