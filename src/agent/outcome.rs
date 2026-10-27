@@ -190,6 +190,7 @@ mod tests {
             admitted_at: 100,
             updated_at: 160,
             usage: None,
+            reply: None,
         }
     }
 

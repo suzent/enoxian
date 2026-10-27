@@ -327,6 +327,12 @@ async fn main() -> anyhow::Result<()> {
                             )
                             .await
                         }
+                        Some(InboxAction::Inject { text, from, wait }) => {
+                            enoxian::commands::inbox::inject(
+                                &client, &base, args.agent, text, from, wait, cli.json,
+                            )
+                            .await
+                        }
                         Some(InboxAction::Release { message_id }) => {
                             enoxian::commands::inbox::release(
                                 &client,

@@ -68,6 +68,10 @@ pub struct AppState {
     /// attribute actions to a label vouched for by this device.
     pub actor_tokens: crate::actor_token::ActorTokenRegistry,
     pub execution_inbox: Arc<RwLock<Option<std::sync::Weak<crate::agent::inbox::Inbox>>>>,
+    /// Wakes the execution worker. Held here so work admitted from outside the
+    /// reaction loop (a private delivery) starts at once rather than on the
+    /// next reconcile tick.
+    pub execution_wake: Arc<tokio::sync::Notify>,
     /// The direct addresses the Iroh endpoint can be reached on, as
     /// `/ip4/<ip>/udp/<port>/quic-v1/p2p/<peer>`. Invites carry the best one
     /// as a hint, so a joiner on the same network need not go via a relay.
@@ -598,6 +602,7 @@ impl AppState {
             peer_id,
             actor_tokens: crate::actor_token::ActorTokenRegistry::default(),
             execution_inbox: Arc::new(RwLock::new(None)),
+            execution_wake: Arc::new(tokio::sync::Notify::new()),
             p2p_direct_addrs: Arc::new(RwLock::new(Vec::new())),
             p2p_home_relay: Arc::new(RwLock::new(None)),
             peer_connections: Arc::new(RwLock::new(HashMap::new())),

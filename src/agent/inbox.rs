@@ -97,6 +97,11 @@ pub struct Entry {
     /// account: shown in its activity panel, never published with the receipt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<super::usage::TurnUsage>,
+    /// What the agent answered, for a private delivery only: that answer goes
+    /// back to whoever delivered it rather than to the room, so this is where
+    /// it lives. Local like `usage`, and never published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -394,6 +399,7 @@ impl Inbox {
             admitted_at: now,
             updated_at: now,
             usage: None,
+            reply: None,
         });
         self.persist(&next)?;
         *current = next;
@@ -429,6 +435,7 @@ impl Inbox {
             admitted_at: now,
             updated_at: now,
             usage: None,
+            reply: None,
         };
         let mut displaced = Vec::new();
         if aggregate.values().sum::<usize>() >= device_limit {
@@ -548,6 +555,23 @@ impl Inbox {
             return Ok(());
         };
         entry.usage = Some(usage);
+        self.persist(&next)?;
+        *current = next;
+        Ok(())
+    }
+
+    /// Record what a running private turn replied. A no-op once it has ended.
+    pub fn record_reply(&self, run_id: &str, reply: String) -> Result<()> {
+        let mut current = self.snapshot.lock().unwrap();
+        let mut next = current.clone();
+        let Some(entry) = next
+            .entries
+            .iter_mut()
+            .find(|e| e.run_id == run_id && e.status == Status::Running)
+        else {
+            return Ok(());
+        };
+        entry.reply = Some(reply);
         self.persist(&next)?;
         *current = next;
         Ok(())

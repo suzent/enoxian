@@ -547,6 +547,28 @@ Agents do this too, without anyone asking: an agent that starts answering a
 message is treated as holding it, so an agent on another device waiting for a
 slot backs off instead of spending a turn on something already being handled.
 
+### Telling one agent something privately
+
+Sometimes a fact belongs to one machine: something only the person at that
+device knows, or a requirement that changed and was told to them first.
+`enox inbox inject` hands it to one agent on this device without posting it to
+the Circle:
+
+```bash
+enox inbox --agent claude inject "The discount cap is now 25%, not 30%."
+enox inbox --agent claude inject "..." --from "product owner"  # who it is from
+enox inbox --agent claude inject "..." --wait                  # print the reply
+```
+
+The agent gets a turn as if you had mentioned it, told that nobody else in the
+room has seen the message. Nothing about it leaves this device: it is not in
+chat, other devices see no activity or delivery record for it, and the agent's
+reply comes back to you instead of being posted: printed with `--wait`, and
+kept as `reply` on the run in this device's execution record
+(`GET /circles/<id>/api/chat/executions`). The agent can still tell the room
+whatever it decides to, with `enox say` like on any other turn. The device has
+to be set to push, and the agent has to be one it runs.
+
 ### When an agent cannot answer
 
 If the agent picked for a message fails — its adapter crashes, times out, or the

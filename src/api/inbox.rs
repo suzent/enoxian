@@ -9,6 +9,9 @@
 //! activity, so every device's drain sees it and backs off (see
 //! [`crate::agent::claims`]). It expires by itself, which is what stops a claim
 //! nobody follows up on from silencing a message for good.
+//!
+//! One route goes the other way round: `inject` queues a private message for
+//! one local agent without posting it anywhere (see [`crate::agent::private`]).
 
 use crate::agent::claims;
 use crate::agent::label::Roster;
@@ -222,6 +225,115 @@ fn set_claim(
     }
 }
 
+#[derive(Deserialize)]
+pub struct InjectRequest {
+    /// The agent on this device to tell.
+    pub agent: String,
+    pub text: String,
+    /// Who the agent is told said it. Defaults to this device's member.
+    pub from: Option<String>,
+}
+
+/// Tell one agent on this device something the rest of the Circle does not
+/// hear (see [`crate::agent::private`]).
+///
+/// Nothing is written to the control doc. The turn is queued on this device's
+/// execution inbox and runs like an addressed mention, except that its reply
+/// is kept on the inbox entry instead of posted to the room.
+pub async fn inject(
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
+    Json(req): Json<InjectRequest>,
+) -> Response {
+    let Some(state) = daemon.get(&circle_id) else {
+        return not_found("circle not found");
+    };
+    let inbox = state
+        .execution_inbox
+        .read()
+        .unwrap()
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade);
+    let Some(inbox) = inbox else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "execution owner unavailable; is this Circle running?"})),
+        )
+            .into_response();
+    };
+    match inject_into(
+        &state,
+        &inbox,
+        &crate::agent::config::AgentConfig::load(),
+        req,
+    ) {
+        Ok(body) => Json(body).into_response(),
+        Err((status, error)) => (status, Json(json!({"error": error}))).into_response(),
+    }
+}
+
+/// Validate and admit a private delivery.
+pub(crate) fn inject_into(
+    state: &crate::state::AppState,
+    inbox: &crate::agent::inbox::Inbox,
+    cfg: &crate::agent::config::AgentConfig,
+    req: InjectRequest,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    use crate::agent::inbox::Admission;
+    let agent = req.agent.trim();
+    if req.text.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "nothing to say".into()));
+    }
+    if cfg.resolve(agent).is_none() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            // A config key, and "on this device" already says whose.
+            format!(
+                "no agent named `{}` is configured on this device",
+                req.agent.trim()
+            ),
+        ));
+    }
+    // Refused rather than queued: under pull nothing would ever run it, and a
+    // private delivery that silently never arrives is the worst outcome here.
+    if cfg.resolved(&state.circle_id).reaction != crate::agent::config::Reaction::Push {
+        return Err((
+            StatusCode::CONFLICT,
+            "this device is set to pull, so it launches no agent turns; switch it to push".into(),
+        ));
+    }
+    let request = crate::agent::private::request(state, agent, &req.text, req.from.as_deref());
+    let message_id = request.message.id.clone();
+    let now = chrono::Utc::now().timestamp();
+    match inbox.admit(request, cfg.resolved(&state.circle_id).max_relay_turns, now) {
+        Ok(Admission::Accepted { entry, displaced }) => {
+            for dropped in displaced {
+                tracing::info!(
+                    "[agent] private delivery displaced queued turn {}: {}",
+                    dropped.run_id,
+                    dropped.detail.as_deref().unwrap_or("queue full")
+                );
+            }
+            state.execution_wake.notify_one();
+            Ok(json!({
+                "run_id": entry.run_id,
+                "message_id": message_id,
+                "agent": entry.request.agent,
+                "status": entry.status,
+            }))
+        }
+        Ok(Admission::Rejected(entry)) => Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            entry.detail.unwrap_or_else(|| "not admitted".into()),
+        )),
+        Ok(Admission::Duplicate) => Err((StatusCode::CONFLICT, "already queued".into())),
+        Err(error) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("execution inbox could not be saved: {error}"),
+        )),
+    }
+}
+
 /// Why a message id did not resolve.
 enum Lookup {
     TooShort,
@@ -280,4 +392,84 @@ fn not_found(error: &str) -> Response {
 
 fn bad_request(error: &str) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::config::{AgentCommand, AgentConfig, Reaction};
+    use crate::agent::inbox::{Inbox, Status};
+
+    fn state(dir: &std::path::Path) -> crate::state::AppState {
+        crate::state::AppState::new(
+            "c1".into(),
+            "circle".into(),
+            dir.to_path_buf(),
+            dir.to_path_buf(),
+            String::new(),
+            "suzy".into(),
+            1,
+            "local".into(),
+            crate::config::JoinPolicy::Manual,
+            "owner".into(),
+            crate::mls::new_mls_state(crate::mls::MlsIdentity::generate("local").unwrap(), None),
+        )
+    }
+
+    fn push() -> AgentConfig {
+        let mut cfg = AgentConfig {
+            reaction: Reaction::Push,
+            ..Default::default()
+        };
+        cfg.agents.insert("claude".into(), AgentCommand::default());
+        cfg
+    }
+
+    fn ask(agent: &str, text: &str) -> InjectRequest {
+        InjectRequest {
+            agent: agent.into(),
+            text: text.into(),
+            from: None,
+        }
+    }
+
+    #[test]
+    fn inject_queues_a_private_turn_and_posts_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path());
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let body = inject_into(&state, &inbox, &push(), ask("claude", "cap is 25%")).unwrap();
+
+        let entry = &inbox.entries()[0];
+        assert_eq!(body["run_id"], entry.run_id.as_str());
+        assert_eq!(entry.status, Status::Pending);
+        assert_eq!(entry.request.agent, "claude");
+        assert_eq!(entry.request.task, "cap is 25%");
+        assert_eq!(
+            entry.request.message.agent_id, "suzy",
+            "said by this device's member"
+        );
+        assert!(!entry.request.ambient);
+        assert!(crate::agent::private::is_private(&entry.request.message.id));
+        assert_eq!(body["message_id"], entry.request.message.id.as_str());
+        assert!(state.transcript().is_empty());
+    }
+
+    #[test]
+    fn inject_refuses_what_would_never_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path());
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let status = |cfg: &AgentConfig, req| inject_into(&state, &inbox, cfg, req).unwrap_err().0;
+
+        assert_eq!(status(&push(), ask("codex", "hi")), StatusCode::NOT_FOUND);
+        assert_eq!(
+            status(&push(), ask("claude", "  ")),
+            StatusCode::BAD_REQUEST
+        );
+        let mut pull = push();
+        pull.reaction = Reaction::Pull;
+        assert_eq!(status(&pull, ask("claude", "hi")), StatusCode::CONFLICT);
+        assert!(inbox.entries().is_empty());
+    }
 }

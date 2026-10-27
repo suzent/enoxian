@@ -438,6 +438,19 @@ pub enum InboxAction {
         /// Message id, or an unambiguous prefix of one
         message_id: String,
     },
+    /// Tell one agent on this device something privately: it is not posted to
+    /// the Circle, other devices never see it, and the agent's reply comes back
+    /// here instead of going to the room. Needs `--agent` and a push device.
+    Inject {
+        /// What to tell the agent
+        text: String,
+        /// Who the agent is told said it (default: this device's member)
+        #[arg(long)]
+        from: Option<String>,
+        /// Wait for the turn to finish and print the agent's reply
+        #[arg(long)]
+        wait: bool,
+    },
 }
 
 #[derive(Parser)]
@@ -757,6 +770,28 @@ mod tests {
                 action: Some(InboxAction::Release { .. }),
                 ..
             })
+        ));
+
+        let cli = AgentCli::try_parse_from([
+            "enox",
+            "inbox",
+            "--agent",
+            "claude",
+            "inject",
+            "cap is 25%",
+            "--from",
+            "pm",
+            "--wait",
+        ])
+        .unwrap();
+        let AgentCommands::Inbox(args) = cli.command else {
+            panic!("expected inbox");
+        };
+        assert_eq!(args.agent.as_deref(), Some("claude"));
+        assert!(matches!(
+            args.action,
+            Some(InboxAction::Inject { ref text, from: Some(ref from), wait: true })
+                if text == "cap is 25%" && from == "pm"
         ));
     }
 

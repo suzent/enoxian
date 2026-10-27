@@ -51,6 +51,11 @@ refuses to publish a version whose section is missing or empty.
   `turn_end` event reports what each turn of an agent this device runs used,
   in tokens and cost, when the agent says. The log stays on the device.
 
+- `enox inbox --agent <name> inject "<text>"` tells one agent on this device
+  something privately. It is never posted to the Circle, other devices see no
+  trace of it, and the agent's reply comes back to you (`--wait` prints it)
+  instead of going to the room.
+
 ### Fixed
 
 - HTML files previewed in the center editor fill the whole pane again, instead

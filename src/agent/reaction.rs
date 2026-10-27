@@ -80,7 +80,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
             .collect::<Vec<_>>(),
         chrono::Utc::now().timestamp(),
     );
-    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    let wake = state.execution_wake.clone();
     let worker_token = token.child_token();
     let _cancel_worker = worker_token.clone().drop_guard();
     let mut worker = spawn_run_worker(state.clone(), inbox.clone(), wake.clone(), worker_token);
@@ -1629,9 +1629,13 @@ async fn run_next_cancellable(
             continue;
         }
         let _ = crate::api::execution::publish(state, inbox);
+        // A private delivery is admitted only through this device's own API,
+        // whatever name it is given as said by.
         let initiator = if request.ambient {
             Initiator::Ambient
-        } else if attributed_local(state, &request.message) {
+        } else if super::private::is_private(&request.message.id)
+            || attributed_local(state, &request.message)
+        {
             Initiator::Local
         } else {
             Initiator::RemoteMember
@@ -1741,6 +1745,11 @@ const UNANSWERED_PREFIX: &str = "No agent could answer";
 /// message. `prefix` is both the opening of the line and how a prior
 /// announcement of the same kind is recognised.
 fn announce(state: &AppState, message_id: &str, prefix: &str, text: String) {
+    // Nobody in the room knows the message exists. Its failure is recorded on
+    // the local inbox entry like any other.
+    if super::private::is_private(message_id) {
+        return;
+    }
     let now = chrono::Utc::now().timestamp();
     if answered_by_an_agent(state, message_id) {
         return;
@@ -1981,9 +1990,11 @@ async fn react(
     // Give the agent enough context about where it is. On a resumed session the
     // agent already has history, so we send a lean per-turn header; on a fresh
     // session we include the standing brief about the enoxian environment.
+    let private = super::private::is_private(message_id);
     let framing = match (ambient, warden) {
         (true, Some(_)) => super::context::Framing::Assigned,
         (true, None) => super::context::Framing::Overheard,
+        (false, _) if private => super::context::Framing::Private,
         (false, _) => super::context::Framing::Addressed,
     };
     let delivery = super::context::build_delivery(
@@ -2026,7 +2037,8 @@ async fn react(
     let launch = driver::launch_cancellable(
         driver::LaunchRequest {
             run_id: Some(run_id),
-            trigger_id: Some(message_id),
+            // A proposal names its trigger, and proposals replicate.
+            trigger_id: (!private).then_some(message_id),
             coordination: Some(state.clone()),
             agent_name: agent_id,
             cmd,
@@ -2152,6 +2164,19 @@ async fn react(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
+        .filter(|_| private)
+    {
+        // Said to the person at this device, not to the room: kept on the
+        // local inbox entry, where whoever delivered the message reads it.
+        record_reply(state, run_id, reply);
+        if let Some(cursor) = &delivery.cursor {
+            mark_seen(state, agent_id, cursor, &delivery.delivered);
+        }
+    } else if let Some(reply) = outcome
+        .reply
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
     {
         // Post under the agent's name, carrying this cascade's relay forward.
         // A mention in the reply may wake another agent, but only within the
@@ -2266,6 +2291,21 @@ pub(crate) fn record_usage(state: &AppState, run_id: &str, usage: super::usage::
     }
 }
 
+/// Record on the execution inbox what a private turn replied.
+fn record_reply(state: &AppState, run_id: &str, reply: &str) {
+    let inbox = state
+        .execution_inbox
+        .read()
+        .unwrap()
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade);
+    if let Some(inbox) = inbox {
+        if let Err(error) = inbox.record_reply(run_id, reply.to_string()) {
+            tracing::warn!("[agent] could not keep private reply for {run_id}: {error}; the reply was: {reply}");
+        }
+    }
+}
+
 /// The `detail` of an unaddressed turn that passed, a withdrawn veiled draft
 /// included. The activity panel shows it as is.
 pub(crate) const PASSED_DETAIL: &str = "No reply needed";
@@ -2323,6 +2363,11 @@ fn publish_agent_activity_detailed(
     live: bool,
     detail: Option<String>,
 ) {
+    // Activities replicate, and would show the room a turn on a message it
+    // has never seen.
+    if super::private::is_private(message_id) {
+        return;
+    }
     let now = chrono::Utc::now().timestamp();
     let activity = ChatActivity {
         activity_id: format!("agent:{message_id}:{agent_id}:{}", state.peer_id),
@@ -5417,6 +5462,62 @@ mod tests {
         assert!(
             sample.windows(2).any(|w| w[0] % 2 != w[1] % 2),
             "and different ids do not all land on the same count"
+        );
+    }
+
+    /// A private delivery runs like an addressed turn and leaves nothing in
+    /// the Circle: no chat line, no activity, no receipt. The reply stays on
+    /// the local inbox entry.
+    #[tokio::test]
+    async fn a_private_delivery_runs_without_touching_the_circle() {
+        use super::super::inbox::{Admission, Inbox, Status};
+        use yrs::{Map, ReadTxn, Transact};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = std::sync::Arc::new(Inbox::open(dir.path(), 100).unwrap());
+        *state.execution_inbox.write().unwrap() = Some(std::sync::Arc::downgrade(&inbox));
+        let agent = "fake-acp:burst";
+        let mut cfg = inbox_config();
+        cfg.agents.insert(
+            agent.into(),
+            serde_json::from_value(serde_json::json!({
+                "command": super::super::acp::tests::fake_agent_command(),
+                "driver": "acp",
+            }))
+            .unwrap(),
+        );
+        let request = super::super::private::request(
+            &state,
+            agent,
+            "The function was renamed to net_price.",
+            Some("requester"),
+        );
+        let message_id = request.message.id.clone();
+        assert!(super::super::private::is_private(&message_id));
+        assert!(matches!(
+            inbox.admit(request, 20, 100).unwrap(),
+            Admission::Accepted { .. }
+        ));
+
+        run_until_idle(&state, &inbox, &cfg).await;
+
+        let entry = inbox.entries().pop().unwrap();
+        assert_eq!(entry.status, Status::Completed, "{:?}", entry.detail);
+        assert_eq!(entry.reply.as_deref(), Some("the answer"));
+        assert!(state.transcript().is_empty(), "nothing was posted to chat");
+        let activities =
+            crate::api::chat::live_activities(&state, chrono::Utc::now().timestamp() - 3600)
+                .unwrap();
+        assert!(
+            activities
+                .iter()
+                .all(|a| a.message_id.as_deref() != Some(message_id.as_str())),
+            "no activity names the private message"
+        );
+        let txn = state.control.transact();
+        let receipts = txn.get_map(crate::api::execution::RECEIPTS_KEY);
+        assert!(
+            receipts.is_none_or(|map| map.get(&txn, &entry.run_id).is_none()),
+            "no receipt was published"
         );
     }
 }
