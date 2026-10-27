@@ -81,6 +81,8 @@ describe('settings recovery', () => {
     }))
     render(<DeviceSettings onClose={vi.fn()} />)
     const input = await screen.findByLabelText('Maximum agent turns in one chain')
+    // Type only once the loaded value is in, or its arrival resets the draft mid-typing.
+    await waitFor(() => expect(input).toHaveValue(20))
     await user.clear(input)
     await user.type(input, '32')
     expect(setEngagement).not.toHaveBeenCalled()
