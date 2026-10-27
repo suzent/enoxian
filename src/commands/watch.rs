@@ -48,12 +48,14 @@ pub async fn run(client: &reqwest::Client, base: &str, args: WatchArgs, json: bo
         .await?
         .error_for_status()?;
 
-    // An SSE line can be split across chunks; only whole lines are parsed.
-    let mut pending = String::new();
+    // An SSE line, or a character in it, can be split across chunks; only
+    // whole lines are decoded.
+    let mut pending: Vec<u8> = Vec::new();
     while let Some(chunk) = resp.chunk().await? {
-        pending.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(end) = pending.find('\n') {
-            let line: String = pending.drain(..=end).collect();
+        pending.extend_from_slice(&chunk);
+        while let Some(end) = pending.iter().position(|&b| b == b'\n') {
+            let bytes: Vec<u8> = pending.drain(..=end).collect();
+            let line = String::from_utf8_lossy(&bytes);
             let Some(data) = line.trim_end().strip_prefix("data: ") else {
                 continue;
             };
