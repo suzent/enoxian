@@ -56,6 +56,11 @@ refuses to publish a version whose section is missing or empty.
   trace of it, and the agent's reply comes back to you (`--wait` prints it)
   instead of going to the room.
 
+### Fixed
+
+- HTML files previewed in the center editor fill the whole pane again, instead
+  of showing a short strip with the rest of the page cut off.
+
 ## [0.13.1] — 2026-10-27
 
 ### Added
