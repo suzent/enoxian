@@ -2547,8 +2547,8 @@ button[role="tab"][aria-selected="true"] {
 }
 
 .file-preview--html {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
@@ -4871,8 +4871,8 @@ input.invite-link-value:focus-visible {
 .file-surface-return { display: inline-flex; align-items: center; gap: 6px; padding: 8px; font: 12px/1.4 var(--font-mono); cursor: pointer; }
 .file-quick-view .file-surface-header { grid-template-columns: auto minmax(0, 1fr) auto; }
 .file-surface-header__meta strong { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; text-transform: none; }
-.document-html-preview { display: flex; flex-direction: column; min-height: 100%; height: 100%; }
-.document-html-preview iframe { flex: 1; width: 100%; min-height: 240px; border: 0; }
+.document-html-preview { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 100%; height: 100%; }
+.document-html-preview iframe { flex: 1; width: 100%; height: auto; min-height: 240px; border: 0; }
 .markdown-preview--compact h1 { font-size: clamp(20px, 6cqi, 26px); }
 .markdown-preview--compact h2 { font-size: 19px; }
 .file-quick-view--full .markdown-preview--compact { font-size: 14px; line-height: 1.7; }
