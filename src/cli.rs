@@ -86,7 +86,11 @@ pub enum AgentCommands {
     /// Release a file lock
     Release { path: String },
     /// Stream live Circle events
-    Watch,
+    ///
+    /// With `--json`, prints one JSON object per line, each stamped with the
+    /// time, this device and its peer id. `--log` appends the same lines to a
+    /// file. The log is this device's own; nothing here is sent to the Circle.
+    Watch(WatchArgs),
     /// Disable a Circle (stops it and prevents auto-start)
     Disable,
     /// Enable a disabled Circle (allows auto-start)
@@ -393,6 +397,20 @@ pub enum WardenSpecAction {
     Apply { file: std::path::PathBuf },
     /// Go back to the built-in spec
     Reset,
+}
+
+#[derive(Parser)]
+pub struct WatchArgs {
+    /// Append each event as a JSON line to this file (created if missing)
+    #[arg(long, value_name = "PATH")]
+    pub log: Option<std::path::PathBuf>,
+    /// Name to stamp as `device` instead of this device's label
+    #[arg(long, value_name = "NAME")]
+    pub device: Option<String>,
+    /// Stamp every line with this `run_id`, for a harness that collects logs
+    /// from several devices
+    #[arg(long, value_name = "ID")]
+    pub run_id: Option<String>,
 }
 
 #[derive(Parser)]

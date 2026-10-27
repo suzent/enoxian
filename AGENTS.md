@@ -73,6 +73,10 @@ show as online in `enox who`), then check `enox tasks` — and check again
 before any large step. If the task now shows someone else, stop and pick
 another.
 
+If you are watching events (`enox watch`), a `task_claim_lost` event for your
+task means the same thing: sync settled on someone else's claim. Stop and pick
+another.
+
 ### 3. Lock high-risk files before editing
 
 For files that are shared and conflict-prone (e.g., configuration, schema files, shared utilities):
@@ -233,7 +237,7 @@ All commands support `--json` for scripting:
 enox status --json
 enox who --json
 enox tasks --json
-enox watch --json   # newline-delimited JSON event stream
+enox watch --json   # newline-delimited JSON event stream (--log <path> to keep it)
 ```
 
 ---

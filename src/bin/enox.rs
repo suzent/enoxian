@@ -285,7 +285,9 @@ async fn main() -> anyhow::Result<()> {
                     )
                     .await
                 }
-                AgentCommands::Watch => enoxian::commands::watch::run(&client, &base).await,
+                AgentCommands::Watch(args) => {
+                    enoxian::commands::watch::run(&client, &base, args, cli.json).await
+                }
                 AgentCommands::Member(args) => {
                     enoxian::commands::member::run(
                         &client,

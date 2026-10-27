@@ -292,6 +292,33 @@ pub struct Task {
     pub updated_at: DateTime<Utc>,
 }
 
+impl Task {
+    /// The [`CircleEvent::TaskClaimLost`] for `self` being replaced by
+    /// `newer`, when `self` was a claim made from `peer_id` and `newer` is
+    /// someone else's claim. Releasing or finishing the task is not a loss.
+    pub fn claim_lost_to(&self, newer: &Task, peer_id: &str) -> Option<CircleEvent> {
+        if self.status != TaskStatus::Claimed || newer.status != TaskStatus::Claimed {
+            return None;
+        }
+        if self.claimed_by_peer_id.as_deref() != Some(peer_id) {
+            return None;
+        }
+        let mine = (&self.claimed_by, &self.claimed_by_peer_id);
+        if mine == (&newer.claimed_by, &newer.claimed_by_peer_id) {
+            return None;
+        }
+        let taken_over = newer.taken_over_from_peer_id.as_deref() == Some(peer_id)
+            && newer.taken_over_from == self.claimed_by;
+        Some(CircleEvent::TaskClaimLost {
+            task_id: newer.task_id.clone(),
+            agent_id: self.claimed_by.clone().unwrap_or_default(),
+            claimed_by: newer.claimed_by.clone().unwrap_or_default(),
+            claimed_by_peer_id: newer.claimed_by_peer_id.clone().unwrap_or_default(),
+            taken_over,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
@@ -794,6 +821,24 @@ pub enum CircleEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         taken_over_from: Option<String>,
     },
+    /// A claim this device held was replaced by another claimant's, as a
+    /// peer's update arrived. Raised only on the device that lost the task.
+    ///
+    /// Claims are checked against what a device has synced, so two devices
+    /// out of sync can both claim one task and learn only later that one of
+    /// them does not hold it. Without this event the loser finds out by
+    /// polling `enox tasks`, if it ever looks.
+    TaskClaimLost {
+        task_id: String,
+        /// The claimant on this device that no longer holds the task.
+        agent_id: String,
+        /// Who holds it now.
+        claimed_by: String,
+        claimed_by_peer_id: String,
+        /// True when the other side took it with `--takeover`; false when two
+        /// claims raced and sync settled on the other one.
+        taken_over: bool,
+    },
     TaskUnclaimed {
         task_id: String,
         agent_id: String,
@@ -854,6 +899,17 @@ pub enum CircleEvent {
     /// An immutable M15 workspace event was appended locally or received.
     WorkspaceEventAppended {
         event_id: String,
+    },
+    /// An agent this device runs finished a turn. Carries what the agent said
+    /// the turn used, like the execution inbox entry for the same run: this
+    /// device's own account, raised on this device only and never sent to
+    /// peers. `usage` is absent when the agent reported nothing.
+    TurnEnd {
+        agent_id: String,
+        run_id: String,
+        stop_reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<crate::agent::usage::TurnUsage>,
     },
 }
 

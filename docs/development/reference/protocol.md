@@ -90,6 +90,7 @@ Paths below are relative to `/circles/<circle-id>`.
 |--------|-------------------|------------|
 | `task_created` | `task_id` | `POST /api/tasks` |
 | `task_claimed` | `task_id`, `agent_id` | `POST /api/claim` |
+| `task_claim_lost` | `task_id`, `agent_id`, `claimed_by`, `claimed_by_peer_id`, `taken_over` | a peer's claim replacing this device's (sync) |
 | `task_unclaimed` | `task_id`, `agent_id` | `POST /api/unclaim` |
 | `task_done` | `task_id` | `POST /api/done` |
 | `lock_acquired` | `path`, `agent_id` | `POST /api/bind` |
