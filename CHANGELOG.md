@@ -51,14 +51,15 @@ refuses to publish a version whose section is missing or empty.
   `turn_end` event reports what each turn of an agent this device runs used,
   in tokens and cost, when the agent says. The log stays on the device.
 
-## [0.13.1] — 2026-10-27
-
-### Added
-
 - `enox inbox --agent <name> inject "<text>"` tells one agent on this device
   something privately. It is never posted to the Circle, other devices see no
   trace of it, and the agent's reply comes back to you (`--wait` prints it)
   instead of going to the room.
+
+## [0.13.1] — 2026-10-27
+
+### Added
+
 - A new device is walked through two optional steps before entering its
   Circle: enable the coding agents found on it (or install missing ones),
   then choose who answers unaddressed messages. TypeSafe Jev and OpenAI
