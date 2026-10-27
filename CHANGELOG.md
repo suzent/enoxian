@@ -39,6 +39,13 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- A device whose task claim is replaced by another device's — taken over, or
+  lost when two devices claimed the same task while out of sync — now gets a
+  `task_claim_lost` event naming who holds the task, instead of finding out
+  only by checking `enox tasks`.
+
 ## [0.13.1] — 2026-10-27
 
 ### Added

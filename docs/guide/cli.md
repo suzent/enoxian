@@ -516,6 +516,10 @@ enox [--circle <NAME>] claim <TASK-ID> --takeover
 has gone away. The previous holder is recorded and shown by `enox tasks`
 (`→ you, taken over from them`) and in the `task_claimed` event.
 
+If your claim is replaced — taken over, or lost when two devices claimed the
+same task while out of sync — your device raises a `task_claim_lost` event
+(`enox watch`) naming who holds the task now. Stop and pick another task.
+
 ---
 
 ### `unclaim`

@@ -927,6 +927,7 @@ data: <json>\n\n
 | `lock_released` | `path`, `agent_id` | File lock released |
 | `task_created` | `task_id` | New task created |
 | `task_claimed` | `task_id`, `agent_id`, `taken_over_from`? | Task claimed; `taken_over_from` is set when it was taken over |
+| `task_claim_lost` | `task_id`, `agent_id`, `claimed_by`, `claimed_by_peer_id`, `taken_over` | Only on the device that lost: a claim it held was replaced by another claimant's when a peer's update synced. `taken_over` is true for a `--takeover`, false when two claims raced |
 | `task_unclaimed` | `task_id`, `agent_id` | Task released back to open |
 | `task_done` | `task_id` | Task marked done |
 | `presence_changed` | `agent_id` | Agent presence updated |

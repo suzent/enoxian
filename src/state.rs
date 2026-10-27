@@ -418,6 +418,7 @@ impl AppState {
         // APIs emit their own events; this covers updates that arrived via CRDT sync.
         let tasks_map = control.get_or_insert_map(TASKS_KEY);
         let events_for_tasks = events_tx.clone();
+        let peer_for_tasks = peer_id.clone();
         let tasks_sub = tasks_map.observe(
             move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
                 let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
@@ -434,8 +435,22 @@ impl AppState {
                                 });
                             }
                         }
-                        yrs::types::EntryChange::Updated(_, yrs::Out::Any(yrs::Any::String(s))) => {
+                        yrs::types::EntryChange::Updated(
+                            old,
+                            yrs::Out::Any(yrs::Any::String(s)),
+                        ) => {
                             if let Ok(task) = serde_json::from_str::<Task>(s) {
+                                let lost = match old {
+                                    yrs::Out::Any(yrs::Any::String(old)) => {
+                                        serde_json::from_str::<Task>(old).ok().and_then(|old| {
+                                            old.claim_lost_to(&task, &peer_for_tasks)
+                                        })
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(lost) = lost {
+                                    let _ = events_for_tasks.send(lost);
+                                }
                                 match task.status {
                                     TaskStatus::Claimed => {
                                         let _ = events_for_tasks.send(CircleEvent::TaskClaimed {
@@ -965,7 +980,8 @@ pub fn classify_ip(ip: std::net::IpAddr) -> ConnectionKind {
 mod tests {
     use super::{AppState, ConnectionKind};
     use crate::control::{
-        AgentStatus, CircleEvent, MemberEntry, MemberRole, Presence, MEMBER_LIST_KEY, PRESENCE_KEY,
+        AgentStatus, CircleEvent, MemberEntry, MemberRole, Presence, Task, TaskStatus,
+        MEMBER_LIST_KEY, PRESENCE_KEY, TASKS_KEY,
     };
     use crate::{config::JoinPolicy, mls};
     use std::path::PathBuf;
@@ -1151,5 +1167,113 @@ mod tests {
         assert_eq!(kind("fd7a:115c:a1e0::1234"), ConnectionKind::Tailscale);
         assert_eq!(kind("203.0.113.8"), ConnectionKind::Public);
         assert_eq!(kind("2606:4700:4700::1111"), ConnectionKind::Public);
+    }
+
+    fn claimed_task(agent: &str, peer: &str, taken_over_from: Option<(&str, &str)>) -> String {
+        let now = chrono::Utc::now();
+        serde_json::to_string(&Task {
+            task_id: "t1".into(),
+            title: "Rename discount".into(),
+            description: None,
+            status: TaskStatus::Claimed,
+            created_by: "lead".into(),
+            created_by_peer_id: "peer-local".into(),
+            claimed_by: Some(agent.into()),
+            claimed_by_peer_id: Some(peer.into()),
+            unclaimed_by: None,
+            unclaimed_by_peer_id: None,
+            completed_by: None,
+            completed_by_peer_id: None,
+            taken_over_from: taken_over_from.map(|(a, _)| a.into()),
+            taken_over_from_peer_id: taken_over_from.map(|(_, p)| p.into()),
+            created_at: now,
+            updated_at: now,
+        })
+        .unwrap()
+    }
+
+    fn claim_lost(events: &[CircleEvent]) -> Vec<(String, String, bool)> {
+        events
+            .iter()
+            .filter_map(|ev| match ev {
+                CircleEvent::TaskClaimLost {
+                    agent_id,
+                    claimed_by,
+                    taken_over,
+                    ..
+                } => Some((agent_id.clone(), claimed_by.clone(), *taken_over)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // Two devices out of sync both claimed the task; sync settled on the
+    // other one. The device that lost must hear about it.
+    #[test]
+    fn a_claim_replaced_by_sync_is_announced_as_lost() {
+        let state = test_state();
+        p2p_write(
+            &state,
+            TASKS_KEY,
+            "t1",
+            &claimed_task("claude", "peer-local", None),
+        );
+        let mut rx = state.events.subscribe();
+
+        p2p_write(
+            &state,
+            TASKS_KEY,
+            "t1",
+            &claimed_task("codex", "peer-remote", None),
+        );
+        assert_eq!(
+            claim_lost(&drain(&mut rx)),
+            vec![("claude".into(), "codex".into(), false)]
+        );
+    }
+
+    #[test]
+    fn a_takeover_of_this_device_is_announced_as_lost() {
+        let state = test_state();
+        p2p_write(
+            &state,
+            TASKS_KEY,
+            "t1",
+            &claimed_task("claude", "peer-local", None),
+        );
+        let mut rx = state.events.subscribe();
+
+        p2p_write(
+            &state,
+            TASKS_KEY,
+            "t1",
+            &claimed_task("codex", "peer-remote", Some(("claude", "peer-local"))),
+        );
+        assert_eq!(
+            claim_lost(&drain(&mut rx)),
+            vec![("claude".into(), "codex".into(), true)]
+        );
+    }
+
+    // Only the loser hears it: a claim that was someone else's to begin with
+    // was never this device's to lose.
+    #[test]
+    fn another_devices_claim_changing_hands_is_not_a_loss_here() {
+        let state = test_state();
+        p2p_write(
+            &state,
+            TASKS_KEY,
+            "t1",
+            &claimed_task("codex", "peer-remote", None),
+        );
+        let mut rx = state.events.subscribe();
+
+        p2p_write(
+            &state,
+            TASKS_KEY,
+            "t1",
+            &claimed_task("gemini", "peer-third", None),
+        );
+        assert!(claim_lost(&drain(&mut rx)).is_empty());
     }
 }
