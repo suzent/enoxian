@@ -12,6 +12,7 @@ import Select from './ui/Select'
 import AgentAuthentication, { useAgentAuthentication } from './AgentAuthentication'
 import AgentCards from './AgentCards'
 import WardenSettings from './WardenSettings'
+import RecommendedSetup from './RecommendedSetup'
 
 type SettingsTab = 'device' | 'agents' | 'behaviour' | 'connectivity' | 'membership' | 'warden'
 
@@ -68,6 +69,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
   const [wardenDirty, setWardenDirty] = useState(false)
   const [wardenBusy, setWardenBusy] = useState(false)
   const [discard, setDiscard] = useState<(() => void) | null>(null)
+  const [recommending, setRecommending] = useState(false)
   const requestId = useRef(0)
   const mutationBusy = useRef(false)
 
@@ -263,6 +265,14 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                     options={[1, 2, 4, 8, 16, 32].map(n => ({ value: String(n), label: n === 1 ? '1 (serial)' : String(n) }))} />
                   <span className="block text-slate">Shared across all Circles on this device. Extra requests wait for a turn. Restart the daemon to apply a new limit.</span>
                 </div>}
+                {scope === 'global' && (
+                  <div className="settings-recommended">
+                    <span>See what the recommended settings would change here, and apply them in one step.</span>
+                    <button type="button" className="enox-btn" disabled={busy} onClick={() => setRecommending(true)}>
+                      RECOMMENDED SETTINGS…
+                    </button>
+                  </div>
+                )}
                 {scope === 'circle' && !activeCircleId ? null : (
                   <EngagementSettings
                     agentNames={cfg.agents.map(a => a.name)}
@@ -586,7 +596,11 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
         connectivity: 'Routing changes restart this Circle on this device.',
       }[activeTab]}</div>}
     </Dialog>
-    {discard && <ConfirmDialog title="Discard unsaved changes?" confirmLabel="Discard changes"
+    {recommending && <RecommendedSetup onClose={applied => {
+      setRecommending(false)
+      if (applied) { setSaved(true); void refresh() }
+    }} />}
+    {discard &&<ConfirmDialog title="Discard unsaved changes?" confirmLabel="Discard changes"
       onClose={() => setDiscard(null)} onConfirm={() => { const action = discard; setDiscard(null); setIdentityDirty(false); action() }}>
       Your unsaved entries will be lost. Saved settings are kept.
     </ConfirmDialog>}

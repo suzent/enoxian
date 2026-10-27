@@ -16,10 +16,7 @@ import type { AgentPlugin, DiscoveredAgent } from '../types'
 import AgentAuthentication, { useAgentAuthentication } from './AgentAuthentication'
 import DeciderPicker, { RECOMMENDED_DECIDER, WARDEN_SAMPLES } from './DeciderPicker'
 import { describeDecision } from './WardenSettings'
-
-/** With the Warden acting, its spec bounds how many listeners a message gets;
- *  this only stops the old per-Circle ceiling from getting in its way. */
-const OPEN_CEILING = 32
+import { OPEN_CEILING, RECOMMENDED_VERSION, RECOMMENDED_WINDOW_SECS } from './RecommendedSetup'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
@@ -32,6 +29,11 @@ interface Props {
 export default function OnboardingSetup({ circleId, onDone }: Props) {
   const [step, setStep] = useState<'agents' | 'warden'>('agents')
   const [agents, setAgents] = useState<string[]>([])
+  // Skipping is an answer too: do not ask again about the recommended settings
+  // the moment the Circle opens. They stay one click away under Agent behaviour.
+  const skip = () => {
+    void setEngagement({ recommended_seen: RECOMMENDED_VERSION }).catch(() => {}).finally(onDone)
+  }
   return (
     <div className="onboard">
       <div className="onboard__head">
@@ -39,8 +41,8 @@ export default function OnboardingSetup({ circleId, onDone }: Props) {
         <h2>{step === 'agents' ? 'YOUR AGENTS' : 'WHO ANSWERS'}</h2>
       </div>
       {step === 'agents'
-        ? <AgentsStep circleId={circleId} onNext={names => { setAgents(names); setStep('warden') }} onSkip={onDone} />
-        : <WardenStep circleId={circleId} agents={agents} onBack={() => setStep('agents')} onDone={onDone} />}
+        ? <AgentsStep circleId={circleId} onNext={names => { setAgents(names); setStep('warden') }} onSkip={skip} />
+        : <WardenStep circleId={circleId} agents={agents} onBack={() => setStep('agents')} onSkip={skip} onDone={onDone} />}
     </div>
   )
 }
@@ -163,7 +165,9 @@ function AgentsStep({ circleId, onNext, onSkip }: { circleId?: string | null; on
   )
 }
 
-function WardenStep({ circleId, agents, onBack, onDone }: { circleId?: string | null; agents: string[]; onBack: () => void; onDone: () => void }) {
+function WardenStep({ circleId, agents, onBack, onSkip, onDone }: {
+  circleId?: string | null; agents: string[]; onBack: () => void; onSkip: () => void; onDone: () => void
+}) {
   const [view, setView] = useState<WardenView | null>(null)
   const [choice, setChoice] = useState<string>(RECOMMENDED_DECIDER)
   const [busy, setBusy] = useState(false)
@@ -202,9 +206,11 @@ function WardenStep({ circleId, agents, onBack, onDone }: { circleId?: string | 
     // Open by default: agents hear the room, and the Warden picks who answers.
     await setEngagement({
       reaction: 'push',
+      engagement_window_secs: RECOMMENDED_WINDOW_SECS,
       warden_mode: 'act',
       ambient_responders: OPEN_CEILING,
       ...(agents.length ? { ambient: agents } : {}),
+      recommended_seen: RECOMMENDED_VERSION,
     })
     onDone()
   })
@@ -214,7 +220,7 @@ function WardenStep({ circleId, agents, onBack, onDone }: { circleId?: string | 
       <div className="onboard__body">
         {error ? <p className="onboard__error" role="alert">{error}</p> : <p className="onboard__muted" role="status">Loading…</p>}
         <div className="onboard__actions">
-          <button type="button" className="onboard-btn onboard-btn--ghost" onClick={onDone}>SKIP</button>
+          <button type="button" className="onboard-btn onboard-btn--ghost" onClick={onSkip}>SKIP</button>
         </div>
       </div>
     )
@@ -262,7 +268,7 @@ function WardenStep({ circleId, agents, onBack, onDone }: { circleId?: string | 
         </button>
         <div className="onboard__split">
           <button type="button" className="onboard-btn onboard-btn--ghost" disabled={busy} onClick={onBack}>BACK</button>
-          <button type="button" className="onboard-btn onboard-btn--ghost" disabled={busy} onClick={onDone}>NOT NOW</button>
+          <button type="button" className="onboard-btn onboard-btn--ghost" disabled={busy} onClick={onSkip}>NOT NOW</button>
         </div>
       </div>
     </div>

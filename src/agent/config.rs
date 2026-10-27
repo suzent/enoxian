@@ -273,6 +273,15 @@ pub struct AgentConfig {
     /// otherwise. Off by default: an experimental feature.
     #[serde(default)]
     pub warden_mode: super::warden::WardenMode,
+    /// The version of the recommended settings this device last answered,
+    /// either way: applied or kept as it was. `0` has never been asked.
+    ///
+    /// Every field above is written back on save, so a device keeps whatever
+    /// defaults were current the first time it saved. Asking once per
+    /// recommendation is how a better default reaches it without overriding
+    /// a choice someone made.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub recommended_seen: u32,
     /// Which decider the warden asks, and how. Device-wide.
     #[serde(default)]
     pub warden: super::warden::decider::WardenConfig,
@@ -368,6 +377,10 @@ fn default_ambient_responders() -> usize {
     1
 }
 
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 fn default_max_concurrent_runs() -> usize {
     4
 }
@@ -386,6 +399,7 @@ impl Default for AgentConfig {
             ambient: Vec::new(),
             max_relay_turns: crate::agent::relay::DEFAULT_MAX_RELAY_TURNS,
             warden_mode: Default::default(),
+            recommended_seen: 0,
             warden: Default::default(),
             circles: BTreeMap::new(),
             agents: BTreeMap::new(),
@@ -564,6 +578,17 @@ warden_mode = "shadow"
         assert_eq!(cfg.resolved("wardened").followup_window_secs(), 0);
         assert_eq!(cfg.resolved("shadowed").followup_window_secs(), 180);
         assert_eq!(cfg.resolved("plain").followup_window_secs(), 180);
+    }
+
+    #[test]
+    fn the_recommended_settings_answer_is_kept_and_unasked_is_left_out() {
+        let cfg = AgentConfig::default();
+        assert!(!toml::to_string_pretty(&cfg)
+            .unwrap()
+            .contains("recommended_seen"));
+        let cfg = AgentConfig::from_toml("recommended_seen = 1\n").unwrap();
+        let back = AgentConfig::from_toml(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert_eq!(back.recommended_seen, 1);
     }
 
     #[test]

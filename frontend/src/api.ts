@@ -118,6 +118,8 @@ export const setEngagement = (patch: {
   ambient?: string[] | null
   max_relay_turns?: number | null
   warden_mode?: WardenMode | null
+  /** Device scope only: which recommended settings this device answered. */
+  recommended_seen?: number
 }) => post<{ ok: boolean }>('/api/agent-config/engagement', patch)
 export const addAgent = (name: string, driver: string, command: string[], working_dir?: string) =>
   post('/api/agent-config/agents', { name, driver, command, working_dir })
