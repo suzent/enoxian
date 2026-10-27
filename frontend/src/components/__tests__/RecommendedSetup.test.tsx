@@ -37,6 +37,14 @@ describe('recommendation', () => {
     expect(withKey.rows.some(r => r.blocked)).toBe(false)
   })
 
+  it('leaves the Warden off when the daemon cannot use the decider it has', () => {
+    const broken = { ...warden('••••cret'), problem: 'JEV_KEY is not set' }
+    const { patch, rows } = recommendation(config(), broken)
+    expect(patch.warden_mode).toBeUndefined()
+    expect(patch.ambient_responders).toBeUndefined()
+    expect(rows.find(r => r.label === 'Warden')).toMatchObject({ blocked: true, to: 'Fix its decider under Settings → Warden first' })
+  })
+
   it('keeps agents already reading the room and lists nothing already recommended', () => {
     const { patch, rows } = recommendation(config({
       reaction: 'push', engagement_window_secs: 180, ambient: ['gemini', 'claude'], warden_mode: 'act', ambient_responders: 32,

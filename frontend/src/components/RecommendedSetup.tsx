@@ -36,8 +36,14 @@ export function wardenReady(warden: WardenView | null) {
   if (!warden) return false
   const kind = warden.kinds.find(k => k.id === warden.config.decider)
   if (!kind || kind.protocol === 'rules') return false
+  // The daemon resolves the decider itself: a key env var it cannot see, or a
+  // bad endpoint, comes back as a problem even though something is configured.
+  if (warden.problem) return false
   return !kind.needs_key || !!kind.key_hint || !!warden.config.key_env
 }
+
+/** A key is in place, but the daemon still cannot use the decider. */
+const wardenBroken = (warden: WardenView | null) => !!warden?.problem
 
 const reaction = (r: string) => (r === 'push' ? 'Starts right away' : 'Waits until fetched')
 const window_ = (s: number) => (s > 0 ? `${s}s` : 'Off')
@@ -71,7 +77,8 @@ export function recommendation(cfg: AgentConfigView, warden: WardenView | null) 
       rows.push({ label: 'Agents one message may reach', from: String(now.ambient_responders ?? 1), to: `Up to ${OPEN_CEILING}` })
     }
   } else if (now.warden_mode !== 'act') {
-    rows.push({ label: 'Warden', from: mode(now.warden_mode), to: 'Save a key under Settings → Warden first', blocked: true })
+    const to = wardenBroken(warden) ? 'Fix its decider under Settings → Warden first' : 'Save a key under Settings → Warden first'
+    rows.push({ label: 'Warden', from: mode(now.warden_mode), to, blocked: true })
   }
   return { patch, rows }
 }
