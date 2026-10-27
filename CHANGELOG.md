@@ -46,6 +46,11 @@ refuses to publish a version whose section is missing or empty.
   `task_claim_lost` event naming who holds the task, instead of finding out
   only by checking `enox tasks`.
 
+### Fixed
+
+- HTML files previewed in the center editor fill the whole pane again, instead
+  of showing a short strip with the rest of the page cut off.
+
 ## [0.13.1] — 2026-10-27
 
 ### Added
