@@ -39,6 +39,14 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- A new device is walked through two optional steps before entering its
+  Circle: enable the coding agents found on it (or install missing ones),
+  then choose who answers unaddressed messages. TypeSafe Jev and OpenAI
+  Decisions are built-in Warden deciders alongside the built-in rules; paste
+  a key, try a sample message, and turn the Warden on in one step.
+
 ## [0.13.0] — 2026-10-26
 
 ### Added

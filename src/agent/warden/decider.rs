@@ -59,6 +59,9 @@ pub struct Manifest {
     pub model: Option<String>,
     #[serde(default)]
     pub needs_key: bool,
+    /// Where a person gets a key for this decider, for the settings panel.
+    #[serde(default)]
+    pub key_url: Option<String>,
     #[serde(default, skip_deserializing)]
     pub builtin: bool,
 }
@@ -114,6 +117,33 @@ fn builtins() -> Vec<Manifest> {
             endpoint: None,
             model: None,
             needs_key: false,
+            key_url: None,
+            builtin: true,
+        },
+        // Hosted deciders, asked directly. Models are pinned, because the
+        // spec's thresholds are calibrated against what a model answers.
+        Manifest {
+            id: "jev".into(),
+            name: "TypeSafe Jev".into(),
+            description: "TypeSafe's System One model, the one the default thresholds are tuned \
+                          against. Fast and inexpensive."
+                .into(),
+            protocol: Protocol::Systemone,
+            endpoint: Some("https://api.typesafe.ai/v1/systemone".into()),
+            model: Some("jev-1.14.0".into()),
+            needs_key: true,
+            key_url: Some("https://docs.typesafe.ai/models".into()),
+            builtin: true,
+        },
+        Manifest {
+            id: "openai-decisions".into(),
+            name: "OpenAI Decisions".into(),
+            description: "OpenAI's Decisions API, for anyone who already has an OpenAI key.".into(),
+            protocol: Protocol::Decisions,
+            endpoint: Some("https://api.openai.com/v1/decisions".into()),
+            model: Some("gpt-6-luna".into()),
+            needs_key: true,
+            key_url: Some("https://platform.openai.com/api-keys".into()),
             builtin: true,
         },
         Manifest {
@@ -126,6 +156,7 @@ fn builtins() -> Vec<Manifest> {
             endpoint: Some("http://localhost:4000/v1/systemone".into()),
             model: Some("jev".into()),
             needs_key: true,
+            key_url: None,
             builtin: true,
         },
         Manifest {
@@ -137,6 +168,7 @@ fn builtins() -> Vec<Manifest> {
             endpoint: Some("http://localhost:4000/v1/decisions".into()),
             model: None,
             needs_key: true,
+            key_url: None,
             builtin: true,
         },
     ]
@@ -605,8 +637,90 @@ pub fn parse_response(protocol: Protocol, body: &Value, questions: &[Question]) 
     reply
 }
 
-/// Put the questions to a decider over HTTP.
+pub mod breaker {
+    //! Stop asking a decider that keeps failing. Without this, a decider that
+    //! is down or rate limited costs every message its full timeout before the
+    //! rules decide. After [`THRESHOLD`] failures in a row it is skipped for
+    //! [`COOLDOWN`]; the first ask after that is a probe, and one success
+    //! closes it again.
+    //!
+    //! Keyed by decider, endpoint and key, so changing any of them — the usual
+    //! fix — starts afresh rather than waiting out the cooldown.
+
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    pub const THRESHOLD: u32 = 3;
+    pub const COOLDOWN: Duration = Duration::from_secs(60);
+
+    #[derive(Default)]
+    struct State {
+        failures: u32,
+        open_until: Option<Instant>,
+    }
+
+    static STATES: Mutex<Option<HashMap<u64, State>>> = Mutex::new(None);
+
+    pub fn key(decider: &super::Resolved) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        decider.manifest.id.hash(&mut h);
+        decider.endpoint.hash(&mut h);
+        decider.key.hash(&mut h);
+        h.finish()
+    }
+
+    fn with<T>(f: impl FnOnce(&mut HashMap<u64, State>) -> T) -> T {
+        let mut guard = STATES.lock().unwrap_or_else(|e| e.into_inner());
+        f(guard.get_or_insert_with(HashMap::new))
+    }
+
+    /// How long until `key` may be asked again, if it is paused now.
+    pub fn paused(key: u64, now: Instant) -> Option<Duration> {
+        with(|all| {
+            let until = all.get(&key)?.open_until?;
+            (until > now).then(|| until - now)
+        })
+    }
+
+    pub fn record(key: u64, ok: bool, now: Instant) {
+        with(|all| {
+            if ok {
+                all.remove(&key);
+                return;
+            }
+            let state = all.entry(key).or_default();
+            state.failures += 1;
+            if state.failures >= THRESHOLD {
+                state.open_until = Some(now + COOLDOWN);
+            }
+        })
+    }
+
+    /// Forget every failure, so the next ask goes out. For an explicit test.
+    pub fn reset() {
+        with(|all| all.clear())
+    }
+}
+
+/// Put the questions to a decider over HTTP, unless it keeps failing (see
+/// [`breaker`]).
 pub async fn ask(decider: &Resolved, input: &str, questions: &[Question]) -> anyhow::Result<Reply> {
+    let key = breaker::key(decider);
+    if let Some(left) = breaker::paused(key, std::time::Instant::now()) {
+        anyhow::bail!(
+            "paused after {} failures in a row; trying again in {}s",
+            breaker::THRESHOLD,
+            left.as_secs().max(1)
+        );
+    }
+    let result = ask_now(decider, input, questions).await;
+    breaker::record(key, result.is_ok(), std::time::Instant::now());
+    result
+}
+
+async fn ask_now(decider: &Resolved, input: &str, questions: &[Question]) -> anyhow::Result<Reply> {
     let endpoint = decider
         .endpoint
         .as_deref()
@@ -777,6 +891,45 @@ mod tests {
             ..WardenConfig::default()
         };
         assert_eq!(resolve(&cfg).unwrap_err(), "no API key is set");
+    }
+
+    #[test]
+    fn hosted_deciders_are_pinned_and_need_a_key() {
+        let jev = find("jev").unwrap();
+        assert_eq!(jev.protocol, Protocol::Systemone);
+        assert_eq!(
+            jev.endpoint.as_deref(),
+            Some("https://api.typesafe.ai/v1/systemone")
+        );
+        assert_eq!(jev.model.as_deref(), Some("jev-1.14.0"));
+        assert!(jev.needs_key && jev.builtin);
+        let openai = find("openai-decisions").unwrap();
+        assert_eq!(openai.protocol, Protocol::Decisions);
+        assert_eq!(
+            openai.endpoint.as_deref(),
+            Some("https://api.openai.com/v1/decisions")
+        );
+        assert_eq!(openai.model.as_deref(), Some("gpt-6-luna"));
+        assert!(openai.needs_key);
+    }
+
+    #[test]
+    fn the_breaker_opens_after_repeated_failures_and_closes_on_success() {
+        let key = 0x0b4e_a4e7_u64;
+        let now = std::time::Instant::now();
+        for _ in 0..breaker::THRESHOLD - 1 {
+            breaker::record(key, false, now);
+        }
+        assert!(breaker::paused(key, now).is_none(), "not yet");
+        breaker::record(key, false, now);
+        assert!(breaker::paused(key, now).is_some());
+        let later = now + breaker::COOLDOWN + std::time::Duration::from_secs(1);
+        assert!(breaker::paused(key, later).is_none(), "a probe may go out");
+        // The probe fails: paused again at once, without three more failures.
+        breaker::record(key, false, later);
+        assert!(breaker::paused(key, later).is_some());
+        breaker::record(key, true, later);
+        assert!(breaker::paused(key, later).is_none());
     }
 
     #[tokio::test]

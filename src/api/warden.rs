@@ -208,6 +208,9 @@ pub async fn test(
         .into_iter()
         .map(|q| q.name)
         .collect();
+    // Someone testing has usually just fixed whatever was failing: ask now
+    // rather than report the pause.
+    decider::breaker::reset();
     let decision = warden::decide(&cfg.warden, &spec, &features).await;
     Json(json!({ "decision": decision, "questions": questions, "input": policy::input(&features) }))
         .into_response()

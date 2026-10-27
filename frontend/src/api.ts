@@ -344,6 +344,8 @@ export interface WardenKind {
   endpoint?: string | null
   model?: string | null
   needs_key: boolean
+  /** Where to get a key for this decider. */
+  key_url?: string | null
   builtin: boolean
   fields: Record<string, WardenField>
   key_hint?: string | null

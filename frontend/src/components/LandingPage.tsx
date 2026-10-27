@@ -23,9 +23,10 @@ interface Props {
   onEntered: (circleId?: string, label?: string) => void
 }
 
-type UIState = 'setup' | 'init-form' | 'enter-form' | 'mnemonic-backup'
+type UIState = 'setup' | 'init-form' | 'enter-form' | 'mnemonic-backup' | 'onboard'
 
 import { buildAngelScene, type AngelScene } from './AngelScene'
+import OnboardingSetup from './OnboardingSetup'
 
 export default function LandingPage({ onEntered }: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
@@ -57,6 +58,9 @@ export default function LandingPage({ onEntered }: Props) {
   // Mnemonic backup
   const [mnemonic, setMnemonic] = useState('')
   const [pendingCircleId, setPendingCircleId] = useState<string | null>(null)
+
+  // The Circle just created or joined, held while its agents and Warden are set up
+  const [entry, setEntry] = useState<{ circleId?: string | null; label?: string } | null>(null)
 
   // Error / loading / eruption
   const [error, setError] = useState('')
@@ -99,11 +103,19 @@ export default function LandingPage({ onEntered }: Props) {
     }
   }
 
+  // Setup comes before the circle list reloads: once a Circle is listed, the
+  // app leaves this page.
   async function completeEntry(circleId?: string | null) {
+    setEntry({ circleId, label: uiState === 'enter-form' ? undefined : circleName.trim() || 'DEFAULT' })
+    setUIState('onboard')
+  }
+
+  async function finishEntry() {
+    const circleId = entry?.circleId
     await reloadCircles()
     if (circleId) setActiveCircleId(circleId)
     setIsErupting(true)
-    onEntered(circleId || undefined, uiState === 'enter-form' ? undefined : circleName.trim() || 'DEFAULT')
+    onEntered(circleId || undefined, entry?.label)
   }
 
   // ── Actions ──────────────────────────────────────────────────────────────
@@ -581,8 +593,11 @@ export default function LandingPage({ onEntered }: Props) {
           left: 'max(10%, calc(50vw - 400px))', // Ensures it stays left but doesn't get pushed off on tiny screens
           transform: 'translateY(-50%)',
           zIndex: 5010,
-          width: 420,
+          width: 440,
           maxWidth: 'calc(100vw - 24px)',
+          maxHeight: 'calc(100vh - 48px)',
+          overflowY: 'auto',
+          padding: '0 6px 6px 0', // room for the card's offset shadow inside the scroll box
           opacity: isErupting ? 0 : 1,
           pointerEvents: isErupting ? 'none' : 'auto',
           transition: 'opacity 0.4s ease',
@@ -601,6 +616,7 @@ export default function LandingPage({ onEntered }: Props) {
           {uiState === 'init-form' && renderInitForm()}
           {uiState === 'enter-form' && renderEnterForm()}
           {uiState === 'mnemonic-backup' && renderMnemonicBackup()}
+          {uiState === 'onboard' && <OnboardingSetup circleId={entry?.circleId} onDone={() => void finishEntry()} />}
         </div>
       </div>
     </>
