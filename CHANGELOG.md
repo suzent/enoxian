@@ -46,6 +46,12 @@ refuses to publish a version whose section is missing or empty.
   then choose who answers unaddressed messages. TypeSafe Jev and OpenAI
   Decisions are built-in Warden deciders alongside the built-in rules; paste
   a key, try a sample message, and turn the Warden on in one step.
+- Devices set up before onboarding existed are asked once whether to use the
+  recommended agent behaviour: agents answer on their own, follow up for three
+  minutes, and the agents installed here read the room, with the Warden
+  deciding who answers once it has a key. The prompt shows exactly what would
+  change; keeping things as they are is one click, and Settings → Behaviour
+  can show it again.
 
 ## [0.13.0] — 2026-10-26
 

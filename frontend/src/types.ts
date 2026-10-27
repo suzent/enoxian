@@ -283,6 +283,8 @@ export interface AgentConfigView {
   config_path: string
   configured: boolean
   agents: AgentSummary[]
+  /** Which recommended settings this device has answered, applied or not. 0: never asked. */
+  recommended_seen?: number
 }
 
 // A well-known agent candidate the backend probed for on this machine.

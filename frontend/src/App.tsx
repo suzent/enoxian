@@ -7,6 +7,7 @@ import RightPanel, { type RightPanelTab } from './components/RightPanel'
 import CircleSidebar from './components/CircleSidebar'
 import SidebarToggles from './components/SidebarToggles'
 import LandingPage from './components/LandingPage'
+import RecommendedSetup from './components/RecommendedSetup'
 import RitualTransition, { type RitualMode } from './components/RitualTransition'
 import { useApp } from './context/AppContext'
 import { leaveCircle } from './api'
@@ -61,6 +62,8 @@ function Layout() {
   const [fileMode, setFileMode] = useState<FileViewMode>('source')
   const [ritual, setRitual] = useState<{ mode: RitualMode; label?: string; circleId: string } | null>(null)
   const [showLanding, setShowLanding] = useState(false)
+  const [recommendedAsked, setRecommendedAsked] = useState(false)
+  const closeRecommended = useCallback(() => setRecommendedAsked(true), [])
   const [revealing, setRevealing] = useState(false)
   const [layoutPreferences, setLayoutPreferences] = useState(loadLayoutPreferences)
   const [mobileDrawer, setMobileDrawer] = useState<MobileDrawer>(null)
@@ -244,6 +247,10 @@ function Layout() {
       )}
 
       {showLanding && !circlesError && <LandingPage onEntered={handleEntered} />}
+
+      {circles.length > 0 && !showLanding && !revealing && !ritual && !recommendedAsked && (
+        <RecommendedSetup auto onClose={closeRecommended} />
+      )}
 
       {revealing && (
         <div className="app-reveal-overlay" onAnimationEnd={() => setRevealing(false)} />

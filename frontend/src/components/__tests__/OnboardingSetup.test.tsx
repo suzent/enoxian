@@ -64,15 +64,18 @@ describe('OnboardingSetup', () => {
     fireEvent.click(screen.getByRole('button', { name: 'TURN ON WARDEN' }))
     await waitFor(() => expect(done).toHaveBeenCalled())
     expect(setWardenConfig).toHaveBeenCalledWith({ decider: 'jev' })
-    expect(setEngagement).toHaveBeenCalledWith({ reaction: 'push', warden_mode: 'act', ambient_responders: 32, ambient: ['claude'] })
+    expect(setEngagement).toHaveBeenCalledWith({
+      reaction: 'push', engagement_window_secs: 180, warden_mode: 'act', ambient_responders: 32, ambient: ['claude'],
+      recommended_seen: 1,
+    })
   })
 
-  it('leaves everything as it was when skipped', async () => {
+  it('leaves everything as it was when skipped, and does not ask again straight after', async () => {
     const done = vi.fn()
     render(<OnboardingSetup onDone={done} />)
     fireEvent.click(await screen.findByRole('button', { name: 'SKIP SETUP' }))
-    expect(done).toHaveBeenCalled()
-    expect(setEngagement).not.toHaveBeenCalled()
+    await waitFor(() => expect(done).toHaveBeenCalled())
+    expect(setEngagement).toHaveBeenCalledWith({ recommended_seen: 1 })
     expect(setWardenConfig).not.toHaveBeenCalled()
   })
 })

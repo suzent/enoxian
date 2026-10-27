@@ -57,6 +57,9 @@ struct AgentConfigView {
     /// settings actually resolve to there.
     circle: Option<CircleSettingsView>,
     agents: Vec<AgentSummary>,
+    /// Which recommended settings this device has answered; see
+    /// `AgentConfig::recommended_seen`.
+    recommended_seen: u32,
 }
 
 #[derive(Serialize)]
@@ -171,6 +174,7 @@ pub async fn get_agent_config(
         global_settings: settings_view(&global),
         circle,
         agents,
+        recommended_seen: cfg.recommended_seen,
     })
 }
 
@@ -310,6 +314,10 @@ pub struct SetEngagementRequest {
     /// "off", "shadow" or "act".
     #[serde(default, deserialize_with = "double_option")]
     pub warden_mode: Option<Option<crate::agent::warden::WardenMode>>,
+    /// Record that this device answered a version of the recommended
+    /// settings. Device scope only.
+    #[serde(default)]
+    pub recommended_seen: Option<u32>,
 }
 
 /// Distinguish "field absent" from "field set to null".
@@ -396,6 +404,12 @@ pub async fn set_engagement(
                 return Err("max_concurrent_runs must be 1–32 at device scope".into());
             }
             cfg.max_concurrent_runs = limit;
+        }
+        if let Some(version) = req.recommended_seen {
+            if scope.is_some() {
+                return Err("recommended_seen is device-wide, not per Circle".into());
+            }
+            cfg.recommended_seen = version;
         }
         match scope {
             None => {
