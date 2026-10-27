@@ -237,7 +237,7 @@ All commands support `--json` for scripting:
 enox status --json
 enox who --json
 enox tasks --json
-enox watch --json   # newline-delimited JSON event stream
+enox watch --json   # newline-delimited JSON event stream (--log <path> to keep it)
 ```
 
 ---
