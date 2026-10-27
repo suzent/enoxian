@@ -138,8 +138,7 @@ fn builtins() -> Vec<Manifest> {
         Manifest {
             id: "openai-decisions".into(),
             name: "OpenAI Decisions".into(),
-            description: "OpenAI's Decisions API, for anyone who already has an OpenAI key."
-                .into(),
+            description: "OpenAI's Decisions API, for anyone who already has an OpenAI key.".into(),
             protocol: Protocol::Decisions,
             endpoint: Some("https://api.openai.com/v1/decisions".into()),
             model: Some("gpt-6-luna".into()),
@@ -721,11 +720,7 @@ pub async fn ask(decider: &Resolved, input: &str, questions: &[Question]) -> any
     result
 }
 
-async fn ask_now(
-    decider: &Resolved,
-    input: &str,
-    questions: &[Question],
-) -> anyhow::Result<Reply> {
+async fn ask_now(decider: &Resolved, input: &str, questions: &[Question]) -> anyhow::Result<Reply> {
     let endpoint = decider
         .endpoint
         .as_deref()
