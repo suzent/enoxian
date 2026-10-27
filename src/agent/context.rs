@@ -38,12 +38,15 @@ pub enum Framing {
     /// Nobody named the agent, but the room's warden judged the message needs
     /// an answer and chose this agent to give it.
     Assigned,
+    /// Said to this agent alone by the person at this device, outside the
+    /// room (see [`super::private`]). Nobody else has seen it.
+    Private,
 }
 
 impl Framing {
     /// Not addressed by name, whether overheard or assigned by the warden.
     fn is_overheard(&self) -> bool {
-        *self != Self::Addressed
+        matches!(self, Self::Overheard | Self::Assigned)
     }
 }
 
@@ -401,6 +404,11 @@ fn compose(
             "MESSAGE posted in circle \"{circle_name}\". {sender} posted this to the room; it \
              names no agent, and the room's warden chose you to answer it:\n"
         )),
+        Framing::Private => out.push_str(&format!(
+            "PRIVATE REQUEST from {sender}, said to you directly on this device. It was not \
+             posted in circle \"{circle_name}\" and nobody else there has seen it; your reply \
+             goes back to {sender} only and is not posted to the room. Respond only to this:\n"
+        )),
     }
     out.push_str(task);
     out.push_str(attachments);
@@ -494,6 +502,10 @@ fn standing_brief(state: &AppState, agent_id: &str, framing: Framing) -> String 
              to give it."
         }
         Framing::Addressed => "You were woken by an @mention in the circle's chat.",
+        Framing::Private => {
+            "You were woken by a message said to you directly on this device, not in the \
+             circle's chat."
+        }
     };
     format!(
         "You are \"{agent}\", an agent participating in an enoxian circle named \"{circle}\".\n\
@@ -665,6 +677,25 @@ mod tests {
         assert!(p.trim_end().ends_with("make a test file"));
         // The context block comes before the request.
         assert!(p.find("<context>").unwrap() < p.find("REQUEST from").unwrap());
+    }
+
+    #[test]
+    fn a_private_turn_is_told_the_room_has_not_seen_it() {
+        let p = compose(
+            "delta",
+            "requester",
+            "the discount cap is now 25%",
+            Some("brief text\n"),
+            Some("  bob: hi"),
+            FRESH_CHAT_HEADING,
+            Framing::Private,
+            "",
+        );
+        assert!(p.contains("PRIVATE REQUEST from requester"));
+        assert!(p.contains("nobody else there has seen it"));
+        assert!(p.contains("not posted to the room"));
+        assert!(!p.contains("(@mention)"), "nobody mentioned this agent");
+        assert!(p.trim_end().ends_with("the discount cap is now 25%"));
     }
 
     #[test]

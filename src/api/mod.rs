@@ -146,6 +146,8 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
             "/circles/{circle_id}/api/inbox/release",
             post(inbox::release),
         )
+        // Private: tell one local agent something the Circle does not hear.
+        .route("/circles/{circle_id}/api/inbox/inject", post(inbox::inject))
         // M9 chat
         .route(
             "/circles/{circle_id}/api/chat",

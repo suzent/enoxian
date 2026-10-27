@@ -105,6 +105,8 @@ pub async fn list(
                 "ambient": e.request.ambient,
                 "activity": state.live_runs.get(&e.run_id).map(|run| run.snapshot(now)),
                 "usage": e.usage,
+                "reply": e.reply,
+                "private": crate::agent::private::is_private(&e.request.message.id),
                 "outcome": outcomes.remove(&e.run_id),
             })
         })
@@ -233,7 +235,15 @@ fn recent_receipts(
 
 pub fn publish(state: &crate::state::AppState, inbox: &Inbox) -> anyhow::Result<()> {
     use yrs::{Any, Map, Transact, WriteTxn};
-    let entries = recent_receipts(inbox.entries(), chrono::Utc::now().timestamp());
+    // A private delivery leaves no receipt: the room must not learn it happened.
+    let entries = recent_receipts(
+        inbox
+            .entries()
+            .into_iter()
+            .filter(|e| !crate::agent::private::is_private(&e.request.message.id))
+            .collect(),
+        chrono::Utc::now().timestamp(),
+    );
     let mut txn = state
         .control
         .try_transact_mut()

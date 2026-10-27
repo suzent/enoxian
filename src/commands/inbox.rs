@@ -128,6 +128,82 @@ async fn send(
     Ok(())
 }
 
+/// Tell one local agent something privately, optionally waiting for its reply.
+pub async fn inject(
+    client: &reqwest::Client,
+    base: &str,
+    agent: Option<String>,
+    text: String,
+    from: Option<String>,
+    wait: bool,
+    json_out: bool,
+) -> Result<()> {
+    // No default, not even `ENOXIAN_AGENT_ID`: a private delivery is always
+    // for a named agent, and guessing would tell the wrong one.
+    let Some(agent) = agent else {
+        anyhow::bail!("say which agent to tell with --agent <name>");
+    };
+    let resp = client
+        .post(format!("{base}/inbox/inject"))
+        .json(&json!({"agent": agent, "text": text, "from": from}))
+        .send()
+        .await?;
+    let status = resp.status();
+    let val: Value = resp.json().await?;
+    if !status.is_success() {
+        if json_out {
+            println!("{}", serde_json::to_string_pretty(&val)?);
+        }
+        anyhow::bail!("{}", val["error"].as_str().unwrap_or("inject failed"));
+    }
+    if !wait {
+        if json_out {
+            println!("{}", serde_json::to_string_pretty(&val)?);
+        } else {
+            println!(
+                "✓ told {agent} privately (run {}); the reply stays on this device",
+                short(&val["run_id"])
+            );
+        }
+        return Ok(());
+    }
+    let message_id = val["message_id"].as_str().unwrap_or_default().to_string();
+    let run = loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let resp = client
+            .get(format!("{base}/chat/executions"))
+            .query(&[("message_id", message_id.as_str())])
+            .send()
+            .await?;
+        // Busy while the owner recovers; that passes.
+        if !resp.status().is_success() {
+            continue;
+        }
+        let page: Value = resp.json().await?;
+        let Some(run) = page["runs"].as_array().and_then(|r| r.first()).cloned() else {
+            continue;
+        };
+        if !matches!(run["status"].as_str(), Some("pending" | "running")) {
+            break run;
+        }
+    };
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&run)?);
+        return Ok(());
+    }
+    match run["status"].as_str() {
+        Some("completed") => {
+            println!("{}", run["reply"].as_str().unwrap_or("(no reply)"));
+            Ok(())
+        }
+        other => anyhow::bail!(
+            "the turn ended {}: {}",
+            other.unwrap_or("?"),
+            run["detail"].as_str().unwrap_or("no reason was reported")
+        ),
+    }
+}
+
 fn short(v: &Value) -> String {
     v.as_str().unwrap_or("?").chars().take(8).collect()
 }

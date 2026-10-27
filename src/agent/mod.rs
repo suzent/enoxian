@@ -32,6 +32,7 @@ pub mod memory;
 pub mod mention;
 pub mod outcome;
 pub mod plugin;
+pub mod private;
 pub mod probe;
 pub mod reaction;
 pub mod relay;
