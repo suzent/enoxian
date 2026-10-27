@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import Select from './ui/Select'
+import DeciderPicker, { WARDEN_SAMPLES } from './DeciderPicker'
 import NumberField from './ui/NumberField'
 import { ConfirmDialog } from './ui/Dialog'
 import {
@@ -70,7 +70,7 @@ export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }
   const [draft, setDraft] = useState<{ endpoint: string; model: string; key_env: string; timeout_secs: number }>({
     endpoint: '', model: '', key_env: '', timeout_secs: 5,
   })
-  const [key, setKey] = useState('')
+  const [keyDirty, setKeyDirty] = useState(false)
   const [specText, setSpecText] = useState('')
   const [sample, setSample] = useState('')
   const [asAgent, setAsAgent] = useState(false)
@@ -83,7 +83,7 @@ export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }
   const configDraft = (v: WardenView) => ({ endpoint: v.config.endpoint ?? '', model: v.config.model ?? '', key_env: v.config.key_env ?? '', timeout_secs: v.config.timeout_secs })
   const configDirty = !!view && JSON.stringify(draft) !== JSON.stringify(configDraft(view))
   const specDirty = !!view && specText !== view.spec_toml
-  useEffect(() => { onDirtyChange?.(configDirty || specDirty || !!key) }, [configDirty, specDirty, key, onDirtyChange])
+  useEffect(() => { onDirtyChange?.(configDirty || specDirty || keyDirty) }, [configDirty, specDirty, keyDirty, onDirtyChange])
   useEffect(() => { onBusyChange?.(busy) }, [busy, onBusyChange])
 
   const refresh = useCallback(async () => {
@@ -100,7 +100,7 @@ export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }
   useEffect(() => { void refresh(); return () => { loadingId.current += 1 } }, [refresh])
 
   const run = async (fn: () => Promise<unknown>, done?: string, reload: 'none' | 'view' | 'config' | 'spec' = 'view') => {
-    if (running.current) return
+    if (running.current) return false
     running.current = true
     setBusy(true)
     setError(null)
@@ -115,43 +115,54 @@ export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }
         if (reload === 'spec') setSpecText(v.spec_toml)
       }
       if (done) setNotice(done)
-    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to update Warden') }
+      return true
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to update Warden'); return false }
     finally { running.current = false; setBusy(false) }
   }
 
   if (!view) return <div className="warden-loading">{error ? <><p role="alert">{error}</p><button className="enox-btn" onClick={() => void refresh()}>Try again</button></> : <p role="status">Loading Warden settings…</p>}</div>
   const kind = view.kinds.find(k => k.id === view.config.decider)
   const asksModel = kind && kind.protocol !== 'rules'
+  // A proxy is nothing without its address; a hosted decider needs only a key.
+  const proxy = !!kind && asksModel && !kind.key_url
 
   return (
     <section className="warden-settings">
-      <div className="warden-scope-note">Experimental · Settings stay on this device</div>
-      {error && <p role="alert" className="text-[11px]">{error}</p>}
-      {notice && <p role="status" className="warden-notice">{notice}</p>}
-      {busy && <p role="status" className="warden-notice">Working…</p>}
+      <p className="warden-scope-note">
+        The Warden decides which agents, if any, answer a message nobody addressed. These settings stay on this
+        device; turn it on per Circle under Behaviour.
+      </p>
       <section className="warden-group">
       <h3>Decision provider</h3>
+      <p className={`warden-status${view.problem ? ' is-problem' : ''}`} role={view.problem ? 'alert' : 'status'}>
+        {view.problem
+          ? <>Not ready: {view.problem}. The built-in rules decide until it is.</>
+          : <>Ready · {kind?.name ?? view.config.decider}</>}
+      </p>
+      {/* A reserved line, so feedback never pushes the panel down. */}
+      <p className={`warden-feedback${error ? ' is-error' : ''}`} role={error ? 'alert' : 'status'} aria-live="polite">
+        {error ?? (busy ? 'Working…' : notice) ?? ''}
+      </p>
 
-      <label className="block py-2 text-xs">
-        Decider
-        <Select disabled={busy} value={view.config.decider} aria-label="Decider"
-          options={view.kinds.map(k => ({ value: k.id, label: k.name }))}
-          onChange={value => {
-            const change = () => { setKey(''); void run(() => setWardenConfig({ decider: value }), 'Decision provider updated.', 'config') }
-            if (configDirty || key) setConfirmation({ title: 'Change decision provider?', detail: 'Unsaved connection settings and the entered key will be discarded. Your policy draft is kept.', action: change })
-            else change()
-          }} />
-        {kind && <span className="block text-[10px] text-slate mt-1">{kind.description}</span>}
-      </label>
-      {view.problem && (
-        <p role="alert" className="text-[10px] border border-obsidian/40 p-2">
-          Not usable yet: {view.problem}. The built-in rules decide until it is.
-        </p>
-      )}
+      <DeciderPicker kinds={view.kinds} value={view.config.decider} busy={busy}
+        endpoint={view.config.endpoint} keyFromEnv={view.config.key_env}
+        onKeyDraftChange={setKeyDirty}
+        onSelect={value => {
+          const change = () => void run(() => setWardenConfig({ decider: value }), 'Decision provider updated.', 'config')
+          if (configDirty || keyDirty) setConfirmation({ title: 'Change decision provider?', detail: 'Unsaved connection settings and the entered key will be discarded. Your policy draft is kept.', action: change })
+          else change()
+        }}
+        onSaveKey={async (id, value) => {
+          if (!await run(() => setWardenKey(id, value), 'Key saved on this device.')) throw new Error('not saved')
+        }}
+        onRemoveKey={id => setConfirmation({ title: 'Remove saved API key?', detail: 'The built-in rules decide until a key is set again.', action: () => void run(() => setWardenKey(id, null), 'Key removed.') })} />
 
-      {asksModel && (
+      {/* Kept in place for the rules too, so changing decider does not move the page. */}
+      <details className="warden-connection" open={proxy || undefined}>
+        <summary>Connection details</summary>
+      {!asksModel ? <p className="decider-note py-2">The built-in rules run here and connect to nothing.</p> : (
         <div className="space-y-2 py-2 text-xs">
-          <label className="block">Endpoint <span className="text-slate">· your proxy's address is enough</span>
+          <label className="block">Endpoint <span className="text-slate">· {proxy ? "your proxy's address is enough" : 'leave empty for the default'}</span>
             <input className="block w-full border px-2 py-1 mt-1" value={draft.endpoint} disabled={busy}
               placeholder={kind?.endpoint ?? 'https://…'} aria-label="Endpoint"
               onChange={e => setDraft({ ...draft, endpoint: e.target.value })} />
@@ -167,36 +178,16 @@ export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }
               onCommit={value => setDraft({ ...draft, timeout_secs: value })} />
             <span className="ml-1">seconds, then the rules decide</span>
           </label>
-          <label className="block">Read the key from environment variable (optional)
+          <label className="block">Read the key from an environment variable instead <span className="text-slate">· optional, by name</span>
             <input className="block w-full border px-2 py-1 mt-1" value={draft.key_env} disabled={busy}
-              placeholder="LITELLM_API_KEY" aria-label="Key environment variable"
+              placeholder="e.g. TYPESAFE_API_KEY" aria-label="Key environment variable"
               onChange={e => setDraft({ ...draft, key_env: e.target.value })} />
           </label>
-          <button className="enox-btn text-[9px] px-2 py-1 min-h-0" disabled={busy}
+          <button className="enox-btn text-[9px] px-2 py-1 min-h-0" disabled={busy || !configDirty}
             onClick={() => void run(() => setWardenConfig(draft), 'Connection settings saved.', 'config')}>Save connection</button>
-
-          {kind?.needs_key && !draft.key_env && (
-            <div className="pt-2">
-              <div>API key {kind.key_hint ? <span className="text-slate">· set {kind.key_hint}</span> : <span className="text-slate">· not set</span>}</div>
-              <div className="flex gap-2 mt-1">
-                <input type="password" className="flex-1 border px-2 py-1" value={key} disabled={busy}
-                  autoComplete="off" aria-label="API key" placeholder={kind.key_hint ? 'Replace key' : 'Paste key'}
-                  onChange={e => setKey(e.target.value)} />
-                <button className="enox-btn text-[9px] px-2 py-1 min-h-0" disabled={busy || !key.trim()}
-                  onClick={() => void run(async () => { await setWardenKey(kind.id, key); setKey('') }, 'Key saved on this device.')}>Save key</button>
-                {kind.key_hint && (
-                  <button className="enox-btn text-[9px] px-2 py-1 min-h-0" disabled={busy}
-                    onClick={() => setConfirmation({ title: 'Remove saved API key?', detail: 'The decision provider may fall back to built-in rules until a key is configured again.', action: () => void run(() => setWardenKey(kind.id, null), 'Key removed.') })}>Remove key</button>
-                )}
-              </div>
-              <span className="block text-[10px] text-slate mt-1">
-                Stored only on this device, readable only by you, and never shown again. With the
-                warden on, messages in that Circle are sent to the endpoint above.
-              </span>
-            </div>
-          )}
         </div>
       )}
+      </details>
 
       </section>
       <section className="warden-group">
@@ -223,6 +214,11 @@ export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }
       <section className="warden-group">
         <h3>Try a message</h3>
         <p className="warden-hint">Uses your saved settings. Shows a decision without posting to the Circle or running agents.</p>
+        <div className="warden-samples">
+          {WARDEN_SAMPLES.map(text => (
+            <button key={text} type="button" className="warden-sample" disabled={busy} onClick={() => setSample(text)}>{text}</button>
+          ))}
+        </div>
         <textarea className="block w-full border px-2 py-1 mt-1 text-[11px]" rows={3} value={sample} disabled={busy}
           aria-label="Sample message" placeholder="A message someone might post in the room"
           onChange={e => setSample(e.target.value)} />

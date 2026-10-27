@@ -39,8 +39,7 @@ describe('WardenSettings', () => {
   it('chooses a decider, and takes a key it never shows again', async () => {
     getWarden.mockResolvedValueOnce(view('builtin:rules')).mockResolvedValue(view('litellm-systemone'))
     render(<WardenSettings />)
-    await userEvent.click(await screen.findByRole('combobox', { name: 'Decider' }))
-    await userEvent.click(screen.getByRole('option', { name: 'LiteLLM (System One)' }))
+    await userEvent.click(await screen.findByRole('radio', { name: /Other provider/ }))
     await waitFor(() => expect(setWardenConfig).toHaveBeenCalledWith({ decider: 'litellm-systemone' }))
     expect(await screen.findByRole('alert')).toBeTruthy()
     expect(screen.getByText(/no API key is set/)).toBeTruthy()
@@ -111,7 +110,7 @@ describe('WardenSettings', () => {
     getWarden.mockRejectedValueOnce(new Error('Temporarily offline')).mockResolvedValue(view('builtin:rules'))
     render(<WardenSettings />)
     fireEvent.click(await screen.findByRole('button', { name: 'Try again' }))
-    expect(await screen.findByRole('combobox', { name: 'Decider' })).toBeTruthy()
+    expect(await screen.findByRole('radiogroup', { name: 'Decider' })).toBeTruthy()
     expect(screen.queryByText('Temporarily offline')).toBeNull()
   })
 
