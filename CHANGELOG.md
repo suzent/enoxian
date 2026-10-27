@@ -39,6 +39,8 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-10-27
+
 ### Added
 
 - A new device is walked through two optional steps before entering its
@@ -1249,7 +1251,8 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/suzent/enoxian/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/suzent/enoxian/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/suzent/enoxian/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/suzent/enoxian/compare/v0.10.0...v0.11.0
