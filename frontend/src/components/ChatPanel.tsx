@@ -239,8 +239,11 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
   if (msg.agent_id === 'system') {
     return (
       <div className="chat-system-event" role="status">
-        <span>SYS</span>
-        <span>{msg.text}</span>
+        <span className="chat-system-event__label">system</span>
+        <span className="chat-system-event__text">{msg.text}</span>
+        <time className="chat-system-event__time" dateTime={new Date(msg.ts * 1000).toISOString()} title={formatFullTimestamp(msg.ts)}>
+          {formatTime(msg.ts)}
+        </time>
       </div>
     )
   }

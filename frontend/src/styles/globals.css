@@ -681,28 +681,42 @@ button[role="tab"][aria-selected="true"] {
 
 .chat-system-event {
   align-self: center;
-  display: inline-flex;
-  align-items: center;
-  max-width: min(80%, 72ch);
-  border: 1px solid var(--fg-obsidian);
-  background: #fff;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: min(calc(100% - 2 * clamp(16px, 2.2vw, 30px)), 76ch);
+  margin-block: 6px;
+  padding: 5px 10px;
+  border: var(--border-light);
   color: var(--fg-slate);
-  font-family: var(--font-mono);
   font-size: var(--ui-tiny);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
-.chat-system-event > span:first-child {
-  align-self: stretch;
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 6px;
-  background: var(--fg-obsidian);
-  color: var(--bg-alabaster);
+/* Same outline badge as AGENT, so a notice reads as part of the transcript
+   rather than a terminal dump dropped into it. */
+.chat-system-event__label {
+  flex: none;
+  border: 1px solid currentColor;
+  padding: 0 4px;
+  font-size: 9px;
   font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  opacity: 0.8;
 }
 
-.chat-system-event > span:last-child {
-  padding: 3px 7px;
+.chat-system-event__text {
+  min-width: 0;
+  white-space: pre-wrap;
+}
+
+.chat-system-event__time {
+  flex: none;
+  font-size: 11px;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
 }
 
 .chat-empty-state {
