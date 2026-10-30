@@ -1,0 +1,65 @@
+# Three simulated enoxian devices (A, B, C) on one docker network, plus the
+# local bootstrap server and plain-HTTP Iroh relay they meet through, so a run
+# needs nothing outside this host. See README.md for the run procedure.
+#
+#   docker compose -f experiments/devices/compose.yaml up -d --build
+#   docker compose -f experiments/devices/compose.yaml exec dev-a enox who
+
+x-device: &device
+  build:
+    context: ../..
+    dockerfile: experiments/devices/Dockerfile
+  image: enoxian-device:dev
+  # tc netem on eth0 needs it; nothing else in the container does.
+  cap_add: [NET_ADMIN]
+  depends_on: [relay]
+  networks: [circle]
+  restart: unless-stopped
+
+services:
+  relay:
+    # Built by the device services; same image, different entrypoint mode.
+    image: enoxian-device:dev
+    command: relay
+    networks: [circle]
+    volumes:
+      - relay-home:/home/device
+
+  dev-a:
+    <<: *device
+    hostname: dev-a
+    environment:
+      ENOXIAN_DEVICE_LABEL: A
+    volumes:
+      - home-a:/home/device
+      - ${RUNS_DIR:-./runs}:/runs
+
+  dev-b:
+    <<: *device
+    hostname: dev-b
+    environment:
+      ENOXIAN_DEVICE_LABEL: B
+    volumes:
+      - home-b:/home/device
+      - ${RUNS_DIR:-./runs}:/runs
+
+  dev-c:
+    <<: *device
+    hostname: dev-c
+    environment:
+      ENOXIAN_DEVICE_LABEL: C
+    volumes:
+      - home-c:/home/device
+      - ${RUNS_DIR:-./runs}:/runs
+
+networks:
+  circle: {}
+
+# One HOME per device: keypair, Circle configs and PSKs, daemon logs, and the
+# ~/enoxian workspaces. `docker compose down -v` gives every device a fresh
+# identity.
+volumes:
+  relay-home:
+  home-a:
+  home-b:
+  home-c:
