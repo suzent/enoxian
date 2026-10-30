@@ -56,6 +56,12 @@ refuses to publish a version whose section is missing or empty.
   trace of it, and the agent's reply comes back to you (`--wait` prints it)
   instead of going to the room.
 
+### Changed
+
+- System notices in a chat room, such as an agent that could not answer, show
+  as a quiet centered note with a SYSTEM badge and the time, instead of a black
+  SYS block that stood apart from the rest of the conversation.
+
 ### Fixed
 
 - HTML files previewed in the center editor fill the whole pane again, instead
