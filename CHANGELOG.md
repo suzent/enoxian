@@ -67,6 +67,11 @@ refuses to publish a version whose section is missing or empty.
 - HTML files previewed in the center editor fill the whole pane again, instead
   of showing a short strip with the rest of the page cut off.
 
+- An agent whose saved conversation it no longer has (for example after the
+  agent itself was reinstalled or its state cleared) starts a fresh one and
+  answers, with recent Circle chat as context, instead of failing every
+  mention with "Could not restore ACP session".
+
 ## [0.13.1] — 2026-10-27
 
 ### Added
