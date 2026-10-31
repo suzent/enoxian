@@ -52,6 +52,20 @@ pub fn auth_required(error: &anyhow::Error) -> bool {
         .is_some_and(|error| error.code == -32000)
 }
 
+/// Whether `session/load` failed because the agent has no such session: it was
+/// lost with the agent's own state, so loading it can never succeed. ACP's
+/// "resource not found" is -32002; agents also answer "invalid params" (-32602)
+/// naming the session ("no such session '…'").
+pub fn session_gone(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<RpcError>().is_some_and(|error| {
+        let message = error.message.to_ascii_lowercase();
+        error.code == -32002
+            || (error.code == -32602
+                && message.contains("session")
+                && (message.contains("no such") || message.contains("not found")))
+    })
+}
+
 struct Inbound {
     value: Value,
     _budget: OwnedSemaphorePermit,
@@ -221,7 +235,9 @@ impl<H: ClientHooks> AcpSession<H> {
     /// `resume` is a prior `sessionId` to continue. When present and the agent
     /// advertises the `loadSession` capability, we call `session/load` to
     /// restore the conversation. Errors preserve the saved session rather than
-    /// silently replacing it with an empty conversation.
+    /// silently replacing it with an empty conversation — except when the agent
+    /// says the session does not exist ([`session_gone`]), which no retry can
+    /// fix; then a fresh session starts and `was_resumed` stays false.
     pub async fn start(
         command: &[String],
         workspace: &Path,
@@ -242,12 +258,20 @@ impl<H: ClientHooks> AcpSession<H> {
         )
         .await?;
         match resume {
-            Some(prior) if session.load_session_cap => {
-                session.load_session(prior).await.context(
-                    "Could not restore ACP session; the saved conversation was not replaced",
-                )?;
-                session.resumed = true;
-            }
+            Some(prior) if session.load_session_cap => match session.load_session(prior).await {
+                Ok(()) => session.resumed = true,
+                // The agent no longer has it, so there is nothing left to
+                // preserve: refusing would fail every later mention the same way.
+                Err(error) if session_gone(&error) => {
+                    tracing::warn!("[acp] saved session {prior} is gone ({error}); starting fresh");
+                    session.new_session().await?;
+                }
+                Err(error) => {
+                    return Err(error.context(
+                        "Could not restore ACP session; the saved conversation was not replaced",
+                    ))
+                }
+            },
             _ => session.new_session().await?,
         }
         Ok(session)
@@ -1008,6 +1032,12 @@ pub(crate) mod tests {
                 Some("session/load") if mode == "resume-auth" => send(
                     json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"Sign in required"}}),
                 ),
+                Some("initialize") if mode == "resume-gone" => send(
+                    json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}),
+                ),
+                Some("session/load") if mode == "resume-gone" => send(
+                    json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":"no such session 'saved'"}}),
+                ),
                 Some("initialize") if mode == "auth" => send(
                     json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":1,"authMethods":[{"id":"login","name":"Browser"},{"id":"terminal","type":"terminal"}]}}),
                 ),
@@ -1155,6 +1185,41 @@ pub(crate) mod tests {
         assert!(auth_required(
             &result.err().expect("must not silently start fresh")
         ));
+    }
+
+    #[tokio::test]
+    async fn a_session_the_agent_no_longer_has_is_replaced_with_a_fresh_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = AcpSession::start(
+            &fake_agent_command(),
+            dir.path(),
+            AllowAll,
+            Some("saved"),
+            "fake-acp:resume-gone",
+            "circle",
+            None,
+        )
+        .await
+        .expect("a lost session must not fail every later run");
+        assert!(!session.was_resumed());
+        assert_eq!(session.session_id(), Some("fake-session"));
+        session.shutdown().await;
+    }
+
+    #[test]
+    fn only_a_missing_session_counts_as_gone() {
+        let rpc = |code, message: &str| {
+            anyhow::Error::new(RpcError {
+                code,
+                message: message.into(),
+            })
+        };
+        assert!(session_gone(&rpc(-32602, "no such session 'fd87ecfd'")));
+        assert!(session_gone(&rpc(-32602, "Session not found")));
+        assert!(session_gone(&rpc(-32002, "Resource not found")));
+        assert!(!session_gone(&rpc(-32602, "cwd must be absolute")));
+        assert!(!session_gone(&rpc(-32000, "Sign in required")));
+        assert!(!session_gone(&anyhow!("no such session")));
     }
 
     #[tokio::test]
