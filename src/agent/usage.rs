@@ -101,15 +101,36 @@ impl Tokens {
 }
 
 /// Parse the `usage` of a `session/prompt` result, if the agent sent one.
+/// Gemini CLI sends no `usage` and puts its counts in `_meta.quota.token_count`
+/// instead, so that is read when `usage` is missing.
 pub fn parse_tokens(result: &Value) -> Option<Tokens> {
-    let usage = result.get("usage").filter(|u| u.is_object())?;
-    let n = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
-    let tokens = Tokens {
-        input: n("inputTokens"),
-        output: n("outputTokens"),
-        cached_read: n("cachedReadTokens"),
-        cached_write: n("cachedWriteTokens"),
-        total: n("totalTokens"),
+    let tokens = match result.get("usage").filter(|u| u.is_object()) {
+        Some(usage) => {
+            let n = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+            Tokens {
+                input: n("inputTokens"),
+                output: n("outputTokens"),
+                cached_read: n("cachedReadTokens"),
+                cached_write: n("cachedWriteTokens"),
+                total: n("totalTokens"),
+            }
+        }
+        None => {
+            let count = result
+                .pointer("/_meta/quota/token_count")
+                .filter(|c| c.is_object())?;
+            let n = |key: &str| count.get(key).and_then(Value::as_u64);
+            let (input, output) = (
+                n("input_tokens").unwrap_or(0),
+                n("output_tokens").unwrap_or(0),
+            );
+            Tokens {
+                input,
+                output,
+                total: n("total_tokens").unwrap_or(input + output),
+                ..Tokens::default()
+            }
+        }
     };
     (tokens != Tokens::default()).then_some(tokens)
 }
@@ -284,6 +305,22 @@ mod tests {
         let turn = meter.turn().unwrap();
         assert_eq!(turn.tokens.unwrap().total, 63_048);
         assert_eq!((turn.context_size, turn.cost), (0, None));
+    }
+
+    #[test]
+    fn gemini_tokens_are_read_from_the_quota_meta() {
+        let result = json!({ "stopReason": "end_turn", "_meta": { "quota": {
+            "token_count": { "input_tokens": 1_200, "output_tokens": 300 } } } });
+        let tokens = parse_tokens(&result).unwrap();
+        assert_eq!(
+            (tokens.input, tokens.output, tokens.total),
+            (1_200, 300, 1_500)
+        );
+        // `usage`, when there is one, wins over the quota.
+        let both = json!({ "usage": { "inputTokens": 5, "totalTokens": 5 },
+            "_meta": { "quota": { "token_count": { "input_tokens": 9 } } } });
+        assert_eq!(parse_tokens(&both).unwrap().total, 5);
+        assert_eq!(parse_tokens(&json!({ "_meta": { "quota": {} } })), None);
     }
 
     #[test]
