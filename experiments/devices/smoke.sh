@@ -119,7 +119,7 @@ as b enox --circle "$CIRCLE" claim "$T2" & as c enox --circle "$CIRCLE" claim "$
 sleep 3
 holders=$(for d in a b c; do status_on "$d" "$T2"; done | sort -u)
 echo "  holder on every device: $holders"
-[ "$(echo "$holders" | wc -l)" = 1 ] || fail "devices disagree on who holds $T2"
+[ "$(echo "$holders" | wc -l)" -eq 1 ] || fail "devices disagree on who holds $T2"
 
 say "run logs"
 sleep 2
