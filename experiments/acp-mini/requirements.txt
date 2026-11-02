@@ -1,2 +1,6 @@
 mini-swe-agent==2.4.6
 agent-client-protocol==0.12.1
+# Pinned for reproducible runs. litellm imports mcp whenever a request carries
+# tools (every mini-swe-agent call) but does not depend on it.
+litellm==1.106.6
+mcp==2.3.0
