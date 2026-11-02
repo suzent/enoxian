@@ -87,7 +87,8 @@ def test_a_turn_runs_commands_and_replies(tmp_path, work):
     assert replies == ["wrote f.txt"]
     assert "tool_call" in client.kinds() and "tool_call_update" in client.kinds()
     costs = [u["cost"]["amount"] for u in client.updates if u["sessionUpdate"] == "usage_update"]
-    assert costs == pytest.approx([0.01, 0.02])
+    # One report per step, and the cumulative total again when the turn ends.
+    assert costs == pytest.approx([0.01, 0.02, 0.02])
     client.close()
 
 
@@ -129,8 +130,20 @@ def test_loading_an_unknown_session_fails(tmp_path, work):
     while True:
         msg = json.loads(client.proc.stdout.readline())
         if msg.get("id") == request:
-            assert "error" in msg
+            # The code enoxian reads as "session gone", so it starts a new one.
+            assert msg["error"]["code"] == -32002
             break
+    client.close()
+
+
+def test_a_turn_ended_by_format_errors_still_reports_its_cost(tmp_path, work):
+    steps = [{"command": "true"}] + [{"malformed": True}] * 3
+    client = Client(script(tmp_path, steps), tmp_path / "state")
+    client.call("initialize", {"protocolVersion": 1})
+    sid = client.call("session/new", {"cwd": str(work), "mcpServers": []})["sessionId"]
+    assert prompt(client, sid, "go")["stopReason"] == "refusal"
+    costs = [u["cost"]["amount"] for u in client.updates if u["sessionUpdate"] == "usage_update"]
+    assert costs[-1] == pytest.approx(0.04)
     client.close()
 
 

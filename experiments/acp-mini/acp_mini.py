@@ -48,6 +48,7 @@ from acp.helpers import (
     update_agent_thought_text,
     update_tool_call,
 )
+from acp.exceptions import RequestError
 from acp.schema import AgentCapabilities, Cost, Implementation, UsageUpdate, Usage
 from minisweagent.agents.default import AgentConfig, DefaultAgent
 from minisweagent.environments.local import LocalEnvironment
@@ -93,6 +94,7 @@ class Turn(DefaultAgent):
         super().__init__(model, env, config_class=SessionConfig, **kwargs)
         self.on_step = on_step or (lambda **_: None)
         self.stop = threading.Event()
+        self.context = 0
 
     def run_turn(self, text: str) -> tuple[str, str, dict]:
         """Run one prompt to its end. Returns (stop reason, reply, usage summed over the turn)."""
@@ -154,7 +156,8 @@ class Turn(DefaultAgent):
             if reply is not None:
                 break
         self.add_messages(*self.model.format_observation_messages(message, outputs, self.get_template_vars()))
-        self.on_step(cost=self.cost, context=_context_tokens(message))
+        self.context = _context_tokens(message)
+        self.on_step(cost=self.cost, context=self.context)
         return reply
 
 
@@ -223,7 +226,8 @@ class MiniAgent(Agent):
     async def load_session(self, cwd: str, session_id: str, **kwargs: Any) -> LoadSessionResponse | None:
         path = self._path(session_id)
         if not path.is_file():
-            raise FileNotFoundError(f"no saved session {session_id}")
+            # -32002 is what enoxian reads as "session gone": it then starts a new one.
+            raise RequestError.resource_not_found(session_id)
         saved = json.loads(path.read_text())
         turn = self._turn(session_id, cwd)
         turn.messages, turn.cost, turn.n_calls = saved["messages"], saved["cost"], saved["n_calls"]
@@ -262,7 +266,10 @@ class MiniAgent(Agent):
         try:
             stop_reason, reply, usage = await asyncio.to_thread(turn.run_turn, text)
         finally:
-            self._save(session_id)
+            self._save(session_id, context=turn.context)
+            # Steps only report cost after their commands run; calls that ended
+            # the turn on format errors or a limit were billed too.
+            await self._send(session_id, self._usage_update(turn.cost, turn.context))
         if reply:
             await self._send(session_id, update_agent_message_text(reply))
         total = usage["input"] + usage["output"]
@@ -339,6 +346,9 @@ class FakeModel:
         i = int(self.cursor.read_text()) if self.cursor.exists() else 0
         self.cursor.write_text(str(i + 1))
         step = self.steps[i]
+        if step.get("malformed"):
+            raise FormatError({"role": "user", "content": "No tool calls found in the response.",
+                               "extra": {"cost": step.get("cost", 0.01)}})
         call_id = f"call_{i}"
         return {
             "role": "assistant",
