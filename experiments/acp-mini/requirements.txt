@@ -1,0 +1,2 @@
+mini-swe-agent==2.4.6
+agent-client-protocol==0.12.1
