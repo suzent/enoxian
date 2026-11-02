@@ -40,7 +40,15 @@ FROM ubuntu:24.04
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates iproute2 iputils-ping jq curl procps \
+      git python3 python3-venv \
  && rm -rf /var/lib/apt/lists/*
+
+# acp-mini: mini-swe-agent behind ACP, the agent every device runs in the
+# experiments (see experiments/acp-mini/README.md).
+COPY experiments/acp-mini/requirements.txt /opt/acp-mini/requirements.txt
+RUN python3 -m venv /opt/acp-mini/venv \
+ && /opt/acp-mini/venv/bin/pip install --no-cache-dir -q -r /opt/acp-mini/requirements.txt
+COPY experiments/acp-mini/acp_mini.py /opt/acp-mini/acp_mini.py
 
 COPY --from=build /src/target/release/enox /usr/local/bin/enox
 COPY experiments/devices/entrypoint.sh /usr/local/bin/device-entrypoint
