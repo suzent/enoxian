@@ -1,0 +1,12 @@
+#!/bin/sh
+# Ask this device's stakeholder a question: stakeholder "question"
+#
+# The harness answers from the instance's stakeholders/<device>.yaml, which
+# stays on the host so the agent cannot read the rules it is asking about.
+set -eu
+[ $# -gt 0 ] || { echo 'usage: stakeholder "your question"' >&2; exit 2; }
+curl -sS --fail-with-body --max-time 30 \
+    --data-urlencode "device=${ENOXIAN_DEVICE_LABEL:-?}" \
+    --data-urlencode "question=$*" \
+    "${HARNESS_URL:-http://host.docker.internal:36600}/ask"
+echo

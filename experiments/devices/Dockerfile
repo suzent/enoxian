@@ -40,7 +40,7 @@ FROM ubuntu:24.04
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates iproute2 iputils-ping jq curl procps \
-      git python3 python3-venv \
+      git python3 python3-venv python-is-python3 python3-pytest \
  && rm -rf /var/lib/apt/lists/*
 
 # acp-mini: mini-swe-agent behind ACP, the agent every device runs in the
