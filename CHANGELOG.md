@@ -39,6 +39,16 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- Gemini CLI turns now record their tokens in `turn_end` and the run log.
+  Gemini sends no `usage` and reports its counts under `_meta.quota` instead,
+  which enoxian now reads when `usage` is missing.
+
+- An agent installed, added or removed with `enox agent install/add/remove`
+  shows up for the rest of the Circle right away, as one changed in the app
+  does, instead of only after `enox service restart`.
+
 ## [0.14.0] — 2026-11-02
 
 ### Added

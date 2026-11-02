@@ -151,14 +151,26 @@ async fn main() -> anyhow::Result<()> {
                 }
                 AgentAction::List => enoxian::commands::agent::list(),
                 AgentAction::Plugins => enoxian::commands::agent::plugins(),
-                AgentAction::Install { plugin } => enoxian::commands::agent::install(plugin).await,
+                AgentAction::Install { plugin } => {
+                    enoxian::commands::agent::install(plugin).await?;
+                    enoxian::commands::agent::readvertise(&client, &root).await;
+                    Ok(())
+                }
                 AgentAction::Add {
                     name,
                     driver,
                     working_dir,
                     command,
-                } => enoxian::commands::agent::add(name, driver, working_dir, command),
-                AgentAction::Remove { name } => enoxian::commands::agent::remove(name),
+                } => {
+                    enoxian::commands::agent::add(name, driver, working_dir, command)?;
+                    enoxian::commands::agent::readvertise(&client, &root).await;
+                    Ok(())
+                }
+                AgentAction::Remove { name } => {
+                    enoxian::commands::agent::remove(name)?;
+                    enoxian::commands::agent::readvertise(&client, &root).await;
+                    Ok(())
+                }
                 AgentAction::Reaction { mode } => enoxian::commands::agent::reaction(mode),
             }
         }

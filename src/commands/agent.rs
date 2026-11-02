@@ -132,6 +132,21 @@ pub async fn install(plugin: String) -> Result<()> {
     Ok(())
 }
 
+/// Tell a running daemon that `agents.toml` changed, so the Circle sees the
+/// agents this device now has without a restart. A daemon that is not running
+/// reads the file when it starts, so that is not an error.
+pub async fn readvertise(client: &reqwest::Client, daemon_root: &str) {
+    let url = format!("{daemon_root}/api/agent-config/readvertise");
+    match client.post(&url).send().await {
+        Ok(response) if response.status().is_success() => {}
+        Ok(response) => println!(
+            "  could not update the Circle ({}); `enox service restart` will",
+            response.status()
+        ),
+        Err(_) => println!("  enoxian is not running — the Circle sees this when it starts."),
+    }
+}
+
 /// `enox agent add <name> --driver <d> -- <command...>`.
 pub fn add(
     name: String,

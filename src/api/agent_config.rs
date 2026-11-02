@@ -554,6 +554,14 @@ pub async fn remove_agent(
     resp
 }
 
+/// `POST /api/agent-config/readvertise` — the CLI edits `agents.toml` itself,
+/// so after `enox agent install/add/remove` it calls this to have the daemon
+/// push the new list to peers, the same as an edit made through this API.
+pub async fn readvertise(State(daemon): State<DaemonState>) -> impl IntoResponse {
+    crate::lifecycle::readvertise_local_agents(&daemon);
+    Json(json!({ "ok": true }))
+}
+
 /// After an agent add/remove succeeds, push the updated advertised list into
 /// every active circle so peers' mention pickers reflect the change without a
 /// daemon restart. Only fires on a 2xx edit — a failed/clobber-guarded edit

@@ -251,6 +251,10 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
             post(agent_config::set_engagement),
         )
         .route("/api/agent-config/agents", post(agent_config::add_agent))
+        .route(
+            "/api/agent-config/readvertise",
+            post(agent_config::readvertise),
+        )
         .route("/api/warden", get(warden::get))
         .route("/api/warden/config", post(warden::set_config))
         .route("/api/warden/key", post(warden::set_key))
