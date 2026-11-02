@@ -378,8 +378,23 @@ class Run:
                 time.sleep(3)
 
     def runs_on(self, d: str) -> list[dict]:
-        data = self.dc.api(d, self.circles[d], "chat/executions?limit=500") or {}
-        return [r for r in data.get("runs", []) if r.get("agent_id") == prompts.AGENTS[d]]
+        """Every execution entry for this device's agent, newest first, following the cursor."""
+        runs, cursor = [], None
+        while True:
+            page = self.dc.api(d, self.circles[d], "chat/executions?limit=200"
+                               + (f"&before={cursor}" if cursor else "")) or {}
+            runs += page.get("runs", [])
+            cursor = page.get("next_cursor")
+            if not cursor:
+                break
+        return [r for r in runs if r.get("agent_id") == prompts.AGENTS[d]]
+
+    @staticmethod
+    def ran(r: dict) -> bool:
+        """Whether an entry is a turn that ran. Requests dropped before they
+        started (queue full, relay budget spent) are entries too, `expired` or
+        `cancelled` with no usage."""
+        return str(r.get("status", "")).lower() in ("completed", "failed", "interrupted") or bool(r.get("usage"))
 
     def busy(self) -> bool:
         for d in self.devices_used:
@@ -390,7 +405,23 @@ class Run:
 
     def finished_turns(self) -> int:
         return sum(1 for d in self.devices_used for r in self.runs_on(d)
-                   if str(r.get("status", "")).lower() not in ("pending", "running"))
+                   if str(r.get("status", "")).lower() not in ("pending", "running") and self.ran(r))
+
+    def freeze(self) -> None:
+        """A fixed cutoff: no more pushes, no more turns admitted, then wait for
+        the turns already running so their usage is recorded."""
+        for flag in (self.dir / "git").rglob("owners.json"):
+            (flag.parent / "frozen").touch()
+        for d in self.devices_used:
+            self.dc.on(d, "enox", "agent", "reaction", "pull", check=False)
+        deadline = time.time() + self.args.drain_secs
+        while self.busy() and time.time() < deadline:
+            time.sleep(self.args.poll)
+        still = sum(1 for d in self.devices_used for r in self.runs_on(d)
+                    if str(r.get("status", "")).lower() == "running")
+        self.events.add("frozen", payload={"still_running": still})
+        if still:
+            log(f"{still} turn(s) still running after {self.args.drain_secs:.0f}s; their usage is not counted")
 
     def main_head(self) -> str | None:
         heads = []
@@ -473,6 +504,7 @@ class Run:
             elif turns >= budget["turns"]:
                 end = "turn budget"
         log(f"end: {end}")
+        self.freeze()
         self.events.add("run_end", payload={"reason": end, "turns": self.finished_turns()})
         self.stakeholders.stop()
         return end
@@ -482,6 +514,7 @@ class Run:
     def collect(self, end: str) -> dict:
         wall = time.time() - self.started
         executions = {d: self.runs_on(d) for d in self.devices_used}
+        ran = {d: [r for r in runs if self.ran(r)] for d, runs in executions.items()}
         raw = self.dir / "devices"
         for d in self.devices_used:
             self.dc.cp_out(d, f"{HOME}/run.jsonl", raw / f"{d}.jsonl")
@@ -512,8 +545,9 @@ class Run:
             "tokens": tokens,
             "tokens_total": tokens["total"],
             "cost": sum(((u.get("cost") or {}).get("amount") or 0) for u in usage),
-            "turns": sum(len(r) for r in executions.values()),
-            "turns_by_device": {d: len(r) for d, r in executions.items()},
+            "turns": sum(len(r) for r in ran.values()),
+            "turns_by_device": {d: len(r) for d, r in ran.items()},
+            "requests_dropped": {d: sum(1 for r in runs if not self.ran(r)) for d, runs in executions.items()},
             "wall_s": wall,
             "end": end,
             "change_injected_s": (self.change_at - self.started) if self.change_at else None,
@@ -594,6 +628,7 @@ def main() -> int:
     p.add_argument("--netem-c", default="", help='tc netem arguments for C, e.g. "delay 200ms"')
     p.add_argument("--poll", type=float, default=5.0)
     p.add_argument("--idle-secs", type=float, default=45.0, help="how long everyone must be idle to count as idle")
+    p.add_argument("--drain-secs", type=float, default=300.0, help="how long to let running turns finish once the run ends")
     p.add_argument("--keep-devices", action="store_true", help="leave the containers running afterwards")
     args = parser.parse_args()
 

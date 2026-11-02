@@ -40,7 +40,9 @@ and copied into each device; it never appears on a command line.
    first — the change is injected into the entry device's agent only, and
    that device's stakeholder starts answering from `after_change`.
 6. **End.** Every agent idle for `--idle-secs` after the change, or the
-   instance's wall-clock or turn budget. The final `main` (Silent: each
+   instance's wall-clock or turn budget. Then `main` is frozen (the hook
+   refuses further pushes), devices stop admitting turns, and running turns
+   get `--drain-secs` to finish so their usage is recorded. The final `main` (Silent: each
    owner's package from its own repo) is graded in a throwaway container with
    no network, so agent code never runs on the host.
 

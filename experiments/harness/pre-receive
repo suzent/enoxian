@@ -27,7 +27,9 @@ status = 0
 for line in sys.stdin:
     old, new, ref = line.split()
     reason = None
-    if new == zero:
+    if (repo.parent / "frozen").exists():
+        reason = "the run has ended; main is frozen"
+    elif new == zero:
         reason = "deleting a branch is not allowed"
     elif ref != "refs/heads/main":
         reason = f"only main is shared; push {ref} is refused"
