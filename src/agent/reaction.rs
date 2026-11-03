@@ -67,6 +67,9 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
         })
         .await??,
     );
+    // Before the worker starts: work recovered from before a restart can go
+    // back to Pending without passing an admission that would set this.
+    inbox.set_per_agent_limit(AgentConfig::load().max_queued_per_agent);
     *state.execution_inbox.write().unwrap() = Some(std::sync::Arc::downgrade(&inbox));
     // Seeded from the current transcript on first run, so switching a Circle to
     // this build decides its whole history as pre-activation rather than
@@ -464,6 +467,7 @@ fn dispatch(
     {
         return;
     }
+    inbox.set_per_agent_limit(cfg.max_queued_per_agent);
     match inbox.admit(
         request,
         settings.max_relay_turns,
@@ -639,6 +643,7 @@ fn drain_ambient(
         // the restart took the whole round, so putting one back would quietly
         // demote a room configured for two responders to one.
         let mut requeued = 0;
+        inbox.set_per_agent_limit(cfg.max_queued_per_agent);
         for run_id in &state_of.never_started {
             match inbox.retry(run_id, settings.max_relay_turns, now) {
                 Ok(_) => requeued += 1,

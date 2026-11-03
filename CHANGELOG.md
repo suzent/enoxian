@@ -39,6 +39,13 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- `max_queued_per_agent` in `agents.toml` sets how many requests one agent
+  may have waiting on a device (default 4, up to 64). Past it, a waiting
+  request is dropped, so an agent that many others call, such as a lead, can
+  now be given a longer queue.
+
 ### Fixed
 
 - Gemini CLI turns now record their tokens in `turn_end` and the run log.

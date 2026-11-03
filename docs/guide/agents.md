@@ -425,7 +425,9 @@ answers. An explicit reply still goes where you point it.
 
 If the agent is already working, your message is **queued** rather than refused
 — up to four per agent, delivered in order as separate turns. Hovering the token
-says so.
+says so. An agent many others call, such as a lead, can be given a longer queue
+with `max_queued_per_agent` in `agents.toml` (up to 64); past it, the oldest
+waiting request that can give way is dropped.
 
 When the window guesses wrong — two agents mid-conversation with you — use the
 **reply** action on an agent's message instead. That routes to exactly that

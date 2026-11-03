@@ -305,6 +305,7 @@ pub(crate) fn inject_into(
     let request = crate::agent::private::request(state, agent, &req.text, req.from.as_deref());
     let message_id = request.message.id.clone();
     let now = chrono::Utc::now().timestamp();
+    inbox.set_per_agent_limit(cfg.max_queued_per_agent);
     match inbox.admit(request, cfg.resolved(&state.circle_id).max_relay_turns, now) {
         Ok(Admission::Accepted { entry, displaced }) => {
             for dropped in displaced {
