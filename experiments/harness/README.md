@@ -86,9 +86,11 @@ M2C2-W (warden) is not wired up yet.
   budget is settled after calibration.
 - **Cascades are capped at 50 turns** by the daemon (`RELAY_TURNS_CEILING`);
   a run whose agents hit it shows `relay budget spent` in the executions.
-- **Mentions past four queued are dropped.** The daemon queues at most four
-  requests per agent; the rest expire with `per-agent queue capacity
-  exceeded`. In the first M1C1 run 8 of 61 were dropped, most of them to the
-  lead. The executions under `devices/` record every one.
+- **Mentions past the agent queue are dropped.** The daemon queues four
+  requests per agent by default; the rest expire with `per-agent queue
+  capacity exceeded`. In the first M1C1 run 8 of 61 were dropped, most of them
+  to the lead. The harness sets `max_queued_per_agent` (`--agent-queue`,
+  default 64), which needs a daemon with enoxian #330; `result.json` reports
+  what was still dropped as `requests_dropped`.
 - **The stakeholder matches keywords.** A question phrased without one of a
   rule's keywords gets "I don't know." even when the rule covers it.

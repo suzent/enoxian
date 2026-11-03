@@ -354,7 +354,9 @@ class Run:
         # Follow-ups without a mention would route by who spoke last, not by
         # the protocol; the cascade cap is raised to the daemon's ceiling.
         self.dc.sh(d, "sed -i -e 's/^max_relay_turns = .*/max_relay_turns = 50/' "
-                      "-e 's/^engagement_window_secs = .*/engagement_window_secs = 0/' ~/.enoxian/agents.toml")
+                      "-e 's/^engagement_window_secs = .*/engagement_window_secs = 0/' "
+                      "-e '/^max_queued_per_agent = /d' ~/.enoxian/agents.toml && "
+                      f"sed -i '1i max_queued_per_agent = {self.args.agent_queue}' ~/.enoxian/agents.toml")
         if f"@{name}" not in self.dc.on(d, "enox", "agent", "list"):
             raise RuntimeError(f"dev-{d.lower()}: agents.toml no longer lists @{name}")
         self.dc.detach(d, f"enox --circle {self.names[d]} watch --json --log {HOME}/run.jsonl --run-id '{self.run_id}' "
@@ -602,6 +604,7 @@ class Run:
                                     capture_output=True, text=True).stdout.strip(),
             "synth_commit": git("rev-parse", "HEAD", cwd=self.args.synth),
             "netem_c": self.args.netem_c,
+            "agent_queue": self.args.agent_queue,
         }, indent=2) + "\n")
 
 
@@ -628,6 +631,8 @@ def main() -> int:
     p.add_argument("--netem-c", default="", help='tc netem arguments for C, e.g. "delay 200ms"')
     p.add_argument("--poll", type=float, default=5.0)
     p.add_argument("--idle-secs", type=float, default=45.0, help="how long everyone must be idle to count as idle")
+    p.add_argument("--agent-queue", type=int, default=64,
+                   help="max_queued_per_agent on every device (enoxian #330; older daemons ignore it and queue 4)")
     p.add_argument("--drain-secs", type=float, default=300.0, help="how long to let running turns finish once the run ends")
     p.add_argument("--keep-devices", action="store_true", help="leave the containers running afterwards")
     args = parser.parse_args()
