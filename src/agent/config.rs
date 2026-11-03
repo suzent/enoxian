@@ -255,6 +255,12 @@ pub struct AgentConfig {
     /// Device-wide execution cap. Set to 1 for serial rollback; restart to resize.
     #[serde(default = "default_max_concurrent_runs")]
     pub max_concurrent_runs: usize,
+    /// Requests one agent may have waiting on this device. Past it, the
+    /// oldest waiting request that can give way is dropped, or the new one is
+    /// refused. Raise it for an agent many others call, such as a lead.
+    /// Clamped to 1 and the Circle's queue of 64.
+    #[serde(default = "default_max_queued_per_agent")]
+    pub max_queued_per_agent: usize,
     #[serde(default)]
     pub reaction: Reaction,
     /// Seconds an agent stays "in conversation" with whoever it replied to, so
@@ -385,6 +391,10 @@ fn default_max_concurrent_runs() -> usize {
     4
 }
 
+fn default_max_queued_per_agent() -> usize {
+    super::inbox::MAX_PENDING_PER_AGENT
+}
+
 impl Default for AgentConfig {
     /// Matches serde defaults so empty files and load failures resolve alike.
     fn default() -> Self {
@@ -394,6 +404,7 @@ impl Default for AgentConfig {
             ambient_backlog_tail: default_ambient_backlog_tail(),
             ambient_max_attempts: default_ambient_max_attempts(),
             max_concurrent_runs: default_max_concurrent_runs(),
+            max_queued_per_agent: default_max_queued_per_agent(),
             reaction: Reaction::default(),
             engagement_window_secs: DEFAULT_ENGAGEMENT_WINDOW_SECS,
             ambient: Vec::new(),
@@ -538,6 +549,15 @@ mod tests {
         command = ["codex", "{{task}}"]
         working_dir = "src"
     "#;
+
+    #[test]
+    fn the_per_agent_queue_defaults_to_four_and_can_be_raised() {
+        assert_eq!(AgentConfig::from_toml("").unwrap().max_queued_per_agent, 4);
+        let cfg = AgentConfig::from_toml("max_queued_per_agent = 32").unwrap();
+        assert_eq!(cfg.max_queued_per_agent, 32);
+        let back = AgentConfig::from_toml(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert_eq!(back.max_queued_per_agent, 32);
+    }
 
     #[test]
     fn scoped_settings_round_trip_through_toml() {

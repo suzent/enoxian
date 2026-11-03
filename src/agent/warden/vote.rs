@@ -322,6 +322,7 @@ async fn resolve(
             ..request.clone()
         };
         let settings = cfg.resolved(&state.circle_id);
+        inbox.set_per_agent_limit(cfg.max_queued_per_agent);
         if let Ok(crate::agent::inbox::Admission::Accepted { .. }) = inbox.admit(
             added,
             settings.max_relay_turns,
