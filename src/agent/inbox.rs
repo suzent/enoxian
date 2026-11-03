@@ -11,11 +11,13 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex,
     },
 };
 
+/// Requests one agent may have waiting, unless `max_queued_per_agent` in
+/// agents.toml says otherwise.
 pub const MAX_PENDING_PER_AGENT: usize = 4;
 pub const MAX_PENDING_PER_CIRCLE: usize = 64;
 pub const MAX_PENDING_PER_DEVICE: usize = 256;
@@ -126,6 +128,9 @@ pub struct Inbox {
     path: PathBuf,
     snapshot: Mutex<Snapshot>,
     healthy: AtomicBool,
+    /// The per-agent queue length, from this device's agents.toml. Set by
+    /// whoever admits, since the file is re-read per request.
+    per_agent: AtomicUsize,
 }
 
 pub enum Admission {
@@ -260,6 +265,7 @@ impl Inbox {
             path: Self::path(circle_dir),
             snapshot: Mutex::new(snapshot.clone()),
             healthy: AtomicBool::new(true),
+            per_agent: AtomicUsize::new(MAX_PENDING_PER_AGENT),
         };
         let mut aggregate = PENDING.lock().unwrap();
         let available = MAX_PENDING_PER_DEVICE.saturating_sub(aggregate.values().sum());
@@ -344,7 +350,7 @@ impl Inbox {
                 .iter()
                 .filter(|e| e.status == Status::Pending && e.request.agent == old.request.agent)
                 .count()
-                < MAX_PENDING_PER_AGENT,
+                < self.per_agent_limit(),
             "agent queue full"
         );
         anyhow::ensure!(
@@ -406,6 +412,17 @@ impl Inbox {
         Ok(())
     }
 
+    /// How many requests one agent may have waiting here, from now on.
+    /// Clamped to 1 and the Circle's own queue.
+    pub fn set_per_agent_limit(&self, limit: usize) {
+        self.per_agent
+            .store(limit.clamp(1, MAX_PENDING_PER_CIRCLE), Ordering::Relaxed);
+    }
+
+    fn per_agent_limit(&self) -> usize {
+        self.per_agent.load(Ordering::Relaxed)
+    }
+
     pub fn admit(&self, request: Request, max_relay_turns: u8, now: i64) -> Result<Admission> {
         self.admit_with_limit(request, max_relay_turns, now, MAX_PENDING_PER_DEVICE)
     }
@@ -451,7 +468,7 @@ impl Inbox {
         let limits: [(&Queue<'_>, usize, &str); 2] = [
             (
                 &|e: &Entry| e.request.agent == agent,
-                MAX_PENDING_PER_AGENT,
+                self.per_agent_limit(),
                 "per-agent queue capacity exceeded",
             ),
             (
@@ -632,7 +649,7 @@ impl Inbox {
                     .iter()
                     .filter(|e| e.status == Status::Pending && e.request.agent == agent)
                     .count()
-                    > MAX_PENDING_PER_AGENT
+                    > self.per_agent_limit()
             {
                 let entry = next
                     .entries
@@ -1107,6 +1124,38 @@ pub(crate) mod tests {
             "the oldest addressed one stays"
         );
         assert_eq!(status_of(&inbox, "a4"), Status::Pending);
+    }
+
+    #[test]
+    fn a_raised_per_agent_limit_queues_more_and_still_caps() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        inbox.set_per_agent_limit(6);
+        for i in 0..6 {
+            accepted(&inbox, request(&format!("a{i}"), "claude"));
+        }
+        for i in 0..6 {
+            assert_eq!(status_of(&inbox, &format!("a{i}")), Status::Pending);
+        }
+
+        let Admission::Rejected(refused) = inbox.admit(aside("b", "claude"), 20, 101).unwrap()
+        else {
+            panic!("the seventh is past the limit");
+        };
+        assert_eq!(
+            refused.detail.as_deref(),
+            Some("per-agent queue capacity exceeded")
+        );
+    }
+
+    #[test]
+    fn the_per_agent_limit_stays_within_the_circle_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        inbox.set_per_agent_limit(0);
+        assert_eq!(inbox.per_agent_limit(), 1);
+        inbox.set_per_agent_limit(10_000);
+        assert_eq!(inbox.per_agent_limit(), MAX_PENDING_PER_CIRCLE);
     }
 
     #[test]
