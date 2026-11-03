@@ -134,6 +134,11 @@ class Devices:
         except json.JSONDecodeError:
             return None
 
+    def api_post(self, dev: str, circle_id: str, path: str, body: dict) -> None:
+        self.sh(dev, f'curl -sf -X POST -H "Authorization: Bearer $(cat ~/.enoxian/api.token)" '
+                     f"-H 'Content-Type: application/json' -d '{json.dumps(body)}' "
+                     f'localhost:36521/circles/{circle_id}/api/{path}', check=False)
+
     def wait(self, what: str, secs: float, fn) -> None:
         deadline = time.time() + secs
         while time.time() < deadline:
@@ -410,14 +415,21 @@ class Run:
                    if str(r.get("status", "")).lower() not in ("pending", "running") and self.ran(r))
 
     def freeze(self) -> None:
-        """A fixed cutoff: no more pushes, no more turns admitted, then wait for
-        the turns already running so their usage is recorded."""
+        """A fixed cutoff: no more pushes, no more turns admitted, queued
+        requests cancelled, then wait for the turns already running so their
+        usage is recorded."""
         for flag in (self.dir / "git").rglob("owners.json"):
             (flag.parent / "frozen").touch()
         for d in self.devices_used:
             self.dc.on(d, "enox", "agent", "reaction", "pull", check=False)
         deadline = time.time() + self.args.drain_secs
-        while self.busy() and time.time() < deadline:
+        while True:
+            for d in self.devices_used:
+                for r in self.runs_on(d):
+                    if str(r.get("status", "")).lower() == "pending":
+                        self.dc.api_post(d, self.circles[d], f"chat/executions/{r['run_id']}", {"action": "cancel"})
+            if not self.busy() or time.time() >= deadline:
+                break
             time.sleep(self.args.poll)
         still = sum(1 for d in self.devices_used for r in self.runs_on(d)
                     if str(r.get("status", "")).lower() == "running")
@@ -479,6 +491,7 @@ class Run:
 
         fallback = self.instance.change["trigger"].get("fallback", {}).get("after_turns")
         last_head, idle_since, end = None, None, None
+        main_moved = time.time()
         while end is None:
             time.sleep(self.args.poll)
             elapsed = time.time() - self.started
@@ -489,6 +502,8 @@ class Run:
                     self.inject_change("trigger")
                 elif fallback and turns >= fallback:
                     self.inject_change(f"fallback: {turns} turns")
+            if head != last_head:
+                main_moved = time.time()
             last_head = head
 
             if self.busy():
@@ -501,6 +516,12 @@ class Run:
                         idle_since = None
                     elif time.time() - self.change_at > self.args.idle_secs:
                         end = "idle after the change"
+            # Agents that keep talking after the work is done would otherwise
+            # run to the turn budget: once the change is in, a main that has not
+            # moved for --quiet-secs ends the run, whoever is still talking.
+            if end is None and self.change_at is not None \
+                    and time.time() - max(main_moved, self.change_at) >= self.args.quiet_secs:
+                end = f"main quiet for {self.args.quiet_secs:.0f}s after the change"
             if elapsed > budget["wall_s"]:
                 end = "wall-clock budget"
             elif turns >= budget["turns"]:
@@ -605,6 +626,7 @@ class Run:
             "synth_commit": git("rev-parse", "HEAD", cwd=self.args.synth),
             "netem_c": self.args.netem_c,
             "agent_queue": self.args.agent_queue,
+            "quiet_secs": self.args.quiet_secs,
         }, indent=2) + "\n")
 
 
@@ -633,6 +655,8 @@ def main() -> int:
     p.add_argument("--idle-secs", type=float, default=45.0, help="how long everyone must be idle to count as idle")
     p.add_argument("--agent-queue", type=int, default=64,
                    help="max_queued_per_agent on every device (enoxian #330; older daemons ignore it and queue 4)")
+    p.add_argument("--quiet-secs", type=float, default=300.0,
+                   help="end the run once main has not moved for this long after the change")
     p.add_argument("--drain-secs", type=float, default=300.0, help="how long to let running turns finish once the run ends")
     p.add_argument("--keep-devices", action="store_true", help="leave the containers running afterwards")
     args = parser.parse_args()
