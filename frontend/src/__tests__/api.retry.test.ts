@@ -109,3 +109,24 @@ describe('invite request timeout', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 })
+
+describe('request timeout', () => {
+  it('gives up on a body that stalls after its headers, rather than loading forever', async () => {
+    // A browser's fetch errors the body stream when its signal aborts.
+    fetchMock.mockImplementation(async (_url: string, init: RequestInit) => {
+      const signal = init.signal as AbortSignal
+      const body = new ReadableStream({
+        start(controller) {
+          signal.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')))
+        },
+      })
+      return new Response(body, { status: 200 })
+    })
+    await expect(settle(getChat('c1'))).rejects.toThrow(/taking too long/)
+  })
+
+  it('still reports a success body that is not JSON', async () => {
+    fetchMock.mockImplementation(async () => new Response('<html>', { status: 200 }))
+    await expect(settle(getChat('c1'))).rejects.toThrow(SyntaxError)
+  })
+})

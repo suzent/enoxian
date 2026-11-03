@@ -48,6 +48,10 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- A settings panel whose request stalls after the daemon starts answering now
+  shows "taking too long to respond" and a Try again button after 10 seconds,
+  instead of staying on "Loading…" forever.
+
 - Gemini CLI turns now record their tokens in `turn_end` and the run log.
   Gemini sends no `usage` and reports its counts under `_meta.quota` instead,
   which enoxian now reads when `usage` is missing.
