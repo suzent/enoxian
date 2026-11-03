@@ -67,6 +67,9 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
         })
         .await??,
     );
+    // Before the worker starts: work recovered from before a restart can go
+    // back to Pending without passing an admission that would set this.
+    inbox.set_per_agent_limit(AgentConfig::load().max_queued_per_agent);
     *state.execution_inbox.write().unwrap() = Some(std::sync::Arc::downgrade(&inbox));
     // Seeded from the current transcript on first run, so switching a Circle to
     // this build decides its whole history as pre-activation rather than
