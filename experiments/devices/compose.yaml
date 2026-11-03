@@ -15,6 +15,8 @@ x-device: &device
   depends_on: [relay]
   networks: [circle]
   restart: unless-stopped
+  # The harness answers `stakeholder` questions from the host.
+  extra_hosts: ["host.docker.internal:host-gateway"]
 
 services:
   relay:
@@ -33,6 +35,8 @@ services:
     volumes:
       - home-a:/home/device
       - ${RUNS_DIR:-./runs}:/runs
+      # The run's integration repo (experiments/harness); empty otherwise.
+      - ${RUN_GIT_DIR_A:-./git}:/git
 
   dev-b:
     <<: *device
@@ -42,6 +46,8 @@ services:
     volumes:
       - home-b:/home/device
       - ${RUNS_DIR:-./runs}:/runs
+      # The run's integration repo (experiments/harness); empty otherwise.
+      - ${RUN_GIT_DIR_B:-./git}:/git
 
   dev-c:
     <<: *device
@@ -51,6 +57,8 @@ services:
     volumes:
       - home-c:/home/device
       - ${RUNS_DIR:-./runs}:/runs
+      # The run's integration repo (experiments/harness); empty otherwise.
+      - ${RUN_GIT_DIR_C:-./git}:/git
 
 networks:
   circle: {}
