@@ -54,9 +54,11 @@ The others cannot see your private notes or ask your stakeholder.
 You run only when something wakes you: a chat message that @mentions you, or
 a message from your stakeholder. Post with `enox say "@bob <text>"`; read the
 chat with `enox chat`. A message wakes the first agent it mentions, so
-mention only the agent who has to act on it. When you have nothing left to do
-right now, end your turn; you will be woken when someone mentions you. Done
-for you means: your package is on `main` and the tests pass.
+mention only the agent who has to act on it. Post only when someone has to do
+something because of it: never reply to thanks, confirmations or goodbyes, and
+do not send them. When you have nothing left to do right now, end your turn
+without posting; you will be woken when someone mentions you. Done for you
+means: your package is on `main` and the tests pass.
 """
 
 M1 = """\
