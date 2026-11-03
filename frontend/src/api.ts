@@ -41,8 +41,18 @@ async function request<T>(url: string, init: RequestInit, attempt = 0, timeoutMs
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
   let res: Response
+  let data: unknown
+  let unreadable: unknown
   try {
     res = await fetch(url, { ...init, signal: controller.signal })
+    // The body is read under the same deadline. Headers can arrive and the
+    // body still stall, and a caller waiting on it would then wait forever.
+    try {
+      data = await res.json()
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') throw error
+      unreadable = error
+    }
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new Error('Enoxian is taking too long to respond. Try again in a moment.')
@@ -54,11 +64,9 @@ async function request<T>(url: string, init: RequestInit, attempt = 0, timeoutMs
   if (!res.ok) {
     let msg = `${res.status} ${url}`
     let code: string | undefined
-    try {
-      const data = await res.json()
-      if (data.error) msg = data.error
-      if (data.code) code = data.code
-    } catch {}
+    const body = data as { error?: string; code?: string } | null | undefined
+    if (body?.error) msg = body.error
+    if (body?.code) code = body.code
 
     // `circle_busy` means the daemon could not open a transaction on the
     // control document, so it refused *before* changing anything. That makes
@@ -73,7 +81,8 @@ async function request<T>(url: string, init: RequestInit, attempt = 0, timeoutMs
     }
     throw new ApiError(msg, res.status, code)
   }
-  return res.json()
+  if (unreadable !== undefined) throw unreadable
+  return data as T
 }
 
 async function get<T>(url: string): Promise<T> {
