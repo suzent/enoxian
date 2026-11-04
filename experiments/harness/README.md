@@ -26,9 +26,14 @@ and copied into each device; it never appears on a command line.
    device. Each gets the key, the `stakeholder` command, and an acp-mini agent
    — @alice on A, @bob on B, @carol on C — in push mode, working in a git
    checkout at `/home/device/repo`.
-2. **Git.** A bare repo per run under the run directory, mounted at `/git`.
-   Its `pre-receive` hook enforces `meta.owners`: a device may push only its
-   own package to `main`. Every push, accepted or refused, is logged.
+2. **Git.** A bare repo per run under the run directory, served by the `git`
+   container over `git://git/`. Devices reach it only over the network, so an
+   agent cannot touch the hooks, the owners or the freeze flag (one deleted
+   the flag through a shared mount before this). The pushing device is the one
+   whose hostname resolves to the caller's IP. `pre-receive` enforces
+   `meta.owners`: a device may push only its own package to `main`;
+   `access-hook` keeps each Silent device to its own repo. Every push,
+   accepted or refused, is logged.
 3. **Circles.** The team conditions put A, B and C in one Circle. Silent gives
    each device a Circle and a repo of its own. Ref-Full and Ref-Split run on
    A alone.
@@ -75,9 +80,10 @@ M2C2-W (warden) is not wired up yet.
 
 ## Known gaps
 
-- **Spoofable identity.** The hook and the stakeholder trust
-  `ENOXIAN_DEVICE_LABEL`, which an agent could override in its own shell.
-  Check `events.jsonl` for a device asking or pushing as another.
+- **The stakeholder trusts the device label.** Git identifies devices by IP,
+  but `stakeholder` sends `ENOXIAN_DEVICE_LABEL`, which an agent could
+  override in its own shell. Check `stakeholder_qa` events for a device asking
+  as another.
 - **The trigger is per template.** `trigger_holds` knows template 1
   (order-discount) only; other templates inject on the fallbacks.
 - **Token budget is not enforced.** `meta.budget.tokens` (600k) is below what

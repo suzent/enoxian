@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Server-side write permissions for the integration repo of one run.
 
-Installed as hooks/pre-receive in each run's bare repo under /git. A push may
-change only the package its device owns (owners.json next to the repo, as in
+Installed as hooks/pre-receive in each run's bare repo, served by the `git`
+container (git daemon), which no device can reach as files. A push may change
+only the package its device owns (owners.json next to the repo, as in
 meta.json `owners`; a device listed as "*" may change anything). The pushing
-device is ENOXIAN_DEVICE_LABEL, which the container sets and the agent inherits
-through the daemon. Every push, accepted or not, is appended to pushes.jsonl
-for the harness to read.
+device is the one whose compose hostname resolves to REMOTE_ADDR, which git
+daemon sets; ENOXIAN_DEVICE_LABEL is used only when there is none (a local
+push in tests). Every push, accepted or not, is appended to pushes.jsonl for
+the harness to read.
 """
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -18,7 +21,20 @@ from pathlib import Path
 
 repo = Path.cwd()
 owners = json.loads((repo.parent / "owners.json").read_text())
-device = os.environ.get("ENOXIAN_DEVICE_LABEL", "?")
+
+
+def device_of(addr: str) -> str:
+    for d in "ABC":
+        try:
+            if socket.gethostbyname(f"dev-{d.lower()}") == addr:
+                return d
+        except OSError:
+            pass
+    return "?"
+
+
+addr = os.environ.get("REMOTE_ADDR")
+device = device_of(addr) if addr else os.environ.get("ENOXIAN_DEVICE_LABEL", "?")
 own = owners.get(device)
 log = repo.parent / "pushes.jsonl"
 zero = "0" * 40

@@ -27,6 +27,22 @@ services:
     volumes:
       - relay-home:/home/device
 
+  git:
+    # The integration repo of a harness run (experiments/harness), served over
+    # git:// so devices reach it only through the network: no agent can touch
+    # its hooks or files. Its hooks tell devices apart by their IP.
+    image: enoxian-device:dev
+    entrypoint: ["git", "daemon", "--reuseaddr", "--export-all", "--enable=receive-pack",
+                 "--base-path=/srv/git", "--access-hook=/srv/git/access-hook", "/srv/git"]
+    environment:
+      # The repos belong to the host user; the daemon runs as root.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: "*"
+    networks: [circle]
+    volumes:
+      - ${RUN_GIT_DIR:-./git}:/srv/git
+
   dev-a:
     <<: *device
     hostname: dev-a
@@ -35,8 +51,6 @@ services:
     volumes:
       - home-a:/home/device
       - ${RUNS_DIR:-./runs}:/runs
-      # The run's integration repo (experiments/harness); empty otherwise.
-      - ${RUN_GIT_DIR_A:-./git}:/git
 
   dev-b:
     <<: *device
@@ -46,8 +60,6 @@ services:
     volumes:
       - home-b:/home/device
       - ${RUNS_DIR:-./runs}:/runs
-      # The run's integration repo (experiments/harness); empty otherwise.
-      - ${RUN_GIT_DIR_B:-./git}:/git
 
   dev-c:
     <<: *device
@@ -57,8 +69,6 @@ services:
     volumes:
       - home-c:/home/device
       - ${RUNS_DIR:-./runs}:/runs
-      # The run's integration repo (experiments/harness); empty otherwise.
-      - ${RUN_GIT_DIR_C:-./git}:/git
 
 networks:
   circle: {}

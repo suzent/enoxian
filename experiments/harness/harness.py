@@ -9,8 +9,10 @@ One run, start to finish:
 1. Fresh devices (`docker compose down -v`, then up), each with the
    mini-swe-agent key copied from this host, the `stakeholder` command, and
    an acp-mini agent: @alice on A, @bob on B, @carol on C.
-2. A bare git repo per run under the run directory, mounted at /git, with a
-   pre-receive hook that enforces `meta.owners`. Each device clones it.
+2. A bare git repo per run under the run directory, served by the `git`
+   container over git://, with a pre-receive hook that enforces
+   `meta.owners`. Devices reach it only over the network, so no agent can
+   touch the hooks, the owners or the freeze flag. Each device clones it.
 3. Circles: the team conditions put A, B and C in one Circle; Silent gives
    each device a Circle of its own and a repo of its own; Ref-Full and
    Ref-Split use device A alone.
@@ -260,11 +262,9 @@ class Run:
         (self.dir / "mnt").mkdir()  # the compose file's /runs mount; nothing goes in it
         (self.dir / "devices").mkdir()
         self.git_setup()
-        # Each device sees only its own integration repo at /git: one shared
-        # repo for the team and single conditions, one per device for Silent.
-        mounts = {f"RUN_GIT_DIR_{d}": str(self.dir / "git" / (d if self.kind == "silent" else ""))
-                  for d in ("A", "B", "C")}
-        self.dc = Devices({**mounts, "RUNS_DIR": str(self.dir / "mnt")})
+        # Served by the git container only; its access hook keeps each Silent
+        # device to its own repo.
+        self.dc = Devices({"RUN_GIT_DIR": str(self.dir / "git"), "RUNS_DIR": str(self.dir / "mnt")})
 
         log(f"{self.run_id}: fresh devices")
         self.dc.compose("down", "-v", "--remove-orphans", check=False)
@@ -298,6 +298,8 @@ class Run:
             (bare / "hooks" / "pre-receive").chmod(0o755)
             allowed = {"A": "*"} if self.kind == "single" else ({d: owners[d]} if self.kind == "silent" else owners)
             (bare.parent / "owners.json").write_text(json.dumps(allowed))
+        shutil.copy(HERE / "access-hook", self.dir / "git" / "access-hook")
+        (self.dir / "git" / "access-hook").chmod(0o755)
         self.repos = repos
 
     def repo_rel(self, d: str) -> str:
@@ -353,7 +355,8 @@ class Run:
                       f"printf '__pycache__/\\n*.pyc\\n.pytest_cache/\\n' > {HOME}/.gitignore && "
                       f"git config --global core.excludesFile {HOME}/.gitignore && "
                       f"git config --global user.name {name} && git config --global user.email {name}@device-{d.lower()} && "
-                      f"git clone -q /git/origin.git {REPO}")
+                      f"for i in $(seq 30); do git clone -q git://git/{self.repo_rel(d)} {REPO} && break; "
+                      f"rm -rf {REPO}; sleep 1; done && test -d {REPO}/.git")
         self.dc.on(d, "enox", "agent", "add", name, "--driver", "acp", "--working-dir", REPO, "--",
                    "/opt/acp-mini/venv/bin/python", "/opt/acp-mini/acp_mini.py", "--model", self.args.model,
                    "--config", f"{HOME}/acp-mini.yaml", "--turn-steps", str(self.args.turn_steps))
@@ -494,6 +497,11 @@ class Run:
         fallback = self.instance.change["trigger"].get("fallback", {}).get("after_turns")
         last_head, idle_since, end = None, None, None
         main_moved = time.time()
+
+        def working() -> bool:
+            """A turn already running when main last moved is still working on it."""
+            return any(str(r.get("status", "")).lower() == "running" and r.get("admitted_at", 0) <= main_moved
+                       for d in self.devices_used for r in self.runs_on(d))
         while end is None:
             time.sleep(self.args.poll)
             elapsed = time.time() - self.started
@@ -520,10 +528,13 @@ class Run:
                         end = "idle after the change"
             # Agents that keep talking after the work is done would otherwise
             # run to the turn budget: once the change is in, a main that has not
-            # moved for --quiet-secs ends the run, whoever is still talking.
-            if end is None and self.change_at is not None \
-                    and time.time() - max(main_moved, self.change_at) >= self.args.quiet_secs:
-                end = f"main quiet for {self.args.quiet_secs:.0f}s after the change"
+            # moved for --quiet-secs ends the run, whoever is still talking --
+            # unless a turn already running when main last moved is still going
+            # (work, not chatter), for up to three times as long.
+            if end is None and self.change_at is not None:
+                quiet = time.time() - max(main_moved, self.change_at)
+                if quiet >= self.args.quiet_secs and (quiet >= 3 * self.args.quiet_secs or not working()):
+                    end = f"main quiet for {quiet:.0f}s after the change"
             if elapsed > budget["wall_s"]:
                 end = "wall-clock budget"
             elif turns >= budget["turns"]:
