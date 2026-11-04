@@ -1,9 +1,11 @@
 """What each agent is told, per condition.
 
-The coordination texts for M1 and M2 carry the same fields (type, task,
+The coordination texts for M1, M2 and Free carry the same fields (type, task,
 interface, old, new, version, author, ref) and ask for a look at the same
 moments (before starting, before every push, after a failing test run), as
 the plan's fairness section requires; only where the state lives differs.
+Free is enoxian as it is meant to be used: chat, task board and shared folder,
+none of them restricted, so M2 isolates what consolidating state adds.
 The single-agent and Silent conditions get no Circle text at all, and their
 agents' system prompt does not mention enoxian.
 """
@@ -92,6 +94,23 @@ Use the chat only for questions, and to tell an agent the record changed
 start, before every push, and after a failing test run.
 """
 
+FREE = """\
+## How to coordinate: any way you like
+
+You have three shared tools; use whichever helps:
+
+- The chat: `enox say`, `enox chat`. Anything can go there, rules, claims and
+  interface changes included.
+- The task board: `enox tasks`, `enox task-create "<title>"`, `enox claim
+  <id>`, `enox done <id>` (full ids: `enox tasks --json`).
+- The shared folder, with the interface record `{ledger}`, synced live to every
+  device. Writing down what was agreed there (interface, old, new, version,
+  author, ref) helps the others find the current state.
+
+Read what you need before you start, before every push, and after a failing
+test run.
+"""
+
 C1 = """\
 ## Who decides: a lead
 
@@ -142,7 +161,7 @@ def kickoff(condition: dict, device: str, instance, ledger: str) -> str:
 
     if kind == "team":
         parts.append(TEAM.format(me=AGENTS[device], device=device))
-        parts.append((M1 if condition["comm"] == "M1" else M2).format(ledger=ledger))
+        parts.append({"M1": M1, "M2": M2, "free": FREE}[condition["comm"]].format(ledger=ledger))
         parts.append(C1 if condition["org"] == "C1" else C2)
     else:
         parts.append(ALONE)

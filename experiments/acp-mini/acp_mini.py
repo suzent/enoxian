@@ -289,7 +289,7 @@ class MiniAgent(Agent):
     def _turn(self, session_id: str, cwd: str) -> Turn:
         model = make_model(self.args.model)
         env = LocalEnvironment(cwd=cwd, timeout=self.args.command_timeout,
-                               env={"PAGER": "cat", "MANPAGER": "cat", "GIT_PAGER": "cat"})
+                               env={**mini_defaults().get("environment", {}).get("env", {}), "GIT_PAGER": "cat"})
         return Turn(
             model, env,
             system_template=self.templates.get("system_template", SYSTEM_TEMPLATE),
@@ -321,13 +321,34 @@ class MiniAgent(Agent):
         tmp.replace(path)
 
 
+MODEL_TIMEOUT = 300
+"""Seconds one model call may take before it is abandoned and retried."""
+
+
+def mini_defaults() -> dict:
+    """mini-swe-agent's own tool-calling settings (its `mini.yaml`).
+
+    LitellmModel's bare defaults keep every command's full output in the
+    history; mini.yaml cuts output past 10,000 characters to its head and tail.
+    Without it one long `cat` stays in every later request of the session.
+    """
+    from minisweagent.config import get_config_path
+
+    return yaml.safe_load(get_config_path("mini").read_text())
+
+
 def make_model(name: str):
     """`fake:<path>` replays a scripted run (for tests); anything else goes to litellm."""
     if name.startswith("fake:"):
         return FakeModel(Path(name[5:]))
     from minisweagent.models.litellm_model import LitellmModel
 
-    return LitellmModel(model_name=name, cost_tracking=os.getenv("MSWEA_COST_TRACKING", "ignore_errors"))
+    settings = {k: v for k, v in mini_defaults().get("model", {}).items()
+                if k in ("observation_template", "format_error_template", "model_kwargs")}
+    # litellm waits forever on a dead connection unless told otherwise, and a
+    # turn stuck in one call never ends; a timeout raises, and mini retries.
+    settings["model_kwargs"] = {"timeout": MODEL_TIMEOUT, **settings.get("model_kwargs", {})}
+    return LitellmModel(model_name=name, cost_tracking=os.getenv("MSWEA_COST_TRACKING", "ignore_errors"), **settings)
 
 
 class FakeModel:

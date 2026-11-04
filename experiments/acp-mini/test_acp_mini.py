@@ -167,3 +167,17 @@ def test_a_turn_stops_at_its_step_limit(tmp_path, work):
     sid = client.call("session/new", {"cwd": str(work), "mcpServers": []})["sessionId"]
     assert prompt(client, sid, "loop")["stopReason"] == "max_turn_requests"
     client.close()
+
+
+def test_long_command_output_is_cut_as_mini_does():
+    """A real model keeps mini.yaml's head-and-tail cut, so one long `cat`
+    does not stay whole in every later request."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    import acp_mini
+
+    model = acp_mini.make_model("gemini/gemini-3.8-flash")
+    message = {"extra": {"actions": [{"command": "cat big", "tool_call_id": "t1"}]}}
+    output = {"output": "x" * 50_000, "returncode": 0, "exception_info": ""}
+    content = model.format_observation_messages(message, [output], {})[0]["content"]
+    assert len(content) < 11_000
+    assert '"elided_chars": 40000' in content

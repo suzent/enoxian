@@ -2,15 +2,17 @@
 """Run one task instance under one condition on the three-device containers.
 
     python harness.py run --instance DIR --condition M2C2 --seed 0 \
-        --synth ~/SYNCagent/eval/synthetic --runs runs [--model gemini/gemini-3.5-flash]
+        --synth ~/SYNCagent/eval/synthetic --runs runs [--model gemini/gemini-3.8-flash]
 
 One run, start to finish:
 
 1. Fresh devices (`docker compose down -v`, then up), each with the
    mini-swe-agent key copied from this host, the `stakeholder` command, and
    an acp-mini agent: @alice on A, @bob on B, @carol on C.
-2. A bare git repo per run under the run directory, mounted at /git, with a
-   pre-receive hook that enforces `meta.owners`. Each device clones it.
+2. A bare git repo per run under the run directory, served by the `git`
+   container over git://, with a pre-receive hook that enforces
+   `meta.owners`. Devices reach it only over the network, so no agent can
+   touch the hooks, the owners or the freeze flag. Each device clones it.
 3. Circles: the team conditions put A, B and C in one Circle; Silent gives
    each device a Circle of its own and a repo of its own; Ref-Full and
    Ref-Split use device A alone.
@@ -63,6 +65,8 @@ CONDITIONS = {
     "M1C2": {"kind": "team", "comm": "M1", "org": "C2"},
     "M2C1": {"kind": "team", "comm": "M2", "org": "C1"},
     "M2C2": {"kind": "team", "comm": "M2", "org": "C2"},
+    # Every tool, nothing restricted: how enoxian is meant to be used.
+    "Free": {"kind": "team", "comm": "free", "org": "C2"},
     "Silent": {"kind": "silent"},
     "Ref-Full": {"kind": "single", "brief": "merged"},
     "Ref-Split": {"kind": "single", "brief": "split"},
@@ -258,11 +262,9 @@ class Run:
         (self.dir / "mnt").mkdir()  # the compose file's /runs mount; nothing goes in it
         (self.dir / "devices").mkdir()
         self.git_setup()
-        # Each device sees only its own integration repo at /git: one shared
-        # repo for the team and single conditions, one per device for Silent.
-        mounts = {f"RUN_GIT_DIR_{d}": str(self.dir / "git" / (d if self.kind == "silent" else ""))
-                  for d in ("A", "B", "C")}
-        self.dc = Devices({**mounts, "RUNS_DIR": str(self.dir / "mnt")})
+        # Served by the git container only; its access hook keeps each Silent
+        # device to its own repo.
+        self.dc = Devices({"RUN_GIT_DIR": str(self.dir / "git"), "RUNS_DIR": str(self.dir / "mnt")})
 
         log(f"{self.run_id}: fresh devices")
         self.dc.compose("down", "-v", "--remove-orphans", check=False)
@@ -296,6 +298,8 @@ class Run:
             (bare / "hooks" / "pre-receive").chmod(0o755)
             allowed = {"A": "*"} if self.kind == "single" else ({d: owners[d]} if self.kind == "silent" else owners)
             (bare.parent / "owners.json").write_text(json.dumps(allowed))
+        shutil.copy(HERE / "access-hook", self.dir / "git" / "access-hook")
+        (self.dir / "git" / "access-hook").chmod(0o755)
         self.repos = repos
 
     def repo_rel(self, d: str) -> str:
@@ -351,7 +355,8 @@ class Run:
                       f"printf '__pycache__/\\n*.pyc\\n.pytest_cache/\\n' > {HOME}/.gitignore && "
                       f"git config --global core.excludesFile {HOME}/.gitignore && "
                       f"git config --global user.name {name} && git config --global user.email {name}@device-{d.lower()} && "
-                      f"git clone -q /git/origin.git {REPO}")
+                      f"for i in $(seq 30); do git clone -q git://git/{self.repo_rel(d)} {REPO} && break; "
+                      f"rm -rf {REPO}; sleep 1; done && test -d {REPO}/.git")
         self.dc.on(d, "enox", "agent", "add", name, "--driver", "acp", "--working-dir", REPO, "--",
                    "/opt/acp-mini/venv/bin/python", "/opt/acp-mini/acp_mini.py", "--model", self.args.model,
                    "--config", f"{HOME}/acp-mini.yaml", "--turn-steps", str(self.args.turn_steps))
@@ -366,7 +371,7 @@ class Run:
             raise RuntimeError(f"dev-{d.lower()}: agents.toml no longer lists @{name}")
         self.dc.detach(d, f"enox --circle {self.names[d]} watch --json --log {HOME}/run.jsonl --run-id '{self.run_id}' "
                           f">/dev/null 2>>{HOME}/watch.err")
-        if self.kind == "team" and self.condition["comm"] == "M2":
+        if self.kind == "team" and self.condition["comm"] in ("M2", "free"):
             ws = self.dc.sh(d, f"enox --circle {self.names[d]} status --json | jq -r '.workspace_dir // empty'", check=False).strip()
             self.ledgers[d] = f"{ws or HOME + '/enoxian/exp'}/{LEDGER}"
             if d == "A":
@@ -492,6 +497,11 @@ class Run:
         fallback = self.instance.change["trigger"].get("fallback", {}).get("after_turns")
         last_head, idle_since, end = None, None, None
         main_moved = time.time()
+
+        def working() -> bool:
+            """A turn already running when main last moved is still working on it."""
+            return any(str(r.get("status", "")).lower() == "running" and r.get("admitted_at", 0) <= main_moved
+                       for d in self.devices_used for r in self.runs_on(d))
         while end is None:
             time.sleep(self.args.poll)
             elapsed = time.time() - self.started
@@ -518,10 +528,13 @@ class Run:
                         end = "idle after the change"
             # Agents that keep talking after the work is done would otherwise
             # run to the turn budget: once the change is in, a main that has not
-            # moved for --quiet-secs ends the run, whoever is still talking.
-            if end is None and self.change_at is not None \
-                    and time.time() - max(main_moved, self.change_at) >= self.args.quiet_secs:
-                end = f"main quiet for {self.args.quiet_secs:.0f}s after the change"
+            # moved for --quiet-secs ends the run, whoever is still talking --
+            # unless a turn already running when main last moved is still going
+            # (work, not chatter), for up to three times as long.
+            if end is None and self.change_at is not None:
+                quiet = time.time() - max(main_moved, self.change_at)
+                if quiet >= self.args.quiet_secs and (quiet >= 3 * self.args.quiet_secs or not working()):
+                    end = f"main quiet for {quiet:.0f}s after the change"
             if elapsed > budget["wall_s"]:
                 end = "wall-clock budget"
             elif turns >= budget["turns"]:
@@ -543,6 +556,13 @@ class Run:
             self.dc.cp_out(d, f"{HOME}/run.jsonl", raw / f"{d}.jsonl")
             (raw / f"{d}-executions.json").write_text(json.dumps(executions[d], indent=1))
             self.dc.cp_out(d, f"{HOME}/.enoxian/circles/{self.circles[d]}/agent-runs", raw / f"{d}-agent-runs")
+            # The shared folder as this device saw it: interfaces.md and
+            # anything else the agents kept there (M2's state lives here).
+            self.dc.cp_out(d, f"{HOME}/enoxian/{self.names[d]}", raw / f"{d}-shared")
+        for d in self.devices_used:
+            # Daemon output, agent stderr included; gone once the containers are removed.
+            logs = self.dc.compose("logs", "--no-color", f"dev-{d.lower()}", check=False)
+            (raw / f"{d}-daemon.log").write_text(logs.stdout + logs.stderr)
         self.dc.compose("stop")
 
         final = self.dir / "final"
@@ -571,6 +591,10 @@ class Run:
             "turns": sum(len(r) for r in ran.values()),
             "turns_by_device": {d: len(r) for d, r in ran.items()},
             "requests_dropped": {d: sum(1 for r in runs if not self.ran(r)) for d, runs in executions.items()},
+            # Turns that failed in the agent or its provider, not in the task: a
+            # run with any is an infrastructure failure, to rerun rather than score.
+            "agent_errors": [f"{d}: {r.get('detail')}" for d, runs in executions.items() for r in runs
+                             if str(r.get("status", "")).lower() == "failed"],
             "wall_s": wall,
             "end": end,
             "change_injected_s": (self.change_at - self.started) if self.change_at else None,
@@ -646,7 +670,7 @@ def main() -> int:
     p.add_argument("--synth", type=Path, required=True, help="SYNCagent's eval/synthetic directory (for grading)")
     p.add_argument("--runs", type=Path, default=Path("runs"))
     p.add_argument("--experiment", default="pilot")
-    p.add_argument("--model", default="gemini/gemini-3.5-flash")
+    p.add_argument("--model", default="gemini/gemini-3.8-flash")
     p.add_argument("--turn-steps", type=int, default=80, help="model calls per agent turn")
     p.add_argument("--key-file", type=Path, default=default_key_file(),
                    help="mini-swe-agent .env holding the provider key, copied into each device")
