@@ -2,7 +2,7 @@
 """Run one task instance under one condition on the three-device containers.
 
     python harness.py run --instance DIR --condition M2C2 --seed 0 \
-        --synth ~/SYNCagent/eval/synthetic --runs runs [--model gemini/gemini-3.5-flash]
+        --synth ~/SYNCagent/eval/synthetic --runs runs [--model gemini/gemini-3.8-flash]
 
 One run, start to finish:
 
@@ -63,6 +63,8 @@ CONDITIONS = {
     "M1C2": {"kind": "team", "comm": "M1", "org": "C2"},
     "M2C1": {"kind": "team", "comm": "M2", "org": "C1"},
     "M2C2": {"kind": "team", "comm": "M2", "org": "C2"},
+    # Every tool, nothing restricted: how enoxian is meant to be used.
+    "Free": {"kind": "team", "comm": "free", "org": "C2"},
     "Silent": {"kind": "silent"},
     "Ref-Full": {"kind": "single", "brief": "merged"},
     "Ref-Split": {"kind": "single", "brief": "split"},
@@ -366,7 +368,7 @@ class Run:
             raise RuntimeError(f"dev-{d.lower()}: agents.toml no longer lists @{name}")
         self.dc.detach(d, f"enox --circle {self.names[d]} watch --json --log {HOME}/run.jsonl --run-id '{self.run_id}' "
                           f">/dev/null 2>>{HOME}/watch.err")
-        if self.kind == "team" and self.condition["comm"] == "M2":
+        if self.kind == "team" and self.condition["comm"] in ("M2", "free"):
             ws = self.dc.sh(d, f"enox --circle {self.names[d]} status --json | jq -r '.workspace_dir // empty'", check=False).strip()
             self.ledgers[d] = f"{ws or HOME + '/enoxian/exp'}/{LEDGER}"
             if d == "A":
@@ -543,6 +545,13 @@ class Run:
             self.dc.cp_out(d, f"{HOME}/run.jsonl", raw / f"{d}.jsonl")
             (raw / f"{d}-executions.json").write_text(json.dumps(executions[d], indent=1))
             self.dc.cp_out(d, f"{HOME}/.enoxian/circles/{self.circles[d]}/agent-runs", raw / f"{d}-agent-runs")
+            # The shared folder as this device saw it: interfaces.md and
+            # anything else the agents kept there (M2's state lives here).
+            self.dc.cp_out(d, f"{HOME}/enoxian/{self.names[d]}", raw / f"{d}-shared")
+        for d in self.devices_used:
+            # Daemon output, agent stderr included; gone once the containers are removed.
+            logs = self.dc.compose("logs", "--no-color", f"dev-{d.lower()}", check=False)
+            (raw / f"{d}-daemon.log").write_text(logs.stdout + logs.stderr)
         self.dc.compose("stop")
 
         final = self.dir / "final"
@@ -571,6 +580,10 @@ class Run:
             "turns": sum(len(r) for r in ran.values()),
             "turns_by_device": {d: len(r) for d, r in ran.items()},
             "requests_dropped": {d: sum(1 for r in runs if not self.ran(r)) for d, runs in executions.items()},
+            # Turns that failed in the agent or its provider, not in the task: a
+            # run with any is an infrastructure failure, to rerun rather than score.
+            "agent_errors": [f"{d}: {r.get('detail')}" for d, runs in executions.items() for r in runs
+                             if str(r.get("status", "")).lower() == "failed"],
             "wall_s": wall,
             "end": end,
             "change_injected_s": (self.change_at - self.started) if self.change_at else None,
@@ -646,7 +659,7 @@ def main() -> int:
     p.add_argument("--synth", type=Path, required=True, help="SYNCagent's eval/synthetic directory (for grading)")
     p.add_argument("--runs", type=Path, default=Path("runs"))
     p.add_argument("--experiment", default="pilot")
-    p.add_argument("--model", default="gemini/gemini-3.5-flash")
+    p.add_argument("--model", default="gemini/gemini-3.8-flash")
     p.add_argument("--turn-steps", type=int, default=80, help="model calls per agent turn")
     p.add_argument("--key-file", type=Path, default=default_key_file(),
                    help="mini-swe-agent .env holding the provider key, copied into each device")

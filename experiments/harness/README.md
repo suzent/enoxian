@@ -12,7 +12,7 @@ cd experiments/harness
     --instance ~/syn-instances/syn-order-discount-rename-B \
     --condition M2C2 --seed 0 \
     --synth ~/workspace/SYNCagent/eval/synthetic \
-    --model gemini/gemini-3.5-flash
+    --model gemini/gemini-3.8-flash
 ```
 
 Instances come from SYNCagent's `synth.py build`; grading is its
