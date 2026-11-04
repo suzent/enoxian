@@ -321,6 +321,10 @@ class MiniAgent(Agent):
         tmp.replace(path)
 
 
+MODEL_TIMEOUT = 300
+"""Seconds one model call may take before it is abandoned and retried."""
+
+
 def mini_defaults() -> dict:
     """mini-swe-agent's own tool-calling settings (its `mini.yaml`).
 
@@ -341,6 +345,9 @@ def make_model(name: str):
 
     settings = {k: v for k, v in mini_defaults().get("model", {}).items()
                 if k in ("observation_template", "format_error_template", "model_kwargs")}
+    # litellm waits forever on a dead connection unless told otherwise, and a
+    # turn stuck in one call never ends; a timeout raises, and mini retries.
+    settings["model_kwargs"] = {"timeout": MODEL_TIMEOUT, **settings.get("model_kwargs", {})}
     return LitellmModel(model_name=name, cost_tracking=os.getenv("MSWEA_COST_TRACKING", "ignore_errors"), **settings)
 
 
