@@ -59,8 +59,13 @@ refuses to publish a version whose section is missing or empty.
 ### Changed
 
 - System notices in a chat room, such as an agent that could not answer, show
-  as a quiet centered note with a SYSTEM badge and the time, instead of a black
-  SYS block that stood apart from the rest of the conversation.
+  as a quiet aside in line with the messages — an info icon in the avatar
+  column and muted text — instead of a black SYS block that stood apart from
+  the rest of the conversation.
+
+- The Circles sidebar is calmer and more compact: the circle count sits beside
+  the CIRCLES label, rows only call out disabled circles instead of marking
+  every one ENABLED, and NEW / ENTER are lighter outlined buttons.
 
 ### Fixed
 
