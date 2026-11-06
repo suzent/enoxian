@@ -3903,7 +3903,7 @@ mod tests {
     /// conversation among agents, which only the budget can then end.
     async fn eager_decider() -> super::super::warden::decider::WardenConfig {
         super::super::warden::decider::WardenConfig {
-            decider: "litellm-systemone".into(),
+            decider: "jev".into(),
             endpoint: Some(
                 decider_serving(serde_json::json!({
                     "admit": { "type": "noul", "noul": 0.95 },
@@ -4069,7 +4069,7 @@ mod tests {
         let ledger = ledger_at_startup(dir.path());
         let mut cfg = voting_config(&["fake-acp:say-a#a", "fake-acp:say-b#b"], WardenMode::Act);
         cfg.warden = super::super::warden::decider::WardenConfig {
-            decider: "litellm-systemone".into(),
+            decider: "jev".into(),
             endpoint: Some(
                 decider_serving(serde_json::json!({
                     "admit": { "type": "noul", "noul": 0.1 },

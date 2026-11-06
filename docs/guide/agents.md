@@ -656,16 +656,28 @@ listener, a long one a blind vote. To have a decision model estimate instead,
 choose a **decider** in the settings for all Circles, under **Behaviour →
 Warden**:
 
-- **LiteLLM (System One)** — a LiteLLM proxy's `/v1/systemone` route, for
-  TypeSafe Jev, OpenAI, or a self-hosted vLLM.
-- **LiteLLM (OpenAI Decisions)** — the same proxy's `/v1/decisions` route.
+- **TypeSafe Jev** — a decision model that answers with probabilities of its
+  own (the System One format).
+- **OpenAI**, **Anthropic** or **Gemini** — an ordinary chat model, with an API
+  key from that provider's console. It fills in a structured answer with a
+  probability for each question. Each comes with a cheap default model, which
+  you can change under **Connection details**.
+- **OpenAI-compatible** — any server that speaks OpenAI Chat Completions with
+  JSON-schema output: OpenRouter, DeepSeek, Ollama, vLLM, a LiteLLM proxy.
+  Give it the endpoint (the base URL, such as `https://openrouter.ai/api/v1`,
+  is enough) and the model.
+- **OpenAI Decisions** — OpenAI's Decisions API.
 - Your own: a manifest in `~/.enoxian/wardens/<id>.toml` naming a protocol
-  (`systemone` or `decisions`) and an endpoint. enoxian loads no code; any
-  server that speaks one of the two formats works.
+  (`systemone`, `decisions`, `openai_chat`, `openai_responses`,
+  `anthropic_messages` or `gemini`) and an endpoint. enoxian loads no code.
+
+The key is an API key, billed per request by the provider. A Claude Code,
+Codex or Gemini CLI subscription login is not one and does not work here.
 
 A decider is asked typed questions — does this need an answer, which listener
 is best placed, would each way of answering succeed — and returns
-probabilities, never text. The daemon turns them into a choice: it declines
+probabilities, never text. A chat model that refuses, or answers in a shape
+that does not fit, counts as giving no answer to that question. The daemon turns them into a choice: it declines
 below the spec's `admit_threshold`, and otherwise picks the way with the best
 *p(success) − λ × cost*.
 
@@ -676,7 +688,13 @@ If the decider cannot be reached within its timeout (5 seconds by default), the
 built-in rules decide that message, and the record says why.
 
 With a decider configured, each message the warden considers is sent to its
-endpoint. Point it at a proxy you run.
+endpoint, which for a hosted provider means that provider sees your Circle's
+unaddressed messages. Point it at a server you run if that matters.
+
+A device that used the retired LiteLLM deciders moves to TypeSafe Jev (from
+LiteLLM System One) or OpenAI Decisions (from LiteLLM OpenAI Decisions) on its
+next start. It keeps its endpoint, model and key, so it still goes through the
+same proxy.
 
 **Try it** in the panel asks the decider about a sample message and shows the
 probabilities, the choice, the latency and the cost. Nothing runs.

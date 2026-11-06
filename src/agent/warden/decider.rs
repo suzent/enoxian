@@ -7,9 +7,11 @@
 //!
 //! Kinds are declared by manifest, like agent adapters (`plugin.rs`): a
 //! built-in catalog, plus `~/.enoxian/wardens/*.toml` for anything else. The
-//! boundary is the protocol — `systemone` or `decisions` over HTTP — so a
-//! decider with logic of its own is a server that speaks one of them; the
-//! daemon loads no code. A third-party manifest cannot take a built-in id.
+//! boundary is the protocol: a decision API (`systemone`, `decisions`), or a
+//! chat model asked for structured output (`openai_chat`, `openai_responses`,
+//! `anthropic_messages`, `gemini`). A decider with logic of its own is a
+//! server that speaks one of them; the daemon loads no code. A third-party
+//! manifest cannot take a built-in id.
 //!
 //! Keys live in `~/.enoxian/secrets/wardens.toml` (0600), keyed by decider id,
 //! never in `agents.toml`, which the settings API returns whole. They can also
@@ -33,6 +35,30 @@ pub enum Protocol {
     Systemone,
     /// OpenAI Decisions: `input` plus a list of `predicate` / `choice` questions.
     Decisions,
+    /// OpenAI Chat Completions with a strict JSON schema. Also what
+    /// OpenAI-compatible servers speak: OpenRouter, DeepSeek, Ollama, vLLM, a
+    /// LiteLLM proxy.
+    OpenaiChat,
+    /// OpenAI Responses with a strict JSON schema.
+    OpenaiResponses,
+    /// Anthropic Messages, answered through one forced tool call.
+    AnthropicMessages,
+    /// Gemini `generateContent` with a response JSON schema.
+    Gemini,
+}
+
+impl Protocol {
+    /// A general chat model asked for structured output, rather than a
+    /// decision API that answers with probabilities of its own.
+    pub fn is_chat(self) -> bool {
+        matches!(
+            self,
+            Protocol::OpenaiChat
+                | Protocol::OpenaiResponses
+                | Protocol::AnthropicMessages
+                | Protocol::Gemini
+        )
+    }
 }
 
 /// A form field the settings panel renders for a decider.
@@ -135,10 +161,66 @@ fn builtins() -> Vec<Manifest> {
             key_url: Some("https://docs.typesafe.ai/models".into()),
             builtin: true,
         },
+        // Chat models, asked for probabilities through a JSON schema. The
+        // default thresholds are not tuned against them, so the model here is
+        // a cheap default the person can change.
+        Manifest {
+            id: "openai".into(),
+            name: "OpenAI".into(),
+            description: "An OpenAI model through the Responses API, with an OpenAI API key."
+                .into(),
+            protocol: Protocol::OpenaiResponses,
+            endpoint: Some("https://api.openai.com/v1/responses".into()),
+            model: Some("gpt-6-luna".into()),
+            needs_key: true,
+            key_url: Some("https://platform.openai.com/api-keys".into()),
+            builtin: true,
+        },
+        Manifest {
+            id: "anthropic".into(),
+            name: "Anthropic".into(),
+            description: "A Claude model through the Messages API, with an Anthropic API key."
+                .into(),
+            protocol: Protocol::AnthropicMessages,
+            endpoint: Some("https://api.anthropic.com/v1/messages".into()),
+            model: Some("claude-haiku-5-5".into()),
+            needs_key: true,
+            key_url: Some("https://console.anthropic.com/settings/keys".into()),
+            builtin: true,
+        },
+        Manifest {
+            id: "gemini".into(),
+            name: "Google Gemini".into(),
+            description: "A Gemini model through the Gemini API, with a Google AI Studio API key."
+                .into(),
+            protocol: Protocol::Gemini,
+            endpoint: Some("https://generativelanguage.googleapis.com/v1beta".into()),
+            model: Some("gemini-3.5-flash-lite".into()),
+            needs_key: true,
+            key_url: Some("https://aistudio.google.com/apikey".into()),
+            builtin: true,
+        },
+        // No default address or model: they are whatever the server serves.
+        // No key link either, for the same reason.
+        Manifest {
+            id: "openai-compatible".into(),
+            name: "OpenAI-compatible endpoint".into(),
+            description: "Any server that speaks OpenAI Chat Completions with JSON schema \
+                          output, such as OpenRouter, DeepSeek, Ollama, vLLM or a LiteLLM proxy. \
+                          Give its address and a model."
+                .into(),
+            protocol: Protocol::OpenaiChat,
+            endpoint: None,
+            model: None,
+            needs_key: true,
+            key_url: None,
+            builtin: true,
+        },
         Manifest {
             id: "openai-decisions".into(),
             name: "OpenAI Decisions".into(),
-            description: "OpenAI's Decisions API, for anyone who already has an OpenAI key.".into(),
+            description: "OpenAI's Decisions API, which answers with probabilities of its own."
+                .into(),
             protocol: Protocol::Decisions,
             endpoint: Some("https://api.openai.com/v1/decisions".into()),
             model: Some("gpt-6-luna".into()),
@@ -146,33 +228,26 @@ fn builtins() -> Vec<Manifest> {
             key_url: Some("https://platform.openai.com/api-keys".into()),
             builtin: true,
         },
-        Manifest {
-            id: "litellm-systemone".into(),
-            name: "LiteLLM (System One)".into(),
-            description: "A LiteLLM proxy's /v1/systemone route, serving any decision model in \
-                          its model list — TypeSafe Jev, OpenAI, or a self-hosted vLLM."
-                .into(),
-            protocol: Protocol::Systemone,
-            endpoint: Some("http://localhost:4000/v1/systemone".into()),
-            model: Some("jev".into()),
-            needs_key: true,
-            key_url: None,
-            builtin: true,
-        },
-        Manifest {
-            id: "litellm-decisions".into(),
-            name: "LiteLLM (OpenAI Decisions)".into(),
-            description: "A LiteLLM proxy's /v1/decisions route, in OpenAI's Decisions format."
-                .into(),
-            protocol: Protocol::Decisions,
-            endpoint: Some("http://localhost:4000/v1/decisions".into()),
-            model: None,
-            needs_key: true,
-            key_url: None,
-            builtin: true,
-        },
     ]
 }
+
+/// Built-in deciders that were removed, and what a saved config naming one
+/// becomes: `(old id, new id, the old default endpoint, the old default
+/// model)`. The old defaults become overrides, so the same server is asked.
+const RETIRED: &[(&str, &str, &str, Option<&str>)] = &[
+    (
+        "litellm-systemone",
+        "jev",
+        "http://localhost:4000/v1/systemone",
+        Some("jev"),
+    ),
+    (
+        "litellm-decisions",
+        "openai-decisions",
+        "http://localhost:4000/v1/decisions",
+        None,
+    ),
+];
 
 fn manifest_dir() -> anyhow::Result<PathBuf> {
     Ok(crate::config::enoxian_dir()?.join("wardens"))
@@ -261,6 +336,24 @@ impl Default for WardenConfig {
     }
 }
 
+impl WardenConfig {
+    /// Point a config that names a removed built-in at its replacement, with
+    /// the old default endpoint (and model) kept as overrides, so the same
+    /// server is still asked. Returns the old id when it changed anything, so
+    /// the caller can carry the stored key over (see [`secrets::adopt`]).
+    pub fn migrate(&mut self) -> Option<&'static str> {
+        let (old, new, endpoint, model) = RETIRED.iter().find(|(old, ..)| *old == self.decider)?;
+        self.decider = (*new).to_string();
+        if self.endpoint.as_deref().is_none_or(|e| e.trim().is_empty()) {
+            self.endpoint = Some((*endpoint).to_string());
+        }
+        if self.model.as_deref().is_none_or(|m| m.trim().is_empty()) {
+            self.model = model.map(str::to_string);
+        }
+        Some(old)
+    }
+}
+
 /// Everything needed to ask: the manifest, with the config's overrides applied,
 /// and the key if one is needed.
 #[derive(Debug, Clone)]
@@ -278,7 +371,7 @@ impl Resolved {
     }
 }
 
-/// A proxy given by its address alone (`https://litellm.example.com/`) means
+/// A proxy given by its address alone (`https://proxy.example.com/`) means
 /// the decider's usual route on it. Posting to the bare origin answers 405,
 /// which is what someone pasting their proxy's address gets otherwise.
 fn with_default_path(endpoint: &str, default: Option<&str>) -> String {
@@ -295,6 +388,37 @@ fn with_default_path(endpoint: &str, default: Option<&str>) -> String {
         }
         _ => trimmed.to_string(),
     }
+}
+
+/// The URL a chat-model protocol posts to, from what was configured: the full
+/// URL, the API's base (`https://openrouter.ai/api/v1`, as an OpenAI SDK's
+/// `base_url`), or the bare origin. Gemini names the model in the path.
+fn chat_url(protocol: Protocol, endpoint: &str, model: &str) -> String {
+    let trimmed = endpoint.trim();
+    let model = model.trim().trim_start_matches("models/");
+    let (version, route) = match protocol {
+        Protocol::OpenaiChat => ("v1", "chat/completions".to_string()),
+        Protocol::OpenaiResponses => ("v1", "responses".to_string()),
+        Protocol::AnthropicMessages => ("v1", "messages".to_string()),
+        Protocol::Gemini => ("v1beta", format!("models/{model}:generateContent")),
+        _ => return trimmed.to_string(),
+    };
+    let Ok(mut url) = reqwest::Url::parse(trimmed) else {
+        return trimmed.to_string();
+    };
+    let path = url.path().trim_end_matches('/').to_string();
+    let complete = match protocol {
+        Protocol::Gemini => path.contains(":generateContent"),
+        _ => path.ends_with(&format!("/{route}")),
+    };
+    if complete {
+        url.set_path(&path);
+    } else if path.is_empty() {
+        url.set_path(&format!("/{version}/{route}"));
+    } else {
+        url.set_path(&format!("{path}/{route}"));
+    }
+    url.to_string()
 }
 
 /// Resolve the configured decider, or say why it cannot be used. The caller
@@ -327,6 +451,13 @@ pub fn resolve(cfg: &WardenConfig) -> Result<Resolved, String> {
     if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
         return Err("the endpoint must be an http(s) URL".into());
     }
+    let endpoint = if manifest.protocol.is_chat() {
+        // A chat API serves many models, and the request must name one.
+        let model = model.as_deref().ok_or("no model is configured")?;
+        chat_url(manifest.protocol, &endpoint, model)
+    } else {
+        endpoint
+    };
     let key = match &cfg.key_env {
         Some(var) if !var.trim().is_empty() => std::env::var(var).ok(),
         _ => secrets::get(&manifest.id),
@@ -392,6 +523,22 @@ pub mod secrets {
         })
     }
 
+    /// Give `new` the key stored for `old`, after a config was migrated from
+    /// one to the other (see [`super::WardenConfig::migrate`]). A key `new`
+    /// already has is kept: it was set on purpose.
+    pub fn adopt(old: &str, new: &str) {
+        let all = load();
+        if all.contains_key(new) {
+            return;
+        }
+        let Some(entry) = all.get(old).filter(|e| !e.api_key.is_empty()) else {
+            return;
+        };
+        if let Err(error) = set(new, Some(&entry.api_key)) {
+            tracing::warn!("[warden] could not carry the {old} key over to {new}: {error}");
+        }
+    }
+
     /// Set or, with `None`, remove the key for one decider.
     pub fn set(id: &str, key: Option<&str>) -> anyhow::Result<()> {
         let mut all = load();
@@ -446,7 +593,8 @@ pub struct Reply {
     pub answers: BTreeMap<String, Answer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// From `x-litellm-response-cost`, in USD, when the proxy reports it.
+    /// In USD, when the server reports it in a response-cost header (see
+    /// [`COST_HEADER`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -529,6 +677,311 @@ pub fn request_body(
             }
             body
         }
+        Protocol::OpenaiChat => json!({
+            "model": model,
+            "messages": [
+                { "role": "system", "content": chat::SYSTEM },
+                { "role": "user", "content": chat::prompt(input, questions) },
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": chat::SCHEMA_NAME,
+                    "strict": true,
+                    "schema": chat::schema(questions),
+                },
+            },
+        }),
+        Protocol::OpenaiResponses => json!({
+            "model": model,
+            "instructions": chat::SYSTEM,
+            "input": chat::prompt(input, questions),
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": chat::SCHEMA_NAME,
+                    "strict": true,
+                    "schema": chat::schema(questions),
+                },
+            },
+            "store": false,
+        }),
+        Protocol::AnthropicMessages => json!({
+            "model": model,
+            "max_tokens": 1024,
+            "system": chat::SYSTEM,
+            "messages": [ { "role": "user", "content": chat::prompt(input, questions) } ],
+            "tools": [{
+                "name": chat::SCHEMA_NAME,
+                "description": "Record the probability for every question.",
+                "input_schema": chat::schema(questions),
+            }],
+            "tool_choice": { "type": "tool", "name": chat::SCHEMA_NAME },
+        }),
+        // The model is in the URL, not the body.
+        Protocol::Gemini => json!({
+            "systemInstruction": { "parts": [ { "text": chat::SYSTEM } ] },
+            "contents": [
+                { "role": "user", "parts": [ { "text": chat::prompt(input, questions) } ] },
+            ],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseJsonSchema": chat::schema(questions),
+            },
+        }),
+    }
+}
+
+/// Chat models asked for probabilities: one JSON schema, built from the
+/// questions, that every chat protocol carries its own way, and the reading
+/// of what comes back.
+///
+/// Questions and options are properties named after them, and are read back
+/// by name, never by position: Gemini does not keep property order. Names are
+/// made safe for every provider's schema rules (`[A-Za-z0-9_-]`, at most 64),
+/// so a candidate called `fake-acp:say-a#a` is asked about as
+/// `fake-acp_say-a_a`.
+mod chat {
+    use super::{Answer, Ask, Question};
+    use serde_json::{json, Map, Value};
+    use std::collections::{BTreeMap, HashSet};
+
+    /// The tool, schema or format name, where a provider wants one.
+    pub const SCHEMA_NAME: &str = "warden_answers";
+
+    pub const SYSTEM: &str = "You estimate probabilities for a group chat. Read the input, \
+        then answer every question with numbers between 0 and 1. For a yes/no question, \
+        p_yes is the probability that the answer is yes. For a choice, give every option \
+        the probability that it is the right one, adding up to 1. Answer only through the \
+        schema.";
+
+    fn safe(raw: &str, taken: &mut HashSet<String>) -> String {
+        let mut base: String = raw
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .take(56)
+            .collect();
+        if base.is_empty() {
+            base.push('_');
+        }
+        let mut key = base.clone();
+        let mut n = 2;
+        while !taken.insert(key.clone()) {
+            key = format!("{base}_{n}");
+            n += 1;
+        }
+        key
+    }
+
+    /// Each question's property name, and for a choice each option's,
+    /// alongside the question. Deterministic, so the request and the reading
+    /// agree.
+    pub fn keys(questions: &[Question]) -> Vec<(String, Vec<(String, String)>)> {
+        let mut taken = HashSet::new();
+        questions
+            .iter()
+            .map(|q| {
+                let key = safe(&q.name, &mut taken);
+                let options = match &q.ask {
+                    Ask::YesNo => Vec::new(),
+                    Ask::Choice(options) => {
+                        let mut taken = HashSet::new();
+                        options
+                            .iter()
+                            .map(|(value, _)| (safe(value, &mut taken), value.clone()))
+                            .collect()
+                    }
+                };
+                (key, options)
+            })
+            .collect()
+    }
+
+    fn probability() -> Value {
+        json!({ "type": "number", "minimum": 0, "maximum": 1 })
+    }
+
+    /// Strict: every object closed and every property required, as OpenAI's
+    /// strict mode demands; the others accept the same.
+    fn object(properties: Map<String, Value>) -> Value {
+        let required: Vec<&String> = properties.keys().collect();
+        json!({
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": false,
+        })
+    }
+
+    pub fn schema(questions: &[Question]) -> Value {
+        let mut properties = Map::new();
+        for (q, (key, options)) in questions.iter().zip(keys(questions)) {
+            let inner = match &q.ask {
+                Ask::YesNo => {
+                    let mut p = Map::new();
+                    p.insert("p_yes".into(), probability());
+                    object(p)
+                }
+                Ask::Choice(_) => object(
+                    options
+                        .iter()
+                        .map(|(key, _)| (key.clone(), probability()))
+                        .collect(),
+                ),
+            };
+            properties.insert(key, inner);
+        }
+        object(properties)
+    }
+
+    /// The input, then the questions under the names the schema uses.
+    pub fn prompt(input: &str, questions: &[Question]) -> String {
+        let mut out = format!("{input}\n\nQuestions:\n");
+        for (q, (key, options)) in questions.iter().zip(keys(questions)) {
+            match &q.ask {
+                Ask::YesNo => out.push_str(&format!("- {key} (yes/no): {}\n", q.instructions)),
+                Ask::Choice(described) => {
+                    out.push_str(&format!("- {key} (choose one): {}\n", q.instructions));
+                    for ((key, _), (_, description)) in options.iter().zip(described) {
+                        out.push_str(&format!("  - {key}: {description}\n"));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn p(value: Option<&Value>) -> Option<f64> {
+        value
+            .and_then(Value::as_f64)
+            .filter(|p| p.is_finite())
+            .map(|p| p.clamp(0.0, 1.0))
+    }
+
+    /// Every question's answer from the object the model filled in. A
+    /// question missing from it, or answered with something other than
+    /// probabilities, is refused; unknown keys are dropped. `None` — nothing
+    /// usable came back at all — refuses every question.
+    pub fn answers(object: Option<&Value>, questions: &[Question]) -> BTreeMap<String, Answer> {
+        let object = object.and_then(Value::as_object);
+        questions
+            .iter()
+            .zip(keys(questions))
+            .map(|(q, (key, options))| {
+                let given = object.and_then(|o| o.get(&key));
+                let answer = match &q.ask {
+                    Ask::YesNo => match p(given.and_then(|g| g.get("p_yes")))
+                        // A bare number is what was meant.
+                        .or_else(|| p(given))
+                    {
+                        Some(p) => Answer::YesNo { p },
+                        None => Answer::Refused,
+                    },
+                    Ask::Choice(_) => {
+                        let mut probs: BTreeMap<String, f64> = options
+                            .iter()
+                            .filter_map(|(key, value)| Some((value.clone(), p(given?.get(key))?)))
+                            .collect();
+                        let total: f64 = probs.values().sum();
+                        if total > 0.0 {
+                            probs.values_mut().for_each(|p| *p /= total);
+                            Answer::Choice { p: probs }
+                        } else {
+                            Answer::Refused
+                        }
+                    }
+                };
+                (q.name.clone(), answer)
+            })
+            .collect()
+    }
+
+    /// A JSON object the model wrote as text.
+    pub fn from_text(text: Option<&str>) -> Option<Value> {
+        let text = text?.trim();
+        // Some compatible servers wrap it in a code fence despite the schema.
+        let text = text
+            .strip_prefix("```json")
+            .or_else(|| text.strip_prefix("```"))
+            .and_then(|t| t.strip_suffix("```"))
+            .map(str::trim)
+            .unwrap_or(text);
+        serde_json::from_str::<Value>(text)
+            .ok()
+            .filter(Value::is_object)
+    }
+
+    /// The filled-in object from a response body, or `None` when the model
+    /// refused, was cut off, or answered with something unreadable.
+    pub fn output(protocol: super::Protocol, body: &Value) -> Option<Value> {
+        use super::Protocol;
+        match protocol {
+            Protocol::OpenaiChat => {
+                let message = body.pointer("/choices/0/message")?;
+                if message
+                    .get("refusal")
+                    .is_some_and(|r| !r.is_null() && r.as_str() != Some(""))
+                {
+                    return None;
+                }
+                from_text(message.get("content").and_then(Value::as_str))
+            }
+            Protocol::OpenaiResponses => {
+                if body.get("status").and_then(Value::as_str) == Some("incomplete") {
+                    return None;
+                }
+                let message = body
+                    .get("output")?
+                    .as_array()?
+                    .iter()
+                    .find(|item| item.get("type").and_then(Value::as_str) == Some("message"))?;
+                let parts = message.get("content")?.as_array()?;
+                let kind =
+                    |part: &Value| part.get("type").and_then(Value::as_str).map(str::to_string);
+                if parts
+                    .iter()
+                    .any(|part| kind(part).as_deref() == Some("refusal"))
+                {
+                    return None;
+                }
+                let part = parts
+                    .iter()
+                    .find(|part| kind(part).as_deref() == Some("output_text"))?;
+                from_text(part.get("text").and_then(Value::as_str))
+            }
+            Protocol::AnthropicMessages => {
+                if body.get("stop_reason").and_then(Value::as_str) == Some("refusal") {
+                    return None;
+                }
+                body.get("content")?
+                    .as_array()?
+                    .iter()
+                    .find(|block| {
+                        block.get("type").and_then(Value::as_str) == Some("tool_use")
+                            && block.get("name").and_then(Value::as_str) == Some(SCHEMA_NAME)
+                    })?
+                    .get("input")
+                    .filter(|input| input.is_object())
+                    .cloned()
+            }
+            Protocol::Gemini => {
+                // The text may come in several parts; thoughts are not it.
+                let parts = body.pointer("/candidates/0/content/parts")?.as_array()?;
+                let text: String = parts
+                    .iter()
+                    .filter(|part| part.get("thought").and_then(Value::as_bool) != Some(true))
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect();
+                from_text(Some(&text))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -593,18 +1046,47 @@ fn parse_answer(kind: &str, body: &Value, ask: &Ask) -> Answer {
 /// Read a response body for `protocol`. Questions it did not answer are left
 /// out, which the policy treats like a refusal.
 pub fn parse_response(protocol: Protocol, body: &Value, questions: &[Question]) -> Reply {
+    let at = |path: &str| body.pointer(path).and_then(Value::as_u64);
+    // Input tokens count the cached ones too, whichever way a provider
+    // reports them.
+    let (input_tokens, cached_tokens) = match protocol {
+        Protocol::OpenaiChat => (
+            at("/usage/prompt_tokens"),
+            at("/usage/prompt_tokens_details/cached_tokens"),
+        ),
+        Protocol::AnthropicMessages => {
+            // Anthropic's `input_tokens` leaves out what was read from or
+            // written to the cache.
+            let read = at("/usage/cache_read_input_tokens");
+            let written = at("/usage/cache_creation_input_tokens");
+            (
+                at("/usage/input_tokens").map(|n| n + read.unwrap_or(0) + written.unwrap_or(0)),
+                read,
+            )
+        }
+        Protocol::Gemini => (
+            at("/usageMetadata/promptTokenCount"),
+            at("/usageMetadata/cachedContentTokenCount"),
+        ),
+        _ => (
+            at("/usage/input_tokens"),
+            at("/usage/input_tokens_details/cached_tokens").or_else(|| at("/usage/cached_tokens")),
+        ),
+    };
+    let model = match protocol {
+        Protocol::Gemini => body.get("modelVersion"),
+        _ => body.get("model"),
+    };
     let mut reply = Reply {
-        model: body
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        input_tokens: body.pointer("/usage/input_tokens").and_then(Value::as_u64),
-        cached_tokens: body
-            .pointer("/usage/input_tokens_details/cached_tokens")
-            .or_else(|| body.pointer("/usage/cached_tokens"))
-            .and_then(Value::as_u64),
+        model: model.and_then(Value::as_str).map(str::to_string),
+        input_tokens,
+        cached_tokens,
         ..Reply::default()
     };
+    if protocol.is_chat() {
+        reply.answers = chat::answers(chat::output(protocol, body).as_ref(), questions);
+        return reply;
+    }
     let ask_of = |name: &str| questions.iter().find(|q| q.name == name).map(|q| &q.ask);
     match (protocol, body.get("answers")) {
         (Protocol::Systemone, Some(Value::Object(map))) => {
@@ -720,6 +1202,44 @@ pub async fn ask(decider: &Resolved, input: &str, questions: &[Question]) -> any
     result
 }
 
+/// What a request's cost comes back in, in USD, from a proxy that reports it.
+/// LiteLLM sends it; servers that do not are simply not costed.
+pub const COST_HEADER: &str = "x-litellm-response-cost";
+
+/// The version of the Anthropic Messages API the request is written for.
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// Put the key where `protocol` expects it.
+fn authorize(
+    request: reqwest::RequestBuilder,
+    protocol: Protocol,
+    key: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let request = match protocol {
+        // Sent even without a key: it says which API the body is written for.
+        Protocol::AnthropicMessages => request.header("anthropic-version", ANTHROPIC_VERSION),
+        _ => request,
+    };
+    let Some(key) = key else {
+        return request;
+    };
+    let header = match protocol {
+        Protocol::AnthropicMessages => "x-api-key",
+        Protocol::Gemini => "x-goog-api-key",
+        _ => return request.bearer_auth(key),
+    };
+    // Marked sensitive, as `bearer_auth` marks its own, so it is not logged.
+    match reqwest::header::HeaderValue::from_str(key) {
+        Ok(mut value) => {
+            value.set_sensitive(true);
+            request.header(header, value)
+        }
+        // Not a valid header value: let the request fail as unauthorised
+        // rather than send something else.
+        Err(_) => request,
+    }
+}
+
 async fn ask_now(decider: &Resolved, input: &str, questions: &[Question]) -> anyhow::Result<Reply> {
     let endpoint = decider
         .endpoint
@@ -734,18 +1254,16 @@ async fn ask_now(decider: &Resolved, input: &str, questions: &[Question]) -> any
     let started = std::time::Instant::now();
     // The credential-free client: a decider is somebody else's server, and the
     // daemon's own token must never reach it. The key goes in the header only.
-    let mut request = crate::outbound::client()
+    let request = crate::outbound::client()
         .post(endpoint)
         .timeout(decider.timeout)
         .json(&body);
-    if let Some(key) = &decider.key {
-        request = request.bearer_auth(key);
-    }
+    let request = authorize(request, decider.manifest.protocol, decider.key.as_deref());
     let response = request.send().await?;
     let status = response.status();
     let cost_usd = response
         .headers()
-        .get("x-litellm-response-cost")
+        .get(COST_HEADER)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.trim().parse::<f64>().ok());
     let text = response.text().await?;
@@ -850,12 +1368,12 @@ mod tests {
     fn a_bare_proxy_address_gets_the_deciders_route() {
         let default = Some("http://localhost:4000/v1/decisions");
         assert_eq!(
-            with_default_path("https://litellm.example.com/", default),
-            "https://litellm.example.com/v1/decisions"
+            with_default_path("https://proxy.example.com/", default),
+            "https://proxy.example.com/v1/decisions"
         );
         assert_eq!(
-            with_default_path("https://litellm.example.com", default),
-            "https://litellm.example.com/v1/decisions"
+            with_default_path("https://proxy.example.com", default),
+            "https://proxy.example.com/v1/decisions"
         );
         // A path someone wrote is theirs.
         assert_eq!(
@@ -863,8 +1381,8 @@ mod tests {
             "https://proxy.example.com/team/v1/decisions"
         );
         assert_eq!(
-            with_default_path("https://litellm.example.com/", None),
-            "https://litellm.example.com/"
+            with_default_path("https://proxy.example.com/", None),
+            "https://proxy.example.com/"
         );
         // A query or fragment stays after the route.
         assert_eq!(
@@ -886,7 +1404,7 @@ mod tests {
     #[test]
     fn an_http_decider_without_a_key_is_refused() {
         let cfg = WardenConfig {
-            decider: "litellm-systemone".into(),
+            decider: "openai-decisions".into(),
             key_env: Some("ENOXIAN_TEST_WARDEN_KEY_THAT_IS_NOT_SET".into()),
             ..WardenConfig::default()
         };
@@ -957,7 +1475,7 @@ mod tests {
             seen
         });
         let resolved = Resolved {
-            manifest: find("litellm-systemone").unwrap(),
+            manifest: find("jev").unwrap(),
             endpoint: Some(format!("http://{addr}/v1/systemone")),
             model: Some("jev".into()),
             key: Some("sk-test".into()),
@@ -972,5 +1490,608 @@ mod tests {
                 || seen.contains("Authorization: Bearer sk-test")
         );
         assert!(seen.starts_with("POST /v1/systemone"));
+    }
+
+    // ---- Chat-model protocols ------------------------------------------
+
+    /// Questions whose names and options are not safe as schema keys, as a
+    /// real candidate list's are not.
+    fn awkward() -> Vec<Question> {
+        vec![
+            Question {
+                name: "success:single".into(),
+                instructions: "one answer enough?".into(),
+                ask: Ask::YesNo,
+            },
+            Question {
+                name: "agent".into(),
+                instructions: "who?".into(),
+                ask: Ask::Choice(vec![
+                    ("fake-acp:say-a#a".into(), "says a".into()),
+                    ("fake-acp:say-a@a".into(), "also says a".into()),
+                    ("codex".into(), "runs tests".into()),
+                ]),
+            },
+        ]
+    }
+
+    #[test]
+    fn chat_keys_are_safe_unique_and_stable() {
+        let keys = chat::keys(&awkward());
+        assert_eq!(keys[0].0, "success_single");
+        assert_eq!(keys[1].0, "agent");
+        let options: Vec<&str> = keys[1].1.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(options, ["fake-acp_say-a_a", "fake-acp_say-a_a_2", "codex"]);
+        assert_eq!(
+            keys,
+            chat::keys(&awkward()),
+            "the reading agrees with the request"
+        );
+    }
+
+    #[test]
+    fn the_chat_schema_is_strict() {
+        let schema = chat::schema(&awkward());
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"], json!(["agent", "success_single"]));
+        let yes = &schema["properties"]["success_single"];
+        assert_eq!(yes["required"], json!(["p_yes"]));
+        assert_eq!(yes["additionalProperties"], false);
+        assert_eq!(yes["properties"]["p_yes"]["maximum"], 1);
+        let agent = &schema["properties"]["agent"];
+        assert_eq!(agent["additionalProperties"], false);
+        assert_eq!(agent["required"].as_array().unwrap().len(), 3);
+        assert_eq!(agent["properties"]["codex"]["type"], "number");
+        let prompt = chat::prompt("hello", &awkward());
+        assert!(prompt.starts_with("hello\n"));
+        assert!(prompt.contains("- success_single (yes/no): one answer enough?"));
+        assert!(prompt.contains("  - fake-acp_say-a_a_2: also says a"));
+    }
+
+    #[test]
+    fn openai_chat_request_uses_a_strict_json_schema() {
+        let body = request_body(Protocol::OpenaiChat, Some("gpt-x"), "hi", &questions());
+        assert_eq!(body["model"], "gpt-x");
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert!(body["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("hi"));
+        let format = &body["response_format"];
+        assert_eq!(format["type"], "json_schema");
+        assert_eq!(format["json_schema"]["name"], chat::SCHEMA_NAME);
+        assert_eq!(format["json_schema"]["strict"], true);
+        assert_eq!(
+            format["json_schema"]["schema"]["properties"]["admit"]["required"],
+            json!(["p_yes"])
+        );
+    }
+
+    #[test]
+    fn openai_responses_request_uses_text_format_and_does_not_store() {
+        let body = request_body(Protocol::OpenaiResponses, Some("gpt-x"), "hi", &questions());
+        assert_eq!(body["store"], false);
+        assert_eq!(body["instructions"], chat::SYSTEM);
+        assert!(body["input"].as_str().unwrap().starts_with("hi"));
+        let format = &body["text"]["format"];
+        assert_eq!(format["type"], "json_schema");
+        assert_eq!(format["name"], chat::SCHEMA_NAME);
+        assert_eq!(format["strict"], true);
+        assert!(format["schema"]["properties"]["agent"]["properties"]["codex"].is_object());
+    }
+
+    #[test]
+    fn anthropic_request_forces_one_tool() {
+        let body = request_body(
+            Protocol::AnthropicMessages,
+            Some("claude-x"),
+            "hi",
+            &questions(),
+        );
+        assert_eq!(body["model"], "claude-x");
+        assert!(body["max_tokens"].as_u64().unwrap() > 0);
+        assert_eq!(body["system"], chat::SYSTEM);
+        assert_eq!(body["tools"][0]["name"], chat::SCHEMA_NAME);
+        assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+        assert_eq!(
+            body["tool_choice"],
+            json!({ "type": "tool", "name": chat::SCHEMA_NAME })
+        );
+    }
+
+    #[test]
+    fn gemini_request_asks_for_json_by_schema_and_leaves_the_model_out() {
+        let body = request_body(Protocol::Gemini, Some("gemini-x"), "hi", &questions());
+        assert!(body.get("model").is_none());
+        let config = &body["generationConfig"];
+        assert_eq!(config["responseMimeType"], "application/json");
+        assert!(config.get("responseSchema").is_none(), "deprecated");
+        assert_eq!(config["responseJsonSchema"]["type"], "object");
+        assert_eq!(body["systemInstruction"]["parts"][0]["text"], chat::SYSTEM);
+        assert!(body["contents"][0]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("hi"));
+    }
+
+    /// The answers a model would fill in, keyed as the schema asks.
+    fn filled() -> Value {
+        json!({
+            // Reordered, as Gemini may; an unknown key is dropped.
+            "agent": { "codex": 0.3, "claude": 0.9, "nobody": 0.5 },
+            "admit": { "p_yes": 1.4 },
+        })
+    }
+
+    fn assert_filled(reply: &Reply) {
+        assert_eq!(reply.yes("admit"), Some(1.0), "clamped");
+        let agent = reply.choice("agent").unwrap();
+        assert_eq!(agent.len(), 2, "unknown option dropped");
+        assert!((agent["claude"] - 0.75).abs() < 1e-9, "renormalised");
+        assert!((agent["codex"] - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn openai_chat_response_is_read_by_name() {
+        let body = json!({
+            "model": "gpt-x-2026",
+            "choices": [{ "message": { "role": "assistant", "content": filled().to_string(), "refusal": null } }],
+            "usage": { "prompt_tokens": 120, "prompt_tokens_details": { "cached_tokens": 64 } }
+        });
+        let reply = parse_response(Protocol::OpenaiChat, &body, &questions());
+        assert_filled(&reply);
+        assert_eq!(reply.model.as_deref(), Some("gpt-x-2026"));
+        assert_eq!(reply.input_tokens, Some(120));
+        assert_eq!(reply.cached_tokens, Some(64));
+    }
+
+    #[test]
+    fn openai_chat_refusal_and_junk_are_refused() {
+        let refused = json!({
+            "choices": [{ "message": { "content": null, "refusal": "I can't help with that." } }]
+        });
+        let reply = parse_response(Protocol::OpenaiChat, &refused, &questions());
+        assert_eq!(reply.answers["admit"], Answer::Refused);
+        assert_eq!(reply.answers["agent"], Answer::Refused);
+        let junk = json!({ "choices": [{ "message": { "content": "{\"admit\": " } }] });
+        let reply = parse_response(Protocol::OpenaiChat, &junk, &questions());
+        assert_eq!(reply.answers.len(), 2);
+        assert!(reply.answers.values().all(|a| *a == Answer::Refused));
+        let empty = json!({});
+        let reply = parse_response(Protocol::OpenaiChat, &empty, &questions());
+        assert!(reply.answers.values().all(|a| *a == Answer::Refused));
+    }
+
+    #[test]
+    fn a_partial_or_malformed_answer_refuses_only_that_question() {
+        let partial =
+            json!({ "admit": { "p_yes": "high" }, "agent": { "claude": 0.0, "codex": 0.0 } });
+        let answers = chat::answers(Some(&partial), &questions());
+        assert_eq!(answers["admit"], Answer::Refused, "not a number");
+        assert_eq!(answers["agent"], Answer::Refused, "no mass anywhere");
+        let one = json!({ "agent": { "codex": 0.4 } });
+        let answers = chat::answers(Some(&one), &questions());
+        assert_eq!(answers["admit"], Answer::Refused, "missing");
+        assert_eq!(
+            answers["agent"],
+            Answer::Choice {
+                p: BTreeMap::from([("codex".to_string(), 1.0)])
+            }
+        );
+        // A bare number for a yes/no is taken as p_yes.
+        let bare = json!({ "admit": 0.2 });
+        assert_eq!(
+            chat::answers(Some(&bare), &questions())["admit"],
+            Answer::YesNo { p: 0.2 }
+        );
+    }
+
+    #[test]
+    fn awkward_names_are_read_back_under_their_own_names() {
+        let body = json!({
+            "success_single": { "p_yes": 0.6 },
+            "agent": { "fake-acp_say-a_a_2": 0.2, "fake-acp_say-a_a": 0.6, "codex": 0.2 },
+        });
+        let answers = chat::answers(Some(&body), &awkward());
+        assert_eq!(answers["success:single"], Answer::YesNo { p: 0.6 });
+        let Answer::Choice { p } = &answers["agent"] else {
+            panic!("a choice")
+        };
+        assert!((p["fake-acp:say-a#a"] - 0.6).abs() < 1e-9);
+        assert!((p["fake-acp:say-a@a"] - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn openai_responses_response_is_read_from_the_message_item() {
+        let body = json!({
+            "model": "gpt-x",
+            "status": "completed",
+            "output": [
+                { "type": "reasoning", "summary": [] },
+                { "type": "message", "content": [ { "type": "output_text", "text": filled().to_string() } ] }
+            ],
+            "usage": { "input_tokens": 99, "input_tokens_details": { "cached_tokens": 3 } }
+        });
+        let reply = parse_response(Protocol::OpenaiResponses, &body, &questions());
+        assert_filled(&reply);
+        assert_eq!(reply.input_tokens, Some(99));
+        assert_eq!(reply.cached_tokens, Some(3));
+    }
+
+    #[test]
+    fn openai_responses_refusal_or_incomplete_is_refused() {
+        let refused = json!({
+            "status": "completed",
+            "output": [ { "type": "message", "content": [ { "type": "refusal", "refusal": "no" } ] } ]
+        });
+        let reply = parse_response(Protocol::OpenaiResponses, &refused, &questions());
+        assert!(reply.answers.values().all(|a| *a == Answer::Refused));
+        let incomplete = json!({
+            "status": "incomplete",
+            "incomplete_details": { "reason": "max_output_tokens" },
+            "output": [ { "type": "message", "content": [ { "type": "output_text", "text": "{\"admit\":{\"p_yes\":0.5}}" } ] } ]
+        });
+        let reply = parse_response(Protocol::OpenaiResponses, &incomplete, &questions());
+        assert!(reply.answers.values().all(|a| *a == Answer::Refused));
+    }
+
+    #[test]
+    fn anthropic_response_is_read_from_the_tool_call() {
+        let body = json!({
+            "model": "claude-x",
+            "stop_reason": "tool_use",
+            "content": [
+                { "type": "text", "text": "Sure." },
+                { "type": "tool_use", "id": "t1", "name": chat::SCHEMA_NAME, "input": filled() }
+            ],
+            "usage": { "input_tokens": 10, "cache_read_input_tokens": 200, "cache_creation_input_tokens": 5 }
+        });
+        let reply = parse_response(Protocol::AnthropicMessages, &body, &questions());
+        assert_filled(&reply);
+        assert_eq!(reply.input_tokens, Some(215));
+        assert_eq!(reply.cached_tokens, Some(200));
+        let refused = json!({ "stop_reason": "refusal", "content": [] });
+        let reply = parse_response(Protocol::AnthropicMessages, &refused, &questions());
+        assert!(reply.answers.values().all(|a| *a == Answer::Refused));
+        let text_only =
+            json!({ "stop_reason": "end_turn", "content": [ { "type": "text", "text": "{}" } ] });
+        let reply = parse_response(Protocol::AnthropicMessages, &text_only, &questions());
+        assert!(reply.answers.values().all(|a| *a == Answer::Refused));
+    }
+
+    #[test]
+    fn gemini_response_is_read_from_the_candidate_text() {
+        let text = filled().to_string();
+        let (a, b) = text.split_at(text.len() / 2);
+        let body = json!({
+            "modelVersion": "gemini-x-001",
+            "candidates": [{ "content": { "role": "model", "parts": [
+                { "text": "thinking...", "thought": true },
+                { "text": a }, { "text": b }
+            ] }, "finishReason": "STOP" }],
+            "usageMetadata": { "promptTokenCount": 300, "cachedContentTokenCount": 256 }
+        });
+        let reply = parse_response(Protocol::Gemini, &body, &questions());
+        assert_filled(&reply);
+        assert_eq!(reply.model.as_deref(), Some("gemini-x-001"));
+        assert_eq!(reply.input_tokens, Some(300));
+        assert_eq!(reply.cached_tokens, Some(256));
+        let blocked = json!({ "promptFeedback": { "blockReason": "SAFETY" } });
+        let reply = parse_response(Protocol::Gemini, &blocked, &questions());
+        assert!(reply.answers.values().all(|a| *a == Answer::Refused));
+    }
+
+    #[test]
+    fn a_fenced_json_answer_is_still_read() {
+        let fenced = format!("```json\n{}\n```", filled());
+        assert!(chat::from_text(Some(&fenced)).is_some());
+        assert!(chat::from_text(Some("[1, 2]")).is_none(), "not an object");
+    }
+
+    #[test]
+    fn chat_urls_accept_a_full_url_a_base_or_an_origin() {
+        use Protocol::*;
+        let cases = [
+            (
+                OpenaiChat,
+                "https://openrouter.ai/api/v1",
+                "https://openrouter.ai/api/v1/chat/completions",
+            ),
+            (
+                OpenaiChat,
+                "http://localhost:11434",
+                "http://localhost:11434/v1/chat/completions",
+            ),
+            (
+                OpenaiChat,
+                "http://localhost:4000/v1/chat/completions/",
+                "http://localhost:4000/v1/chat/completions",
+            ),
+            (
+                OpenaiResponses,
+                "https://api.openai.com/v1/responses",
+                "https://api.openai.com/v1/responses",
+            ),
+            (
+                OpenaiResponses,
+                "https://api.openai.com",
+                "https://api.openai.com/v1/responses",
+            ),
+            (
+                AnthropicMessages,
+                "https://api.anthropic.com",
+                "https://api.anthropic.com/v1/messages",
+            ),
+            (
+                AnthropicMessages,
+                "https://gw.example.com/anthropic/v1",
+                "https://gw.example.com/anthropic/v1/messages",
+            ),
+            (
+                Gemini,
+                "https://generativelanguage.googleapis.com/v1beta",
+                "https://generativelanguage.googleapis.com/v1beta/models/m-1:generateContent",
+            ),
+            (
+                Gemini,
+                "https://generativelanguage.googleapis.com",
+                "https://generativelanguage.googleapis.com/v1beta/models/m-1:generateContent",
+            ),
+            (
+                Gemini,
+                "https://g.example.com/v1beta/models/other:generateContent",
+                "https://g.example.com/v1beta/models/other:generateContent",
+            ),
+            (
+                OpenaiChat,
+                "https://proxy.example.com/v1?team=x",
+                "https://proxy.example.com/v1/chat/completions?team=x",
+            ),
+        ];
+        for (protocol, endpoint, want) in cases {
+            assert_eq!(
+                chat_url(protocol, endpoint, "models/m-1"),
+                want,
+                "{endpoint}"
+            );
+        }
+    }
+
+    fn resolve_with_key(
+        decider: &str,
+        endpoint: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<Resolved, String> {
+        resolve(&WardenConfig {
+            decider: decider.into(),
+            endpoint: endpoint.map(str::to_string),
+            model: model.map(str::to_string),
+            key_env: Some("PATH".into()),
+            ..WardenConfig::default()
+        })
+    }
+
+    #[test]
+    fn chat_builtins_resolve_to_their_routes() {
+        let openai = resolve_with_key("openai", None, None).unwrap();
+        assert_eq!(openai.manifest.protocol, Protocol::OpenaiResponses);
+        assert_eq!(
+            openai.endpoint.as_deref(),
+            Some("https://api.openai.com/v1/responses")
+        );
+        let anthropic = resolve_with_key("anthropic", None, None).unwrap();
+        assert_eq!(
+            anthropic.endpoint.as_deref(),
+            Some("https://api.anthropic.com/v1/messages")
+        );
+        assert_eq!(anthropic.model.as_deref(), Some("claude-haiku-5-5"));
+        let gemini = resolve_with_key("gemini", None, Some("gemini-y")).unwrap();
+        assert_eq!(
+            gemini.endpoint.as_deref(),
+            Some(
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-y:generateContent"
+            )
+        );
+        // A compatible endpoint has nothing to fall back on.
+        assert_eq!(
+            resolve_with_key("openai-compatible", None, Some("m")).unwrap_err(),
+            "no endpoint is configured"
+        );
+        assert_eq!(
+            resolve_with_key(
+                "openai-compatible",
+                Some("https://openrouter.ai/api/v1"),
+                None
+            )
+            .unwrap_err(),
+            "no model is configured"
+        );
+        let compatible = resolve_with_key(
+            "openai-compatible",
+            Some("https://openrouter.ai/api/v1"),
+            Some("m"),
+        )
+        .unwrap();
+        assert_eq!(
+            compatible.endpoint.as_deref(),
+            Some("https://openrouter.ai/api/v1/chat/completions")
+        );
+        for id in ["openai", "anthropic", "gemini"] {
+            let m = find(id).unwrap();
+            assert!(
+                m.builtin && m.needs_key && m.key_url.is_some() && m.model.is_some(),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn litellm_builtins_are_gone_and_saved_configs_migrate() {
+        assert!(find("litellm-systemone").is_none());
+        assert!(find("litellm-decisions").is_none());
+
+        let mut cfg = WardenConfig {
+            decider: "litellm-systemone".into(),
+            ..WardenConfig::default()
+        };
+        assert_eq!(cfg.migrate(), Some("litellm-systemone"));
+        assert_eq!(cfg.decider, "jev");
+        assert_eq!(
+            cfg.endpoint.as_deref(),
+            Some("http://localhost:4000/v1/systemone")
+        );
+        assert_eq!(cfg.model.as_deref(), Some("jev"), "the proxy's model name");
+        assert_eq!(cfg.migrate(), None, "once");
+
+        let mut cfg = WardenConfig {
+            decider: "litellm-decisions".into(),
+            endpoint: Some("https://proxy.example.com".into()),
+            model: Some("my-model".into()),
+            timeout_secs: 9,
+            ..WardenConfig::default()
+        };
+        assert_eq!(cfg.migrate(), Some("litellm-decisions"));
+        assert_eq!(cfg.decider, "openai-decisions");
+        assert_eq!(
+            cfg.endpoint.as_deref(),
+            Some("https://proxy.example.com"),
+            "kept"
+        );
+        assert_eq!(cfg.model.as_deref(), Some("my-model"));
+        assert_eq!(cfg.timeout_secs, 9);
+        // And it resolves to the proxy's route, not OpenAI's.
+        cfg.key_env = Some("PATH".into());
+        assert_eq!(
+            resolve(&cfg).unwrap().endpoint.as_deref(),
+            Some("https://proxy.example.com/v1/decisions")
+        );
+
+        let mut current = WardenConfig {
+            decider: "jev".into(),
+            ..WardenConfig::default()
+        };
+        assert_eq!(current.migrate(), None);
+        assert_eq!(current.endpoint, None);
+    }
+
+    #[test]
+    fn a_saved_litellm_config_loads_as_its_replacement() {
+        let cfg = crate::agent::config::AgentConfig::from_toml(
+            "[warden]\ndecider = \"litellm-decisions\"\nendpoint = \"http://10.0.0.2:4000\"\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.warden.decider, "openai-decisions");
+        assert_eq!(cfg.warden.endpoint.as_deref(), Some("http://10.0.0.2:4000"));
+    }
+
+    /// Serve one canned JSON response, and hand back the raw request.
+    async fn serve_once(reply: Value) -> (std::net::SocketAddr, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 16384];
+            let mut seen = String::new();
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+                let Some((head, body)) = seen.split_once("\r\n\r\n") else {
+                    continue;
+                };
+                let length = head
+                    .lines()
+                    .find_map(|l| {
+                        let (k, v) = l.split_once(':')?;
+                        k.eq_ignore_ascii_case("content-length")
+                            .then(|| v.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+                if body.len() >= length {
+                    break;
+                }
+            }
+            let body = reply.to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            seen
+        });
+        (addr, server)
+    }
+
+    async fn ask_chat(id: &str, reply: Value) -> (Reply, String) {
+        let (addr, server) = serve_once(reply).await;
+        let manifest = find(id).unwrap();
+        let protocol = manifest.protocol;
+        let resolved = Resolved {
+            manifest,
+            endpoint: Some(chat_url(protocol, &format!("http://{addr}"), "test-model")),
+            model: Some("test-model".into()),
+            key: Some("sk-chat".into()),
+            timeout: std::time::Duration::from_secs(5),
+        };
+        let reply = ask(&resolved, "hello", &questions()).await.unwrap();
+        (reply, server.await.unwrap().to_lowercase())
+    }
+
+    #[tokio::test]
+    async fn openai_chat_is_asked_with_a_bearer_key() {
+        let (reply, seen) = ask_chat(
+            "openai-compatible",
+            json!({ "choices": [{ "message": { "content": filled().to_string() } }] }),
+        )
+        .await;
+        assert_filled(&reply);
+        assert!(seen.starts_with("post /v1/chat/completions "), "{seen}");
+        assert!(seen.contains("authorization: bearer sk-chat"));
+        assert!(seen.contains("\"response_format\""));
+    }
+
+    #[tokio::test]
+    async fn openai_responses_is_asked_with_a_bearer_key() {
+        let (reply, seen) = ask_chat(
+            "openai",
+            json!({ "output": [ { "type": "message", "content": [ { "type": "output_text", "text": filled().to_string() } ] } ] }),
+        )
+        .await;
+        assert_filled(&reply);
+        assert!(seen.starts_with("post /v1/responses "), "{seen}");
+        assert!(seen.contains("authorization: bearer sk-chat"));
+    }
+
+    #[tokio::test]
+    async fn anthropic_is_asked_with_its_own_headers() {
+        let (reply, seen) = ask_chat(
+            "anthropic",
+            json!({ "content": [ { "type": "tool_use", "name": chat::SCHEMA_NAME, "input": filled() } ] }),
+        )
+        .await;
+        assert_filled(&reply);
+        assert!(seen.starts_with("post /v1/messages "), "{seen}");
+        assert!(seen.contains("x-api-key: sk-chat"));
+        assert!(seen.contains(&format!("anthropic-version: {ANTHROPIC_VERSION}")));
+        assert!(!seen.contains("authorization:"), "no bearer");
+    }
+
+    #[tokio::test]
+    async fn gemini_is_asked_with_the_model_in_the_path() {
+        let (reply, seen) = ask_chat(
+            "gemini",
+            json!({ "candidates": [ { "content": { "parts": [ { "text": filled().to_string() } ] } } ] }),
+        )
+        .await;
+        assert_filled(&reply);
+        assert!(
+            seen.starts_with("post /v1beta/models/test-model:generatecontent "),
+            "{seen}"
+        );
+        assert!(seen.contains("x-goog-api-key: sk-chat"));
+        assert!(!seen.contains("authorization:"), "no bearer");
     }
 }

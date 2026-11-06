@@ -422,6 +422,11 @@ impl AgentConfig {
     pub fn from_toml(text: &str) -> anyhow::Result<Self> {
         let mut cfg: Self = toml::from_str(text)?;
         cfg.migrate_legacy_agent_settings();
+        // A removed built-in decider: ask its replacement, at the same
+        // address, with the same key.
+        if let Some(old) = cfg.warden.migrate() {
+            super::warden::decider::secrets::adopt(old, &cfg.warden.decider);
+        }
         cfg.drop_unnameable_agents();
         Ok(cfg)
     }

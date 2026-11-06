@@ -124,7 +124,7 @@ export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }
   const kind = view.kinds.find(k => k.id === view.config.decider)
   const asksModel = kind && kind.protocol !== 'rules'
   // A proxy is nothing without its address; a hosted decider needs only a key.
-  const proxy = !!kind && asksModel && !kind.key_url
+  const proxy = !!kind && asksModel && (!kind.key_url || !kind.endpoint)
 
   return (
     <section className="warden-settings">

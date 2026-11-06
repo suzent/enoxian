@@ -18,8 +18,8 @@ const view = (decider: string, keyHint: string | null = null) => ({
   problem: decider === 'builtin:rules' || keyHint ? null : 'no API key is set',
   kinds: [
     { id: 'builtin:rules', name: 'Built-in rules', description: 'No model.', protocol: 'rules', needs_key: false, builtin: true, fields: {} },
-    { id: 'litellm-systemone', name: 'LiteLLM (System One)', description: 'A proxy.', protocol: 'systemone',
-      endpoint: 'http://localhost:4000/v1/systemone', model: 'jev', needs_key: true, builtin: true, fields: {}, key_hint: keyHint },
+    { id: 'openai-compatible', name: 'OpenAI-compatible', description: 'Any endpoint.', protocol: 'openai_chat',
+      needs_key: true, builtin: true, fields: {}, key_hint: keyHint },
   ],
   spec_toml: 'version = "builtin-1"\n',
   spec: { version: 'builtin-1', modes: ['single', 'vote'], admit_threshold: 0.5, lambda: 0.05 },
@@ -28,7 +28,7 @@ const view = (decider: string, keyHint: string | null = null) => ({
 
 const decision = {
   choice: { admit: true, mode: 'vote', listeners: 2, max_listeners: 3, agents: ['claude', 'codex'] },
-  decider: 'litellm-systemone', spec_version: 'builtin-1', p_admit: 0.91,
+  decider: 'openai-compatible', spec_version: 'builtin-1', p_admit: 0.91,
   p_success: { single: 0.5, vote: 0.8 }, scores: { single: 0.45, vote: 0.68 },
   reason: 'vote p=0.80', latency_ms: 120, cost_usd: 0.0004,
 }
@@ -37,23 +37,25 @@ describe('WardenSettings', () => {
   beforeEach(() => { cleanup(); vi.clearAllMocks() })
 
   it('chooses a decider, and takes a key it never shows again', async () => {
-    getWarden.mockResolvedValueOnce(view('builtin:rules')).mockResolvedValue(view('litellm-systemone'))
+    getWarden.mockResolvedValueOnce(view('builtin:rules')).mockResolvedValue(view('openai-compatible'))
     render(<WardenSettings />)
     await userEvent.click(await screen.findByRole('radio', { name: /Other provider/ }))
-    await waitFor(() => expect(setWardenConfig).toHaveBeenCalledWith({ decider: 'litellm-systemone' }))
+    await waitFor(() => expect(setWardenConfig).toHaveBeenCalledWith({ decider: 'openai-compatible' }))
     expect(await screen.findByRole('alert')).toBeTruthy()
     expect(screen.getByText(/no API key is set/)).toBeTruthy()
 
     const input = await screen.findByLabelText('API key') as HTMLInputElement
     expect(input.type).toBe('password')
+    expect(screen.getByText(/subscription login does not work here/)).toBeTruthy()
+    expect(screen.getByText(/Set its endpoint and model under Connection details/)).toBeTruthy()
     fireEvent.change(input, { target: { value: 'sk-secret' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save key' }))
-    await waitFor(() => expect(setWardenKey).toHaveBeenCalledWith('litellm-systemone', 'sk-secret'))
+    await waitFor(() => expect(setWardenKey).toHaveBeenCalledWith('openai-compatible', 'sk-secret'))
     await waitFor(() => expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe(''))
   })
 
   it('tries a sample message and shows what the warden would do', async () => {
-    getWarden.mockResolvedValue(view('litellm-systemone', '••••abcd'))
+    getWarden.mockResolvedValue(view('openai-compatible', '••••abcd'))
     testWarden.mockResolvedValue({ decision, questions: ['admit', 'agent', 'success:single', 'success:vote'], input: '' })
     render(<WardenSettings circleId="c1" />)
     fireEvent.change(await screen.findByLabelText('Sample message'), { target: { value: 'Is this true?' } })
@@ -87,7 +89,7 @@ describe('WardenSettings', () => {
   })
 
   it('keeps connection and policy drafts when testing or saving a key', async () => {
-    getWarden.mockResolvedValue(view('litellm-systemone'))
+    getWarden.mockResolvedValue(view('openai-compatible'))
     testWarden.mockResolvedValue({ decision, questions: [] })
     const dirty = vi.fn()
     render(<WardenSettings onDirtyChange={dirty} />)

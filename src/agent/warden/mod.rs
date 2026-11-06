@@ -397,7 +397,7 @@ mod tests {
             from_agent: false,
         };
         let cfg = decider::WardenConfig {
-            decider: "litellm-decisions".into(),
+            decider: "openai-decisions".into(),
             endpoint: Some("http://127.0.0.1:9/v1/decisions".into()),
             key_env: Some("PATH".into()),
             timeout_secs: 2,
