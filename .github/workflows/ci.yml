@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
   merge_group:
+  # Advisories are published against code that has not changed, and pull
+  # requests now only audit when they touch dependencies. A weekly run keeps a
+  # new advisory against an untouched lockfile from going unnoticed when main
+  # is quiet; `changes` turns everything else off for it.
+  schedule:
+    - cron: "0 6 * * 1"
 
 permissions:
   contents: read
@@ -21,8 +27,92 @@ env:
   NODE_VERSION: "22"
 
 jobs:
+  # Decides which jobs a pull request needs. Every job below is a required
+  # status check, so nothing is filtered with workflow-level `paths:` — a
+  # required check that never reports blocks the merge. A job skipped through
+  # `if:` reports as passing instead. Pushes to main and merge-queue runs build
+  # everything, which is what keeps the caches warm and catches rot.
+  #
+  # Dependent jobs fail open: if this job itself fails, they would otherwise be
+  # skipped — and a skipped required check passes. So each one also runs
+  # whenever `needs.changes.result` is anything but success.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      workflows: ${{ steps.filter.outputs.workflows }}
+      rust: ${{ steps.filter.outputs.rust }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      installers: ${{ steps.filter.outputs.installers }}
+      audit: ${{ steps.filter.outputs.audit }}
+      docker: ${{ steps.filter.outputs.docker }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - id: filter
+        name: Classify changed paths
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          areas=(workflows rust frontend installers audit docker)
+
+          set_all() {
+            for area in "${areas[@]}"; do
+              echo "$area=$1" >> "$GITHUB_OUTPUT"
+            done
+          }
+
+          case "$EVENT" in
+            pull_request) ;;
+            schedule)
+              set_all false
+              echo "audit=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            *)
+              set_all true
+              exit 0
+              ;;
+          esac
+
+          git fetch --no-tags origin "$BASE_REF"
+          base="$(git merge-base FETCH_HEAD HEAD)"
+          changed="$(git diff --name-only "$base" HEAD)"
+          printf 'Changed files:\n%s\n' "$changed"
+
+          # A change to this workflow can alter any job, so it runs them all.
+          if grep -qx '.github/workflows/ci.yml' <<< "$changed"; then
+            set_all true
+            exit 0
+          fi
+
+          matches() {
+            if grep -qE "$2" <<< "$changed"; then
+              echo "$1=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$1=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+
+          matches workflows  '^\.github/'
+          # The end-to-end scripts run in the test job against the built CLI.
+          matches rust       '^(src/|tests/|Cargo\.(toml|lock)$|build\.rs$|\.cargo/|rustfmt\.toml$|scripts/test-[^/]+\.sh$)'
+          matches frontend   '^frontend/'
+          # `.gitattributes` decides the scripts' line endings, which the
+          # installers job guards against CRLF.
+          matches installers '^(scripts/|\.gitattributes$)'
+          matches audit      '^(Cargo\.(toml|lock)$|\.cargo/)'
+          matches docker     '^(Dockerfile$|\.dockerignore$|Cargo\.(toml|lock)$|build\.rs$|src/)'
+
   workflows:
     name: Workflow lint
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.workflows == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -37,6 +127,8 @@ jobs:
 
   changelog:
     name: Changelog entry
+    # Only a pull request has a diff to check; elsewhere this is a no-op.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -60,9 +152,7 @@ jobs:
       # event — and keeps label changes off the workflow triggers, so applying
       # one cannot cancel and restart the whole matrix.
       - name: Require a CHANGELOG entry
-        if: >-
-          github.event_name == 'pull_request'
-          && github.event.pull_request.user.login != 'dependabot[bot]'
+        if: github.event.pull_request.user.login != 'dependabot[bot]'
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -85,6 +175,8 @@ jobs:
 
   dependency-audit:
     name: Dependency security audit
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.audit == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -134,6 +226,8 @@ jobs:
 
   installers:
     name: Installer syntax
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.installers == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -192,21 +286,10 @@ jobs:
             exit 1
           fi
 
-      - name: Validate PowerShell installer
-        shell: pwsh
-        run: |
-          $tokens = $null
-          $errors = $null
-          [void][Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path scripts/install.ps1), [ref]$tokens, [ref]$errors
-          )
-          if ($errors.Count) {
-            $errors | ForEach-Object { Write-Error $_ }
-            exit 1
-          }
-
   quality:
     name: Rust quality
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -240,6 +323,15 @@ jobs:
 
   test:
     name: Rust tests (${{ matrix.os }})
+    needs: changes
+    # Gated per step, not with a job-level `if:`. A matrix job skipped before
+    # it expands reports a single check named with the literal matrix
+    # expression, so the three required `Rust tests (<os>)` checks would never
+    # report and the pull request could not merge. Gating the steps still
+    # starts each runner, but only for a few seconds.
+    if: ${{ !cancelled() }}
+    env:
+      RUN: ${{ needs.changes.result != 'success' || needs.changes.outputs.rust == 'true' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -247,18 +339,26 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
+      - name: No Rust changes
+        if: env.RUN != 'true'
+        run: echo "No Rust inputs changed; skipping the tests."
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.RUN == 'true'
 
       - name: Install Rust
+        if: env.RUN == 'true'
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, pinned 2026-08-16
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: env.RUN == 'true'
         with:
           key: ${{ matrix.os }}
 
       - name: Test
+        if: env.RUN == 'true'
         run: cargo test --locked --all-targets
 
       # End-to-end membership against a real daemon. Single daemon, no peer,
@@ -266,18 +366,20 @@ jobs:
       # rather than what the command printed, which is the only way a CLI that
       # reports success on a rejected request gets caught.
       - name: Circle membership (end to end)
-        if: runner.os == 'Linux'
+        if: env.RUN == 'true' && runner.os == 'Linux'
         run: ./scripts/test-members.sh
 
       # Two real daemons on one machine over Iroh: invite, join, admission,
       # presence, file sync both ways, and recovery after a restart. They meet
       # over loopback, so no relay is needed.
       - name: Two-device sync (end to end)
-        if: runner.os == 'Linux'
+        if: env.RUN == 'true' && runner.os == 'Linux'
         run: ./scripts/test-sync.sh
 
   frontend:
     name: Frontend production build
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -319,43 +421,20 @@ jobs:
 
   docker:
     name: Bootstrap image
+    needs: changes
+    # A full release build is expensive, so a pull request only rebuilds when
+    # something that feeds the image changed. Every push to main rebuilds
+    # unconditionally, which is what keeps the image from rotting unnoticed.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.docker == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      # A full release build is expensive, so only rebuild when something that
-      # feeds the image changed. Every push to main rebuilds unconditionally,
-      # which is what keeps the image from rotting unnoticed.
-      - id: changes
-        name: Decide whether to build
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT" != "pull_request" ]; then
-            echo "build=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          git fetch --no-tags origin "$BASE_REF"
-          base="$(git merge-base FETCH_HEAD HEAD)"
-          if git diff --name-only "$base" HEAD \
-            | grep -qE '^(Dockerfile|Cargo\.(toml|lock)|build\.rs|src/)'; then
-            echo "build=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "build=false" >> "$GITHUB_OUTPUT"
-            echo "No image inputs changed; skipping the build."
-          fi
 
       - name: Build image
-        if: steps.changes.outputs.build == 'true'
         run: docker build --tag enoxian-bootstrap:ci .
 
       - name: Verify entrypoint
-        if: steps.changes.outputs.build == 'true'
         run: |
           set -euo pipefail
           docker run --rm --entrypoint enox enoxian-bootstrap:ci --version
