@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Settings } from 'lucide-react'
+import { Settings, Plus, LogIn } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import { initCircle, enterCircle, getIdentity, type IdentityInfo } from '../api'
 import { shortenAgentId } from '../lib/displayName'
@@ -121,8 +121,13 @@ export default function CircleSidebar({ onRitual }: Props) {
     <>
       <aside className="app-circles-sidebar sys-window flex flex-col z-10 overflow-hidden font-mono">
         <div className="section-header">
-          <span className="circle-sidebar-brand">enoxian<span>CIRCLES</span></span>
-          <span className="circle-list-count">{String(circles.length).padStart(2, '0')}</span>
+          <span className="circle-sidebar-brand">
+            enoxian
+            <span>
+              CIRCLES
+              <span className="circle-list-count">{String(circles.length).padStart(2, '0')}</span>
+            </span>
+          </span>
         </div>
 
         <div ref={listRef} className="circle-list">
@@ -150,10 +155,9 @@ export default function CircleSidebar({ onRitual }: Props) {
                   {String(index + 1).padStart(2, '0')}
                 </span>
                 <div className="circle-row__copy">
-                  <span className="circle-row__name">{circle.circle_name}</span>
-                  <span className={`circle-row__state${isActive ? ' active' : ''}${circle.disabled ? ' void' : ''}`}>
-                    {circle.disabled ? 'DISABLED' : isActive ? 'ACTIVE' : 'ENABLED'}
-                  </span>
+                  <span className="circle-row__name" title={circle.circle_name}>{circle.circle_name}</span>
+                  {/* Enabled is the norm; only spell out the exception. */}
+                  {circle.disabled && <span className="circle-row__state void">DISABLED</span>}
                 </div>
                 <span className="circle-row__marker" aria-hidden="true">{circle.disabled ? '×' : '→'}</span>
               </button>
@@ -161,19 +165,13 @@ export default function CircleSidebar({ onRitual }: Props) {
           })}
         </div>
 
-        <div className="border-t-2 border-obsidian flex shrink-0">
-          {(['NEW', 'ENTER'] as const).map((label, i) => (
-            <button
-              key={label}
-              onClick={() => { setModal((['init', 'enter'] as const)[i]); setError('') }}
-              className={`flex-1 py-1.5 text-[11px] font-bold tracking-widest hover:bg-obsidian hover:text-alabaster ${
-                i === 0 ? 'border-r-2 border-obsidian' : ''
-              }`}
-              style={{ transition: 'none' }}
-            >
-              {label}
-            </button>
-          ))}
+        <div className="circle-sidebar-actions">
+          <button type="button" onClick={() => { setModal('init'); setError('') }}>
+            <Plus size={13} strokeWidth={2} aria-hidden="true" />NEW
+          </button>
+          <button type="button" onClick={() => { setModal('enter'); setError('') }}>
+            <LogIn size={13} strokeWidth={2} aria-hidden="true" />ENTER
+          </button>
         </div>
 
         <button

@@ -1,6 +1,6 @@
 import type { RightPanelTab } from './RightPanel'
 import { createPortal } from 'react-dom'
-import { Users, FileText, Download } from 'lucide-react'
+import { Users, FileText, Download, Info } from 'lucide-react'
 import ExecutionStatus from './ExecutionStatus'
 import { Fragment, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import type { Attachment, ChatActivity, ChatMessage, EngagementView, Member, Presence } from '../types'
@@ -238,8 +238,10 @@ interface BubbleProps {
 function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNonces, onOpenImage, onReply, replyParent, replyParentName, showQuote, onJumpTo }: BubbleProps) {
   if (msg.agent_id === 'system') {
     return (
-      <div className="chat-system-event" role="status">
-        <span className="chat-system-event__label">system</span>
+      <div className="chat-system-event" role="status" aria-label="System notice">
+        <span className="chat-system-event__icon" aria-hidden="true">
+          <Info size={14} strokeWidth={1.75} />
+        </span>
         <span className="chat-system-event__text">{msg.text}</span>
         <time className="chat-system-event__time" dateTime={new Date(msg.ts * 1000).toISOString()} title={formatFullTimestamp(msg.ts)}>
           {formatTime(msg.ts)}
