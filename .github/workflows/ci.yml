@@ -103,7 +103,9 @@ jobs:
           # The end-to-end scripts run in the test job against the built CLI.
           matches rust       '^(src/|tests/|Cargo\.(toml|lock)$|build\.rs$|\.cargo/|rustfmt\.toml$|scripts/test-[^/]+\.sh$)'
           matches frontend   '^frontend/'
-          matches installers '^scripts/'
+          # `.gitattributes` decides the scripts' line endings, which the
+          # installers job guards against CRLF.
+          matches installers '^(scripts/|\.gitattributes$)'
           matches audit      '^(Cargo\.(toml|lock)$|\.cargo/)'
           matches docker     '^(Dockerfile$|\.dockerignore$|Cargo\.(toml|lock)$|build\.rs$|src/)'
 
