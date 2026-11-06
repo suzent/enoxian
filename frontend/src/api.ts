@@ -351,7 +351,7 @@ export interface WardenKind {
   id: string
   name: string
   description: string
-  protocol: 'rules' | 'systemone' | 'decisions'
+  protocol: 'rules' | 'systemone' | 'decisions' | 'openai_chat' | 'openai_responses' | 'anthropic_messages' | 'gemini'
   endpoint?: string | null
   model?: string | null
   needs_key: boolean

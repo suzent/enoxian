@@ -5,8 +5,8 @@ import type { WardenKind } from '../api'
 /** The decider a new device is pointed at. */
 export const RECOMMENDED_DECIDER = 'jev'
 
-/** Shown as cards; everything else (proxies, local manifests) sits under "Other". */
-const FEATURED = [RECOMMENDED_DECIDER, 'openai-decisions', 'builtin:rules']
+/** Shown as cards; everything else (compatible endpoints, local manifests) sits under "Other". */
+const FEATURED = [RECOMMENDED_DECIDER, 'openai', 'anthropic', 'gemini', 'builtin:rules']
 
 /** Messages that show the range of what the Warden does, for "try it". */
 export const WARDEN_SAMPLES = [
@@ -86,7 +86,7 @@ export default function DeciderPicker({ kinds, value, busy, onSelect, onSaveKey,
             <span className="decider-card__mark" aria-hidden="true" />
             <span className="decider-card__body">
               <span className="decider-card__title">Other provider</span>
-              <span className="decider-card__text">A LiteLLM proxy, or a decider you added under ~/.enoxian/wardens.</span>
+              <span className="decider-card__text">Any OpenAI-compatible endpoint, OpenAI Decisions, or a decider you added under ~/.enoxian/wardens.</span>
             </span>
           </button>
         )}
@@ -130,7 +130,12 @@ export default function DeciderPicker({ kinds, value, busy, onSelect, onSaveKey,
             {explainFallback && !selected.key_hint && <>Until a key is saved, the built-in rules decide. </>}
             Stored only on this device and never shown again.
             {destination && <> In Circles where the Warden is on, messages nobody addressed are sent to <strong>{destination}</strong> to decide who answers.</>}
+            {!destination && <> In Circles where the Warden is on, messages nobody addressed are sent to the endpoint you set to decide who answers.</>}
+            {' '}This is an API key from the provider&apos;s console, billed per request; a Claude Code, Codex or Gemini CLI subscription login does not work here.
           </p>
+          {!endpoint && !selected.endpoint && (
+            <p className="decider-note">Set its endpoint and model under Connection details in the Warden settings.</p>
+          )}
         </div>
       )}
       {selected?.needs_key && keyFromEnv && (

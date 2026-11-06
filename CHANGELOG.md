@@ -41,10 +41,23 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- The Warden can now decide with an ordinary OpenAI, Anthropic or Gemini API
+  key, or with any OpenAI-compatible endpoint (OpenRouter, DeepSeek, Ollama,
+  vLLM, a LiteLLM proxy) given its address and model. The model fills in a
+  structured answer with a probability per question; a refusal, or an answer
+  that does not fit, counts as no answer to that question.
+
 - `max_queued_per_agent` in `agents.toml` sets how many requests one agent
   may have waiting on a device (default 4, up to 64). Past it, a waiting
   request is dropped, so an agent that many others call, such as a lead, can
   now be given a longer queue.
+
+### Changed
+
+- The LiteLLM (System One) and LiteLLM (OpenAI Decisions) deciders are gone.
+  A device that used one switches to TypeSafe Jev or OpenAI Decisions on its
+  next start, keeping its endpoint, model and key, so it still goes through
+  the same proxy.
 
 ### Fixed
 
