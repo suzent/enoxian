@@ -63,8 +63,8 @@ describe('circle scope', () => {
       <EngagementSettings agentNames={['claude']} global={GLOBAL} circle={circle()}
         scope="circle" busy={false} onChange={vi.fn()} />,
     )
-    // Nine settings, all inherited.
-    expect(screen.getAllByText('Using default')).toHaveLength(9)
+    // Eight generic settings plus the explicit Warden scope indicator.
+    expect(screen.getAllByText('Using default')).toHaveLength(8)
     // And the inherited value is visible, not hidden.
     expect(screen.getByLabelText('Follow-up window in seconds')).toHaveValue(180)
   })
@@ -76,7 +76,7 @@ describe('circle scope', () => {
         scope="circle" busy={false} onChange={vi.fn()} />,
     )
     expect(screen.getAllByRole('button', { name: 'Use default' })).toHaveLength(1)
-    expect(screen.getAllByText('Using default')).toHaveLength(8)
+    expect(screen.getAllByText('Using default')).toHaveLength(7)
   })
 
   it('reset clears the override rather than writing a value', async () => {
@@ -189,14 +189,44 @@ describe('listener rotation', () => {
 })
 
 describe('warden', () => {
+  it('reveals configuration for active modes and preserves drafts when switched off', async () => {
+    const props = { agentNames: [], circle: null, scope: 'global' as const, busy: false, onChange: vi.fn(),
+      wardenSettings: <input aria-label="Policy draft" defaultValue="saved policy" /> }
+    const { rerender } = render(<EngagementSettings {...props} global={{ ...GLOBAL, warden_mode: 'shadow' }} />)
+    const details = screen.getByText('How Warden decides').closest('details')!
+    expect(details).toHaveAttribute('open')
+    fireEvent.change(screen.getByLabelText('Policy draft'), { target: { value: 'unsaved policy' } })
+    rerender(<EngagementSettings {...props} global={{ ...GLOBAL, warden_mode: 'off' }} />)
+    expect(details).not.toHaveAttribute('open')
+    await userEvent.click(screen.getByText('How Warden decides'))
+    expect(screen.getByLabelText('Policy draft')).toHaveValue('unsaved policy')
+    rerender(<EngagementSettings {...props} global={{ ...GLOBAL, warden_mode: 'act' }} />)
+    expect(details).toHaveAttribute('open')
+  })
+
+  it('distinguishes a Circle override from the global mode and restores inheritance', async () => {
+    const onChange = vi.fn()
+    const props = { agentNames: [], global: { ...GLOBAL, warden_mode: 'act' as const }, scope: 'circle' as const, busy: false, onChange }
+    const { rerender } = render(<EngagementSettings {...props} circle={circle({ warden_mode: 'shadow' })} />)
+    expect(screen.getByRole('radio', { name: 'Shadow' })).toBeChecked()
+    expect(screen.getByText('Custom setting for this Circle')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Use global setting (On)' }))
+    expect(onChange).toHaveBeenCalledWith({ warden_mode: null })
+    rerender(<EngagementSettings {...props} circle={{ circle_id: 'c1', overrides: {}, effective: props.global }} />)
+    expect(screen.getByRole('radio', { name: 'On' })).toBeChecked()
+    expect(screen.getByText('Using global setting · On')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Use global setting/ })).toBeNull()
+    rerender(<EngagementSettings {...props} circle={circle()} busy />)
+    expect(screen.getByRole('radio', { name: 'On' })).toBeDisabled()
+  })
+
   it('turns the warden on in the scope being edited, and hands it the listener count', async () => {
     const onChange = vi.fn()
     const { rerender } = render(
       <EngagementSettings agentNames={['claude']} global={GLOBAL} circle={circle()}
         scope="circle" busy={false} onChange={onChange} />,
     )
-    await userEvent.click(screen.getByRole('combobox', { name: 'Warden' }))
-    await userEvent.click(screen.getByRole('option', { name: /^On$/ }))
+    await userEvent.click(screen.getByRole('radio', { name: 'On' }))
     expect(onChange).toHaveBeenCalledWith({ warden_mode: 'act' })
 
     rerender(

@@ -58,6 +58,10 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
+- Warden mode and configuration now live together under Behaviour. Mode cards
+  explain Off, Shadow and On, show Circle overrides and global defaults, and
+  reveal decision settings in place without losing unsaved drafts.
+
 - The LiteLLM (System One) and LiteLLM (OpenAI Decisions) deciders are gone.
   A device that used one switches to TypeSafe Jev or OpenAI Decisions on its
   next start, keeping its endpoint, model and key, so it still goes through

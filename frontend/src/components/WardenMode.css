@@ -1,0 +1,33 @@
+.warden-mode {
+  min-width: 0;
+  margin: 20px 0 16px;
+  padding: 0;
+  border: 0;
+  color: var(--fg-obsidian);
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+.warden-mode legend { padding: 0; font-size: 14px; font-weight: 600; }
+.warden-mode__intro { margin: 6px 0 12px; color: var(--fg-slate); }
+.warden-mode__scope { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; margin-bottom: 12px; font-size: 11px; color: var(--fg-slate); }
+.warden-mode__scope button { padding: 0; border: 0; background: transparent; color: var(--fg-obsidian); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.warden-mode__options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.warden-mode__card { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 14px 12px; border: 1px solid var(--settings-divider, #dcdcd6); background: var(--surface-panel, #fff); cursor: pointer; transition: background .15s, border-color .15s; }
+.warden-mode__card:hover { border-color: var(--fg-slate); }
+.warden-mode__card.is-selected { border-color: var(--fg-obsidian); background: var(--surface-control, #f4f4f0); box-shadow: inset 0 2px 0 var(--fg-obsidian); }
+.warden-mode__card:focus-within { outline: 2px solid var(--fg-obsidian); outline-offset: 3px; }
+.warden-mode__choice { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.warden-mode__choice input { margin: 0; width: 14px; height: 14px; flex-shrink: 0; accent-color: var(--fg-obsidian); }
+.warden-mode__caption { font-size: 12px; font-weight: 500; }
+.warden-mode__description { color: var(--fg-slate); font-size: 12px; line-height: 1.6; }
+.warden-mode__footnote { margin: 10px 0 0; color: var(--fg-slate); font-size: 11px; }
+.warden-mode:disabled .warden-mode__card, .warden-mode button:disabled { opacity: .6; cursor: default; }
+.warden-mode__configuration { margin: 0 0 18px; border-top: 1px solid var(--settings-divider, #dcdcd6); }
+.warden-mode__configuration > summary { padding: 14px 0; cursor: pointer; font-size: 13px; font-weight: 600; }
+.warden-mode__configuration > summary span { display: block; margin: 4px 0 0 16px; color: var(--fg-slate); font-size: 11px; font-weight: 400; }
+.warden-mode__configuration > .warden-settings { padding-bottom: 8px; gap: 12px; }
+.warden-mode__shared { padding: 0 0 16px; font-size: 12px; color: var(--fg-slate); }
+.warden-mode__shared p { margin: 0 0 8px; }
+@media (max-width: 640px) {
+  .warden-mode__options { grid-template-columns: 1fr; }
+  .warden-mode__card { padding: 12px 14px; gap: 4px; }
+}

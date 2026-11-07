@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import NumberField from './ui/NumberField'
-import Select from './ui/Select'
+import './WardenMode.css'
 import { ConfirmDialog } from './ui/Dialog'
 import type { CircleSettingsView, SettingsView } from '../types'
 
@@ -29,6 +29,8 @@ interface Props {
   scope: 'global' | 'circle'
   busy: boolean
   onChange: (patch: Patch) => void
+  wardenSettings?: ReactNode
+  onConfigureGlobal?: () => void
 }
 
 /**
@@ -39,9 +41,11 @@ interface Props {
  * configurable is how far a chain may run, not who may start one.
  */
 export default function EngagementSettings({
-  agentNames, global, circle, scope, busy, onChange,
+  agentNames, global, circle, scope, busy, onChange, wardenSettings, onConfigureGlobal,
 }: Props) {
   const [confirmation, setConfirmation] = useState<{ title: string; detail: string; patch: Patch } | null>(null)
+  const modeGroup = useId()
+  const modeLabels = { off: 'Off', shadow: 'Shadow', act: 'On' }
   const isCircle = scope === 'circle'
   const over = circle?.overrides ?? {}
   const effective = isCircle ? circle?.effective ?? global : global
@@ -78,7 +82,7 @@ export default function EngagementSettings({
   return (
     <div className="engagement-settings">
       <section className="settings-option-group">
-      <h3 className="settings-group-title">Automatic responses</h3>
+      <h3 className="settings-group-title">When agents respond</h3>
       {row('reaction', 'Run agents when mentioned',
         <label className="engagement-toggle">
           <input
@@ -130,7 +134,7 @@ export default function EngagementSettings({
 
       </section>
       <section className="settings-option-group">
-      <h3 className="settings-group-title">Room listeners</h3>
+      <h3 className="settings-group-title">Who responds to unaddressed messages</h3>
       {row('ambient', 'Agents that scry the room',
         <div className="engagement-agents">
           {agentNames.length === 0 && <span className="engagement-row__hint">No agents configured.</span>}
@@ -165,18 +169,65 @@ export default function EngagementSettings({
           ? 'Nobody — agents answer only when addressed.'
           : effective.reaction !== 'push'
             ? 'Listening is paused. Turn on automatic agent runs above to activate these listeners.'
-            : (effective.warden_mode ?? 'off') !== 'off'
-              ? 'The warden decides which unaddressed messages these listeners get, and who answers. An agent\'s own message reaches it only with "Agents\' messages too" on, in the settings for all Circles.'
+            : effective.warden_mode === 'act'
+              ? 'The warden decides which unaddressed messages these listeners get, and who answers. An agent\'s own message reaches it only with "Agents\' messages too" on, in global Behaviour settings.'
               : 'Listeners take turns on new, unaddressed human messages. Those selected can reply or stay quiet; the others wait for a later message. Short messages, recent speakers, and agent messages are skipped.')}
-      {row('warden_mode', 'Warden',
-        <Select aria-label="Warden" disabled={busy} value={effective.warden_mode ?? 'off'}
-          onChange={value => onChange({ warden_mode: value as 'off' | 'shadow' | 'act' })}
-          options={[{ value: 'off', label: 'Off' }, { value: 'shadow', label: 'Shadow' }, { value: 'act', label: 'On' }]} />,
-        effective.warden_mode === 'act'
-          ? 'For each message nobody addressed, the warden decides whether an agent should answer, and how: one listener, several together, or a blind vote where two answer independently and one answer is posted. Choose its decider in the settings for all Circles.'
-          : effective.warden_mode === 'shadow'
-            ? 'Listeners still take turns as below. The warden records what it would have done, so you can compare before letting it decide.'
-            : 'Experimental. The warden decides who answers messages nobody addressed, instead of taking turns.')}
+      <fieldset className="warden-mode" disabled={busy}>
+        <legend>Warden</legend>
+        <p className="warden-mode__intro">Decide whether unaddressed messages need a reply, and who should answer.</p>
+        <div className="warden-mode__scope">
+          <span>{isCircle
+            ? inherits('warden_mode')
+              ? `Using global setting · ${modeLabels[global.warden_mode ?? 'off']}`
+              : 'Custom setting for this Circle'
+            : 'Default for all Circles on this device'}</span>
+          {isCircle && !inherits('warden_mode') && (
+            <button type="button" disabled={busy} onClick={() => onChange({ warden_mode: null })}>
+              Use global setting ({modeLabels[global.warden_mode ?? 'off']})
+            </button>
+          )}
+        </div>
+        <div className="warden-mode__options">
+          {([
+            { value: 'off', title: 'Off', caption: 'Rotation only', description: 'Listeners take turns. Warden does not evaluate messages.' },
+            { value: 'shadow', title: 'Shadow', caption: 'Observe only', description: 'Record Warden’s choices while listeners keep taking turns.' },
+            { value: 'act', title: 'On', caption: 'Let Warden decide', description: 'Warden chooses whether to reply and which listeners to use.' },
+          ] as const).map(mode => (
+            <label key={mode.value} className={`warden-mode__card${(effective.warden_mode ?? 'off') === mode.value ? ' is-selected' : ''}`}>
+              <span className="warden-mode__choice">
+                <input type="radio" name={modeGroup} value={mode.value}
+                  aria-label={mode.title} checked={(effective.warden_mode ?? 'off') === mode.value}
+                  onChange={() => onChange({ warden_mode: mode.value })} />
+                <strong>{mode.title}</strong>
+              </span>
+              <span className="warden-mode__caption">{mode.caption}</span>
+              <span className="warden-mode__description">{mode.description}</span>
+            </label>
+          ))}
+        </div>
+        <p className="warden-mode__footnote">
+          {effective.reaction !== 'push'
+            ? 'Automatic replies are paused. Enable “Run agents when mentioned” above to activate listeners.'
+            : effective.ambient.length === 0
+              ? 'Select at least one listener above to use this mode.'
+              : effective.warden_mode === 'shadow'
+                ? 'Observation only: Warden records decisions but does not choose who replies.'
+                : effective.warden_mode === 'act'
+                  ? 'Warden is in charge of eligible unaddressed messages. Direct mentions still go to the named agent.'
+                  : 'Listeners take turns. Your saved Warden configuration is kept for later.'}
+        </p>
+      </fieldset>
+      {isCircle ? (
+        <div className="warden-mode__shared">
+          <p>The decision model and policy are shared across Circles on this device. Only the mode above is set here.</p>
+          {onConfigureGlobal && <button type="button" className="engagement-row__reset" disabled={busy} onClick={onConfigureGlobal}>Edit global Behaviour settings →</button>}
+        </div>
+      ) : wardenSettings && (
+        <details className="warden-mode__configuration" open={(effective.warden_mode ?? 'off') !== 'off'}>
+          <summary>How Warden decides <span>Decision model, policy and a test message</span></summary>
+          {wardenSettings}
+        </details>
+      )}
       <details className="settings-advanced">
       <summary>Advanced listener settings</summary>
       {row('ambient_responders', warding ? 'Most listeners per message' : 'Listeners per message',
