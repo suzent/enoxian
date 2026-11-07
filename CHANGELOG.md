@@ -39,6 +39,8 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-11-07
+
 ### Added
 
 - Releases publish a relay image, `ghcr.io/suzent/enoxian-bootstrap`, for
@@ -1335,7 +1337,8 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/suzent/enoxian/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/suzent/enoxian/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/suzent/enoxian/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/suzent/enoxian/compare/v0.12.0...v0.13.0
