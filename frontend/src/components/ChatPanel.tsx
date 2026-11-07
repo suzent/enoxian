@@ -292,6 +292,7 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
         {showSender && (
           <header className="chat-message__sender">
             <span className="chat-message__owner" title={label.agent ? `Owned by ${label.user}` : undefined}>{label.agent || label.user}</span>
+            {label.agent && <span className="chat-message__device">· {label.user}</span>}
             {label.device && <span className="chat-message__device">· {label.device}</span>}
             {label.agent && <span className="chat-message__agent">AGENT</span>}
             {delegatedBy && (handedOver ? (
@@ -643,9 +644,10 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
     const isOwnDevice = ownerLabel === selfOwner
     const deviceLabel = member.device_label || shortenAgentId(member.agent_id)
 
-    // Show device qualifier when this owner has more than one device in the circle
+    // Agent messages always identify their host, including unlisted CLI actors.
+    // Human messages only need a device qualifier to distinguish an owner's devices.
     const sameOwnerDevices = members.filter(m => peerLabel(m.owner, m.agent_id) === ownerLabel)
-    const showDevice = sameOwnerDevices.length > 1 && !!deviceLabel && deviceLabel !== ownerLabel
+    const showDevice = (!!agentName || sameOwnerDevices.length > 1) && !!deviceLabel && deviceLabel !== ownerLabel
 
     return {
       user: isOwnDevice ? 'you' : ownerLabel,
