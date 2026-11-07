@@ -499,8 +499,14 @@ class Run:
         main_moved = time.time()
 
         def working() -> bool:
-            """A turn already running when main last moved is still working on it."""
-            return any(str(r.get("status", "")).lower() == "running" and r.get("admitted_at", 0) <= main_moved
+            """A turn already running when main last moved is still working on it,
+            and so is one admitted soon after the change: the change reaches its
+            owner through a relay, and that owner's turn may not push for minutes."""
+            def work(r):
+                admitted = r.get("admitted_at", 0)
+                return (admitted <= main_moved
+                        or self.change_at <= admitted <= self.change_at + self.args.quiet_secs)
+            return any(str(r.get("status", "")).lower() == "running" and work(r)
                        for d in self.devices_used for r in self.runs_on(d))
         while end is None:
             time.sleep(self.args.poll)
@@ -529,8 +535,9 @@ class Run:
             # Agents that keep talking after the work is done would otherwise
             # run to the turn budget: once the change is in, a main that has not
             # moved for --quiet-secs ends the run, whoever is still talking --
-            # unless a turn already running when main last moved is still going
-            # (work, not chatter), for up to three times as long.
+            # unless a turn already running when main last moved, or admitted
+            # within --quiet-secs of the change, is still going (work, not
+            # chatter), for up to three times as long.
             if end is None and self.change_at is not None:
                 quiet = time.time() - max(main_moved, self.change_at)
                 if quiet >= self.args.quiet_secs and (quiet >= 3 * self.args.quiet_secs or not working()):
