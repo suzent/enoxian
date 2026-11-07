@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
+import { getChat, getMembers } from '../../api'
 
 let receive: (event: {data: string}) => void
 const old = { id: 'old', agent_id: 'bob', text: 'History', ts: 1, mentions: [] }
@@ -20,6 +21,23 @@ vi.mock('../../context/AppContext', () => ({useApp: () => ({
 vi.mock('../CircleGlyph', () => ({default: () => <span />}))
 const { default: ChatPanel } = await import('../ChatPanel')
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+it('shows the owner and single host device for an agent absent from the advertised agents', async () => {
+  vi.mocked(getMembers).mockResolvedValueOnce([
+    { peer_id: 'slian-peer', owner: 'slian', agent_id: 'slian-device', device_label: 'MacBook', agents: [], role: 'member' },
+  ])
+  vi.mocked(getChat).mockResolvedValueOnce([
+    { ...old, agent_id: 'codex-plan-reply', peer_id: 'slian-peer', text: 'Plan update' },
+  ])
+  render(<ChatPanel variant="main" />)
+  const name = await screen.findByText('codex-plan-reply')
+  await waitFor(() => {
+    const header = name.closest('header')!
+    expect(header).toHaveTextContent('· slian')
+    expect(header).toHaveTextContent('· MacBook')
+    expect(header).toHaveTextContent('AGENT')
+  })
+})
 
 it('only signals unseen incoming live messages, then clears when the transcript is read', async () => {
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 1 })

@@ -65,6 +65,8 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- Agent chat messages show their owner and host device, including agents not
+  listed in the device's advertised agents.
 - A settings panel whose request stalls after the daemon starts answering now
   shows "taking too long to respond" and a Try again button after 10 seconds,
   instead of staying on "Loading…" forever.
