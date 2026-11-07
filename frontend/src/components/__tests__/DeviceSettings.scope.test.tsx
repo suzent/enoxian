@@ -140,10 +140,25 @@ describe('settings recovery', () => {
 })
 
 describe('separate settings entry points', () => {
-  it('gives Warden a dedicated global page and protects unsaved policy edits', async () => {
+  it('opens global Behaviour from a Circle without showing global model controls in the Circle', async () => {
+    render(<DeviceSettings circleId="c1" onClose={vi.fn()} />)
+    await screen.findByText('Edit global Behaviour settings →')
+    expect(screen.queryByText('How Warden decides')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Edit global Behaviour settings →' }))
+    expect(await screen.findByText('How Warden decides')).toBeInTheDocument()
+    expect(getAgentConfigFor).toHaveBeenLastCalledWith(null)
+    await userEvent.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(getAgentConfigFor).toHaveBeenLastCalledWith('c1'))
+  })
+
+  it('keeps Warden inline under Behaviour and protects unsaved policy edits', async () => {
     const close = vi.fn()
     render(<DeviceSettings onClose={close} />)
-    await userEvent.click(screen.getByRole('tab', { name: 'Warden' }))
+    const summary = await screen.findByText('How Warden decides')
+    expect(screen.queryByRole('tab', { name: 'Warden' })).toBeNull()
+    expect(summary.closest('details')).not.toHaveAttribute('open')
+    await userEvent.click(summary)
+    expect(screen.getByRole('tab', { name: 'Behaviour' })).toHaveAttribute('aria-selected', 'true')
     await userEvent.click(await screen.findByText('Advanced policy'))
     fireEvent.change(screen.getByLabelText('Warden spec'), { target: { value: 'new policy' } })
     await userEvent.click(screen.getByRole('button', { name: 'Close' }))

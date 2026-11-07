@@ -129,8 +129,8 @@ export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }
   return (
     <section className="warden-settings">
       <p className="warden-scope-note">
-        The Warden decides which agents, if any, answer a message nobody addressed. These settings stay on this
-        device; turn it on per Circle under Behaviour.
+        This decision model and policy apply to every Circle on this device that uses Shadow or On.
+        Changing them does not change a Circle’s mode.
       </p>
       <section className="warden-group">
       <h3>Decision provider</h3>

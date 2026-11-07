@@ -77,7 +77,7 @@ export function recommendation(cfg: AgentConfigView, warden: WardenView | null) 
       rows.push({ label: 'Agents one message may reach', from: String(now.ambient_responders ?? 1), to: `Up to ${OPEN_CEILING}` })
     }
   } else if (now.warden_mode !== 'act') {
-    const to = wardenBroken(warden) ? 'Fix its decider under Settings → Warden first' : 'Save a key under Settings → Warden first'
+    const to = wardenBroken(warden) ? 'Fix its decider under Settings → Behaviour → How Warden decides first' : 'Save a key under Settings → Behaviour → How Warden decides first'
     rows.push({ label: 'Warden', from: mode(now.warden_mode), to, blocked: true })
   }
   return { patch, rows }

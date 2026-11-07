@@ -14,13 +14,12 @@ import AgentCards from './AgentCards'
 import WardenSettings from './WardenSettings'
 import RecommendedSetup from './RecommendedSetup'
 
-type SettingsTab = 'device' | 'agents' | 'behaviour' | 'connectivity' | 'membership' | 'warden'
+type SettingsTab = 'device' | 'agents' | 'behaviour' | 'connectivity' | 'membership'
 
 const SETTINGS_TABS: readonly SegmentedTabOption<SettingsTab>[] = [
   { value: 'device', content: <><Laptop size={14} aria-hidden="true" />Device</> },
   { value: 'agents', content: <><Bot size={14} aria-hidden="true" />Agents</> },
   { value: 'behaviour', content: <><SlidersHorizontal size={14} aria-hidden="true" />Behaviour</> },
-  { value: 'warden', content: <><SlidersHorizontal size={14} aria-hidden="true" />Warden</> },
   { value: 'membership', content: <><Users size={14} aria-hidden="true" />Membership</> },
   { value: 'connectivity', content: <><RadioTower size={14} aria-hidden="true" />Connectivity</> },
 ]
@@ -69,6 +68,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
   const [wardenDirty, setWardenDirty] = useState(false)
   const [wardenBusy, setWardenBusy] = useState(false)
   const [discard, setDiscard] = useState<(() => void) | null>(null)
+  const [globalOpen, setGlobalOpen] = useState(false)
   const [recommending, setRecommending] = useState(false)
   const requestId = useRef(0)
   const mutationBusy = useRef(false)
@@ -184,7 +184,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
 
   return (
     <>
-    <Dialog onClose={() => navigate(onClose)} className="device-settings-panel"
+    {!globalOpen && <Dialog onClose={() => navigate(onClose)} className="device-settings-panel"
       title={scope === 'global' ? 'Global settings' : 'Circle settings'} >
         <div className="settings-layout">
           <aside className="settings-sidebar">
@@ -205,11 +205,10 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
           <div className="ritual-panel__body settings-panel-body flex flex-col gap-4">
           <header className="settings-section-heading">
             <span className="settings-section-heading__scope">{scope === 'global' ? 'THIS DEVICE · GLOBAL' : `THIS DEVICE IN ${activeCircle?.circle_name ?? 'CIRCLE'}`}</span>
-            <h2>{{ device: 'Device identity', agents: 'Your agents', behaviour: 'Agent behaviour', membership: 'Circle membership', connectivity: 'Connectivity', warden: 'Warden' }[activeTab]}</h2>
-            <p>{{ device: 'How you and this machine appear to others.', agents: 'Connect the agents available on this machine. Used across all Circles.', behaviour: scope === 'global' ? 'Set how agents respond across all Circles.' : 'Tailor how agents respond in this Circle.', membership: 'Pause participation or leave this Circle on this device.', connectivity: 'Manage how this device connects to the current Circle.', warden: 'Choose how unaddressed messages are assessed. Enable Warden in each Circle’s Behaviour settings.' }[activeTab]}</p>
+            <h2>{{ device: 'Device identity', agents: 'Your agents', behaviour: 'Agent behaviour', membership: 'Circle membership', connectivity: 'Connectivity' }[activeTab]}</h2>
+            <p>{{ device: 'How you and this machine appear to others.', agents: 'Connect the agents available on this machine. Used across all Circles.', behaviour: scope === 'global' ? 'Set how agents respond across all Circles.' : 'Tailor how agents respond in this Circle.', membership: 'Pause participation or leave this Circle on this device.', connectivity: 'Manage how this device connects to the current Circle.' }[activeTab]}</p>
           </header>
           {activeTab === 'membership' && membership}
-          {activeTab === 'warden' && <WardenSettings onDirtyChange={setWardenDirty} onBusyChange={setWardenBusy} />}
           {error && (
             <div className="file-error" role="alert">
               <div>{error}</div>
@@ -279,12 +278,13 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                     global={cfg.global_settings}
                     circle={cfg.circle}
                     scope={scope}
-                    busy={busy}
+                    busy={busy || wardenBusy}
                     onChange={applyEngagement}
+                    onConfigureGlobal={() => navigate(() => setGlobalOpen(true))}
+                    wardenSettings={scope === 'global' ? <WardenSettings onDirtyChange={setWardenDirty} onBusyChange={setWardenBusy} /> : undefined}
                   />
                 )}
               </section>
-              {scope === 'global' && <WardenSettings />}
               {scope === 'circle' && activeCircleId && (
                 <AgentCards circleId={activeCircleId}
                   onOpenFile={onOpenFile && (path => { onOpenFile(path); onClose() })} />
@@ -589,13 +589,14 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
           )}
           </div>
         </div>
-      {activeTab !== 'membership' && activeTab !== 'warden' && <div className="settings-save-status" role="status">{busy ? 'Saving changes…' : saved && !error ? 'Changes saved' : {
+      {activeTab !== 'membership' && <div className="settings-save-status" role="status">{busy || wardenBusy ? 'Saving changes…' : wardenDirty ? 'Unsaved Warden changes · Use Save in the edited section.' : saved && !error ? 'Changes saved' : {
         device: 'Use Save to update your device identity.',
         agents: 'Agent changes apply across all Circles on this device.',
-        behaviour: 'Saved automatically · Press Enter or leave a number field to save.',
+        behaviour: 'Behaviour saves automatically. Connection and policy edits have their own Save buttons.',
         connectivity: 'Routing changes restart this Circle on this device.',
       }[activeTab]}</div>}
-    </Dialog>
+    </Dialog>}
+    {globalOpen && <DeviceSettings onClose={() => { setGlobalOpen(false); void refresh() }} />}
     {recommending && <RecommendedSetup onClose={applied => {
       setRecommending(false)
       if (applied) { setSaved(true); void refresh() }

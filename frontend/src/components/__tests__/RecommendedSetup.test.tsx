@@ -42,7 +42,7 @@ describe('recommendation', () => {
     const { patch, rows } = recommendation(config(), broken)
     expect(patch.warden_mode).toBeUndefined()
     expect(patch.ambient_responders).toBeUndefined()
-    expect(rows.find(r => r.label === 'Warden')).toMatchObject({ blocked: true, to: 'Fix its decider under Settings → Warden first' })
+    expect(rows.find(r => r.label === 'Warden')).toMatchObject({ blocked: true, to: 'Fix its decider under Settings → Behaviour → How Warden decides first' })
   })
 
   it('keeps agents already reading the room and lists nothing already recommended', () => {
