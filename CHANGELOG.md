@@ -41,6 +41,10 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Releases publish a relay image, `ghcr.io/suzent/enoxian-bootstrap`, for
+  amd64 and arm64. A relay server is now one `docker compose up -d` with
+  `scripts/rendezvous/docker-compose.yml` and a DNS name.
+
 - The Warden can now decide with an ordinary OpenAI, Anthropic or Gemini API
   key, or with any OpenAI-compatible endpoint (OpenRouter, DeepSeek, Ollama,
   vLLM, a LiteLLM proxy) given its address and model. The model fills in a

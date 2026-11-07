@@ -78,7 +78,8 @@ them independently:
 - `Dependency security audit`: `cargo audit`, reading its accepted-advisory list
   from `.cargo/audit.toml`.
 - `Installer syntax`: both installers parse, and no shell script has CRLF.
-- `Bootstrap image`: builds `Dockerfile` and checks its entrypoint. On pull
+- `Bootstrap image`: builds `Dockerfile`, checks its entrypoint and health
+  check, and lints the release image's Dockerfile and the compose file. On pull
   requests it only builds when an input to the image changed, so it is cheap
   enough to require as well.
 
@@ -150,7 +151,15 @@ next begins:
 6. **`promote`** — marks the release `latest`. Only now do `curl | sh` users
    move onto it.
 
-The optional `homebrew` job then updates the tap.
+Two jobs follow `promote`:
+
+- **`docker`** — builds `scripts/rendezvous/release.Dockerfile` from the two
+  Linux archives this run built, pushes `ghcr.io/suzent/enoxian-bootstrap`
+  for amd64 and arm64, and attests the image. A release is tagged with its
+  version, its minor line and `latest`; a prerelease with its version only.
+  It uses `GITHUB_TOKEN`, so no secret is needed. The first push creates a
+  private package: make it public once under the package's settings.
+- **`homebrew`** — optional; updates the tap.
 
 Published releases are immutable: rerunning a completed release refuses to
 overwrite an already-promoted tag.
@@ -180,6 +189,16 @@ previous release, and new installs go back to it immediately:
 
 ```sh
 gh release edit v0.4.3 --repo suzent/enoxian --prerelease --latest=false
+```
+
+The relay image's `latest` and minor-line tags do not follow that. Point them
+back at the previous version's image:
+
+```sh
+docker buildx imagetools create \
+  --tag ghcr.io/suzent/enoxian-bootstrap:latest \
+  --tag ghcr.io/suzent/enoxian-bootstrap:0.4 \
+  ghcr.io/suzent/enoxian-bootstrap:0.4.2
 ```
 
 Then fix forward with a normal patch release. Do not delete the release: the tag

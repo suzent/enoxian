@@ -107,7 +107,7 @@ jobs:
           # installers job guards against CRLF.
           matches installers '^(scripts/|\.gitattributes$)'
           matches audit      '^(Cargo\.(toml|lock)$|\.cargo/)'
-          matches docker     '^(Dockerfile$|\.dockerignore$|Cargo\.(toml|lock)$|build\.rs$|src/)'
+          matches docker     '^(Dockerfile$|\.dockerignore$|Cargo\.(toml|lock)$|build\.rs$|src/|scripts/rendezvous/(release\.Dockerfile|docker-compose\.yml)$)'
 
   workflows:
     name: Workflow lint
@@ -439,3 +439,27 @@ jobs:
           set -euo pipefail
           docker run --rm --entrypoint enox enoxian-bootstrap:ci --version
           docker run --rm --entrypoint enox enoxian-bootstrap:ci bootstrap serve --help
+
+      # Runs the image's own HEALTHCHECK command rather than waiting out its
+      # interval, so a server that does not come up fails here in seconds.
+      - name: Verify health check
+        run: |
+          set -euo pipefail
+          docker run -d --name bootstrap-ci enoxian-bootstrap:ci
+          trap 'docker rm -f bootstrap-ci >/dev/null' EXIT
+          for _ in $(seq 1 40); do
+            docker exec bootstrap-ci sh -c \
+              'wget -q -O /dev/null "http://127.0.0.1:${ENOXIAN_HEALTH_PORT}/version"' && exit 0
+            sleep 0.5
+          done
+          docker logs bootstrap-ci
+          exit 1
+
+      # The published image is built from release binaries only at release
+      # time; lint its Dockerfile and the compose file here so neither breaks
+      # unnoticed in between.
+      - name: Lint release image and compose file
+        run: |
+          set -euo pipefail
+          docker buildx build --check --file scripts/rendezvous/release.Dockerfile scripts/rendezvous
+          ENOXIAN_DOMAIN=relay.example.com docker compose -f scripts/rendezvous/docker-compose.yml config --quiet

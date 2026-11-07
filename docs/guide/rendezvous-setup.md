@@ -198,9 +198,76 @@ Both build with `--features iroh-relay-server`.
 
 ## Docker
 
-The repository's `Dockerfile` builds an image with the relay compiled in. Mount
-a volume at `/root/.enoxian` to keep the server's key and certificates across
-restarts.
+Every release publishes `ghcr.io/suzent/enoxian-bootstrap` for `linux/amd64`
+and `linux/arm64`, with the relay compiled in. Tags: the exact version
+(`0.12.0`), the minor line (`0.12`) and `latest`. A prerelease gets only its
+exact version.
+
+It needs the same things as any other deployment: a server with a public IP, a
+DNS name pointing at it, and the [ports above](#requirements) open and free.
+Docker Desktop on a laptop behind NAT cannot be a relay.
+
+### One command
+
+With Docker Compose, from any directory on the server:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/suzent/enoxian/main/scripts/rendezvous/docker-compose.yml
+ENOXIAN_DOMAIN=enox.yourdomain.com docker compose up -d
+```
+
+Or without Compose:
+
+```bash
+docker run -d --name enoxian --restart unless-stopped \
+    -p 36521:36521/tcp -p 80:80/tcp -p 443:443/tcp -p 7842:7842/udp \
+    -v enoxian:/root/.enoxian \
+    -e ENOXIAN_ADVERTISE_HOST=enox.yourdomain.com \
+    ghcr.io/suzent/enoxian-bootstrap --port 36521 --iroh-relay
+```
+
+The volume at `/root/.enoxian` holds the server's key, its certificate and the
+short invites it stores. Keep it: without it every restart changes the peer
+ID, asks Let's Encrypt for a new certificate, and breaks outstanding short
+invite links.
+
+Optional settings for the compose file, in the environment or a `.env` file
+beside it:
+
+| Variable | Use |
+|----------|-----|
+| `ENOXIAN_DOMAIN` | Required. The server's DNS name |
+| `ENOXIAN_ACME_CONTACT` | Contact email for the Let's Encrypt account |
+| `ENOXIAN_VERSION` | Image tag to run instead of `latest`, for example `0.12` |
+
+`docker logs enoxian` (or `docker compose logs`) shows the peer ID. Then
+[put the relay in your invites](#put-your-relay-in-invites).
+
+The image has a health check against `/version`. If you change `--port`, set
+`ENOXIAN_HEALTH_PORT` to match.
+
+### Updating
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+There is no updater inside the container; the
+[automatic updates](#automatic-updates) timer is for the systemd install. To
+update unattended, point a tool such as Watchtower at the container, or pin
+`ENOXIAN_VERSION` to a minor line and pull on a schedule. Unlike the systemd
+updater, nothing rolls back a failed start for you.
+
+Each image carries signed build provenance:
+
+```bash
+gh attestation verify oci://ghcr.io/suzent/enoxian-bootstrap:latest --repo suzent/enoxian
+```
+
+### Building from source
+
+The repository's `Dockerfile` builds the same kind of image from source, for
+running unreleased code:
 
 ```bash
 docker build -t enoxian-bootstrap .

@@ -682,6 +682,104 @@ jobs:
           echo "### Released $TAG" >> "$GITHUB_STEP_SUMMARY"
           echo "https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
 
+  # The relay image on GHCR, built from the Linux binaries this run already
+  # built, smoke-tested and attested (scripts/rendezvous/release.Dockerfile).
+  # It runs after promote so `latest` on GHCR never gets ahead of `latest` on
+  # GitHub Releases; a prerelease gets only its exact version tag.
+  docker:
+    name: Publish relay image
+    needs: [verify, promote]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      # Required by actions/attest-build-provenance to sign the image.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: enoxian-linux-*
+          path: dist
+          merge-multiple: true
+
+      - name: Stage binaries per platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p image/linux-amd64 image/linux-arm64
+          tar -xzf dist/enoxian-linux-x86_64.tar.gz -C image/linux-amd64 enox
+          tar -xzf dist/enoxian-linux-aarch64.tar.gz -C image/linux-arm64 enox
+          test -s image/linux-amd64/enox
+          test -s image/linux-arm64/enox
+
+      - name: Log in to GHCR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - id: push
+        name: Build and push
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/enoxian-bootstrap"
+          tags=(--tag "$image:$VERSION")
+          if [ "$PRERELEASE" != "true" ]; then
+            tags+=(--tag "$image:${VERSION%.*}" --tag "$image:latest")
+          fi
+          source="https://github.com/$GITHUB_REPOSITORY"
+          description="enoxian bootstrap server and Iroh relay"
+
+          docker buildx create --use --name enoxian-release
+          # Labels go on each platform's image; GHCR reads the index's
+          # annotations to link the package to this repository.
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --file scripts/rendezvous/release.Dockerfile \
+            --label "org.opencontainers.image.source=$source" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --label "org.opencontainers.image.description=$description" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            --annotation "index:org.opencontainers.image.source=$source" \
+            --annotation "index:org.opencontainers.image.version=$VERSION" \
+            --annotation "index:org.opencontainers.image.description=$description" \
+            --annotation "index:org.opencontainers.image.licenses=MIT" \
+            "${tags[@]}" \
+            --metadata-file metadata.json \
+            --push \
+            image
+
+          digest="$(jq -r '."containerimage.digest"' metadata.json)"
+          [[ "$digest" == sha256:* ]] || { echo "no image digest in buildx metadata" >&2; exit 1; }
+          {
+            echo "image=$image"
+            echo "digest=$digest"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Relay image"
+            for tag in "${tags[@]}"; do
+              [ "$tag" = "--tag" ] || echo "- \`$tag\`"
+            done
+            echo "- digest \`$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
   homebrew:
     name: Update Homebrew tap
     needs: [verify, promote]

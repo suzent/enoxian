@@ -17,6 +17,10 @@
 #
 # CI builds this image on every push to main and on pull requests that touch its
 # inputs, so it cannot drift away from the CLI unnoticed.
+#
+# Releases publish a ready-made image, ghcr.io/suzent/enoxian-bootstrap, built
+# from the release binaries by scripts/rendezvous/release.Dockerfile. This file
+# is for running unreleased code.
 
 # ── Build stage ──────────────────────────────────────────────────────────────
 # Pinned to the same toolchain as CI (see RUST_VERSION in .github/workflows).
@@ -39,7 +43,7 @@ RUN cargo build --release --locked --bin enox --features iroh-relay-server
 # ── Runtime stage ────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
+ && apt-get install -y --no-install-recommends ca-certificates wget \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src/target/release/enox /usr/local/bin/enox
@@ -54,6 +58,12 @@ EXPOSE 7842/udp
 
 # Persist the stable bootstrap keypair across restarts by mounting /root/.enoxian.
 VOLUME ["/root/.enoxian"]
+
+# `/version` is the cheapest endpoint the server has. Set ENOXIAN_HEALTH_PORT
+# when --port is not 36521. Matches scripts/rendezvous/release.Dockerfile.
+ENV ENOXIAN_HEALTH_PORT=36521
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD wget -q -O /dev/null "http://127.0.0.1:${ENOXIAN_HEALTH_PORT}/version" || exit 1
 
 ENTRYPOINT ["enox", "bootstrap", "serve"]
 CMD ["--port", "36521"]
