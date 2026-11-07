@@ -80,8 +80,8 @@ calibration from episodes and their outcomes, and propose it as part of a spec.
 ## What an experiment may change
 
 The warden is meant to be improved by experiments, including automated ones
-(RSI: propose a change, test it, keep what wins). What they may touch is fixed
-in three layers.
+that propose a change, test it, and keep what wins. What they may touch is
+fixed in three layers.
 
 **Never** — in code, not in the spec, and not adjustable by anything an
 experiment produces:
