@@ -1,0 +1,34 @@
+# An enoxian bootstrap server with its Iroh relay, from the published image.
+#
+# On a server with a public IP and a DNS name pointing at it:
+#
+#   curl -fsSLO https://raw.githubusercontent.com/suzent/enoxian/main/scripts/rendezvous/docker-compose.yml
+#   ENOXIAN_DOMAIN=relay.example.com docker compose up -d
+#
+# Or put ENOXIAN_DOMAIN (and optionally ENOXIAN_ACME_CONTACT) in a `.env` file
+# beside this one. Ports 36521/tcp, 80/tcp, 443/tcp and 7842/udp must be open
+# and free. See docs/guide/rendezvous-setup.md.
+
+services:
+  enoxian:
+    image: ghcr.io/suzent/enoxian-bootstrap:${ENOXIAN_VERSION:-latest}
+    restart: unless-stopped
+    command: ["--port", "36521", "--iroh-relay"]
+    environment:
+      # The relay's certificate is issued for this name, so it must resolve
+      # to this server before the first start.
+      ENOXIAN_ADVERTISE_HOST: ${ENOXIAN_DOMAIN:?set ENOXIAN_DOMAIN to the DNS name of this server}
+      # Let's Encrypt contact email. Left without a value so it is passed only
+      # when set: an empty value would still count as one.
+      ENOXIAN_ACME_CONTACT:
+    ports:
+      - "36521:36521/tcp" # invites, device linking, version check
+      - "443:443/tcp" # Iroh relay (HTTPS) and the Let's Encrypt challenge
+      - "80:80/tcp" # Iroh's captive-portal probe
+      - "7842:7842/udp" # QUIC address discovery
+    volumes:
+      # Keypair, certificate and short invites. Keep it across upgrades.
+      - enoxian:/root/.enoxian
+
+volumes:
+  enoxian:
