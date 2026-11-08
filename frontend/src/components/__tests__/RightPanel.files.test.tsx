@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import RightPanel from '../RightPanel'
+import RightPanel, { absoluteWorkspacePath } from '../RightPanel'
 
 vi.mock('../../api', async importOriginal => ({
   ...await importOriginal<typeof import('../../api')>(),
@@ -11,11 +11,15 @@ vi.mock('../../api', async importOriginal => ({
 }))
 vi.mock('../../context/AppContext', () => ({ useApp: () => ({
   activeCircleId: 'c1', circles: [{ circle_id: 'c1', circle_name: 'Test' }],
-  reloadCircles: vi.fn(), status: { agent_id: 'self' },
+  reloadCircles: vi.fn(), status: { agent_id: 'self', workspace: '/home/me/Enoxian/Test' },
 }) }))
 
 describe('file interaction entry points', () => {
-  it('opens the same actions from right-click and overflow and copies the full relative path', async () => {
+  it('joins Windows workspaces with backslashes', () => {
+    expect(absoluteWorkspacePath('C:\\Users\\me\\Enoxian\\Test\\', 'notes/brief.md')).toBe('C:\\Users\\me\\Enoxian\\Test\\notes\\brief.md')
+  })
+
+  it('opens the same actions from right-click and overflow and copies the absolute path', async () => {
     const writeText = vi.fn(async () => {})
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
     render(<RightPanel onFileSelect={vi.fn()} selectedFile={null} activeTab="workspace" onClose={vi.fn()} />)
@@ -23,8 +27,8 @@ describe('file interaction entry points', () => {
     fireEvent.contextMenu(screen.getByRole('button', { name: 'brief.md' }), { clientX: 80, clientY: 90 })
     expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Open in center', 'Copy file path', 'Rename', 'Delete'])
     fireEvent.click(screen.getByRole('menuitem', { name: 'Copy file path' }))
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('notes/brief.md'))
-    expect(await screen.findByText('Copied Circle-relative path.')).toBeTruthy()
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('/home/me/Enoxian/Test/notes/brief.md'))
+    expect(await screen.findByText('Copied absolute path.')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'More actions for notes/brief.md' }))
     expect(screen.getAllByRole('menuitem')).toHaveLength(4)
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })

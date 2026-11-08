@@ -39,6 +39,12 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- "Copy file path" in the file panel now copies the file's absolute path on
+  this device, ready to paste into a terminal or editor, instead of the
+  Circle-relative one.
+
 ## [0.14.1] — 2026-11-07
 
 ### Added
