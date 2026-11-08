@@ -863,7 +863,7 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
     ]} />}
     {fileMenuOpen && fileMenuAnchor && <ActionMenu anchor={fileMenuAnchor} label="File actions" onClose={() => setFileMenuOpen(null)} actions={[
       { label: 'Open in center', icon: <PanelLeftOpen size={15} />, onSelect: () => openFileInCenter(fileMenuOpen) },
-      { label: 'Copy file path', icon: <Copy size={15} />, onSelect: () => { void navigator.clipboard.writeText(fileMenuOpen).then(() => setFileNotice('Copied Circle-relative path.')).catch(() => setFileActionError('Could not copy the path. Check clipboard permission.')) } },
+      { label: 'Copy file path', icon: <Copy size={15} />, onSelect: () => { const absolute = status?.workspace ? absoluteWorkspacePath(status.workspace, fileMenuOpen) : null; void navigator.clipboard.writeText(absolute ?? fileMenuOpen).then(() => setFileNotice(absolute ? 'Copied absolute path.' : 'Copied Circle-relative path.')).catch(() => setFileActionError('Could not copy the path. Check clipboard permission.')) } },
       { label: 'Rename', icon: <Pencil size={15} />, onSelect: () => handleRenameFile(fileMenuOpen) },
       { label: 'Delete', icon: <Trash2 size={15} />, danger: true, onSelect: () => handleDeleteFile(fileMenuOpen) },
     ]} />}
@@ -972,6 +972,14 @@ const SvgIcon = ({ d, d2 }: { d: string; d2?: string }) => (
     {d2 && <path d={d2} />}
   </svg>
 )
+
+/** Join the daemon's workspace folder and a Circle-relative path, using the
+ *  workspace's own separator so a Windows daemon gets a Windows path. */
+export function absoluteWorkspacePath(workspace: string, rel: string): string {
+  const sep = workspace.includes('\\') && !workspace.includes('/') ? '\\' : '/'
+  const base = workspace.replace(/[\\/]+$/, '')
+  return `${base}${sep}${rel.split('/').join(sep)}`
+}
 
 function FileIcon({ name, isDir, isOpen }: { name: string; isDir: boolean; isOpen: boolean }) {
   if (isDir) {
