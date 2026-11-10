@@ -67,6 +67,10 @@ CONDITIONS = {
     "M2C2": {"kind": "team", "comm": "M2", "org": "C2"},
     # Every tool, nothing restricted: how enoxian is meant to be used.
     "Free": {"kind": "team", "comm": "free", "org": "C2"},
+    # Free plus the protocols that target the pilot's failure modes.
+    "Free+V": {"kind": "team", "comm": "free", "org": "C2", "protocols": ("verify",)},
+    "Free+A": {"kind": "team", "comm": "free", "org": "C2", "protocols": ("ack",)},
+    "Free+VA": {"kind": "team", "comm": "free", "org": "C2", "protocols": ("verify", "ack")},
     "Silent": {"kind": "silent"},
     "Ref-Full": {"kind": "single", "brief": "merged"},
     "Ref-Split": {"kind": "single", "brief": "split"},

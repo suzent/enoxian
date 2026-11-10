@@ -127,6 +127,28 @@ There is no lead. Whoever sees work that needs doing claims it and does it,
 and tells the agents who have to act on anything they learn.
 """
 
+# Protocols added on top of Free to test the pilot's two main failure modes: a
+# change passed on without asking the stakeholder about what it leaves open,
+# and a rule sent once that its receiver never took up.
+VERIFY = """\
+## Before you pass a change on: check it
+
+When your stakeholder tells you about a change or a new rule, first look for
+anything in it that is left open or could be read two ways, and ask your
+stakeholder about each such point. Then tell the agents who have to act,
+passing on your stakeholder's answers together with the change.
+"""
+
+ACK = """\
+## Confirm the rules you receive
+
+When another agent sends you a rule or a change that affects your package,
+reply to that agent once: the rule in your own words and what you will change.
+This is the one exception to not sending confirmations; do not reply to a
+confirmation. If you sent a rule that another package needs and its owner has
+not confirmed it the next time you run, send it to them again.
+"""
+
 ALONE = """\
 ## Working alone
 
@@ -163,6 +185,7 @@ def kickoff(condition: dict, device: str, instance, ledger: str) -> str:
         parts.append(TEAM.format(me=AGENTS[device], device=device))
         parts.append({"M1": M1, "M2": M2, "free": FREE}[condition["comm"]].format(ledger=ledger))
         parts.append(C1 if condition["org"] == "C1" else C2)
+        parts += [{"verify": VERIFY, "ack": ACK}[p] for p in condition.get("protocols", ())]
     else:
         parts.append(ALONE)
     return "\n\n".join(p.strip() for p in parts) + "\n"
