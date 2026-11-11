@@ -49,7 +49,7 @@
 .device-settings-panel .settings-panel-body [class*="text-[11px]"] { font-size: 13px; line-height: 1.6; }
 .device-settings-panel .settings-panel-body .font-mono { font-family: inherit; }
 .device-settings-panel .settings-panel-body .py-2 { padding-block: 16px; }
-.device-settings-panel button:not([role="tab"]):not(.ritual-panel__close):not(.settings-switch) { min-height: 36px; }
+.device-settings-panel button:not([role="tab"]):not(.ritual-panel__close):not(.settings-switch):not(.agent-btn) { min-height: 36px; }
 .device-settings-panel .settings-secondary-action { padding: 6px 8px; font-size: 12px; text-decoration: underline; color: var(--fg-slate); cursor: pointer; }
 .device-settings-panel input:not([type="checkbox"]), .device-settings-panel .ui-select__trigger {
   min-height: 38px; padding: 8px 10px; border: 1px solid var(--settings-border); background: var(--surface-panel); color: var(--fg-obsidian); font: inherit;
@@ -275,3 +275,5 @@
 .onboard-try__result.is-empty span { font-family: inherit; font-size: 12px; }
 .onboard-try__result strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .onboard-try__result span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The compact sign-in row keeps its own control height in this panel. */
+.device-settings-panel .agent-auth .ui-select button.ui-select__trigger[role="combobox"] { min-height: 28px; height: 28px; padding: 0 8px; font-size: 11px; }

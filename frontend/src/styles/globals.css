@@ -4905,3 +4905,44 @@ input.invite-link-value:focus-visible {
 .markdown-preview--compact h1 { font-size: clamp(20px, 6cqi, 26px); }
 .markdown-preview--compact h2 { font-size: 19px; }
 .file-quick-view--full .markdown-preview--compact { font-size: 14px; line-height: 1.7; }
+
+/* Agent sign-in: one quiet line under the agent. Every control keeps its
+   size across states, so pressing a button never reflows the row. */
+/* Agent sign-in: a status line and a row of controls. On its own it wraps
+   as a flex row; inside .agent-card its parts join the card's grid. */
+.agent-auth { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 6px; min-width: 0; }
+.agent-auth__status { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 1.4; color: var(--fg-slate); }
+.agent-auth__status > i { flex: none; width: 7px; height: 7px; border-radius: 50%; border: 1px solid currentColor; }
+.agent-auth__status.is-ready { color: var(--fg-obsidian); }
+.agent-auth__status.is-ready > i { background: currentColor; }
+/* Pulses in place: rotating the square dot would clip its corners. */
+.agent-auth__status.is-busy > i { background: currentColor; animation: agent-auth-pulse .8s ease-in-out infinite alternate; }
+@keyframes agent-auth-pulse { from { opacity: 1; } to { opacity: .2; } }
+.agent-auth__controls { display: flex; align-items: center; gap: 6px; flex: none; }
+/* Every label shares one grid cell, so the button is as wide as the longest. */
+.agent-auth__primary > span { grid-area: 1 / 1; }
+.agent-auth .ui-select { flex: none; width: 132px; min-width: 0; }
+.agent-auth .ui-select .ui-select__trigger { min-height: 28px; height: 28px; padding: 0 8px; font-size: 11px; }
+.agent-auth__error { flex-basis: 100%; margin: 0; font-size: 11px; line-height: 1.4; color: var(--fg-obsidian); }
+
+/* One button style for everything on an agent card. */
+.agent-btn { flex: none; display: inline-grid; place-items: center; height: 28px; min-height: 28px; padding: 0 10px; border: 1px solid var(--fg-slate); background: var(--surface-panel); color: var(--fg-obsidian); font: 700 10px/1 var(--font-mono, ui-monospace, monospace); letter-spacing: .05em; white-space: nowrap; cursor: pointer; }
+.agent-btn:hover:not(:disabled) { border-color: var(--fg-obsidian); background: var(--surface-control); }
+.agent-btn:disabled { opacity: .5; cursor: default; }
+.agent-btn--icon { width: 28px; padding: 0; }
+.agent-btn--quiet { border-color: transparent; background: transparent; color: var(--fg-slate); font-weight: 500; letter-spacing: 0; text-transform: none; font-family: inherit; font-size: 12px; }
+.agent-btn--quiet:hover:not(:disabled) { border-color: transparent; background: transparent; color: var(--fg-obsidian); text-decoration: underline; }
+
+.agent-card { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: 'name actions extra' 'status actions extra' 'note note note'; align-items: center; column-gap: 8px; padding: 12px 0; }
+.agent-card__name { grid-area: name; display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 13px; font-weight: 700; color: var(--fg-obsidian); }
+.agent-card__name > span { font-size: 11px; font-weight: 400; color: var(--fg-slate); }
+.agent-card__status { grid-area: status; margin-top: 2px; font-size: 12px; line-height: 1.4; color: var(--fg-slate); }
+.agent-card__actions { grid-area: actions; display: flex; align-items: center; gap: 6px; }
+.agent-card__extra { grid-area: extra; }
+.agent-card__note { grid-area: note; margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: var(--fg-slate); }
+.agent-card__note a { color: var(--fg-obsidian); text-decoration: underline; }
+.agent-card__progress { grid-area: note; margin-top: 8px; }
+.agent-card .agent-auth { display: contents; }
+.agent-card .agent-auth__status { grid-area: status; margin-top: 2px; }
+.agent-card .agent-auth__controls { grid-area: actions; }
+.agent-card .agent-auth__error { grid-area: note; margin-top: 6px; }

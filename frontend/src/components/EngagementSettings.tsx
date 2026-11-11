@@ -57,6 +57,11 @@ export default function EngagementSettings({
   // With the warden deciding, the listener count is a ceiling and rotation
   // has nothing left to choose.
   const warding = effective.warden_mode === 'act'
+  const wardenFootnote = effective.reaction !== 'push'
+    ? 'Paused: turn on “Run agents when mentioned” above.'
+    : effective.ambient.length === 0
+      ? 'Select at least one listener above to use this mode.'
+      : warding ? 'Direct mentions still go to the named agent.' : null
 
   const row = (key: keyof Patch, label: string, control: React.ReactNode, hint: string) => (
     <div className={`engagement-row${key === 'ambient' ? ' engagement-row--agents' : ''}${inherits(key) ? ' engagement-row--inherited' : ''}`}>
@@ -103,8 +108,8 @@ export default function EngagementSettings({
           <span>{effective.reaction === 'push' ? 'on' : 'off'}</span>
         </label>,
         effective.reaction === 'push'
-          ? 'Called agents, and agents enabled to scry the room, can start runs here.'
-          : 'Automatic replies are paused on this device, including agents that scry the room.')}
+          ? 'Mentioned agents and listeners can run here.'
+          : 'Automatic replies are paused on this device.')}
 
       {row('engagement_window_secs', 'Unthreaded follow-ups',
         <span className="engagement-number">
@@ -117,8 +122,8 @@ export default function EngagementSettings({
           <span>sec</span>
         </span>,
         effective.engagement_window_secs > 0
-          ? `A new, unaddressed message may go to the last agent for ${effective.engagement_window_secs}s. Use Reply to choose an agent explicitly.`
-          : 'Use Reply on an agent’s message or @mention it. New messages do not automatically go to the last speaker.')}
+          ? `Unaddressed messages go to the last agent for ${effective.engagement_window_secs}s.`
+          : 'Use Reply on an agent’s message or @mention it.')}
 
       {row('max_relay_turns', 'Hand-off chain limit',
         <span className="engagement-number">
@@ -149,7 +154,7 @@ export default function EngagementSettings({
                   onChange={() => {
                     if (!on) {
                       setConfirmation({ title: `Let @${name} listen to the room?`,
-                        detail: 'New, unaddressed human messages may be sent to this agent’s model provider. Selected listeners can run, which uses their model providers. The agent may reply or stay quiet. Everyone can see that it is listening.',
+                        detail: 'Unaddressed messages may be sent to this agent’s model provider, and it may reply. Everyone can see that it is listening.',
                         patch: { ambient: [...effective.ambient, name] } })
                       return
                     }
@@ -168,13 +173,12 @@ export default function EngagementSettings({
         effective.ambient.length === 0
           ? 'Nobody — agents answer only when addressed.'
           : effective.reaction !== 'push'
-            ? 'Listening is paused. Turn on automatic agent runs above to activate these listeners.'
+            ? 'Paused: turn on “Run agents when mentioned” above.'
             : effective.warden_mode === 'act'
-              ? 'The warden decides which unaddressed messages these listeners get, and who answers. An agent\'s own message reaches it only with "Agents\' messages too" on, in global Behaviour settings.'
-              : 'Listeners take turns on new, unaddressed human messages. Those selected can reply or stay quiet; the others wait for a later message. Short messages, recent speakers, and agent messages are skipped.')}
+              ? 'The warden decides which messages these listeners get.'
+              : 'Listeners take turns on unaddressed human messages.')}
       <fieldset className="warden-mode" disabled={busy}>
         <legend>Warden</legend>
-        <p className="warden-mode__intro">Decide whether unaddressed messages need a reply, and who should answer.</p>
         <div className="warden-mode__scope">
           <span>{isCircle
             ? inherits('warden_mode')
@@ -205,21 +209,11 @@ export default function EngagementSettings({
             </label>
           ))}
         </div>
-        <p className="warden-mode__footnote">
-          {effective.reaction !== 'push'
-            ? 'Automatic replies are paused. Enable “Run agents when mentioned” above to activate listeners.'
-            : effective.ambient.length === 0
-              ? 'Select at least one listener above to use this mode.'
-              : effective.warden_mode === 'shadow'
-                ? 'Observation only: Warden records decisions but does not choose who replies.'
-                : effective.warden_mode === 'act'
-                  ? 'Warden is in charge of eligible unaddressed messages. Direct mentions still go to the named agent.'
-                  : 'Listeners take turns. Your saved Warden configuration is kept for later.'}
-        </p>
+        {wardenFootnote && <p className="warden-mode__footnote">{wardenFootnote}</p>}
       </fieldset>
       {isCircle ? (
         <div className="warden-mode__shared">
-          <p>The decision model and policy are shared across Circles on this device. Only the mode above is set here.</p>
+          <p>Model and policy are set globally.</p>
           {onConfigureGlobal && <button type="button" className="engagement-row__reset" disabled={busy} onClick={onConfigureGlobal}>Edit global Behaviour settings →</button>}
         </div>
       ) : wardenSettings && (
@@ -236,7 +230,7 @@ export default function EngagementSettings({
           onCommit={value => onChange({ ambient_responders: value })} />,
         warding
           ? `The warden chooses 1 to ${effective.ambient_responders ?? 1} listeners per message. At least 2 lets it run a blind vote.`
-          : 'Choose how many listeners may consider each message on this device. Agents take turns fairly; each may reply or stay quiet. Selected requests queue when execution slots are full.')}
+          : 'How many listeners consider each message.')}
       {row('ambient_rotate_count', 'Vary the number of listeners',
         <label className="engagement-toggle"><input type="checkbox" aria-label="Vary the number of listeners"
           checked={effective.ambient_rotate_count ?? false} disabled={busy || warding}
@@ -244,18 +238,18 @@ export default function EngagementSettings({
         warding
           ? 'The warden decides how many listeners each message gets.'
           : effective.ambient_rotate_count
-          ? `Cycle through 1 to ${effective.ambient_responders ?? 1} listeners across messages, limited by who is eligible.`
-          : 'Keep the same listener limit while rotating which agents get a turn.')}
+          ? `Cycle between 1 and ${effective.ambient_responders ?? 1} listeners.`
+          : 'Always use the same number.')}
       {row('ambient_backlog_tail', 'Messages read after a gap',
         <NumberField min={1} max={16} aria-label="Messages read after a gap" className="border px-2 py-1 w-20"
           value={effective.ambient_backlog_tail ?? 1} disabled={busy}
           onCommit={value => onChange({ ambient_backlog_tail: value })} />,
-        'When this device comes back to a room that has moved on — after a restart, a disconnection, or a peer syncing — this many of the most recent messages still get a turn. The rest are marked as read without one, so catching up costs the same as keeping up.')}
+        'After a restart or reconnect, only this many recent messages get a turn.')}
       {row('ambient_max_attempts', 'Tries before giving up',
         <NumberField min={1} max={8} aria-label="Tries before giving up" className="border px-2 py-1 w-20"
           value={effective.ambient_max_attempts ?? 2} disabled={busy}
           onCommit={value => onChange({ ambient_max_attempts: value })} />,
-        'If a listener fails to answer, the message passes to another one. This limits how many tries a single message gets before the room is told nobody could answer it.')}
+        'Listeners tried before the room is told nobody could answer.')}
 
 
       </details>

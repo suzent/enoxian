@@ -39,6 +39,16 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Changed
+
+- Each agent in Settings → Agents now has one on/off switch that installs,
+  repairs or enables it as needed, replacing the separate Enable, Install,
+  Check again and Disable buttons.
+- Agent sign-in is checked automatically when the agents list opens and again
+  when you return to the window; the refresh button is gone. Sign-in controls
+  are smaller and no longer change size when pressed.
+- Settings tabs use shorter descriptions.
+
 ### Fixed
 
 - "Copy file path" in the file panel now copies the file's absolute path on

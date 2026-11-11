@@ -95,9 +95,8 @@ export default function DeviceIdentity({
       <div className="device-identity__hint">
         {/* The distinction people get wrong: "change your handle" reads like it
             changes everywhere, and it does not. */}
-        Your handle is used when you <em>create or join</em> a Circle. Changing
-        it here does not rename you in Circles you have already joined
-        {owner ? <> — you stay <strong>{owner}</strong> there.</> : '.'}
+        Used when you <em>create or join</em> a Circle; existing Circles keep
+        {owner ? <> <strong>{owner}</strong>.</> : ' your old handle.'}
       </div>
 
       <div className="device-identity__actions">
