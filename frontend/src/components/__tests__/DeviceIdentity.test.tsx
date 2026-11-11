@@ -62,7 +62,7 @@ describe('the address it shows', () => {
         busy={false} onSave={vi.fn()} />,
     )
     expect(screen.getByText(/create or join/)).toBeTruthy()
-    expect(screen.getByText(/you stay/)).toBeTruthy()
+    expect(screen.getByText(/existing Circles keep/)).toBeTruthy()
   })
 
   it('falls back to the local handle when no Circle knows this device yet', () => {

@@ -13,26 +13,33 @@ given device is that device's own local decision.
 
 ## Check sign-in on this device
 
-In **Device Settings → Agents**, installation and sign-in have separate statuses.
-Use the refresh icon to check an installed ACP agent without sending a model
-prompt. **SIGN IN** uses the agent's advertised authentication method; if it
+In **Device Settings → Agents**, each agent has one switch. Turning it on
+enables the agent, downloading its pinned adapter first when it needs one;
+turning it off removes the agent from `agents.toml`. The switch stays off
+while a prerequisite is missing, and the panel looks again when you return to
+the window, so an install done elsewhere shows up without a button.
+
+Once an agent is on, its status line is its sign-in. enoxian checks an installed ACP agent's sign-in when the panel opens, without
+sending a model prompt, and checks again when you return to the window after a
+check that did not end signed in. A signed-in agent is checked again on return
+once five minutes have passed since its last check. **SIGN IN** uses the agent's advertised authentication method; if it
 requires a terminal, a real terminal opens on the device running the daemon.
 For supported CLI bridges without an advertised method, enoxian opens the
 product's own login command. Complete login there, then return to the panel.
 
-**CANCEL** stops the check or login. Closing a terminal also ends the attempt.
+While a check or login runs, the same button reads **CANCEL** and stops it. Closing a terminal also ends the attempt.
 After login, enoxian checks a new connection before showing **Signed in**.
 Checks create an empty agent session, so a provider that defers credential
 validation until the first prompt can still reject a later task. No paid test
-prompt is sent. Status is kept only for this daemon session; refresh it after
-signing out or changing credentials outside enoxian.
+prompt is sent. Status is kept only for this daemon session; after signing out or changing
+credentials outside enoxian, return to the window to have it checked again.
 
 Within a Circle's settings, relative working directories resolve from that
 Circle's workspace, just as task execution does. Global settings use the
 private `~/.enoxian/auth-workspace` directory as the base instead.
 
 Terminal login requires an interactive desktop on the daemon's device. On a
-headless host, sign in using the provider CLI there and refresh the check.
+headless host, sign in using the provider CLI there, then return to the panel.
 Custom agents with only connection-scoped credentials cannot share that login
 with task processes; configure credentials that persist across connections.
 

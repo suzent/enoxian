@@ -129,7 +129,7 @@ function AgentsStep({ circleId, onNext, onSkip }: { circleId?: string | null; on
                   </button>
                 )}
               </div>
-              {s.ready && <AgentAuthentication agent={p.agent} state={auth.states[p.agent]} pending={auth.pending[p.agent]} onAction={auth.act} />}
+              {s.ready && <AgentAuthentication agent={p.agent} state={auth.states[p.agent]} pending={auth.pending[p.agent]} onAction={auth.act} onAutoCheck={auth.autoCheck} />}
             </li>
           )
         })}

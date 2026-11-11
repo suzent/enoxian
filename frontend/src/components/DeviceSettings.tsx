@@ -106,6 +106,13 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
   }, [activeCircleId, activeTab])
 
   useEffect(() => {
+    if (activeTab !== 'agents') return
+    const onReturn = () => { if (document.visibilityState === 'visible') void refresh() }
+    window.addEventListener('focus', onReturn)
+    document.addEventListener('visibilitychange', onReturn)
+    return () => { window.removeEventListener('focus', onReturn); document.removeEventListener('visibilitychange', onReturn) }
+  }, [activeTab, refresh])
+  useEffect(() => {
     void refresh()
     setSaved(false)
     return () => { requestId.current += 1 }
@@ -200,13 +207,12 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
             onChange={tab => navigate(() => { setIdentityDirty(false); setWardenDirty(false); setShowAdd(false); setName(''); setCommand(''); setActiveTab(tab) })}
             options={SETTINGS_TABS.filter(tab => scope === 'global' ? tab.value !== 'connectivity' && tab.value !== 'membership' : tab.value === 'behaviour' || tab.value === 'connectivity' || (tab.value === 'membership' && !!membership))}
           />
-          <p className="settings-sidebar__note">{scope === 'global' ? 'Defaults for this device across all Circles.' : activeTab === 'membership' ? 'Your participation in this Circle on this device.' : 'This device’s preferences in this Circle.'}</p>
           </aside>
           <div className="ritual-panel__body settings-panel-body flex flex-col gap-4">
           <header className="settings-section-heading">
             <span className="settings-section-heading__scope">{scope === 'global' ? 'THIS DEVICE · GLOBAL' : `THIS DEVICE IN ${activeCircle?.circle_name ?? 'CIRCLE'}`}</span>
             <h2>{{ device: 'Device identity', agents: 'Your agents', behaviour: 'Agent behaviour', membership: 'Circle membership', connectivity: 'Connectivity' }[activeTab]}</h2>
-            <p>{{ device: 'How you and this machine appear to others.', agents: 'Connect the agents available on this machine. Used across all Circles.', behaviour: scope === 'global' ? 'Set how agents respond across all Circles.' : 'Tailor how agents respond in this Circle.', membership: 'Pause participation or leave this Circle on this device.', connectivity: 'Manage how this device connects to the current Circle.' }[activeTab]}</p>
+            <p>{{ device: 'How you and this machine appear to others.', agents: 'Agents on this machine, available in every Circle.', behaviour: scope === 'global' ? 'Set how agents respond across all Circles.' : 'Tailor how agents respond in this Circle.', membership: 'Pause participation or leave this Circle on this device.', connectivity: 'How this device connects to this Circle.' }[activeTab]}</p>
           </header>
           {activeTab === 'membership' && membership}
           {error && (
@@ -239,9 +245,6 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                 <section>
                   <div className="text-[11px] font-bold mb-1">CONFIG</div>
                   <div className="text-[9px] text-slate break-all">{cfg.config_path}</div>
-                  <div className="text-[9px] text-slate mt-1 leading-relaxed">
-                    Agent configuration is stored here on this machine, including your Circle overrides.
-                  </div>
                 </section>
               )}
             </>
@@ -252,21 +255,19 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
           {activeTab === 'behaviour' && cfg && (
             <>
                 <section className="settings-scope">
-                <p className="settings-scope__note">
-                  {scope === 'global'
-                    ? 'Defaults for all Circles on this device.'
-                    : 'Only affects this device; never shared with the Circle. Unchanged options follow your global defaults.'}
-                </p>
+                {scope === 'circle' && <p className="settings-scope__note">
+                  Only affects this device; never shared with the Circle. Unset options use your global defaults.
+                </p>}
                 {scope === 'global' && <div className="settings-concurrency">
                   Agents running at once on this device
                   <Select aria-label="Agents running at once on this device" disabled={busy} value={String(cfg.max_concurrent_runs ?? 4)}
                     onChange={value => void run(() => setEngagement({ max_concurrent_runs: Number(value) }))}
                     options={[1, 2, 4, 8, 16, 32].map(n => ({ value: String(n), label: n === 1 ? '1 (serial)' : String(n) }))} />
-                  <span className="block text-slate">Shared across all Circles on this device. Extra requests wait for a turn. Restart the daemon to apply a new limit.</span>
+                  <span className="block text-slate">Extra runs wait their turn. Applies after a daemon restart.</span>
                 </div>}
                 {scope === 'global' && (
                   <div className="settings-recommended">
-                    <span>See what the recommended settings would change here, and apply them in one step.</span>
+                    <span>Preview and apply the recommended settings.</span>
                     <button type="button" className="enox-btn" disabled={busy} onClick={() => setRecommending(true)}>
                       RECOMMENDED SETTINGS…
                     </button>
@@ -318,13 +319,11 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                       const installing = installingPlugin === plugin.id || plugin.state === 'installing'
                       // Nothing is downloaded for a native plugin: enabling it
                       // only writes the chat handle, so never say "install".
-                      const action = native
-                        ? 'ENABLE'
-                        : plugin.state === 'broken'
-                        ? 'REPAIR'
-                        : plugin.state === 'ready'
-                          ? 'USE MANAGED'
-                          : installing ? 'PREPARING…' : 'INSTALL'
+                      const enabled = !!(plugin.configured || plugin.legacy_configured)
+                      // Enabled but not runnable for a reason turning it on
+                      // again fixes: an old download to migrate, or a repair.
+                      const fix = enabled && !ready && !prerequisitesMissing && !installing
+                        ? plugin.legacy_configured ? 'Migrate' : 'Repair' : null
                       const status = runtimeMissing
                         ? `${plugin.runtime_program || 'Product'} CLI missing`
                         : nodeMissing
@@ -335,62 +334,50 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                         ? 'Ready'
                         : plugin.legacy_configured
                           ? 'Runtime download · migrate'
-                          : plugin.state === 'ready'
-                            ? native ? 'Installed · not enabled' : 'Installed · disabled'
-                            : plugin.state === 'broken' ? 'Needs repair' : 'Not installed'
+                          : enabled
+                            ? 'Needs repair'
+                            : plugin.state === 'ready' || native ? 'Off' : 'Off · downloads a pinned adapter when turned on'
                       return (
-                      <div key={plugin.id} className="py-2 font-mono">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="text-[11px] font-bold">@{plugin.agent}</span>
-                              <span className="text-[8px] text-slate">{plugin.version ? `v${plugin.version}` : 'NATIVE ACP'}</span>
-                            </div>
-                            <div className={`text-[9px] mt-0.5 ${ready ? 'text-obsidian' : 'text-slate'}`}>
-                              {installing ? 'Preparing runtime and pinned adapter…' : status}
-                            </div>
-                          </div>
-                          <div className="flex items-center justify-between gap-2">
-                            {ready ? (
-                              <span className="text-[9px] font-bold px-1.5 py-0.5 bg-obsidian text-alabaster">ENABLED</span>
-                            ) : prerequisitesMissing ? (
-                              <button
-                                onClick={() => { setError(null); refresh() }}
-                                disabled={busy}
-                                className="enox-btn text-[9px] px-2 py-1 min-h-0 disabled:opacity-50"
-                                title="Install the missing prerequisite, restart Enoxian, then check again"
-                              >CHECK AGAIN</button>
-                            ) : (
-                              <button
-                                onClick={() => installPlugin(plugin)}
-                                disabled={busy || installing}
-                                className="enox-btn text-[9px] px-2 py-1 min-h-0 disabled:opacity-50"
-                                title={native
-                                  ? `Point @${plugin.agent} at your installed ${plugin.runtime_program || 'CLI'} — nothing is downloaded`
-                                  : `Install ${plugin.package}@${plugin.version}`}
-                              >{action}</button>
-                            )}
-                            {(plugin.configured || plugin.legacy_configured) && (
-                              <button
-                                onClick={() => run(() => removeAgent(plugin.agent))}
-                                disabled={busy}
-                                className="settings-secondary-action"
-                                title={`Disable @${plugin.agent}`}
-                                aria-label={`Disable @${plugin.agent}`}
-                              >Disable</button>
-                            )}
-                          </div>
+                      <div key={plugin.id} className="agent-card">
+                        <div className="agent-card__name">
+                          @{plugin.agent}
+                          <span title={plugin.runtime_program ? (native
+                            ? `Runs your installed ${plugin.runtime_program} CLI, which speaks ACP itself. Nothing is downloaded.`
+                            : `Runs your installed ${plugin.runtime_program} CLI through a pinned adapter. Its login and settings stay yours.`) : undefined}>
+                            {plugin.version ? `v${plugin.version}` : 'native ACP'}</span>
                         </div>
-
-                        {ready && <AgentAuthentication agent={plugin.agent} state={auth.states[plugin.agent]}
-                          pending={auth.pending[plugin.agent]} onAction={auth.act} />}
+                        {/* A ready agent's status line is its sign-in state. */}
+                        {ready ? (
+                          <AgentAuthentication agent={plugin.agent} state={auth.states[plugin.agent]}
+                            pending={auth.pending[plugin.agent]} onAction={auth.act} onAutoCheck={auth.autoCheck} />
+                        ) : (
+                          <>
+                            <div className="agent-card__status">{installing ? 'Preparing…' : status}</div>
+                            {fix && (
+                              <div className="agent-card__actions">
+                                <button type="button" className="agent-btn" disabled={busy}
+                                  onClick={() => installPlugin(plugin)}>{fix.toUpperCase()}</button>
+                              </div>
+                            )}
+                          </>
+                        )}
+                        <button type="button" role="switch" aria-checked={enabled || installing}
+                          aria-label={`Enable @${plugin.agent}`}
+                          title={prerequisitesMissing && !enabled ? 'Install the missing prerequisite first'
+                            : native ? `Uses your installed ${plugin.runtime_program || 'CLI'}; nothing is downloaded`
+                            : `${plugin.package}@${plugin.version}`}
+                          disabled={busy || installing || (prerequisitesMissing && !enabled)}
+                          className={`settings-switch agent-card__extra${enabled || installing ? ' is-on' : ''}`}
+                          onClick={() => enabled ? run(() => removeAgent(plugin.agent)) : installPlugin(plugin)}>
+                          <span aria-hidden="true" />
+                        </button>
                         {runtimeMissing && (
-                          <div className="mt-2 border-l-2 border-obsidian/40 pl-2 text-[9px] text-slate leading-relaxed">
+                          <p className="agent-card__note">
                             {native ? (
                               <>
                                 Install <code>{plugin.runtime_program}</code>
-                                {plugin.install_url ? <> from <a href={plugin.install_url} target="_blank" rel="noreferrer" className="underline text-obsidian">{new URL(plugin.install_url).host}</a></> : ''}
-                                , then check again. Enoxian downloads nothing for this agent.
+                                {plugin.install_url ? <> from <a href={plugin.install_url} target="_blank" rel="noreferrer">{new URL(plugin.install_url).host}</a></> : ''}
+                                . This updates when you come back.
                               </>
                             ) : (
                               <>
@@ -398,35 +385,16 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                                 {plugin.runtime_login_command ? <> with <code>{plugin.runtime_login_command}</code></> : ''}.
                               </>
                             )}
-                          </div>
+                          </p>
                         )}
-
-                        {ready && plugin.runtime_program && (
-                          <div className="mt-2 border-l-2 border-obsidian/40 pl-2 text-[9px] text-slate leading-relaxed">
-                            {native ? (
-                              <>
-                                Runs your installed <code>{plugin.runtime_program}</code> CLI, which speaks ACP itself —
-                                Enoxian pins nothing and downloads nothing. Its own memory, skills, and settings stay yours.
-                              </>
-                            ) : (
-                              <>
-                                Runs your installed <code>{plugin.runtime_program}</code> CLI. Enoxian manages only the
-                                adapter, so that CLI's login and settings stay yours.
-                              </>
-                            )}
-                          </div>
-                        )}
-
                         {nodeMissing && (
-                          <div className="mt-2 border-l-2 border-obsidian/40 pl-2 text-[9px] text-slate leading-relaxed">
-                            Install system Node.js 22+ with npm from{' '}
-                            <a href="https://nodejs.org/en/download" target="_blank" rel="noreferrer" className="underline text-obsidian">nodejs.org</a>,
-                            {' '}restart the Enoxian service, then check again. Enoxian does not install or manage Node.js.
-                          </div>
+                          <p className="agent-card__note">
+                            Install Node.js 22+ with npm from{' '}
+                            <a href="https://nodejs.org/en/download" target="_blank" rel="noreferrer">nodejs.org</a>, then restart Enoxian.
+                          </p>
                         )}
-
                         {installing && (
-                          <div className="mt-2 h-1 overflow-hidden bg-obsidian/10" role="progressbar" aria-label={`Installing @${plugin.agent}`}>
+                          <div className="agent-card__progress h-1 overflow-hidden bg-obsidian/10" role="progressbar" aria-label={`Installing @${plugin.agent}`}>
                             <div className="h-full w-2/3 bg-obsidian animate-pulse" />
                           </div>
                         )}
@@ -497,7 +465,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                         )}
                         <div className="text-[8px] text-slate truncate" title={agent.command.join(' ')}>{agent.command.join(' ')}</div>
                         {health.ready && agent.driver === 'acp' && <AgentAuthentication agent={agent.name} state={auth.states[agent.name]}
-                          pending={auth.pending[agent.name]} onAction={auth.act} />}
+                          pending={auth.pending[agent.name]} onAction={auth.act} onAutoCheck={auth.autoCheck} />}
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <span
@@ -543,10 +511,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                   the two consistent — and stops "force relay" reading like
                   something the whole Circle is switched to. */}
               <div className="settings-scope__note">
-                Applies in <strong>{activeCircle?.circle_name ?? 'this Circle'}</strong> only.{' '}
-                <span className="settings-scope__private">
-                  This is this device's routing — never shared with the Circle.
-                </span>
+                Only for <strong>{activeCircle?.circle_name ?? 'this Circle'}</strong> on this device; never shared with the Circle.
               </div>
 
               {/* Members connect directly where the network allows and through
@@ -590,9 +555,9 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
           </div>
         </div>
       {activeTab !== 'membership' && <div className="settings-save-status" role="status">{busy || wardenBusy ? 'Saving changes…' : wardenDirty ? 'Unsaved Warden changes · Use Save in the edited section.' : saved && !error ? 'Changes saved' : {
-        device: 'Use Save to update your device identity.',
-        agents: 'Agent changes apply across all Circles on this device.',
-        behaviour: 'Behaviour saves automatically. Connection and policy edits have their own Save buttons.',
+        device: '',
+        agents: '',
+        behaviour: 'Changes save automatically, except where a section has its own Save.',
         connectivity: 'Routing changes restart this Circle on this device.',
       }[activeTab]}</div>}
     </Dialog>}

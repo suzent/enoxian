@@ -112,6 +112,30 @@ describe('settings recovery', () => {
     await userEvent.click(screen.getByRole('button', { name: 'TRY AGAIN' }))
     expect(await screen.findByLabelText('Device name')).toHaveValue('macbook-pro')
   })
+  it('turns agents on and off with one switch, which installs when needed', async () => {
+    const { getAgentPlugins, installAgentPlugin, removeAgent } = await import('../../api')
+    const plugin = (agent: string, extra: object) => ({
+      id: agent, agent, version: '', driver: 'acp', kind: 'native', requires_node: false, install_url: '',
+      package: '', about: '', source: '', state: 'ready', configured: false, legacy_configured: false,
+      executable: '', node_runtime_installed: true, node_runtime_version: null,
+      runtime_program: agent, runtime_installed: true, runtime_login_command: null, ...extra,
+    })
+    vi.mocked(getAgentPlugins).mockResolvedValue({ plugins: [
+      plugin('hermes', {}), plugin('codex', { configured: true }), plugin('openclaw', { runtime_installed: false }),
+    ] } as never)
+    render(<DeviceSettings onClose={vi.fn()} />)
+    await userEvent.click(screen.getByRole('tab', { name: 'Agents' }))
+    const hermes = await screen.findByRole('switch', { name: 'Enable @hermes' })
+    expect(hermes).toHaveAttribute('aria-checked', 'false')
+    await userEvent.click(hermes)
+    expect(installAgentPlugin).toHaveBeenCalledWith('hermes')
+    const codex = screen.getByRole('switch', { name: 'Enable @codex' })
+    expect(codex).toHaveAttribute('aria-checked', 'true')
+    await userEvent.click(codex)
+    expect(removeAgent).toHaveBeenCalledWith('codex')
+    expect(screen.getByRole('switch', { name: 'Enable @openclaw' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /ENABLE|INSTALL|CHECK AGAIN/ })).toBeNull()
+  })
   it('preserves a custom agent draft after the server rejects it', async () => {
     const { addAgent } = await import('../../api')
     vi.mocked(addAgent).mockRejectedValueOnce(new Error('Agent already exists'))
@@ -169,7 +193,7 @@ describe('separate settings entry points', () => {
   })
   it('opens global settings without a scope picker', async () => {
     render(<DeviceSettings onClose={vi.fn()} />)
-    expect(await screen.findByText(/Defaults for all Circles/)).toBeTruthy()
+    expect(await screen.findByRole('dialog', { name: 'Global settings' })).toBeTruthy()
     expect(screen.queryByRole('combobox', { name: 'Settings scope' })).toBeNull()
     expect(screen.getByRole('tab', { name: 'Device' })).toBeTruthy()
     expect(screen.getByRole('tab', { name: 'Agents' })).toBeTruthy()

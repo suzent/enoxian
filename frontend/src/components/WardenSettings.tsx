@@ -129,8 +129,7 @@ export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }
   return (
     <section className="warden-settings">
       <p className="warden-scope-note">
-        This decision model and policy apply to every Circle on this device that uses Shadow or On.
-        Changing them does not change a Circle’s mode.
+        Used by every Circle on this device set to Shadow or On.
       </p>
       <section className="warden-group">
       <h3>Decision provider</h3>
@@ -198,14 +197,11 @@ export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }
           onChange={e => void run(() => setWardenConfig({ agent_messages: e.target.checked }))} />
         <span className="ml-2">Agents' messages too</span>
         <span className="block text-[10px] text-slate mt-1">
-          Every new message is the warden's to decide, including one an agent posts naming no one, so
-          agents can carry a conversation on without a person in it. What stops them is the hand-off
-          limit: each human message pays for at most that many agent turns.
+          Lets agents talk to each other unprompted, up to the hand-off chain limit.
         </span>
         {view.config.agent_messages && (kind?.protocol === 'rules' || view.problem) && (
           <span role="alert" className="block text-[10px] mt-1 border border-obsidian/40 p-2">
-            Agents' messages need a decider to judge them. With the built-in rules, or until the decider
-            above is usable, no agent's message will be answered.
+            Needs a working decision model; the built-in rules never answer agents.
           </span>
         )}
       </label>
@@ -213,7 +209,7 @@ export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }
       </section>
       <section className="warden-group">
         <h3>Try a message</h3>
-        <p className="warden-hint">Uses your saved settings. Shows a decision without posting to the Circle or running agents.</p>
+        <p className="warden-hint">A dry run with your saved settings; nothing is posted.</p>
         <div className="warden-samples">
           {WARDEN_SAMPLES.map(text => (
             <button key={text} type="button" className="warden-sample" disabled={busy} onClick={() => setSample(text)}>{text}</button>
