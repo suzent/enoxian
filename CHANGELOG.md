@@ -39,6 +39,8 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+## [0.14.2] — 2026-11-12
+
 ### Changed
 
 - Each agent in Settings → Agents now has one on/off switch that installs,
@@ -1353,7 +1355,8 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.14.2...HEAD
+[0.14.2]: https://github.com/suzent/enoxian/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/suzent/enoxian/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/suzent/enoxian/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/suzent/enoxian/compare/v0.13.0...v0.13.1
