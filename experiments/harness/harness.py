@@ -71,6 +71,8 @@ CONDITIONS = {
     "Free+V": {"kind": "team", "comm": "free", "org": "C2", "protocols": ("verify",)},
     "Free+A": {"kind": "team", "comm": "free", "org": "C2", "protocols": ("ack",)},
     "Free+VA": {"kind": "team", "comm": "free", "org": "C2", "protocols": ("verify", "ack")},
+    "Free+D": {"kind": "team", "comm": "free", "org": "C2", "protocols": ("address",)},
+    "Free+U": {"kind": "team", "comm": "free", "org": "C2", "protocols": ("authority",)},
     "Silent": {"kind": "silent"},
     "Ref-Full": {"kind": "single", "brief": "merged"},
     "Ref-Split": {"kind": "single", "brief": "split"},
