@@ -1787,14 +1787,16 @@ fn announce(state: &AppState, message_id: &str, prefix: &str, text: String) {
 /// next listener, so saying "no reply is coming" at that point would be wrong.
 /// Only giving up is final.
 pub(crate) fn announce_unanswered(state: &AppState, message_id: &str, reason: &str) {
+    // The line says what happened and stops. It used to end with "Mention an
+    // agent directly to ask one for a reply, or retry from Agent activity",
+    // which reads as the room instructing the person who just posted in it —
+    // and the retry it points at is a button in Agent activity, where the same
+    // message is already listed.
     announce(
         state,
         message_id,
         UNANSWERED_PREFIX,
-        format!(
-            "{UNANSWERED_PREFIX} this — {reason}. Mention an agent directly to ask one for a \
-             reply, or retry from Agent activity."
-        ),
+        format!("{UNANSWERED_PREFIX} this — {reason}."),
     );
 }
 
@@ -1814,8 +1816,10 @@ pub(crate) fn announce_unanswered(state: &AppState, message_id: &str, reason: &s
 /// "you asked, it broke, nothing is coming".
 fn announce_failure(state: &AppState, request: &super::inbox::Request, reason: &str) {
     let prefix = failure_prefix(state, &request.agent);
-    let text =
-        format!("{prefix} — {reason}. No reply was posted; you can try again from Agent activity.");
+    // One line: who it was and why nothing came. The retry lives in Agent
+    // activity beside the run, so pointing at it here only lengthened the
+    // notice the room had to read.
+    let text = format!("{prefix} — {reason}. No reply was posted.");
     announce(state, &request.message.id, &prefix, text);
 }
 
@@ -3691,9 +3695,7 @@ mod tests {
         assert_eq!(replies.len(), 1, "one answer, not one per voter");
         assert_eq!(replies[0].agent_id, a);
         assert!(replies[0].text.contains("ANSWER: true"));
-        assert!(replies[0]
-            .text
-            .contains("Blind vote: 2 of 2 answers agreed"));
+        assert!(replies[0].text.contains("Blind vote: 2 of 2 agreed"));
         assert_eq!(inbox.entries().len(), 2, "agreement needs no third voter");
 
         let records = log::read_all(dir.path());
@@ -3738,7 +3740,9 @@ mod tests {
         let replies = agent_replies(&state, "q");
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].agent_id, b, "the majority's first answer");
-        assert!(replies[0].text.contains("the one 2 of 3 agreed on"));
+        assert!(replies[0]
+            .text
+            .contains("2 of 3 agreed; this is that answer"));
         let votes: Vec<_> = log::read_all(dir.path())
             .into_iter()
             .filter_map(|r| r.vote)
@@ -3784,7 +3788,7 @@ mod tests {
         let replies = agent_replies(&state, "q");
         assert_eq!(replies.len(), 1);
         assert!(
-            replies[0].text.contains("2 of 2 answers agreed"),
+            replies[0].text.contains("2 of 2 agreed"),
             "{}",
             replies[0].text
         );
@@ -3841,7 +3845,9 @@ mod tests {
             replies[0].agent_id, a,
             "the earlier voter on the winning side posts"
         );
-        assert!(replies[0].text.contains("the one 2 of 3 agreed on"));
+        assert!(replies[0]
+            .text
+            .contains("2 of 3 agreed; this is that answer"));
     }
 
     /// A System One decider on a local port, answering every question from

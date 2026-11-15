@@ -238,10 +238,24 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
           {warden.decided[run.message_id].phase === 'shadow' ? 'Warden would have chosen: ' : 'Warden: '}
           {describeDecision(warden.decided[run.message_id].decision!)}
         </p>}
-        {ambient && warden.votes[run.message_id]?.vote && <p className="agent-activity__warden">
-          Blind vote: {warden.votes[run.message_id].vote!.groups.length === 1 ? 'all agreed' : `${warden.votes[run.message_id].vote!.groups.length} different answers`}
-          {warden.votes[run.message_id].vote!.posted_by ? ` · posted @${warden.votes[run.message_id].vote!.posted_by}'s` : warden.votes[run.message_id].vote!.added ? ` · asked @${warden.votes[run.message_id].vote!.added} too` : ''}
-        </p>}
+        {ambient && warden.votes[run.message_id]?.vote && (() => {
+          // What the voters actually did. "N different answers" counted groups
+          // of conclusions, so a vote where one agent answered and two failed
+          // read the same as three agents disagreeing — and the posted message
+          // already carries the verdict, so this only has to add the tally.
+          const vote = warden.votes[run.message_id].vote!
+          const count = (result: string) => vote.ballots.filter(b => b.result === result).length
+          const answered = count('answered')
+          const tally = [
+            `${answered} of ${vote.ballots.length} answered`,
+            count('passed') ? `${count('passed')} passed` : '',
+            count('failed') ? `${count('failed')} failed` : '',
+          ].filter(Boolean).join(' · ')
+          return <p className="agent-activity__warden" title={vote.judged_by ? `Agreement judged by ${vote.judged_by}` : undefined}>
+            Blind vote: {tally}
+            {vote.posted_by ? ` · posted @${vote.posted_by}` : vote.added ? ` · asked @${vote.added} too` : ''}
+          </p>
+        })()}
         {local && usage[run.run_id] && <p className="agent-activity__usage" title={usageTitle(usage[run.run_id])}>{describeUsage(usage[run.run_id])}</p>}
         <div className="agent-activity__actions">
           {local && run.status === 'running' && running && <button type="button" className="underline underline-offset-2" disabled={busy !== null || running.stopping} onClick={() => void act(run, 'cancel')}>{running.stopping ? 'Stopping…' : busy === run.run_id ? 'Updating…' : 'Stop'}</button>}
