@@ -1285,6 +1285,35 @@ button[role="tab"][aria-selected="true"] {
 }
 
 
+/* ── Blind vote footnote ──────────────────────────────────────────────────── */
+
+/* The daemon's verdict on a voted answer, not the agent's words. Set apart
+   from the body so it does not read as the agent narrating its own vote, and
+   quiet enough that it does not compete with the answer above it. */
+.chat-message__vote {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 6px;
+  padding-left: 8px;
+  border-left: 2px solid rgba(0, 0, 0, 0.1);
+  font-size: var(--ui-tiny);
+  line-height: 1.5;
+  color: var(--fg-slate);
+}
+
+.chat-message__vote-label {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.chat-message__vote-text {
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── Chat attachments ─────────────────────────────────────────────────────── */
 
 .chat-message__attachments {

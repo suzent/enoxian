@@ -13,6 +13,7 @@ import MentionPopup, { buildMentionItems, type MentionItem } from './MentionPopu
 import MentionInput, { draftText, type DraftNode, type MentionInputHandle } from './MentionInput'
 import Lightbox from './Lightbox'
 import { renderChatMarkdown } from '../lib/markdown'
+import { splitVoteNote } from '../lib/voteNote'
 
 // Backfill retry budget: ~0.5s + 1s + 1.5s + 2s before giving up and telling
 // the user, rather than rendering an empty transcript as if it were loaded.
@@ -261,6 +262,13 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
   const handedOver = !!delegatedBy && (!replyParent || namesAgent(replyParent, msg.agent_id))
   const timestamp = formatTime(msg.ts)
   const fullTimestamp = formatFullTimestamp(msg.ts)
+  // A blind vote's answer carries a verdict enoxian added after the agent's
+  // turn ended. Rendered as a footnote, because in the body it reads as the
+  // agent narrating its own vote — and it sits below the `ANSWER:` line the
+  // reply was asked to end with.
+  const { body: bodyText, note: voteNote } = isAgent
+    ? splitVoteNote(msg.text)
+    : { body: msg.text, note: undefined }
 
   return (
     <article
@@ -322,7 +330,16 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
             )}
           </header>
         )}
-        {msg.text.trim() && <MessageText text={msg.text} mentions={msg.mentions} />}
+        {bodyText.trim() && <MessageText text={bodyText} mentions={msg.mentions} />}
+        {voteNote && (
+          <p
+            className="chat-message__vote"
+            title="Added by enoxian when a blind vote settled on this answer. The agent did not write it."
+          >
+            <span className="chat-message__vote-label">Blind vote</span>
+            <span className="chat-message__vote-text">{voteNote}</span>
+          </p>
+        )}
         {!!msg.attachments?.length && (
           <div className="chat-message__attachments">
             {msg.attachments.map(att => (

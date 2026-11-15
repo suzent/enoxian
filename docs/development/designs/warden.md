@@ -67,7 +67,12 @@ each other until the budget ran out.
 The vote's agreement check is the one other point a decider is asked: with
 `spec.vote.ask_decider` set, each answer is compared to the first of every
 existing group (`agree`, yes/no). Otherwise answers agree when their `ANSWER:`
-lines match after normalization.
+lines match after normalization. The label may be written in the voter's own
+language — `答案：`, `结论：`, `回答：` are read the same way as `ANSWER:` — because
+a voter answering in Chinese labels its conclusion in Chinese, and reading only
+the English label left every such ballot in a group of its own: a vote that
+could not agree, however many voters it was given. Comparing an English
+conclusion against a Chinese one is the decider's job, not the label's.
 
 **Calibration.** A general decision model does not know these agents, so the
 spec can map each question's raw probability onto how often it turned out

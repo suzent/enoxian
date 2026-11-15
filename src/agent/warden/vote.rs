@@ -94,26 +94,46 @@ pub fn instruction(voters: usize) -> String {
          on. So answer it fully yourself rather than leaving part of it to someone else, and do \
          not hedge toward what others might say. Reply with exactly PASS only if the message \
          plainly needs no answer at all. End your reply with a final line of the form \
-         `ANSWER: <your conclusion in a few words>` so the answers can be compared. This is a \
-         conversational turn, not a work order: do not change files."
+         `ANSWER: <your conclusion in a few words>` — in your own language if you are not \
+         answering in English, `答案：…` is read the same way — so the answers can be compared. \
+         This is a conversational turn, not a work order: do not change files."
     )
 }
 
+/// The labels a voter may put in front of its conclusion.
+///
+/// English, then the three ways a Chinese-language model writes "answer". A
+/// voter that writes `答案：上海` is stating a conclusion the same way one that
+/// writes `ANSWER: Shanghai` is, and before these were recognized every
+/// Chinese-labelled ballot parsed to `None` and landed in a group of its own:
+/// a vote that could never agree, however many voters it was given. Whether
+/// the two *conclusions* agree across languages is the decider's question, not
+/// this list's.
+const CONCLUSION_LABELS: [&str; 4] = ["ANSWER", "答案", "结论", "回答"];
+
+/// What `line` says after a conclusion label, with the label and the markup
+/// around it taken off. `None` when the line states no conclusion.
+fn labelled(line: &str) -> Option<&str> {
+    let trimmed = line
+        .trim()
+        .trim_start_matches(['*', '_', '`', '#', '>', ' ']);
+    let upper = trimmed.to_uppercase();
+    let label = CONCLUSION_LABELS
+        .iter()
+        .find(|label| upper.starts_with(*label))?;
+    // `to_uppercase` may change byte lengths, so slice defensively instead of
+    // trusting `label.len()`: a panic here would sink the whole round.
+    let rest = trimmed.get(label.len()..)?;
+    let rest = rest.trim_start_matches(['*', '_', '`', ' ']);
+    let rest = rest.strip_prefix(':').or_else(|| rest.strip_prefix('：'))?;
+    Some(rest.trim_start_matches(['*', '_', '`', ' ']))
+}
+
 /// The conclusion an answer states on its `ANSWER:` line, normalized for
-/// comparison: case, markup, spacing and trailing punctuation do not count.
+/// comparison: label language, case, markup, spacing and trailing punctuation
+/// do not count.
 pub fn conclusion(text: &str) -> Option<String> {
-    let line = text.lines().rev().find_map(|line| {
-        let line = line
-            .trim()
-            .trim_matches(|c| c == '*' || c == '_' || c == '`');
-        let upper = line.to_uppercase();
-        let rest = upper
-            .strip_prefix("ANSWER")
-            .map(|_| &line["ANSWER".len()..])?;
-        let rest = rest.trim_start_matches(['*', '_', ' ']);
-        let rest = rest.strip_prefix(':').or_else(|| rest.strip_prefix('：'))?;
-        Some(rest.to_string())
-    })?;
+    let line = text.lines().rev().find_map(labelled)?;
     let normalized: String = line
         .to_lowercase()
         .chars()
@@ -335,20 +355,36 @@ async fn resolve(
     }
     // Agreement, or no one left to ask: post the answer most voters agree on.
     let (agent, text) = &answers[top[0]];
+    // What the voters who posted nothing did, from the ballots rather than
+    // from their absence. "gave none" read the same whether a voter passed on
+    // the question or crashed on it, and those are different things to see in
+    // a transcript.
+    let passed = round
+        .ballots
+        .iter()
+        .filter(|b| b.result == "passed")
+        .count();
+    let failed = round
+        .ballots
+        .iter()
+        .filter(|b| b.result == "failed")
+        .count();
+    let absent = match (passed, failed) {
+        (0, 0) => String::new(),
+        (passed, 0) => format!(" ({passed} passed)"),
+        (0, failed) => format!(" ({failed} failed)"),
+        (passed, failed) => format!(" ({passed} passed, {failed} failed)"),
+    };
     let note = match (unanimous, answers.len()) {
-        (_, 1) => format!(
-            "\n\n_Blind vote: the only answer; {} other voter{} gave none._",
-            voters.len() - 1,
-            if voters.len() == 2 { "" } else { "s" }
-        ),
-        (true, n) => format!("\n\n_Blind vote: {n} of {n} answers agreed._"),
+        (_, 1) => format!("\n\n_Blind vote: the only answer{absent}._"),
+        (true, n) => format!("\n\n_Blind vote: {n} of {n} agreed._"),
         (false, n) if top.len() * 2 > n => format!(
-            "\n\n_Blind vote: the answers differed; this is the one {} of {n} agreed on._",
+            "\n\n_Blind vote: {} of {n} agreed; this is that answer._",
             top.len()
         ),
         (false, n) => format!(
-            "\n\n_Blind vote: the {n} answers did not agree, and nobody was left to break the \
-             tie; this is the first one given._"
+            "\n\n_Blind vote: the {n} answers did not agree and the vote is out of voters; \
+             this is the first one given._"
         ),
     };
     if !post(state, agent, &format!("{text}{note}"), request).await {
@@ -455,6 +491,36 @@ mod tests {
         assert_eq!(conclusion("ANSWER: (B)\nthanks"), Some("(b)".into()));
         assert_eq!(conclusion("No conclusion line here"), None);
         assert_eq!(conclusion("ANSWER:   "), None);
+    }
+
+    #[test]
+    fn a_conclusion_labelled_in_chinese_is_read_the_same_way() {
+        // A voter answering in Chinese writes the label in Chinese. Reading
+        // only `ANSWER` put each of these in a group of its own, so the vote
+        // could not agree however many voters it was given.
+        assert_eq!(conclusion("推理…\n\n答案：上海"), Some("上海".into()));
+        assert_eq!(
+            conclusion("**结论：** 重试在 reconcile tick 上"),
+            Some("重试在 reconcile tick 上".into())
+        );
+        assert_eq!(conclusion("回答: 42"), Some("42".into()));
+        assert_eq!(conclusion("---\n### 答案： 两票。"), Some("两票".into()));
+        // A line that merely starts with the characters is not a conclusion.
+        assert_eq!(conclusion("答案是显然的"), None);
+        assert_eq!(conclusion("答案：   "), None);
+    }
+
+    #[test]
+    fn chinese_labelled_answers_group_together() {
+        let answers = vec![
+            ("a".to_string(), "先看日志。\n答案：上海".to_string()),
+            (
+                "b".to_string(),
+                "我看是杭州。\n**答案：** 上海。".to_string(),
+            ),
+            ("c".to_string(), "不同的结论。\n答案：杭州".to_string()),
+        ];
+        assert_eq!(group_by_conclusion(&answers), vec![vec![0, 1], vec![2]]);
     }
 
     #[test]

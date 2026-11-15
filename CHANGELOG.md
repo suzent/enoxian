@@ -39,6 +39,20 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Changed
+
+- The line a blind vote leaves under a posted answer is shorter and says what
+  the other voters did (passed or failed) instead of "gave none"; in the
+  transcript it is shown as a footnote rather than as part of the agent's reply.
+- A failed or unanswered request posts one short line in chat. The retry it used
+  to spell out is the button beside the run in Agent activity.
+
+### Fixed
+
+- A voter that labels its conclusion in Chinese (`答案：`, `结论：`, `回答：`) is
+  read like one that writes `ANSWER:`. Before, those ballots never matched, so
+  a vote could report "the answers did not agree" however often it was asked.
+
 ## [0.14.2] — 2026-11-12
 
 ### Changed
