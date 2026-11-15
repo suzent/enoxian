@@ -149,6 +149,28 @@ confirmation. If you sent a rule that another package needs and its owner has
 not confirmed it the next time you run, send it to them again.
 """
 
+# Two more, for the other failure modes the pilot showed: a rule mentioned to a
+# teammate who does not need it, so its owner is never woken, and an owner who
+# refuses a change relayed by a peer because nobody may decide.
+ADDRESS = """\
+## Mention the owner who has to act
+
+Before you post a rule, a change or an answer, work out which package has to
+implement it and mention that package's owner, not whoever you are talking
+with. A message wakes only the first agent it mentions, so when several
+packages are affected, post one message to each owner.
+"""
+
+AUTHORITY = """\
+## Changes: their source decides
+
+Nobody leads the work, but a change is decided by the agent whose stakeholder
+announced it; that agent asks its stakeholder about anything left open. When a
+change reaches you from another agent and touches your package, make it, even
+if your own brief or stakeholder does not mention it. If it conflicts with
+something you know, tell that agent, but do not hold the change back.
+"""
+
 ALONE = """\
 ## Working alone
 
@@ -185,7 +207,8 @@ def kickoff(condition: dict, device: str, instance, ledger: str) -> str:
         parts.append(TEAM.format(me=AGENTS[device], device=device))
         parts.append({"M1": M1, "M2": M2, "free": FREE}[condition["comm"]].format(ledger=ledger))
         parts.append(C1 if condition["org"] == "C1" else C2)
-        parts += [{"verify": VERIFY, "ack": ACK}[p] for p in condition.get("protocols", ())]
+        protocols = {"verify": VERIFY, "ack": ACK, "address": ADDRESS, "authority": AUTHORITY}
+        parts += [protocols[p] for p in condition.get("protocols", ())]
     else:
         parts.append(ALONE)
     return "\n\n".join(p.strip() for p in parts) + "\n"
