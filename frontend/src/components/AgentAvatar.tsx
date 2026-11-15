@@ -4,7 +4,7 @@ export default function AgentAvatar({ identity }: { identity: string }) {
   for (const character of identity.toLowerCase().trim()) {
     hash = Math.imul(hash ^ character.charCodeAt(0), 16777619) >>> 0
   }
-  const family = hash % 3
+  const family = hash % 5
   const turn = ((hash >>> 4) % 4) * 45
   return (
     <span className="agent-avatar" aria-hidden="true">
@@ -25,9 +25,18 @@ export default function AgentAvatar({ identity }: { identity: string }) {
             <path d="m16 5 9 5v12l-9 5-9-5V10Z" />
             <path d="m16 9 6 7-6 7-6-7Zm-9 1 9 6 9-6M16 16v11" />
           </>}
+          {family === 3 && <>
+            <rect x="7" y="7" width="18" height="18" />
+            <path d="m7 7 18 18M25 7 7 25" />
+            <circle cx="16" cy="16" r="6" />
+          </>}
+          {family === 4 && <>
+            <path d="M16 4 20 12 28 16 20 20 16 28 12 20 4 16 12 12Z" />
+            <circle cx="16" cy="16" r="4" />
+          </>}
         </g>
         <rect x="14" y="14" width="4" height="4" fill="currentColor" stroke="none" />
-        {[0, 1, 2].map(index => <rect key={index} x={11 + index * 4} y="30" width="1" height="1" fill="currentColor" stroke="none" opacity={(hash >>> (index + 8)) & 1 ? 0.8 : 0.2} />)}
+        {[0, 1, 2].map(index => <rect key={index} x={11 + index * 4} y="30" width="1" height="1" fill="currentColor" stroke="none" opacity={(hash >>> (index + 8)) & 1 ? 0.85 : 0.25} />)}
       </svg>
     </span>
   )

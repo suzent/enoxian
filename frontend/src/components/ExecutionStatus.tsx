@@ -21,6 +21,28 @@ function ago(secs: number) {
  *  mentions it. Only a hint for whoever is looking: nothing is stopped. */
 export const QUIET_HINT_SECS = 10 * 60
 
+/** Human-readable label for the latest ACP event when no tool call is open. */
+export function describePhase(lastKind?: string | null, lastFile?: string | null): string | undefined {
+  switch (lastKind) {
+    case 'agent_message_chunk':
+    case 'agent_message':
+      return 'writing reply'
+    case 'agent_thought_chunk':
+    case 'agent_thought':
+      return 'thinking'
+    case 'fs/read_text_file':
+      return lastFile ? `reading ${lastFile}` : 'reading file'
+    case 'fs/write_text_file':
+      return lastFile ? `writing ${lastFile}` : 'writing file'
+    case 'session/request_permission':
+      return 'requesting permission'
+    case 'plan':
+      return 'updating plan'
+    default:
+      return undefined
+  }
+}
+
 /** One line on what a running turn is doing: its open tool calls, or how long
  *  it has been quiet. */
 export function describeActivity(activity: RunActivity, now: number): { text: string; quiet: boolean } {
@@ -31,10 +53,13 @@ export function describeActivity(activity: RunActivity, now: number): { text: st
     return { text: `${running} · using ${tools}`, quiet: false }
   }
   const quiet = activity.idle_secs >= QUIET_HINT_SECS
+  const phase = describePhase(activity.last_kind, activity.last_file)
   return {
     text: quiet
       ? `${running} · nothing reported for ${ago(activity.idle_secs)}. It may be stuck; stop it if so.`
-      : `${running} · last activity ${ago(activity.idle_secs)} ago`,
+      : phase
+        ? `${running} · ${phase} · ${ago(activity.idle_secs)} ago`
+        : `${running} · last activity ${ago(activity.idle_secs)} ago`,
     quiet,
   }
 }
@@ -233,6 +258,26 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
         {source ? <a className="agent-activity__source" href={`#chat-message-${run.message_id}`} onClick={onNavigate} title={source.text}>{source.text}</a>
           : <span className="agent-activity__unavailable">Message unavailable</span>}
         {run.status === 'running' && live && <p className={`agent-activity__live${live.quiet ? ' agent-activity__live--quiet' : ''}`}>{live.text}</p>}
+        {run.status === 'running' && running?.plan && running.plan.length > 0 && <ul className="agent-activity__plan" aria-label="Agent plan">
+          {running.plan.map((step, idx) => {
+            const mark = step.status === 'completed' ? '✓' : step.status === 'in_progress' ? '●' : '○'
+            return <li key={`${idx}:${step.content}`} className={`agent-activity__plan-step agent-activity__plan-step--${step.status}`}>
+              <span className="agent-activity__plan-mark" aria-hidden="true">{mark}</span>
+              <span>{step.content}</span>
+            </li>
+          })}
+        </ul>}
+        {run.status === 'running' && running?.recent_tools && running.recent_tools.length > 0 && <ul className="agent-activity__tools" aria-label="Completed tool calls">
+          {running.recent_tools.map((tool, idx) => {
+            const mark = tool.status === 'completed' ? '✓' : '✗'
+            return <li key={`${idx}:${tool.finished_at}:${tool.title}`} className={`agent-activity__tool agent-activity__tool--${tool.status}`}>
+              <span className="agent-activity__tool-mark" aria-hidden="true">{mark}</span>
+              {tool.kind && <span className="agent-activity__tool-kind">{tool.kind}</span>}
+              <span className="agent-activity__tool-title">{tool.title}</span>
+              <span className="agent-activity__tool-duration">{ago(tool.duration_secs)}</span>
+            </li>
+          })}
+        </ul>}
         {run.detail && run.detail !== label && <p className="agent-activity__detail">{run.detail}</p>}
         {ambient && warden.decided[run.message_id]?.decision && <p className="agent-activity__warden" title={warden.decided[run.message_id].decision!.decider}>
           {warden.decided[run.message_id].phase === 'shadow' ? 'Warden would have chosen: ' : 'Warden: '}
@@ -256,7 +301,16 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
             {vote.posted_by ? ` · posted @${vote.posted_by}` : vote.added ? ` · asked @${vote.added} too` : ''}
           </p>
         })()}
-        {local && usage[run.run_id] && <p className="agent-activity__usage" title={usageTitle(usage[run.run_id])}>{describeUsage(usage[run.run_id])}</p>}
+        {local && usage[run.run_id] && (() => {
+          const u = usage[run.run_id]
+          const ratio = u.context_size > 0 ? Math.min(100, Math.round((u.context_used / u.context_size) * 100)) : null
+          return <>
+            <p className="agent-activity__usage" title={usageTitle(u)}>{describeUsage(u)}</p>
+            {ratio !== null && <div className={`agent-activity__context-bar${ratio >= 80 ? ' agent-activity__context-bar--high' : ''}`} role="meter" aria-label="Context window usage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={ratio} title={`Context window ${ratio}% used`}>
+              <span style={{ width: `${ratio}%` }} />
+            </div>}
+          </>
+        })()}
         <div className="agent-activity__actions">
           {local && run.status === 'running' && running && <button type="button" className="underline underline-offset-2" disabled={busy !== null || running.stopping} onClick={() => void act(run, 'cancel')}>{running.stopping ? 'Stopping…' : busy === run.run_id ? 'Updating…' : 'Stop'}</button>}
           {local && run.status === 'pending' && <button type="button" className="underline underline-offset-2" disabled={busy !== null} onClick={() => void act(run, 'cancel')}>{busy === run.run_id ? 'Updating…' : 'Cancel request'}</button>}

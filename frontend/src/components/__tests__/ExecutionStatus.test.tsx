@@ -124,6 +124,42 @@ describe('describeActivity', () => {
   it('says when a turn is stopping', () => {
     expect(describeActivity({ ...base, idle_secs: 0, stopping: true }, 5).text).toBe('Stopping…')
   })
+  it('describes the latest ACP phase and file when no tool is open', () => {
+    expect(describeActivity({ ...base, idle_secs: 2, last_kind: 'fs/read_text_file', last_file: 'src/main.rs' }, 20).text)
+      .toBe('Running 20s · reading src/main.rs · 2s ago')
+    expect(describeActivity({ ...base, idle_secs: 1, last_kind: 'agent_message_chunk' }, 15).text)
+      .toBe('Running 15s · writing reply · 1s ago')
+  })
+  it('renders plan steps, completed tool calls, and context window meter', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    getExecutions.mockResolvedValue({ peer_id: 'local', runs: [
+      { run_id: 'r10', message_id: 'm10', agent_id: 'claude', peer_id: 'local', status: 'running', ambient: false },
+    ], activity: {
+      r10: {
+        started_at: now - 60,
+        idle_secs: 3,
+        last_kind: 'agent_message_chunk',
+        open_tools: [],
+        recent_tools: [
+          { title: 'cargo check', kind: 'execute', status: 'completed', duration_secs: 12, finished_at: now - 10 },
+        ],
+        plan: [
+          { content: 'Inspect ACP liveness', status: 'completed' },
+          { content: 'Render richer status', status: 'in_progress' },
+        ],
+        stopping: false,
+      },
+    }, usage: {
+      r10: { context_used: 170_000, context_size: 200_000, cost: { amount: 0.08, currency: 'USD' } },
+    } })
+    render(<ExecutionStatus circleId="circle" />)
+    expect(await screen.findByText('Inspect ACP liveness')).toBeTruthy()
+    expect(screen.getByText('Render richer status')).toBeTruthy()
+    expect(screen.getByText('cargo check')).toBeTruthy()
+    expect(screen.getByText('execute')).toBeTruthy()
+    const meter = screen.getByRole('meter', { name: 'Context window usage' })
+    expect(meter.getAttribute('aria-valuenow')).toBe('85')
+  })
   it('shows what a turn on this device used, and nothing for another device', async () => {
     const now = Math.floor(Date.now() / 1000)
     getExecutions.mockResolvedValue({ peer_id: 'local', runs: [

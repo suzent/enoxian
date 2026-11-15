@@ -15,9 +15,11 @@
 
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
+
+const MAX_RECENT_TOOLS: usize = 8;
 
 /// A tool call the agent announced and has not finished.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -31,6 +33,25 @@ pub struct OpenTool {
     pub since: i64,
 }
 
+/// A tool call the agent finished during this turn.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CompletedTool {
+    pub title: String,
+    pub kind: Option<String>,
+    /// `completed`, `failed`, or `cancelled`.
+    pub status: String,
+    pub duration_secs: i64,
+    pub finished_at: i64,
+}
+
+/// One step from an ACP `plan` update.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PlanStep {
+    pub content: String,
+    /// `pending`, `in_progress`, or `completed`.
+    pub status: String,
+}
+
 /// What the agent in one turn has been doing.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Activity {
@@ -38,8 +59,14 @@ pub struct Activity {
     pub last_activity_at: Option<i64>,
     /// What that was: a `session/update` kind, or the method it called.
     pub last_kind: Option<String>,
+    /// Path from the most recent `fs/read_text_file` or `fs/write_text_file`.
+    pub last_file: Option<String>,
     /// Tool calls announced and not yet finished, by tool call id.
     pub open_tools: BTreeMap<String, OpenTool>,
+    /// Most recent finished tool calls, oldest first (bounded by `MAX_RECENT_TOOLS`).
+    pub recent_tools: VecDeque<CompletedTool>,
+    /// Current step-by-step plan, when the agent reported one via `session/update`.
+    pub plan: Vec<PlanStep>,
 }
 
 impl Activity {
@@ -47,6 +74,15 @@ impl Activity {
     pub fn observe(&mut self, msg: &Value, now: i64) {
         self.last_activity_at = Some(now);
         let method = msg.get("method").and_then(Value::as_str);
+        if matches!(method, Some("fs/read_text_file" | "fs/write_text_file")) {
+            if let Some(path) = msg
+                .get("params")
+                .and_then(|p| p.get("path"))
+                .and_then(Value::as_str)
+            {
+                self.last_file = Some(path.to_string());
+            }
+        }
         let update = (method == Some("session/update"))
             .then(|| msg.get("params").and_then(|p| p.get("update")))
             .flatten();
@@ -55,28 +91,63 @@ impl Activity {
             return;
         };
         let kind = super::acp::update_kind(update).map(str::to_string);
-        if matches!(
-            kind.as_deref(),
-            Some("tool_call") | Some("tool_call_update")
-        ) {
-            self.observe_tool(update, kind.as_deref() == Some("tool_call"), now);
+        match kind.as_deref() {
+            Some("tool_call") | Some("tool_call_update") => {
+                self.observe_tool(update, kind.as_deref() == Some("tool_call"), now);
+            }
+            Some("plan") => {
+                self.observe_plan(update);
+            }
+            _ => {}
         }
         self.last_kind = kind;
+    }
+
+    fn observe_plan(&mut self, update: &Value) {
+        let Some(entries) = update.get("entries").and_then(Value::as_array) else {
+            return;
+        };
+        self.plan = entries
+            .iter()
+            .filter_map(|e| {
+                let content = e.get("content").and_then(Value::as_str)?.trim();
+                if content.is_empty() {
+                    return None;
+                }
+                let status = e
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("pending")
+                    .to_string();
+                Some(PlanStep {
+                    content: content.to_string(),
+                    status,
+                })
+            })
+            .collect();
     }
 
     fn observe_tool(&mut self, update: &Value, announced: bool, now: i64) {
         let Some(id) = update.get("toolCallId").and_then(Value::as_str) else {
             return;
         };
+        let text = |key: &str| update.get(key).and_then(Value::as_str).map(str::to_string);
         let status = update.get("status").and_then(Value::as_str);
-        if matches!(
-            status,
-            Some("completed") | Some("failed") | Some("cancelled")
-        ) {
-            self.open_tools.remove(id);
+        if let Some(done @ ("completed" | "failed" | "cancelled")) = status {
+            if let Some(open) = self.open_tools.remove(id) {
+                if self.recent_tools.len() >= MAX_RECENT_TOOLS {
+                    self.recent_tools.pop_front();
+                }
+                self.recent_tools.push_back(CompletedTool {
+                    title: text("title").unwrap_or(open.title),
+                    kind: text("kind").or(open.kind),
+                    status: done.to_string(),
+                    duration_secs: (now - open.since).max(0),
+                    finished_at: now,
+                });
+            }
             return;
         }
-        let text = |key: &str| update.get(key).and_then(Value::as_str).map(str::to_string);
         match self.open_tools.get_mut(id) {
             Some(open) => {
                 if let Some(status) = status {
@@ -84,6 +155,9 @@ impl Activity {
                 }
                 if let Some(title) = text("title") {
                     open.title = title;
+                }
+                if let Some(kind) = text("kind") {
+                    open.kind = Some(kind);
                 }
             }
             // An update for a call we never saw announced still means it is
@@ -143,6 +217,7 @@ pub struct LiveRun {
     pub ambient: bool,
     pub started_at: i64,
     pub activity: Arc<Mutex<Activity>>,
+    pub usage: Arc<Mutex<super::usage::Meter>>,
     stop: CancellationToken,
     cause: Mutex<Option<StopCause>>,
 }
@@ -175,7 +250,10 @@ impl LiveRun {
             "last_activity_at": activity.last_activity_at,
             "idle_secs": now - activity.last_activity_at.unwrap_or(self.started_at),
             "last_kind": activity.last_kind,
+            "last_file": activity.last_file,
             "open_tools": activity.open_tools.values().collect::<Vec<_>>(),
+            "recent_tools": activity.recent_tools,
+            "plan": activity.plan,
             "stopping": self.stop.is_cancelled(),
         })
     }
@@ -204,6 +282,7 @@ impl LiveRuns {
             ambient,
             started_at: now,
             activity: Arc::default(),
+            usage: Arc::default(),
             stop: CancellationToken::new(),
             cause: Mutex::new(None),
         });
@@ -325,6 +404,36 @@ mod tests {
         );
         assert!(a.open_tools.is_empty());
         assert_eq!(a.last_kind.as_deref(), Some("tool_call_update"));
+        assert_eq!(a.recent_tools.len(), 1);
+        assert_eq!(a.recent_tools[0].title, "cargo test");
+        assert_eq!(a.recent_tools[0].kind.as_deref(), Some("execute"));
+        assert_eq!(a.recent_tools[0].status, "completed");
+        assert_eq!(a.recent_tools[0].duration_secs, 400);
+    }
+
+    #[test]
+    fn records_plan_updates_and_file_access() {
+        let mut a = Activity::default();
+        a.observe(
+            &json!({"method": "fs/read_text_file", "id": 3, "params": {"path": "src/main.rs"}}),
+            42,
+        );
+        assert_eq!(a.last_file.as_deref(), Some("src/main.rs"));
+
+        a.observe(
+            &update(json!({
+                "sessionUpdate": "plan",
+                "entries": [
+                    {"content": "Inspect liveness", "status": "completed"},
+                    {"content": "Update frontend", "status": "in_progress"}
+                ]
+            })),
+            50,
+        );
+        assert_eq!(a.plan.len(), 2);
+        assert_eq!(a.plan[0].content, "Inspect liveness");
+        assert_eq!(a.plan[0].status, "completed");
+        assert_eq!(a.plan[1].status, "in_progress");
     }
 
     #[test]

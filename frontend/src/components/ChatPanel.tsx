@@ -84,8 +84,9 @@ function formatDateLabel(ts: number) {
   })
 }
 
-interface SenderLabel {
+export interface SenderLabel {
   user: string    // "you" or owner name
+  owner?: string  // underlying owner name even when user === "you"
   device: string | null  // shown when owner has multiple devices
   agent: string | null   // shown when a registered agent (not device primary) is speaking
 }
@@ -139,9 +140,29 @@ function sendErrorText(error: unknown): string {
   return detail ? `Not sent — ${detail}` : 'Message failed to send.'
 }
 
-function senderInitial(label: SenderLabel) {
-  const source = label.agent || label.device || label.user
-  return source.match(/[\p{L}\p{N}]/u)?.[0]?.toUpperCase() || '·'
+export function senderInitial(label: SenderLabel) {
+  const raw = (label.owner && label.owner !== 'you' ? label.owner : label.user) || label.device || ''
+  const parts = raw.trim().split(/[\s._-]+/).filter(Boolean)
+  if (parts.length >= 2) {
+    const a = parts[0].match(/[\p{L}\p{N}]/u)?.[0]
+    const b = parts[1].match(/[\p{L}\p{N}]/u)?.[0]
+    if (a && b) return `${a}${b}`.toUpperCase()
+  }
+  const chars = Array.from(raw.trim()).filter(c => /[\p{L}\p{N}]/u.test(c))
+  if (chars.length === 0) return '·'
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(chars[0])) {
+    return chars[0]
+  }
+  return chars.slice(0, 2).join('').toUpperCase()
+}
+
+function senderVariant(label: SenderLabel): number {
+  const key = ((label.owner && label.owner !== 'you' ? label.owner : label.user) || '').toLowerCase().trim()
+  let hash = 2166136261
+  for (const ch of key) {
+    hash = Math.imul(hash ^ ch.charCodeAt(0), 16777619) >>> 0
+  }
+  return hash % 4
 }
 
 function formatBytes(n: number): string {
@@ -277,7 +298,7 @@ function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNo
     >
       <div className="chat-message__gutter" aria-hidden="true">
         {showSender
-          ? isAgent ? <AgentAvatar identity={label.agent!} /> : <span className="chat-message__avatar">{senderInitial(label)}</span>
+          ? isAgent ? <AgentAvatar identity={label.agent!} /> : <span className="chat-message__avatar" data-variant={senderVariant(label)}>{senderInitial(label)}</span>
           : <time className="chat-message__gutter-time" dateTime={new Date(msg.ts * 1000).toISOString()} title={fullTimestamp}>{timestamp}</time>}
       </div>
       <div className="chat-message__body">
@@ -655,7 +676,10 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
       if (host) { member = host; agentName = agentId }
     }
 
-    if (!member) return { user: shortenAgentId(agentId) || agentId, device: null, agent: null }
+    if (!member) {
+      const fallback = shortenAgentId(agentId) || agentId
+      return { user: fallback, owner: fallback, device: null, agent: null }
+    }
 
     const ownerLabel = peerLabel(member.owner, member.agent_id)
     const isOwnDevice = ownerLabel === selfOwner
@@ -668,6 +692,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
 
     return {
       user: isOwnDevice ? 'you' : ownerLabel,
+      owner: ownerLabel,
       device: showDevice ? deviceLabel : null,
       agent: agentName,
     }

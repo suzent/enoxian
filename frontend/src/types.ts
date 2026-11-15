@@ -329,7 +329,10 @@ export interface RunActivity {
   last_activity_at?: number | null
   idle_secs: number
   last_kind?: string | null
+  last_file?: string | null
   open_tools: { title: string; kind?: string | null; status: string; since: number }[]
+  recent_tools?: { title: string; kind?: string | null; status: string; duration_secs: number; finished_at: number }[]
+  plan?: { content: string; status: string }[]
   stopping: boolean
 }
 
