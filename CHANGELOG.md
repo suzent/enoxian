@@ -41,6 +41,12 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
+- Running ACP turns in Agent activity now show the agent's current phase and
+  file, step-by-step plan progress, recently completed tool calls with duration,
+  live token/cost usage, and a context-window usage bar.
+- Chat avatars now use each member's name rather than their device name for
+  initials, with circular human badges, high-contrast dark square agent seals,
+  and more comfortable message and list spacing.
 - The line a blind vote leaves under a posted answer is shorter and says what
   the other voters did (passed or failed) instead of "gave none"; in the
   transcript it is shown as a footnote rather than as part of the agent's reply.
