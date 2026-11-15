@@ -19,8 +19,15 @@ vi.mock('../../context/AppContext', () => ({useApp: () => ({
   activeCircleId: 'circle', circles: [{circle_id: 'circle', circle_name: 'Design'}], status: {agent_id: 'alice'},
 })}))
 vi.mock('../CircleGlyph', () => ({default: () => <span />}))
-const { default: ChatPanel } = await import('../ChatPanel')
+const { default: ChatPanel, senderInitial } = await import('../ChatPanel')
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+it('derives human avatar initials from the owner rather than the device name', () => {
+  expect(senderInitial({ user: 'you', owner: 'suzy', device: 'macbook-pro', agent: null })).toBe('SU')
+  expect(senderInitial({ user: 'slian', owner: 'slian', device: 'MacBook', agent: null })).toBe('SL')
+  expect(senderInitial({ user: 'ness-su', owner: 'ness-su', device: 'mac-mini', agent: null })).toBe('NS')
+  expect(senderInitial({ user: '池一舟', owner: '池一舟', device: 'macbook-pro', agent: null })).toBe('池')
+})
 
 it('shows the owner and single host device for an agent absent from the advertised agents', async () => {
   vi.mocked(getMembers).mockResolvedValueOnce([

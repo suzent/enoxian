@@ -477,7 +477,10 @@ async fn run_acp(
     // Start with capture OFF so the history replayed during session/load is not
     // mistaken for the current reply. Turned on just before we prompt.
     let capturing = Arc::new(AtomicBool::new(false));
-    let usage = Arc::new(Mutex::new(super::usage::Meter::default()));
+    let usage = live
+        .as_ref()
+        .map(|run| run.usage.clone())
+        .unwrap_or_default();
     let hooks = PolicyHooks {
         coordination: coordination.clone(),
         workspace: workspace.canonicalize()?,

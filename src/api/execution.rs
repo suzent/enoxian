@@ -104,7 +104,7 @@ pub async fn list(
                 "reply_to": e.request.message.reply_to,
                 "ambient": e.request.ambient,
                 "activity": state.live_runs.get(&e.run_id).map(|run| run.snapshot(now)),
-                "usage": e.usage,
+                "usage": e.usage.clone().or_else(|| state.live_runs.get(&e.run_id).and_then(|run| run.usage.lock().unwrap().turn())),
                 "reply": e.reply,
                 "private": crate::agent::private::is_private(&e.request.message.id),
                 "outcome": outcomes.remove(&e.run_id),
@@ -369,6 +369,17 @@ pub async fn deliveries(
         }
         if listed.contains(e.run_id.as_str()) {
             usage.insert(e.run_id, json!(used));
+        }
+    }
+    for id in &listed {
+        if !usage.contains_key(*id) {
+            if let Some(live_used) = state
+                .live_runs
+                .get(id)
+                .and_then(|run| run.usage.lock().unwrap().turn())
+            {
+                usage.insert((*id).to_string(), json!(live_used));
+            }
         }
     }
     Json(json!({
