@@ -222,10 +222,11 @@ pub fn build_delivery(
             if fresh(message) {
                 shown.push(message.id.clone());
                 recent.push_str(&format!(
-                    "\nThread ancestor {} ({}): {}",
+                    "\nThread ancestor {} ({}): {}{}",
                     message.id,
                     roster.speaker(message),
-                    message.text
+                    message.text,
+                    inline_attachments(message)
                 ));
             } else {
                 withheld.push(message.id.clone());
@@ -236,10 +237,11 @@ pub fn build_delivery(
     // A resumed session already holds the brief. If session/load falls back to
     // session/new, the driver prepends `recovery_context`, which carries it.
     let brief = (!resumed).then(|| standing_brief(state, agent_id, framing));
+    let blobs = state.blobs().ok();
     let attachments = all
         .iter()
         .find(|m| m.id == trigger_id)
-        .map(|m| attachment_note(&state.circle_id, m))
+        .map(|m| attachment_note_with_blobs(&state.circle_id, blobs.as_deref(), m))
         .unwrap_or_default();
     Delivery {
         prompt: compose(
@@ -421,7 +423,16 @@ fn compose(
 /// instruction was the empty string: the ambient floor deliberately lets a
 /// wordless image through, and nothing downstream had ever looked at
 /// `ChatMessage::attachments`.
+#[cfg(test)]
 fn attachment_note(circle_id: &str, message: &ChatMessage) -> String {
+    attachment_note_with_blobs(circle_id, None, message)
+}
+
+fn attachment_note_with_blobs(
+    circle_id: &str,
+    blobs: Option<&crate::proposal::blob::BlobStore>,
+    message: &ChatMessage,
+) -> String {
     if message.attachments.is_empty() {
         return String::new();
     }
@@ -433,8 +444,13 @@ fn attachment_note(circle_id: &str, message: &ChatMessage) -> String {
                 (Some(w), Some(h)) => format!(", {w}x{h}"),
                 _ => String::new(),
             };
+            let local_path = blobs
+                .and_then(|b| b.path_for(&a.hash).ok())
+                .filter(|p| p.exists())
+                .map(|p| format!(" (local file: {})", p.display()))
+                .unwrap_or_default();
             format!(
-                "  {} — {}, {} KB{dimensions}. GET /circles/{circle_id}/api/blobs/{}",
+                "  {} — {}, {} KB{dimensions}. GET /circles/{circle_id}/api/blobs/{}{local_path}",
                 a.name,
                 a.mime,
                 a.size.div_ceil(1024).max(1),
@@ -448,6 +464,22 @@ fn attachment_note(circle_id: &str, message: &ChatMessage) -> String {
         if listed.len() == 1 { "" } else { "s" },
         listed.join("\n")
     )
+}
+
+fn inline_attachments(message: &ChatMessage) -> String {
+    if message.attachments.is_empty() {
+        return String::new();
+    }
+    let names: Vec<String> = message
+        .attachments
+        .iter()
+        .map(|a| format!("{} ({})", a.name, a.mime))
+        .collect();
+    if message.text.trim().is_empty() {
+        format!("[attached: {}]", names.join(", "))
+    } else {
+        format!(" [attached: {}]", names.join(", "))
+    }
 }
 
 /// The standing brief describing the enoxian environment. Sent once per fresh
@@ -515,7 +547,9 @@ fn standing_brief(state: &AppState, agent_id: &str, framing: Framing) -> String 
          {roster}\
          Anything you write to files here is captured as a reviewable *proposal* that members can \
          accept, reject, or revert — so make focused, clear changes and explain what you did. \
-         Your text reply is posted back into the circle chat, so answer conversationally.\n\
+         Your text reply is posted back into the circle chat, so answer conversationally. \
+         To attach a file to your chat reply without storing it in the shared workspace, include \
+         `ATTACH: <path>` on its own line in your reply (or run `enox say \"<text>\" --attach <path>`).\n\
          {conventions}\
          {cards}\
          If another agent is clearly better placed for part of the work, you may hand it over by \
@@ -630,7 +664,7 @@ fn window(all: &[ChatMessage], since: Option<&str>, exclude: &str, roster: &Rost
         .iter()
         .map(|m| {
             let text = m.text.replace('\n', " ");
-            format!("  {}: {}", roster.speaker(m), text)
+            format!("  {}: {}{}", roster.speaker(m), text, inline_attachments(m))
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -986,5 +1020,30 @@ mod tests {
         assert!(!resumed.prompt.contains("knowledge base and index"));
         assert!(recovery_context(&state, "claude", &resumed.withheld)
             .contains("knowledge base and index"));
+    }
+
+    #[test]
+    fn window_and_attachment_note_surface_local_blob_paths_and_history_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = crate::proposal::blob::BlobStore::open(dir.path().join("blobs")).unwrap();
+        let hash = blobs.put(b"%PDF-1.7 test").unwrap();
+        let mut m = msg("m1", "suzy", "see report");
+        m.attachments = vec![crate::control::Attachment {
+            hash: hash.clone(),
+            name: "report.pdf".into(),
+            mime: "application/pdf".into(),
+            size: 13,
+            width: None,
+            height: None,
+        }];
+        let note = attachment_note_with_blobs("c1", Some(&blobs), &m);
+        assert!(note.contains("(local file:"));
+        assert!(note.contains(&hash[2..]));
+
+        let rendered = window(&[m], None, "", &Roster::default());
+        assert_eq!(
+            rendered,
+            "  suzy: see report [attached: report.pdf (application/pdf)]"
+        );
     }
 }

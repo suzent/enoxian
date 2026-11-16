@@ -61,5 +61,30 @@ fn print_message(msg: &ChatMessage) {
     let dt = chrono::DateTime::from_timestamp(msg.ts, 0)
         .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_else(|| msg.ts.to_string());
-    println!("[{dt}] {}: {}", msg.agent_id, msg.text);
+    if msg.attachments.is_empty() {
+        println!("[{dt}] {}: {}", msg.agent_id, msg.text);
+    } else {
+        let files: Vec<String> = msg
+            .attachments
+            .iter()
+            .map(|a| {
+                format!(
+                    "{} ({}, {} KB)",
+                    a.name,
+                    a.mime,
+                    a.size.div_ceil(1024).max(1)
+                )
+            })
+            .collect();
+        if msg.text.trim().is_empty() {
+            println!("[{dt}] {}: [attached: {}]", msg.agent_id, files.join(", "));
+        } else {
+            println!(
+                "[{dt}] {}: {} [attached: {}]",
+                msg.agent_id,
+                msg.text,
+                files.join(", ")
+            );
+        }
+    }
 }

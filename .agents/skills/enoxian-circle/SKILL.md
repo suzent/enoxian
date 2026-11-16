@@ -84,10 +84,12 @@ enox member list --circle <circle>
 enox chat --circle <circle>
 enox chat --follow --circle <circle>
 enox say "<message>" --circle <circle>
+enox say "<message>" --attach <path> --circle <circle>
 ```
 
 - Read recent chat when the request depends on current group context or prior decisions.
 - Post only when the user asks to communicate or when a message is an expected part of an authorized coordination workflow.
+- Use `--attach <path>` (or `-a <path>`, repeatable up to 10 files) when sharing screenshots, media, or report artifacts in chat without polluting the shared workspace folder.
 - Resolve exact agent IDs from Circle state before using `@agent_id`. A mention may launch an allowlisted agent on another device, so do not mention agents speculatively.
 - Keep secrets, private chain-of-thought, and raw file contents out of chat.
 - Use `--follow` only for an active monitoring request, and stop it when the monitoring objective is met.

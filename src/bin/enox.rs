@@ -361,8 +361,20 @@ async fn main() -> anyhow::Result<()> {
                 AgentCommands::Chat { follow, since } => {
                     enoxian::commands::chat::run(&client, &base, follow, since).await
                 }
-                AgentCommands::Say { text } => {
-                    enoxian::commands::say::run(&client, &base, text, actor_token.as_deref()).await
+                AgentCommands::Say {
+                    text,
+                    attachments,
+                    reply_to,
+                } => {
+                    enoxian::commands::say::run(
+                        &client,
+                        &base,
+                        text,
+                        attachments,
+                        reply_to,
+                        actor_token.as_deref(),
+                    )
+                    .await
                 }
                 AgentCommands::Proposal(args) => {
                     use enoxian::cli::ProposalAction;
