@@ -68,6 +68,11 @@ refuses to publish a version whose section is missing or empty.
   read like one that writes `ANSWER:`. Before, those ballots never matched, so
   a vote could report "the answers did not agree" however often it was asked.
 
+### Security
+
+- Updated `quinn-udp` to 0.5.16 so a truncated UDP datagram can no longer cause
+  the QUIC receive loop to spin (`RUSTSEC-2026-0538`).
+
 ## [0.14.2] — 2026-11-12
 
 ### Changed
