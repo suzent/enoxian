@@ -777,7 +777,7 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
             }} aria-haspopup="menu" aria-expanded={!!newFileAnchor}><FilePlus size={15} />{importing ? 'Uploading…' : 'New file'}</button>
           </div>
           <input ref={uploadInput} type="file" multiple hidden aria-label="Upload text files"
-            accept="text/*,.md,.mdx,.txt,.csv,.json,.yaml,.yml,.toml,.py,.rs,.ts,.tsx,.js,.jsx,.css,.html,.xml,.svg,.sh,.go,.java,.c,.cpp,.h"
+            accept="text/*,image/*,audio/*,video/*,application/pdf,.md,.mdx,.txt,.csv,.json,.yaml,.yml,.toml,.py,.rs,.ts,.tsx,.js,.jsx,.css,.html,.xml,.svg,.sh,.go,.java,.c,.cpp,.h,.pdf,.png,.jpg,.jpeg,.gif,.webp,.avif,.mp3,.wav,.ogg,.flac,.m4a,.mp4,.webm,.mov"
             onChange={event => { void importFiles(Array.from(event.target.files ?? [])); event.target.value = '' }} />
           {fileNotice && <div className="file-operation-notice" role="status">{fileNotice}</div>}
           <label className="workspace-search">

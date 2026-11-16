@@ -154,7 +154,7 @@ export default function Lightbox({ circleId, items, index, onIndexChange, onClos
           </button>
         )}
         <figure
-          className="lightbox__figure"
+          className={`lightbox__figure${current.mime === 'application/pdf' ? ' lightbox__figure--pdf' : ''}`}
           // Hold the frame's shape while the next image decodes. Paging
           // remounts the <img>, and without a reserved ratio the figure
           // collapses to its padding and the viewer flashes an empty box.
@@ -164,16 +164,43 @@ export default function Lightbox({ circleId, items, index, onIndexChange, onClos
               : undefined
           }
         >
-          <img
-            className="lightbox__img"
-            // Keyed by hash so paging swaps the element rather than showing the
-            // previous image stretched to the new one's dimensions.
-            key={current.hash}
-            src={blobUrl(circleId, current.hash)}
-            alt={current.name}
-            width={current.width}
-            height={current.height}
-          />
+          {current.mime.startsWith('video/') ? (
+            <video
+              className="lightbox__video"
+              key={current.hash}
+              src={blobUrl(circleId, current.hash)}
+              controls
+              autoPlay
+              aria-label={current.name}
+            />
+          ) : current.mime.startsWith('audio/') ? (
+            <audio
+              className="lightbox__audio"
+              key={current.hash}
+              src={blobUrl(circleId, current.hash)}
+              controls
+              autoPlay
+              aria-label={current.name}
+            />
+          ) : current.mime === 'application/pdf' ? (
+            <iframe
+              className="lightbox__pdf"
+              key={current.hash}
+              title={current.name}
+              src={blobUrl(circleId, current.hash)}
+            />
+          ) : (
+            <img
+              className="lightbox__img"
+              // Keyed by hash so paging swaps the element rather than showing the
+              // previous image stretched to the new one's dimensions.
+              key={current.hash}
+              src={blobUrl(circleId, current.hash)}
+              alt={current.name}
+              width={current.width}
+              height={current.height}
+            />
+          )}
         </figure>
         {items.length > 1 && (
           <button

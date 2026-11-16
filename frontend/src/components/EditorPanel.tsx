@@ -17,7 +17,7 @@ import { agentColor, agentColorLight } from '../lib/agentColor'
 import { constrainCursorLabels } from '../lib/constrainCursorLabels'
 import { peerLabel, shortenAgentId } from '../lib/displayName'
 import { renderMarkdown } from '../lib/markdown'
-import { Maximize2, X, ChevronLeft } from 'lucide-react'
+import { Maximize2, X, ChevronLeft, Download } from 'lucide-react'
 import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
 
 export type FileViewMode = 'source' | 'preview'
@@ -116,13 +116,29 @@ function fileName(path: string) {
   return path.split('/').pop() || path
 }
 
-type PreviewKind = 'markdown' | 'html' | null
+export type PreviewKind = 'markdown' | 'html' | 'svg' | 'image' | 'video' | 'audio' | 'pdf' | null
 
-function previewKind(path: string): PreviewKind {
+export function previewKind(path: string): PreviewKind {
   const ext = path.split('.').pop()?.toLowerCase()
   if (ext === 'md' || ext === 'markdown') return 'markdown'
   if (ext === 'html' || ext === 'htm') return 'html'
+  if (ext === 'svg') return 'svg'
+  if (ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'gif' || ext === 'webp' || ext === 'avif' || ext === 'bmp' || ext === 'ico') return 'image'
+  if (ext === 'mp4' || ext === 'webm' || ext === 'mov' || ext === 'm4v' || ext === 'ogv') return 'video'
+  if (ext === 'mp3' || ext === 'wav' || ext === 'ogg' || ext === 'flac' || ext === 'm4a' || ext === 'aac' || ext === 'opus') return 'audio'
+  if (ext === 'pdf') return 'pdf'
   return null
+}
+
+function isBinaryMediaKind(kind: PreviewKind): boolean {
+  return kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'pdf'
+}
+
+function rawFileHref(circleId: string | null, filePath: string): string {
+  if (!circleId) return ''
+  const base = `/circles/${circleId}/api/files/raw?path=${encodeURIComponent(filePath)}`
+  const token = (window as unknown as { __ENOX_TOKEN__?: string }).__ENOX_TOKEN__
+  return token ? `${base}&token=${encodeURIComponent(token)}` : base
 }
 
 function renderHtmlDocument(source: string) {
@@ -179,9 +195,10 @@ interface FileSurfaceControlsProps {
 }
 
 function FileSurfaceControls({ kind, value, onChange, ariaLabel, action }: FileSurfaceControlsProps) {
+  const binaryMedia = isBinaryMediaKind(kind)
   return (
     <div className="file-surface-controls">
-      {kind ? (
+      {kind && !binaryMedia ? (
         <SegmentedTabs
           className="file-surface-modes"
           ariaLabel={ariaLabel}
@@ -189,21 +206,69 @@ function FileSurfaceControls({ kind, value, onChange, ariaLabel, action }: FileS
           onChange={onChange}
           options={PREVIEW_FIRST_VIEWS}
         />
-      ) : <span className="file-surface-type">SOURCE</span>}
-      {action}
+      ) : (
+        <span className="file-surface-type">{binaryMedia ? kind!.toUpperCase() : 'SOURCE'}</span>
+      )}
+      <div className="flex items-center gap-2">
+        {action}
+      </div>
     </div>
   )
 }
 
-function DocumentPreview({ kind, source, filePath, compact = false }: {
-  kind: PreviewKind; source: string; filePath: string; compact?: boolean
+function DocumentPreview({ kind, source, filePath, circleId, compact = false }: {
+  kind: PreviewKind; source: string; filePath: string; circleId?: string | null; compact?: boolean
 }) {
   const rendered = useMemo(() => kind === 'markdown' ? renderMarkdown(source) : kind === 'html' ? renderHtmlDocument(source) : '', [kind, source])
+  const rawUrl = rawFileHref(circleId ?? null, filePath)
   if (kind === 'markdown') return <article className={`markdown-preview${compact ? ' markdown-preview--compact' : ''}`} dangerouslySetInnerHTML={{ __html: rendered }} />
   if (kind === 'html') return <div className="document-html-preview">
     <div className="html-preview-notice">Sandboxed preview · scripts and network disabled</div>
     <iframe title={`Preview of ${fileName(filePath)}`} sandbox="" srcDoc={rendered} />
   </div>
+  if (kind === 'svg') {
+    const svgUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`
+    return (
+      <div className={`document-media-preview document-media-preview--image${compact ? ' document-media-preview--compact' : ''}`}>
+        {source.trim() ? (
+          <img src={svgUrl} alt={fileName(filePath)} />
+        ) : (
+          <span className="document-media-preview__empty">Empty SVG document</span>
+        )}
+      </div>
+    )
+  }
+  if (kind === 'image') {
+    return (
+      <div className={`document-media-preview document-media-preview--image${compact ? ' document-media-preview--compact' : ''}`}>
+        <img src={rawUrl} alt={fileName(filePath)} />
+      </div>
+    )
+  }
+  if (kind === 'video') {
+    return (
+      <div className={`document-media-preview document-media-preview--video${compact ? ' document-media-preview--compact' : ''}`}>
+        <video controls preload="metadata" src={rawUrl} aria-label={`Video preview of ${fileName(filePath)}`} />
+      </div>
+    )
+  }
+  if (kind === 'audio') {
+    return (
+      <div className={`document-media-preview document-media-preview--audio${compact ? ' document-media-preview--compact' : ''}`}>
+        <div className="document-media-preview__audio-card">
+          <strong>{fileName(filePath)}</strong>
+          <audio controls preload="metadata" src={rawUrl} aria-label={`Audio preview of ${fileName(filePath)}`} />
+        </div>
+      </div>
+    )
+  }
+  if (kind === 'pdf') {
+    return (
+      <div className="document-html-preview document-pdf-preview">
+        <iframe title={`Preview of ${fileName(filePath)}`} src={rawUrl} />
+      </div>
+    )
+  }
   return null
 }
 
@@ -212,6 +277,7 @@ export function FileQuickView({ filePath, onOpen, onClose, full = false }: FileQ
   const [documentText, setDocumentText] = useState('')
   const [connectionStatus, setConnectionStatus] = useState<YjsConnectionStatus>('connecting')
   const kind = previewKind(filePath)
+  const binaryMedia = isBinaryMediaKind(kind)
   const [viewMode, setViewMode] = useState<FileViewMode>(kind ? 'preview' : 'source')
 
   useEffect(() => {
@@ -221,6 +287,10 @@ export function FileQuickView({ filePath, onOpen, onClose, full = false }: FileQ
 
   useEffect(() => {
     if (!activeCircleId) return
+    if (binaryMedia) {
+      setConnectionStatus('synced')
+      return
+    }
     setConnectionStatus('connecting')
     const ydoc = new Y.Doc()
     const ytext = ydoc.getText(filePath)
@@ -240,7 +310,7 @@ export function FileQuickView({ filePath, onOpen, onClose, full = false }: FileQ
       provider.destroy()
       ydoc.destroy()
     }
-  }, [activeCircleId, filePath])
+  }, [activeCircleId, filePath, binaryMedia])
 
   return (
     <section className={`file-quick-view${full ? ' file-quick-view--full' : ''}`} aria-label={`Preview of ${fileName(filePath)}`}>
@@ -256,14 +326,29 @@ export function FileQuickView({ filePath, onOpen, onClose, full = false }: FileQ
         value={viewMode}
         onChange={setViewMode}
         ariaLabel="Sidebar file view"
-        action={<button type="button" className="file-surface-action" onClick={() => onOpen(viewMode)} title="Open in center editor">
-          <Maximize2 size={13} aria-hidden="true" />
-          <span>Open in center</span>
-        </button>}
+        action={<>
+          {binaryMedia && activeCircleId && (
+            <a
+              className="file-surface-action"
+              href={rawFileHref(activeCircleId, filePath)}
+              download={fileName(filePath)}
+              title="Download file"
+            >
+              <Download size={13} aria-hidden="true" />
+              <span>Download</span>
+            </a>
+          )}
+          <button type="button" className="file-surface-action" onClick={() => onOpen(viewMode)} title="Open in center editor">
+            <Maximize2 size={13} aria-hidden="true" />
+            <span>Open in center</span>
+          </button>
+        </>}
       />
       <div className="file-quick-view__body">
-        {viewMode === 'source' && <pre className="file-quick-view__source">{documentText}</pre>}
-        {viewMode === 'preview' && <DocumentPreview kind={kind} source={documentText} filePath={filePath} compact />}
+        {viewMode === 'source' && !binaryMedia && <pre className="file-quick-view__source">{documentText}</pre>}
+        {(viewMode === 'preview' || binaryMedia) && (
+          <DocumentPreview kind={kind} source={documentText} filePath={filePath} circleId={activeCircleId} compact />
+        )}
       </div>
     </section>
   )
@@ -277,13 +362,14 @@ export default function EditorPanel({ filePath, onBack, initialMode = 'source' }
   const ydocRef = useRef<Y.Doc | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<YjsConnectionStatus>('disconnected')
   const [displayName, setDisplayName] = useState<string>(() => status?.agent_id ?? 'unknown')
-  const [viewMode, setViewMode] = useState<FileViewMode>(initialMode)
-  const [documentText, setDocumentText] = useState('')
   const kind = filePath ? previewKind(filePath) : null
+  const binaryMedia = isBinaryMediaKind(kind)
+  const [viewMode, setViewMode] = useState<FileViewMode>(binaryMedia ? 'preview' : initialMode)
+  const [documentText, setDocumentText] = useState('')
 
   useEffect(() => {
-    setViewMode(initialMode)
-  }, [filePath, initialMode])
+    setViewMode(binaryMedia ? 'preview' : initialMode)
+  }, [filePath, initialMode, binaryMedia])
 
   useEffect(() => { setDocumentText('') }, [filePath])
 
@@ -306,6 +392,15 @@ export default function EditorPanel({ filePath, onBack, initialMode = 'source' }
     viewRef.current?.destroy()
     providerRef.current?.destroy()
     ydocRef.current?.destroy()
+    viewRef.current = null
+    providerRef.current = null
+    ydocRef.current = null
+
+    if (binaryMedia) {
+      setConnectionStatus('synced')
+      return
+    }
+
     setConnectionStatus('connecting')
 
     const ydoc = new Y.Doc()
@@ -353,7 +448,7 @@ export default function EditorPanel({ filePath, onBack, initialMode = 'source' }
       provider.destroy()
       ydoc.destroy()
     }
-  }, [filePath, activeCircleId, status?.agent_id, displayName])
+  }, [filePath, activeCircleId, status?.agent_id, displayName, binaryMedia])
 
   if (!filePath) {
     return (
@@ -381,12 +476,23 @@ export default function EditorPanel({ filePath, onBack, initialMode = 'source' }
           value={viewMode}
           onChange={setViewMode}
           ariaLabel="File view"
+          action={binaryMedia && activeCircleId ? (
+            <a
+              className="file-surface-action"
+              href={rawFileHref(activeCircleId, filePath)}
+              download={fileName(filePath)}
+              title="Download file"
+            >
+              <Download size={13} aria-hidden="true" />
+              <span>Download</span>
+            </a>
+          ) : undefined}
         />
-        <div className={`ide-document min-h-0 flex-1${viewMode === 'preview' && kind ? ' is-previewing' : ''}`}>
+        <div className={`ide-document min-h-0 flex-1${(viewMode === 'preview' || binaryMedia) && kind ? ' is-previewing' : ''}`}>
           <div ref={editorRef} className="ide-editor min-h-0 h-full overflow-auto bg-transparent" />
-          {viewMode === 'preview' && kind && (
+          {(viewMode === 'preview' || binaryMedia) && kind && (
             <div className={`file-preview file-preview--${kind}`}>
-              <DocumentPreview kind={kind} source={documentText} filePath={filePath} />
+              <DocumentPreview kind={kind} source={documentText} filePath={filePath} circleId={activeCircleId} />
             </div>
           )}
         </div>

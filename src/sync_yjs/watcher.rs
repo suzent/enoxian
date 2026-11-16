@@ -377,7 +377,14 @@ async fn ingest_file(state: &AppState, path: &Path, rel: String) -> Option<std::
 
     let contents = match tokio::fs::read_to_string(path).await {
         Ok(c) => c,
-        Err(e) => return Some(e.kind()),
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::InvalidData
+                && crate::api::files::is_binary_media_path(&rel)
+            {
+                let _ = state.events.send(CircleEvent::FileUpdated { path: rel });
+            }
+            return Some(e.kind());
+        }
     };
 
     // Apply to Y.Text (full replace — last external writer wins).

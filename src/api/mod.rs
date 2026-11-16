@@ -83,6 +83,16 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
         .route("/circles/{circle_id}/api/events", get(events::sse_handler))
         .route("/circles/{circle_id}/api/files", get(files::list_files))
         .route(
+            "/circles/{circle_id}/api/files/raw",
+            get(files::get_file_raw),
+        )
+        .route(
+            "/circles/{circle_id}/api/files/upload",
+            post(files::upload_file).layer(axum::extract::DefaultBodyLimit::max(
+                attachments::MAX_ATTACHMENT_BYTES,
+            )),
+        )
+        .route(
             "/circles/{circle_id}/api/files/create",
             post(files::create_file),
         )

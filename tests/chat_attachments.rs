@@ -167,7 +167,7 @@ async fn non_images_are_downloads_never_inline_content() {
     for (name, bytes) in [
         ("x.svg", b"<svg onload='alert(1)'/>".to_vec()),
         ("evil.png", b"<html><script>alert(1)</script>".to_vec()),
-        ("report.pdf", b"%PDF-1.7 test".to_vec()),
+        ("archive.bin", b"PK\x03\x04test-zip".to_vec()),
     ] {
         let (status, body) = send(&router, upload(name, bytes.clone())).await;
         assert_eq!(status, StatusCode::CREATED);
@@ -199,6 +199,43 @@ async fn non_images_are_downloads_never_inline_content() {
     }
     let (status, _) = send(&router, upload("empty.txt", Vec::new())).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn multimedia_attachments_are_sniffed_and_served_inline() {
+    let (router, _dir) = harness();
+    for (name, bytes, expected_mime) in [
+        ("report.pdf", b"%PDF-1.7 test".to_vec(), "application/pdf"),
+        (
+            "voice.mp3",
+            b"ID3\x04\x00\x00\x00\x00\x00\x00".to_vec(),
+            "audio/mpeg",
+        ),
+        (
+            "clip.mp4",
+            b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00".to_vec(),
+            "video/mp4",
+        ),
+    ] {
+        let (status, body) = send(&router, upload(name, bytes.clone())).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let att: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(att["mime"], expected_mime);
+        let hash = att["hash"].as_str().unwrap();
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/circles/{CIRCLE}/api/blobs/{hash}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.headers()["content-type"], expected_mime);
+        assert_eq!(res.headers()["content-disposition"], "inline");
+        assert_eq!(res.headers()["x-content-type-options"], "nosniff");
+    }
 }
 
 #[tokio::test]

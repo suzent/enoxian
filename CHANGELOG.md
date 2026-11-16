@@ -39,6 +39,10 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- Inline multimedia preview and Lightbox support for video, audio, PDF, AVIF, and SVG files across both Chat attachments and the Workspace file tree, alongside direct workspace multimedia uploads.
+
 ### Changed
 
 - Running ACP turns in Agent activity now show the agent's current phase and

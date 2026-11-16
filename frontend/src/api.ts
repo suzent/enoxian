@@ -245,6 +245,17 @@ export const claimTask = (id: string, taskId: string, agentId: string) =>
 export const doneTask = (id: string, taskId: string, agentId: string) =>
   post(`${api(id)}/done`, { task_id: taskId, agent_id: agentId })
 export const getFiles = (id: string) => get<string[]>(`${api(id)}/files`)
+export const workspaceFileUrl = (id: string, path: string) =>
+  withToken(`${api(id)}/files/raw?path=${encodeURIComponent(path)}`)
+export const uploadWorkspaceFile = (id: string, path: string, bytes: ArrayBuffer | Uint8Array) =>
+  request<{status: string, path: string}>(
+    `${api(id)}/files/upload?path=${encodeURIComponent(path)}`,
+    {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/octet-stream' }),
+      body: bytes instanceof Uint8Array ? bytes.slice().buffer : bytes,
+    },
+  )
 export const createFile = (id: string, path: string, content = '') =>
   post<{status: string, path: string}>(`${api(id)}/files/create`, { path, content })
 export const renameFile = (id: string, from: string, to: string) =>

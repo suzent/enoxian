@@ -196,8 +196,68 @@ function AttachmentImage({ circleId, att, nonce, onOpen }: AttachmentImageProps)
   // Reserve the real aspect ratio up front so arriving images don't reflow the
   // transcript under the reader.
   const ratio = att.width && att.height ? `${att.width} / ${att.height}` : undefined
+  const href = blobUrl(circleId, att.hash)
+  const versionedHref = `${href}${href.includes('?') ? '&' : '?'}v=${nonce}`
 
-  if (!att.mime.startsWith('image/')) return <a className="chat-file-attachment" href={blobUrl(circleId, att.hash)} download={att.name}>
+  if (att.mime.startsWith('video/')) {
+    return (
+      <div className="chat-media-attachment chat-media-attachment--video">
+        <video
+          controls
+          preload="metadata"
+          src={versionedHref}
+          aria-label={att.name}
+          onError={() => setFailed(true)}
+        />
+        <div className="chat-media-attachment__meta">
+          <span title={att.name}><strong>{att.name}</strong> · {formatBytes(att.size)}</span>
+          <a href={href} download={att.name} aria-label={`Download ${att.name}`}>
+            <Download size={14} aria-hidden="true" />
+          </a>
+        </div>
+      </div>
+    )
+  }
+
+  if (att.mime.startsWith('audio/')) {
+    return (
+      <div className="chat-media-attachment chat-media-attachment--audio">
+        <div className="chat-media-attachment__meta">
+          <span title={att.name}><strong>{att.name}</strong> · {formatBytes(att.size)}</span>
+          <a href={href} download={att.name} aria-label={`Download ${att.name}`}>
+            <Download size={14} aria-hidden="true" />
+          </a>
+        </div>
+        <audio
+          controls
+          preload="metadata"
+          src={versionedHref}
+          aria-label={att.name}
+          onError={() => setFailed(true)}
+        />
+      </div>
+    )
+  }
+
+  if (att.mime === 'application/pdf') {
+    return (
+      <div className="chat-file-attachment chat-file-attachment--pdf">
+        <FileText size={22} aria-hidden="true" />
+        <span>
+          <strong>{att.name}</strong>
+          <small>{formatBytes(att.size)} · PDF</small>
+        </span>
+        <button type="button" className="enox-btn chat-file-attachment__preview" onClick={onOpen}>
+          PREVIEW
+        </button>
+        <a href={href} download={att.name} aria-label={`Download ${att.name}`}>
+          <Download size={15} aria-hidden="true" />
+        </a>
+      </div>
+    )
+  }
+
+  if (!att.mime.startsWith('image/')) return <a className="chat-file-attachment" href={href} download={att.name}>
     <FileText size={22} aria-hidden="true" /><span><strong>{att.name}</strong><small>{formatBytes(att.size)} · Download</small></span><Download size={15} aria-hidden="true" />
   </a>
 
@@ -751,9 +811,11 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
 
   const uploadEntries = Object.entries(uploads)
 
-  // Every image in the transcript, in order, so the viewer can page through
-  // the whole conversation rather than just the message that was clicked.
-  const galleryItems = messages.flatMap(m => m.attachments ?? []).filter(att => att.mime.startsWith('image/'))
+  // Every previewable item in the transcript, in order, so the viewer can page
+  // through the whole conversation rather than just the message that was clicked.
+  const galleryItems = messages
+    .flatMap(m => m.attachments ?? [])
+    .filter(att => att.mime.startsWith('image/') || att.mime.startsWith('video/') || att.mime === 'application/pdf')
   const lightboxIndex = lightboxHash
     ? galleryItems.findIndex(a => a.hash === lightboxHash)
     : -1

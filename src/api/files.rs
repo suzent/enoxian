@@ -1,15 +1,74 @@
 use crate::control::CircleEvent;
 use crate::daemon::DaemonState;
 use axum::{
-    extract::{Path, State},
-    http::StatusCode,
+    body::Bytes,
+    extract::{Path, Query, State},
+    http::{header, StatusCode},
     response::IntoResponse,
     Json,
 };
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::path::{Component, PathBuf};
 use yrs::{GetString, Text, Transact, WriteTxn};
+
+/// Whether `rel` has a binary multimedia extension that the workspace UI
+/// previews directly rather than syncing through a Yjs `Y.Text` document.
+pub fn is_binary_media_path(rel: &str) -> bool {
+    let Some(ext) = rel.rsplit('.').next().filter(|e| *e != rel) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "avif"
+            | "bmp"
+            | "ico"
+            | "mp3"
+            | "wav"
+            | "ogg"
+            | "flac"
+            | "m4a"
+            | "aac"
+            | "opus"
+            | "mp4"
+            | "webm"
+            | "mov"
+            | "m4v"
+            | "ogv"
+            | "pdf"
+    )
+}
+
+fn extension_media_mime(rel: &str) -> Option<&'static str> {
+    let ext = rel.rsplit('.').next()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "avif" => Some("image/avif"),
+        "bmp" => Some("image/bmp"),
+        "ico" => Some("image/x-icon"),
+        "svg" => Some("image/svg+xml"),
+        "mp3" => Some("audio/mpeg"),
+        "wav" => Some("audio/wav"),
+        "ogg" | "opus" => Some("audio/ogg"),
+        "flac" => Some("audio/flac"),
+        "m4a" | "aac" => Some("audio/mp4"),
+        "mp4" | "m4v" => Some("video/mp4"),
+        "webm" => Some("video/webm"),
+        "mov" => Some("video/quicktime"),
+        "ogv" => Some("video/ogg"),
+        "pdf" => Some("application/pdf"),
+        _ => None,
+    }
+}
 
 pub async fn list_files(
     State(daemon): State<DaemonState>,
@@ -26,17 +85,39 @@ pub async fn list_files(
         }
     };
 
-    // state.docs is the authoritative set of tracked files — populated by startup preload
-    // and updated as files are synced from peers or created locally. No filesystem scan needed.
-    let mut files: Vec<String> = state
+    // state.docs holds all tracked UTF-8 text documents; also include binary
+    // multimedia files present in the workspace so the UI can list and preview them.
+    let mut files: BTreeSet<String> = state
         .docs
         .iter()
         .map(|r| r.key().clone())
         .filter(|k| k != "__control__")
         .collect();
 
-    files.sort();
-    Json(json!(files)).into_response()
+    let mut stack = vec![state.workspace.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(mut rd) = tokio::fs::read_dir(&dir).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let path = entry.path();
+            let Ok(rel) = path.strip_prefix(&state.workspace) else {
+                continue;
+            };
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            if state.is_ignored(&rel) {
+                continue;
+            }
+            if path.is_dir() {
+                stack.push(path);
+            } else if is_binary_media_path(&rel) && !crate::deletions::is_deleted(&state, &rel) {
+                files.insert(rel);
+            }
+        }
+    }
+
+    let sorted: Vec<String> = files.into_iter().collect();
+    Json(json!(sorted)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -352,6 +433,7 @@ pub async fn delete_file(
     }
 
     state.remove_doc(&rel);
+    crate::deletions::record(&state, &rel);
     crate::store::crdt::delete(&state.workspace, &rel).await;
     let _ = state.all_deletes.send(rel.clone());
     let _ = state.interactive_writes.send((rel.clone(), None));
@@ -362,6 +444,143 @@ pub async fn delete_file(
     (
         StatusCode::OK,
         Json(json!({ "status": "deleted", "path": rel })),
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct FilePathQuery {
+    pub path: String,
+}
+
+/// `POST /circles/{id}/api/files/upload?path=...` — upload a binary/multimedia
+/// file directly into the workspace directory.
+pub async fn upload_file(
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
+    Query(q): Query<FilePathQuery>,
+    body: Bytes,
+) -> impl IntoResponse {
+    let Some(state) = daemon.get(&circle_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "circle not found"})),
+        )
+            .into_response();
+    };
+    let rel = match normalize_rel_path(&q.path) {
+        Ok(path) => path,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response();
+        }
+    };
+    if state.is_ignored(&rel) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "path is ignored" })),
+        )
+            .into_response();
+    }
+    if body.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "empty upload" })),
+        )
+            .into_response();
+    }
+    if body.len() > super::attachments::MAX_ATTACHMENT_BYTES {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({
+                "error": "file too large",
+                "max_bytes": super::attachments::MAX_ATTACHMENT_BYTES,
+            })),
+        )
+            .into_response();
+    }
+    let full = workspace_path(&state, &rel);
+    if tokio::fs::try_exists(&full).await.unwrap_or(false) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "file already exists" })),
+        )
+            .into_response();
+    }
+    if let Some(parent) = full.parent() {
+        if let Err(err) = tokio::fs::create_dir_all(parent).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": err.to_string() })),
+            )
+                .into_response();
+        }
+    }
+    if let Err(err) = tokio::fs::write(&full, &body).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response();
+    }
+    if let Some(deleted_at) = crate::deletions::covering_ts(&state, &rel) {
+        crate::deletions::clear(&state, &rel);
+        mark_recreated(&full, deleted_at).await;
+    }
+
+    let _ = state.interactive_writes.send((rel.clone(), None));
+    let _ = state
+        .events
+        .send(CircleEvent::FileUpdated { path: rel.clone() });
+
+    (
+        StatusCode::OK,
+        Json(json!({ "status": "created", "path": rel })),
+    )
+        .into_response()
+}
+
+/// `GET /circles/{id}/api/files/raw?path=...` — serve raw workspace file bytes
+/// for multimedia preview and download.
+pub async fn get_file_raw(
+    State(daemon): State<DaemonState>,
+    Path(circle_id): Path<String>,
+    Query(q): Query<FilePathQuery>,
+) -> impl IntoResponse {
+    let Some(state) = daemon.get(&circle_id) else {
+        return (StatusCode::NOT_FOUND, "circle not found").into_response();
+    };
+    let rel = match normalize_rel_path(&q.path) {
+        Ok(path) => path,
+        Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+    };
+    if state.is_ignored(&rel) {
+        return (StatusCode::NOT_FOUND, "file not found").into_response();
+    }
+    let full = workspace_path(&state, &rel);
+    let Ok(bytes) = tokio::fs::read(&full).await else {
+        return (StatusCode::NOT_FOUND, "file not found").into_response();
+    };
+    let mime = super::attachments::sniff_mime(&bytes)
+        .or_else(|| extension_media_mime(&rel))
+        .unwrap_or("application/octet-stream");
+    let inline = super::attachments::is_inline_media_mime(mime);
+
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, mime),
+            (
+                header::CONTENT_DISPOSITION,
+                if inline { "inline" } else { "attachment" },
+            ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CACHE_CONTROL, "no-cache"),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; img-src 'self' data:; media-src 'self'; object-src 'self'; style-src 'unsafe-inline'; sandbox",
+            ),
+        ],
+        bytes,
     )
         .into_response()
 }
@@ -505,5 +724,49 @@ mod tests {
         assert_eq!(rename(&daemon, "a.md", "b.md").await, StatusCode::OK);
         assert!(!crate::deletions::is_deleted(&state, "b.md"));
         assert!(crate::deletions::is_deleted(&state, "a.md"));
+    }
+
+    #[tokio::test]
+    async fn uploads_lists_and_serves_workspace_multimedia_files() {
+        let (daemon, _state, _dir) = circle();
+        let png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00".to_vec();
+
+        let resp = upload_file(
+            State(daemon.clone()),
+            Path("c1".into()),
+            Query(FilePathQuery {
+                path: "assets/diagram.png".into(),
+            }),
+            Bytes::from(png.clone()),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let list_resp = list_files(State(daemon.clone()), Path("c1".into()))
+            .await
+            .into_response();
+        let list_bytes = axum::body::to_bytes(list_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let files: Vec<String> = serde_json::from_slice(&list_bytes).unwrap();
+        assert_eq!(files, vec!["assets/diagram.png".to_string()]);
+
+        let raw_resp = get_file_raw(
+            State(daemon),
+            Path("c1".into()),
+            Query(FilePathQuery {
+                path: "assets/diagram.png".into(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(raw_resp.status(), StatusCode::OK);
+        assert_eq!(raw_resp.headers()["content-type"], "image/png");
+        assert_eq!(raw_resp.headers()["content-disposition"], "inline");
+        let raw_bytes = axum::body::to_bytes(raw_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(raw_bytes.as_ref(), png.as_slice());
     }
 }
