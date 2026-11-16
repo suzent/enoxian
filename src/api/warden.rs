@@ -110,6 +110,26 @@ pub async fn set_config(Json(req): Json<ConfigRequest>) -> axum::response::Respo
 }
 
 #[derive(Deserialize)]
+pub struct ModelsQuery {
+    pub decider: Option<String>,
+    pub endpoint: Option<String>,
+}
+
+pub async fn models(Query(query): Query<ModelsQuery>) -> axum::response::Response {
+    let cfg = AgentConfig::load();
+    match decider::fetch_models(
+        &cfg.warden,
+        query.decider.as_deref(),
+        query.endpoint.as_deref(),
+    )
+    .await
+    {
+        Ok(models) => Json(json!({ "models": models })).into_response(),
+        Err(error) => bad_request(error),
+    }
+}
+
+#[derive(Deserialize)]
 pub struct KeyRequest {
     pub decider: String,
     /// `null` or `""` removes the key.

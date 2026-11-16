@@ -667,8 +667,8 @@ Warden**:
   own (the System One format).
 - **OpenAI**, **Anthropic** or **Gemini** — an ordinary chat model, with an API
   key from that provider's console. It fills in a structured answer with a
-  probability for each question. Each comes with a cheap default model, which
-  you can change under **Connection details**.
+  probability for each question. Once a key is saved, enoxian fetches the
+  provider's available models so you can choose one.
 - **OpenAI-compatible** — any server that speaks OpenAI Chat Completions with
   JSON-schema output: OpenRouter, DeepSeek, Ollama, vLLM, a LiteLLM proxy.
   Give it the endpoint (the base URL, such as `https://openrouter.ai/api/v1`,

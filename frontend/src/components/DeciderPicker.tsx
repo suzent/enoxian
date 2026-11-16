@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import Select from './ui/Select'
+import * as api from '../api'
 import type { WardenKind } from '../api'
 
 /** The decider a new device is pointed at. */
@@ -8,16 +9,16 @@ export const RECOMMENDED_DECIDER = 'jev'
 /** Shown as cards; everything else (compatible endpoints, local manifests) sits under "Other". */
 const FEATURED = [RECOMMENDED_DECIDER, 'openai', 'anthropic', 'gemini', 'builtin:rules']
 
+const isDecisionApi = (p: WardenKind['protocol']) => p === 'systemone' || p === 'decisions'
+const isChatModel = (p: WardenKind['protocol']) =>
+  p === 'openai_chat' || p === 'openai_responses' || p === 'anthropic_messages' || p === 'gemini'
+
 /** Messages that show the range of what the Warden does, for "try it". */
 export const WARDEN_SAMPLES = [
   'Could someone review the retry logic in src/sync.rs before I merge?',
   'Which of these two approaches is better for caching, and why?',
   'thanks all, heading out for lunch',
 ]
-
-const host = (url?: string | null) => {
-  try { return url ? new URL(url).host : null } catch { return null }
-}
 
 interface Props {
   kinds: WardenKind[]
@@ -30,6 +31,9 @@ interface Props {
   onKeyDraftChange?: (dirty: boolean) => void
   /** Where requests actually go, when the config overrides the manifest. */
   endpoint?: string | null
+  /** Currently configured model, when using a model API. */
+  model?: string | null
+  onSelectModel?: (model: string) => void
   /** The key comes from an environment variable the person named instead. */
   keyFromEnv?: string | null
   /** Say what happens without a key, where nothing else on the page does. */
@@ -40,8 +44,13 @@ interface Props {
  * Choose what the Warden asks, and give it a key. Used in onboarding and in
  * settings, so both say the same thing about cost and where messages go.
  */
-export default function DeciderPicker({ kinds, value, busy, onSelect, onSaveKey, onRemoveKey, onKeyDraftChange, endpoint, keyFromEnv, explainFallback }: Props) {
+export default function DeciderPicker({
+  kinds, value, busy, onSelect, onSaveKey, onRemoveKey, onKeyDraftChange,
+  endpoint, model, onSelectModel, keyFromEnv, explainFallback,
+}: Props) {
   const [key, setKey] = useState('')
+  const [models, setModels] = useState<string[]>([])
+  const [fetchingModels, setFetchingModels] = useState(false)
   useEffect(() => { setKey('') }, [value])
   useEffect(() => { onKeyDraftChange?.(!!key) }, [key, onKeyDraftChange])
 
@@ -49,11 +58,38 @@ export default function DeciderPicker({ kinds, value, busy, onSelect, onSaveKey,
   const others = kinds.filter(k => !FEATURED.includes(k.id))
   const selected = kinds.find(k => k.id === value)
   const otherSelected = !!selected && !FEATURED.includes(selected.id)
+  const hasKey = !selected?.needs_key || !!selected?.key_hint || !!keyFromEnv
+  const hasEndpoint = !!(endpoint || selected?.endpoint)
+
+  useEffect(() => {
+    if (!selected || selected.protocol === 'rules' || !hasKey || !hasEndpoint || typeof api.getWardenModels !== 'function') {
+      setModels([])
+      setFetchingModels(false)
+      return
+    }
+    let live = true
+    setFetchingModels(true)
+    api.getWardenModels(selected.id, endpoint).then(res => {
+      if (!live) return
+      const list = res?.models ?? []
+      setModels(list)
+      if (isChatModel(selected.protocol) && list.length > 0 && (!model || !list.includes(model))) {
+        onSelectModel?.(list[0])
+      }
+    }, () => {
+      if (live) setModels([])
+    }).finally(() => {
+      if (live) setFetchingModels(false)
+    })
+    return () => { live = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.id, selected?.key_hint, endpoint, hasKey, hasEndpoint])
 
   const tag = (k: WardenKind) =>
-    k.id === RECOMMENDED_DECIDER ? 'Recommended'
-      : k.protocol === 'rules' ? 'Free · no key'
-        : null
+    k.id === RECOMMENDED_DECIDER ? 'Decision API'
+      : isDecisionApi(k.protocol) ? 'Decision API'
+        : k.protocol === 'rules' ? 'Free · no key'
+          : null
 
   const card = (k: WardenKind) => {
     const checked = k.id === value
@@ -73,8 +109,6 @@ export default function DeciderPicker({ kinds, value, busy, onSelect, onSaveKey,
     )
   }
 
-  const destination = host(endpoint || selected?.endpoint)
-
   return (
     <div className="decider-picker">
       <div role="radiogroup" aria-label="Decider" className="decider-cards">
@@ -86,7 +120,7 @@ export default function DeciderPicker({ kinds, value, busy, onSelect, onSaveKey,
             <span className="decider-card__mark" aria-hidden="true" />
             <span className="decider-card__body">
               <span className="decider-card__title">Other provider</span>
-              <span className="decider-card__text">Any OpenAI-compatible endpoint, OpenAI Decisions, or a decider you added under ~/.enoxian/wardens.</span>
+              <span className="decider-card__text">OpenAI-compatible endpoint, OpenAI Decisions, or custom manifest.</span>
             </span>
           </button>
         )}
@@ -96,7 +130,7 @@ export default function DeciderPicker({ kinds, value, busy, onSelect, onSaveKey,
         <label className="decider-field">
           Provider
           <Select aria-label="Other provider" disabled={busy} value={value}
-            options={others.map(k => ({ value: k.id, label: k.name }))} onChange={onSelect} />
+            options={others.map(k => ({ value: k.id, label: `${k.name}${isDecisionApi(k.protocol) ? ' (Decision API)' : ''}` }))} onChange={onSelect} />
         </label>
       )}
 
@@ -126,12 +160,20 @@ export default function DeciderPicker({ kinds, value, busy, onSelect, onSaveKey,
               <button type="button" className="enox-btn" disabled={busy} onClick={() => onRemoveKey(selected.id)}>Remove key</button>
             )}
           </form>
+          {models.length > 0 && (
+            <label className="decider-field">
+              <span>Model</span>
+              <Select aria-label="Fetched model" disabled={busy} value={model || models[0] || ''}
+                options={models.map(m => ({ value: m, label: m }))}
+                onChange={m => onSelectModel?.(m)} />
+            </label>
+          )}
+          {fetchingModels && models.length === 0 && (
+            <p className="decider-note">Fetching models…</p>
+          )}
           <p className="decider-note">
             {explainFallback && !selected.key_hint && <>Until a key is saved, the built-in rules decide. </>}
-            Stored only on this device and never shown again.
-            {destination && <> In Circles where the Warden is on, messages nobody addressed are sent to <strong>{destination}</strong> to decide who answers.</>}
-            {!destination && <> In Circles where the Warden is on, messages nobody addressed are sent to the endpoint you set to decide who answers.</>}
-            {' '}This is an API key from the provider&apos;s console, billed per request; a Claude Code, Codex or Gemini CLI subscription login does not work here.
+            Stored locally; a CLI subscription login does not work here.
           </p>
           {!endpoint && !selected.endpoint && (
             <p className="decider-note">Set its endpoint and model under Connection details in the Warden settings.</p>
@@ -142,7 +184,7 @@ export default function DeciderPicker({ kinds, value, busy, onSelect, onSaveKey,
         <p className="decider-note">Key read from <code>{keyFromEnv}</code> on this device.</p>
       )}
       {selected?.protocol === 'rules' && (
-        <p className="decider-note">Nothing leaves this device. Rules work on message length alone, so they cannot tell who is best placed to answer.</p>
+        <p className="decider-note">Local only; decides by message length.</p>
       )}
       {selected && !selected.needs_key && selected.protocol !== 'rules' && (
         <p className="decider-note">No key needed.</p>

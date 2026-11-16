@@ -389,8 +389,12 @@ export default function LandingPage({ onEntered }: Props) {
             {linkExpanded && (
               <div style={{ marginTop: 8 }}>
                 <div style={dividerStyle} />
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#555', fontWeight: 700, marginBottom: 8, letterSpacing: '0.06em' }}>
-                  ENTER YOUR NAME AND RECOVERY PHRASE FROM ANOTHER DEVICE
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#555', lineHeight: 1.5, marginBottom: 8 }}>
+                  PAIR: run <code style={{ color: '#000', fontWeight: 700 }}>enox link</code> on your other device, then run its 4-word code here.
+                </div>
+                <div style={{ borderBottom: '1px dashed #ccc', margin: '8px 0' }} />
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#555', fontWeight: 700, marginBottom: 6, letterSpacing: '0.06em' }}>
+                  OR RECOVER WITH 24-WORD PHRASE
                 </div>
                 <div style={rowStyle}>
                   <span style={labelStyle}>USER NAME</span>

@@ -210,9 +210,18 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
           </aside>
           <div className="ritual-panel__body settings-panel-body flex flex-col gap-4">
           <header className="settings-section-heading">
-            <span className="settings-section-heading__scope">{scope === 'global' ? 'THIS DEVICE · GLOBAL' : `THIS DEVICE IN ${activeCircle?.circle_name ?? 'CIRCLE'}`}</span>
-            <h2>{{ device: 'Device identity', agents: 'Your agents', behaviour: 'Agent behaviour', membership: 'Circle membership', connectivity: 'Connectivity' }[activeTab]}</h2>
-            <p>{{ device: 'How you and this machine appear to others.', agents: 'Agents on this machine, available in every Circle.', behaviour: scope === 'global' ? 'Set how agents respond across all Circles.' : 'Tailor how agents respond in this Circle.', membership: 'Pause participation or leave this Circle on this device.', connectivity: 'How this device connects to this Circle.' }[activeTab]}</p>
+            <div className="settings-section-heading__row">
+              <div>
+                <span className="settings-section-heading__scope">{scope === 'global' ? 'THIS DEVICE · GLOBAL' : `THIS DEVICE IN ${activeCircle?.circle_name ?? 'CIRCLE'}`}</span>
+                <h2>{{ device: 'Device identity', agents: 'Your agents', behaviour: 'Agent behaviour', membership: 'Circle membership', connectivity: 'Connectivity' }[activeTab]}</h2>
+                <p>{{ device: 'How you and this machine appear to others.', agents: 'Agents on this machine, available in every Circle.', behaviour: scope === 'global' ? 'Set how agents respond across all Circles.' : 'Tailor how agents respond in this Circle.', membership: 'Pause participation or leave this Circle on this device.', connectivity: 'How this device connects to this Circle.' }[activeTab]}</p>
+              </div>
+              {activeTab === 'behaviour' && scope === 'global' && (
+                <button type="button" className="enox-btn settings-recommended-btn" disabled={busy} onClick={() => setRecommending(true)}>
+                  RECOMMENDED SETTINGS…
+                </button>
+              )}
+            </div>
           </header>
           {activeTab === 'membership' && membership}
           {error && (
@@ -228,26 +237,15 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
           )}
 
           {activeTab === 'device' && identity && (
-            <>
-              <section>
-                <div className="text-[11px] font-bold mb-1">IDENTITY</div>
-                <DeviceIdentity
-                  identity={identity}
-                  addressedAs={cfg?.circle?.addressed_as}
-                  circleName={activeCircle?.circle_name}
-                  busy={busy}
-                  onDirtyChange={setIdentityDirty}
-                  onSave={async patch => { if (await run(() => setIdentity(patch))) setIdentityDirty(false) }}
-                />
-              </section>
-
-              {cfg?.config_path && (
-                <section>
-                  <div className="text-[11px] font-bold mb-1">CONFIG</div>
-                  <div className="text-[9px] text-slate break-all">{cfg.config_path}</div>
-                </section>
-              )}
-            </>
+            <DeviceIdentity
+              identity={identity}
+              addressedAs={cfg?.circle?.addressed_as}
+              circleName={activeCircle?.circle_name}
+              configPath={cfg?.config_path}
+              busy={busy}
+              onDirtyChange={setIdentityDirty}
+              onSave={async patch => { if (await run(() => setIdentity(patch))) setIdentityDirty(false) }}
+            />
           )}
 
           {(activeTab === 'agents' || activeTab === 'behaviour') && !cfg && !error && <div className="text-slate font-mono text-[11px]">Loading…</div>}
@@ -258,21 +256,15 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                 {scope === 'circle' && <p className="settings-scope__note">
                   Only affects this device; never shared with the Circle. Unset options use your global defaults.
                 </p>}
-                {scope === 'global' && <div className="settings-concurrency">
-                  Agents running at once on this device
+                {scope === 'global' && <div className="settings-option-group settings-concurrency">
+                  <div>
+                    <div className="engagement-row__label">Agents running at once on this device</div>
+                    <span className="block text-slate text-[12px]">Extra runs wait; applies on restart.</span>
+                  </div>
                   <Select aria-label="Agents running at once on this device" disabled={busy} value={String(cfg.max_concurrent_runs ?? 4)}
                     onChange={value => void run(() => setEngagement({ max_concurrent_runs: Number(value) }))}
                     options={[1, 2, 4, 8, 16, 32].map(n => ({ value: String(n), label: n === 1 ? '1 (serial)' : String(n) }))} />
-                  <span className="block text-slate">Extra runs wait their turn. Applies after a daemon restart.</span>
                 </div>}
-                {scope === 'global' && (
-                  <div className="settings-recommended">
-                    <span>Preview and apply the recommended settings.</span>
-                    <button type="button" className="enox-btn" disabled={busy} onClick={() => setRecommending(true)}>
-                      RECOMMENDED SETTINGS…
-                    </button>
-                  </div>
-                )}
                 {scope === 'circle' && !activeCircleId ? null : (
                   <EngagementSettings
                     agentNames={cfg.agents.map(a => a.name)}

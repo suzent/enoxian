@@ -41,6 +41,10 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
+- Streamlined first-run onboarding (`enox open` auto-starts the daemon, the
+  two-step setup dialog opens automatically and enables detected local agents in
+  one click), replaced hardcoded Warden models with live `/models` discovery
+  across providers, and flattened the Settings UI.
 - Running ACP turns in Agent activity now show the agent's current phase and
   file, step-by-step plan progress, recently completed tool calls with duration,
   live token/cost usage, and a context-window usage bar.

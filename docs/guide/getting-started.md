@@ -35,14 +35,24 @@ installer. Source builds are covered in the
 ## 2. Create a Circle
 
 ```sh
+enox open
+```
+
+`open` starts enoxian in the background (if it is not already running) and opens
+the local web UI. From there you can set your identity, create or join a Circle,
+enable the coding agents found on this machine, and choose how the Warden routes
+messages.
+
+To create a Circle from the terminal instead:
+
+```sh
 enox init --name MyCircle
-enox start
 enox open
 ```
 
 `init` prints the location of your shared folder, normally
-`~/enoxian/MyCircle`, and an invite. `start` runs enoxian in the background;
-`open` opens the local web UI.
+`~/enoxian/MyCircle`, and an invite. When you open the web UI afterward, it
+still walks you through enabling your local agents and Warden on first run.
 
 Add a note inside that folder using your usual editor. This is where shared
 notes, decisions, and hand-offs live. Keep repositories, dependencies, and
