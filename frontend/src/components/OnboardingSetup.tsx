@@ -73,6 +73,12 @@ function AgentsStep({ circleId, onNext, onSkip }: { circleId?: string | null; on
     } catch (e) { setError(message(e)); setPlugins(p => p ?? []) }
   }, [])
   useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    const onReturn = () => { if (document.visibilityState === 'visible') void refresh() }
+    window.addEventListener('focus', onReturn)
+    document.addEventListener('visibilitychange', onReturn)
+    return () => { window.removeEventListener('focus', onReturn); document.removeEventListener('visibilitychange', onReturn) }
+  }, [refresh])
 
   const act = async (id: string, fn: () => Promise<unknown>) => {
     setWorking(id)
@@ -88,12 +94,48 @@ function AgentsStep({ circleId, onNext, onSkip }: { circleId?: string | null; on
     return s.ready ? 0 : s.runtimeMissing || s.nodeMissing ? 2 : 1
   }
   const ordered = [...plugins].sort((a, b) => rank(a) - rank(b))
+  const detectedPlugins = ordered.filter(p => {
+    const s = pluginStatus(p)
+    return !s.ready && !s.runtimeMissing && !s.nodeMissing
+  })
+  const detectedExtra = extra.filter(a => !a.configured)
+  const detectedCount = detectedPlugins.length + detectedExtra.length
   const readyCount = configured.length
+
+  const continueWithDetected = async () => {
+    if (readyCount > 0 || detectedCount === 0) {
+      onNext(configured)
+      return
+    }
+    setWorking('__all__')
+    setError(null)
+    try {
+      for (const p of detectedPlugins) await installAgentPlugin(p.id)
+      for (const a of detectedExtra) await addAgent(a.name, a.driver, a.command)
+      const cfg = await getAgentConfig()
+      const names = cfg.agents.map(a => a.name)
+      setConfigured(names)
+      onNext(names.length ? names : [...detectedPlugins.map(p => p.agent), ...detectedExtra.map(a => a.name)])
+    } catch (e) {
+      setError(message(e))
+      await refresh()
+    } finally {
+      setWorking(null)
+    }
+  }
+
+  const primaryLabel = readyCount
+    ? `CONTINUE WITH ${readyCount} AGENT${readyCount === 1 ? '' : 'S'}`
+    : detectedCount === 1
+      ? `ENABLE @${(detectedPlugins[0]?.agent ?? detectedExtra[0]?.name ?? '').toUpperCase()} & CONTINUE`
+      : detectedCount > 1
+        ? `ENABLE ${detectedCount} FOUND AGENTS & CONTINUE`
+        : 'CONTINUE'
 
   return (
     <div className="onboard__body">
       <p className="onboard__lead">
-        Agents on this machine can answer in your Circles. Enable the ones you use; their logins and settings stay yours.
+        Enable the coding agents found on this machine.
       </p>
       {error && <p className="onboard__error" role="alert">{error}</p>}
       <ul className="onboard-agents">
@@ -156,8 +198,8 @@ function AgentsStep({ circleId, onNext, onSkip }: { circleId?: string | null; on
         <button type="button" className="onboard-link" onClick={() => void refresh()} disabled={!!working}>Installed something? Check again</button>
       )}
       <div className="onboard__actions">
-        <button type="button" className="onboard-btn onboard-btn--primary" disabled={!!working} onClick={() => onNext(configured)}>
-          {readyCount ? `CONTINUE WITH ${readyCount} AGENT${readyCount === 1 ? '' : 'S'}` : 'CONTINUE'}
+        <button type="button" className="onboard-btn onboard-btn--primary" disabled={!!working} onClick={() => void continueWithDetected()}>
+          {working === '__all__' ? 'ENABLING…' : primaryLabel}
         </button>
         <button type="button" className="onboard-btn onboard-btn--ghost" disabled={!!working} onClick={onSkip}>SKIP SETUP</button>
       </div>
@@ -170,6 +212,7 @@ function WardenStep({ circleId, agents, onBack, onSkip, onDone }: {
 }) {
   const [view, setView] = useState<WardenView | null>(null)
   const [choice, setChoice] = useState<string>(RECOMMENDED_DECIDER)
+  const [model, setModel] = useState<string>('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [asking, setAsking] = useState(false)
@@ -181,6 +224,7 @@ function WardenStep({ circleId, agents, onBack, onSkip, onDone }: {
       // Someone who already chose a decider keeps it; a new device starts on
       // the recommended one, which is only used once it has a key.
       if (v.config.decider !== 'builtin:rules' || v.kinds.every(k => k.id !== RECOMMENDED_DECIDER)) setChoice(v.config.decider)
+      if (v.config.model) setModel(v.config.model)
     }).catch(e => setError(message(e)))
   }, [])
 
@@ -192,17 +236,19 @@ function WardenStep({ circleId, agents, onBack, onSkip, onDone }: {
     try { await fn() } catch (e) { setError(message(e)) } finally { setBusy(false) }
   }
 
+  const configPatch = () => (model ? { decider: choice, model } : { decider: choice })
+
   const tryIt = (text: string) => guard(async () => {
     setAsking(true)
     try {
-      await setWardenConfig({ decider: choice })
+      await setWardenConfig(configPatch())
       const result = await testWarden(text, circleId)
       setTried({ text, decision: result.decision })
     } finally { setAsking(false) }
   })
 
   const finish = () => guard(async () => {
-    await setWardenConfig({ decider: choice })
+    await setWardenConfig(configPatch())
     // Open by default: agents hear the room, and the Warden picks who answers.
     await setEngagement({
       reaction: 'push',
@@ -229,14 +275,14 @@ function WardenStep({ circleId, agents, onBack, onSkip, onDone }: {
   return (
     <div className="onboard__body">
       <p className="onboard__lead">
-        When a message names no one, the Warden decides whether it needs an answer and which
-        {agents.length ? ` of your ${agents.length === 1 ? 'agent' : `${agents.length} agents`}` : ' agents'} should give it. Mention someone with @ to skip it.
+        For messages without an @mention, the Warden picks who answers.
       </p>
       {agents.length === 0 && (
-        <p className="onboard__muted">No agents are enabled yet, so there is nobody for it to pick. You can go back, or add agents later.</p>
+        <p className="onboard__muted">No agents enabled yet — go back or add one later.</p>
       )}
       <DeciderPicker kinds={view.kinds} value={choice} busy={busy} explainFallback
-        onSelect={id => { setChoice(id); setTried(null) }}
+        model={model} onSelectModel={m => { setModel(m); setTried(null) }}
+        onSelect={id => { setChoice(id); setModel(''); setTried(null) }}
         onSaveKey={async (id, key) => { await guard(async () => { await setWardenKey(id, key); await reload(); setTried(null) }) }} />
 
       <div className="onboard-try">

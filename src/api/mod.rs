@@ -266,6 +266,7 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
             post(agent_config::readvertise),
         )
         .route("/api/warden", get(warden::get))
+        .route("/api/warden/models", get(warden::models))
         .route("/api/warden/config", post(warden::set_config))
         .route("/api/warden/key", post(warden::set_key))
         .route("/api/warden/spec", post(warden::set_spec))

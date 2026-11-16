@@ -1215,12 +1215,51 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
         const list = messageListRef.current
         if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 48) setUnread(false)
       }}>
-        {messages.length === 0 && chatLoaded && !chatError && (
-          <div className="chat-empty-state">
-            <span>NO MESSAGES YET</span>
-            <strong>Send the first message.</strong>
-          </div>
-        )}
+        {messages.length === 0 && chatLoaded && !chatError && (() => {
+          const firstAgent = myMember?.agents?.[0] ?? members.flatMap(m => m.agents ?? [])[0]
+          const fillPrompt = (agent: string) => {
+            const nodes: DraftNode[] = [
+              { kind: 'mention', token: agent },
+              { kind: 'text', value: ' summarize AGENTS.md and suggest our first steps' },
+            ]
+            const text = draftText(nodes)
+            inputRef.current?.restore(nodes)
+            setInput(text)
+            writeDraft({ nodes })
+            lastTypedTextRef.current = text
+            inputRef.current?.focus()
+          }
+          return (
+            <div className="chat-empty-state">
+              <span>NO MESSAGES YET</span>
+              <strong>Send the first message.</strong>
+              {status?.workspace && (
+                <code className="chat-empty-state__path" title="Shared folder on this device">
+                  {status.workspace}
+                </code>
+              )}
+              {(firstAgent || onOpenCircleDetails) && (
+                <div className="chat-empty-state__actions">
+                  {firstAgent && (
+                    <button type="button" className="enox-btn" onClick={() => fillPrompt(firstAgent)}>
+                      TRY @{firstAgent.toUpperCase()}
+                    </button>
+                  )}
+                  {onOpenCircleDetails && (
+                    <>
+                      <button type="button" className="enox-btn" onClick={() => onOpenCircleDetails('members')}>
+                        INVITE
+                      </button>
+                      <button type="button" className="enox-btn" onClick={() => onOpenCircleDetails('workspace')}>
+                        FILES
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })()}
         {chatError && (
           <div className="chat-empty-state">
             <span>COULD NOT LOAD MESSAGES</span>

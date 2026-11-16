@@ -249,7 +249,7 @@ function Layout() {
       {showLanding && !circlesError && <LandingPage onEntered={handleEntered} />}
 
       {circles.length > 0 && !showLanding && !revealing && !ritual && !recommendedAsked && (
-        <RecommendedSetup auto onClose={closeRecommended} />
+        <RecommendedSetup auto circleId={activeCircleId} onClose={closeRecommended} />
       )}
 
       {revealing && (

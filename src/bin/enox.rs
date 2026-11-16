@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
             enoxian::commands::invite::run(args, &client, &api_base).await
         }
         AgentCommands::Circles => enoxian::commands::circles::run(&client, &root, cli.json).await,
-        AgentCommands::Open => enoxian::commands::open::run(&root),
+        AgentCommands::Open => enoxian::commands::open::run(&root).await,
         AgentCommands::Start { port } => enoxian::commands::start::run(port).await,
         AgentCommands::Stop => {
             if enoxian::commands::service::is_installed() {

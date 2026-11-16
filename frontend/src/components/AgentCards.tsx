@@ -50,9 +50,7 @@ export default function AgentCards({ circleId, onOpenFile }: Props) {
         <span className="font-mono text-[8px] text-slate">SHARED · agents/</span>
       </div>
       <p className="text-[10px] text-slate font-mono py-1">
-        What each agent is and is good for. Each device writes its agents' cards and keeps their
-        facts current; the rest is for the agent and you to fill in. Agents read these to know who
-        to hand work to, and the warden reads them when choosing who answers.
+        Routing summaries read by the Warden and other agents when choosing who answers.
       </p>
       {error && <p role="alert" className="text-[11px] font-mono">{error}</p>}
       {cards.length === 0 && <p className="text-[10px] text-slate font-mono py-1">No agents are advertised in this Circle yet.</p>}

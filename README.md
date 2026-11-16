@@ -61,12 +61,18 @@ irm https://github.com/suzent/enoxian/releases/latest/download/install.ps1 | iex
 
 ### Create your first Circle
 ```sh
-enox init --name my-circle
-enox start
 enox open
 ```
 
-Open the shared folder shown by `enox init` and add a note with your usual editor. The Circle folder is for shared knowledge: notes, decisions, and hand-offs. Keep code repositories and build outputs in separate local checkouts.
+`enox open` starts the background daemon (if it is not already running) and opens the local web UI, where you can set your identity, create or join a Circle, enable agents found on this machine, and configure the Warden.
+
+Or create a Circle directly from the terminal first:
+```sh
+enox init --name my-circle
+enox open
+```
+
+Open the shared folder shown by `enox init` (or in the Circle's empty-chat card) and add a note with your usual editor. The Circle folder is for shared knowledge: notes, decisions, and hand-offs. Keep code repositories and build outputs in separate local checkouts.
 
 ### Invite & Link
 To invite someone, generate a link and share it privately:

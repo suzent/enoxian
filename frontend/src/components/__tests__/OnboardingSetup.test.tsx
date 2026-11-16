@@ -26,6 +26,7 @@ const kinds = (hint: string | null) => [
     needs_key: true, builtin: true, fields: {}, key_hint: hint, key_url: 'https://docs.typesafe.ai/models' },
 ]
 const getWarden = vi.fn()
+const getWardenModels = vi.fn(async () => ({ models: [] as string[] }))
 const setWardenConfig = vi.fn(async () => ({ ok: true }))
 const setWardenKey = vi.fn(async () => ({ key_hint: '••••cret' }))
 const setEngagement = vi.fn(async () => ({}))
@@ -33,7 +34,7 @@ const testWarden = vi.fn()
 vi.mock('../../api', () => ({
   getAgentPlugins, discoverAgents, getAgentConfig, installAgentPlugin, addAgent,
   getAgentAuth, startAgentAuth: vi.fn(), cancelAgentAuth: vi.fn(),
-  getWarden, setWardenConfig, setWardenKey, setEngagement, testWarden,
+  getWarden, getWardenModels, setWardenConfig, setWardenKey, setEngagement, testWarden,
 }))
 
 const { default: OnboardingSetup } = await import('../OnboardingSetup')
@@ -77,5 +78,38 @@ describe('OnboardingSetup', () => {
     await waitFor(() => expect(done).toHaveBeenCalled())
     expect(setEngagement).toHaveBeenCalledWith({ recommended_seen: 1 })
     expect(setWardenConfig).not.toHaveBeenCalled()
+  })
+
+  it('activates a detected agent directly when clicking the primary continue button', async () => {
+    getWarden.mockResolvedValue({ config: { decider: 'builtin:rules' }, kinds: kinds(null) })
+    const done = vi.fn()
+    render(<OnboardingSetup circleId="c1" onDone={done} />)
+
+    const primary = await screen.findByRole('button', { name: 'ENABLE @CLAUDE & CONTINUE' })
+    fireEvent.click(primary)
+    await waitFor(() => expect(installAgentPlugin).toHaveBeenCalledWith('claude-acp'))
+    expect(await screen.findByText('WHO ANSWERS')).toBeTruthy()
+  })
+
+  it('fetches models for a chat provider after a key is saved and saves the selected model', async () => {
+    getWardenModels.mockResolvedValue({ models: ['model-fast', 'model-pro'] })
+    const chatKinds = (hint: string | null) => [
+      ...kinds(null),
+      { id: 'openai', name: 'OpenAI', description: '', protocol: 'openai_responses', endpoint: 'https://api.openai.com/v1/responses', needs_key: true, builtin: true, fields: {}, key_hint: hint },
+    ]
+    getWarden.mockResolvedValueOnce({ config: { decider: 'builtin:rules' }, kinds: chatKinds(null) })
+      .mockResolvedValue({ config: { decider: 'openai' }, kinds: chatKinds('••••1234') })
+    const done = vi.fn()
+    render(<OnboardingSetup circleId="c1" onDone={done} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'ENABLE @CLAUDE & CONTINUE' }))
+
+    fireEvent.click(await screen.findByRole('radio', { name: /OpenAI/ }))
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-1234' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save key' }))
+    await waitFor(() => expect(getWardenModels).toHaveBeenCalledWith('openai', undefined))
+    expect(await screen.findByRole('combobox', { name: 'Fetched model' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'TURN ON WARDEN' }))
+    await waitFor(() => expect(setWardenConfig).toHaveBeenCalledWith({ decider: 'openai', model: 'model-fast' }))
   })
 })

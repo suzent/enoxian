@@ -128,15 +128,15 @@ export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }
 
   return (
     <section className="warden-settings">
-      <p className="warden-scope-note">
-        Used by every Circle on this device set to Shadow or On.
-      </p>
       <section className="warden-group">
-      <h3>Decision provider</h3>
+      <div className="flex items-baseline justify-between gap-2 mb-2">
+        <h3 className="!m-0">Decision provider</h3>
+        <span className="text-[11px] text-slate">Global on this device</span>
+      </div>
       <p className={`warden-status${view.problem ? ' is-problem' : ''}`} role={view.problem ? 'alert' : 'status'}>
         {view.problem
           ? <>Not ready: {view.problem}. The built-in rules decide until it is.</>
-          : <>Ready · {kind?.name ?? view.config.decider}</>}
+          : <>Ready · {kind?.name ?? view.config.decider}{view.config.model ? ` · ${view.config.model}` : ''}</>}
       </p>
       {/* A reserved line, so feedback never pushes the panel down. */}
       <p className={`warden-feedback${error ? ' is-error' : ''}`} role={error ? 'alert' : 'status'} aria-live="polite">
@@ -144,7 +144,14 @@ export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }
       </p>
 
       <DeciderPicker kinds={view.kinds} value={view.config.decider} busy={busy}
-        endpoint={view.config.endpoint} keyFromEnv={view.config.key_env}
+        endpoint={view.config.endpoint} model={draft.model}
+        onSelectModel={m => {
+          setDraft(d => ({ ...d, model: m }))
+          if (m !== (view.config.model ?? '')) {
+            void run(() => setWardenConfig({ model: m }), 'Model updated.', 'config')
+          }
+        }}
+        keyFromEnv={view.config.key_env}
         onKeyDraftChange={setKeyDirty}
         onSelect={value => {
           const change = () => void run(() => setWardenConfig({ decider: value }), 'Decision provider updated.', 'config')
@@ -160,93 +167,105 @@ export default function WardenSettings({ circleId, onDirtyChange, onBusyChange }
       <details className="warden-connection" open={proxy || undefined}>
         <summary>Connection details</summary>
       {!asksModel ? <p className="decider-note py-2">The built-in rules run here and connect to nothing.</p> : (
-        <div className="space-y-2 py-2 text-xs">
-          <label className="block">Endpoint <span className="text-slate">· {proxy ? "your proxy's address is enough" : 'leave empty for the default'}</span>
-            <input className="block w-full border px-2 py-1 mt-1" value={draft.endpoint} disabled={busy}
+        <div className="warden-conn-grid">
+          <label className="warden-conn-row">
+            <span>Endpoint <small className="text-slate">· {proxy ? "proxy address" : 'optional override'}</small></span>
+            <input value={draft.endpoint} disabled={busy}
               placeholder={kind?.endpoint ?? 'https://…'} aria-label="Endpoint"
               onChange={e => setDraft({ ...draft, endpoint: e.target.value })} />
           </label>
-          <label className="block">Model
-            <input className="block w-full border px-2 py-1 mt-1" value={draft.model} disabled={busy}
-              placeholder={kind?.model ?? ''} aria-label="Model"
+          <label className="warden-conn-row">
+            <span>Model</span>
+            <input value={draft.model} disabled={busy}
+              placeholder={kind?.model ?? 'model id'} aria-label="Model"
               onChange={e => setDraft({ ...draft, model: e.target.value })} />
           </label>
-          <label className="block">Wait at most
-            <NumberField min={1} max={30} className="ml-2 border px-2 py-1 w-16" disabled={busy}
-              value={draft.timeout_secs} aria-label="Timeout seconds"
-              onCommit={value => setDraft({ ...draft, timeout_secs: value })} />
-            <span className="ml-1">seconds, then the rules decide</span>
-          </label>
-          <label className="block">Read the key from an environment variable instead <span className="text-slate">· optional, by name</span>
-            <input className="block w-full border px-2 py-1 mt-1" value={draft.key_env} disabled={busy}
+          <label className="warden-conn-row">
+            <span>Key environment variable <small className="text-slate">· optional</small></span>
+            <input value={draft.key_env} disabled={busy}
               placeholder="e.g. TYPESAFE_API_KEY" aria-label="Key environment variable"
               onChange={e => setDraft({ ...draft, key_env: e.target.value })} />
           </label>
-          <button className="enox-btn text-[9px] px-2 py-1 min-h-0" disabled={busy || !configDirty}
-            onClick={() => void run(() => setWardenConfig(draft), 'Connection settings saved.', 'config')}>Save connection</button>
+          <label className="warden-conn-row">
+            <span>Timeout <small className="text-slate">· falls back to rules</small></span>
+            <span className="engagement-number">
+              <NumberField min={1} max={30} disabled={busy}
+                value={draft.timeout_secs} aria-label="Timeout seconds"
+                onCommit={value => setDraft({ ...draft, timeout_secs: value })} />
+              <span>sec</span>
+            </span>
+          </label>
+          <div className="warden-conn-actions">
+            <button type="button" className="enox-btn" disabled={busy || !configDirty}
+              onClick={() => void run(() => setWardenConfig(draft), 'Connection settings saved.', 'config')}>Save connection</button>
+          </div>
         </div>
       )}
       </details>
 
       </section>
-      <section className="warden-group">
-      <h3>Messages to consider</h3>
-      <label className="block py-2 text-xs">
-        <input type="checkbox" aria-label="Agents' messages too" disabled={busy}
-          checked={!!view.config.agent_messages}
-          onChange={e => void run(() => setWardenConfig({ agent_messages: e.target.checked }))} />
-        <span className="ml-2">Agents' messages too</span>
-        <span className="block text-[10px] text-slate mt-1">
+      <div className="engagement-row">
+        <div className="engagement-row__label"><span>Agents&apos; messages too</span></div>
+        <div className="engagement-row__control">
+          <label className="engagement-toggle">
+            <input type="checkbox" aria-label="Agents' messages too" disabled={busy}
+              checked={!!view.config.agent_messages}
+              onChange={e => void run(() => setWardenConfig({ agent_messages: e.target.checked }))} />
+            <span>{view.config.agent_messages ? 'on' : 'off'}</span>
+          </label>
+        </div>
+        <div className="engagement-row__hint">
           Lets agents talk to each other unprompted, up to the hand-off chain limit.
-        </span>
-        {view.config.agent_messages && (kind?.protocol === 'rules' || view.problem) && (
-          <span role="alert" className="block text-[10px] mt-1 border border-obsidian/40 p-2">
-            Needs a working decision model; the built-in rules never answer agents.
-          </span>
-        )}
-      </label>
+          {view.config.agent_messages && (kind?.protocol === 'rules' || view.problem) && (
+            <span role="alert" className="block text-[11px] text-obsidian font-medium mt-1">
+              Needs a working decision model; the built-in rules never answer agents.
+            </span>
+          )}
+        </div>
+      </div>
 
-      </section>
       <section className="warden-group">
-        <h3>Try a message</h3>
-        <p className="warden-hint">A dry run with your saved settings; nothing is posted.</p>
+        <div className="warden-try-head">
+          <h3>Try a message</h3>
+          <label className="engagement-toggle text-[12px]">
+            <input type="checkbox" checked={asAgent} disabled={busy} onChange={e => setAsAgent(e.target.checked)} />
+            <span>as an agent&apos;s message</span>
+          </label>
+        </div>
         <div className="warden-samples">
           {WARDEN_SAMPLES.map(text => (
             <button key={text} type="button" className="warden-sample" disabled={busy} onClick={() => setSample(text)}>{text}</button>
           ))}
         </div>
-        <textarea className="block w-full border px-2 py-1 mt-1 text-[11px]" rows={3} value={sample} disabled={busy}
-          aria-label="Sample message" placeholder="A message someone might post in the room"
-          onChange={e => setSample(e.target.value)} />
-        <button className="enox-btn text-[9px] px-2 py-1 min-h-0 mt-1" disabled={busy || !sample.trim()}
-          onClick={() => void run(async () => setTried(await testWarden(sample, circleId, asAgent)), undefined, 'none')}>Test decision</button>
-        <label className="ml-3 text-[10px]">
-          <input type="checkbox" checked={asAgent} disabled={busy} onChange={e => setAsAgent(e.target.checked)} />
-          <span className="ml-1">as an agent's message</span>
-        </label>
+        <div className="decider-key__row mt-2">
+          <input type="text" value={sample} disabled={busy}
+            aria-label="Sample message" placeholder="A message someone might post in the room"
+            onChange={e => setSample(e.target.value)} />
+          <button type="button" className="enox-btn" disabled={busy || !sample.trim()}
+            onClick={() => void run(async () => setTried(await testWarden(sample, circleId, asAgent)), undefined, 'none')}>Test decision</button>
+        </div>
         {tried && <DecisionView decision={tried.decision} questions={tried.questions} />}
       </section>
 
       <details className="warden-policy warden-group">
         <summary>Advanced policy</summary>
-        <div className="flex items-baseline justify-between">
-          <span>Spec <span className="text-slate">· {String(view.spec.version)} · {view.spec_source.kind === 'file' ? 'from file' : view.spec_source.kind === 'invalid' ? 'file invalid, using built-in' : 'built-in'}</span></span>
+        <div className="flex items-baseline justify-between mb-2">
+          <span className="text-[12px]">Spec <span className="text-slate">· {String(view.spec.version)} · {view.spec_source.kind === 'file' ? 'from file' : view.spec_source.kind === 'invalid' ? 'file invalid, using built-in' : 'built-in'}</span></span>
         </div>
-        {view.spec_source.kind === 'invalid' && <p role="alert" className="text-[10px]">{view.spec_source.error}</p>}
-        <textarea className="block w-full border px-2 py-1 mt-1 text-[10px] font-mono" rows={12} value={specText}
+        {view.spec_source.kind === 'invalid' && <p role="alert" className="text-[11px]">{view.spec_source.error}</p>}
+        <textarea className="block w-full border p-2 text-[11px] font-mono" rows={10} value={specText}
           aria-label="Warden spec" spellCheck={false} disabled={busy}
           onChange={e => setSpecText(e.target.value)} />
-        <div className="flex gap-2 mt-1">
-          <button className="enox-btn text-[9px] px-2 py-1 min-h-0" disabled={busy || specText === view.spec_toml}
+        <div className="flex gap-2 mt-2">
+          <button type="button" className="enox-btn" disabled={busy || specText === view.spec_toml}
             onClick={() => void run(() => setWardenSpec(specText), 'Policy applied.', 'spec')}>Apply policy</button>
           {view.spec_source.kind !== 'default' && (
-            <button className="enox-btn text-[9px] px-2 py-1 min-h-0" disabled={busy}
+            <button type="button" className="enox-btn" disabled={busy}
               onClick={() => setConfirmation({ title: 'Reset to built-in policy?', detail: 'This replaces the saved custom policy and any policy edits here.', action: () => void run(resetWardenSpec, 'Built-in policy restored.', 'spec') })}>Reset to built-in</button>
           )}
         </div>
-        <span className="block text-[10px] text-slate mt-1">
-          Validated before it is applied. Kept at {view.spec_path ?? '~/.enoxian/warden/spec.toml'}; an
-          experiment can replace it with <code>enox warden spec apply</code>.
+        <span className="block text-[11px] text-slate mt-2">
+          Validated before it is applied. Kept at <code>{view.spec_path ?? '~/.enoxian/warden/spec.toml'}</code>.
         </span>
       </details>
       {confirmation && <ConfirmDialog title={confirmation.title} onClose={() => setConfirmation(null)}

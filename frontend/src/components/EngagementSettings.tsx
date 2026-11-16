@@ -193,9 +193,9 @@ export default function EngagementSettings({
         </div>
         <div className="warden-mode__options">
           {([
-            { value: 'off', title: 'Off', caption: 'Rotation only', description: 'Listeners take turns. Warden does not evaluate messages.' },
-            { value: 'shadow', title: 'Shadow', caption: 'Observe only', description: 'Record Warden’s choices while listeners keep taking turns.' },
-            { value: 'act', title: 'On', caption: 'Let Warden decide', description: 'Warden chooses whether to reply and which listeners to use.' },
+            { value: 'off', title: 'Off', caption: 'Rotation only' },
+            { value: 'shadow', title: 'Shadow', caption: 'Observe only' },
+            { value: 'act', title: 'On', caption: 'Let Warden decide' },
           ] as const).map(mode => (
             <label key={mode.value} className={`warden-mode__card${(effective.warden_mode ?? 'off') === mode.value ? ' is-selected' : ''}`}>
               <span className="warden-mode__choice">
@@ -205,7 +205,6 @@ export default function EngagementSettings({
                 <strong>{mode.title}</strong>
               </span>
               <span className="warden-mode__caption">{mode.caption}</span>
-              <span className="warden-mode__description">{mode.description}</span>
             </label>
           ))}
         </div>
@@ -225,9 +224,11 @@ export default function EngagementSettings({
       <details className="settings-advanced">
       <summary>Advanced listener settings</summary>
       {row('ambient_responders', warding ? 'Most listeners per message' : 'Listeners per message',
-        <NumberField min={1} max={32} aria-label="Listeners per message" className="border px-2 py-1 w-20"
-          value={effective.ambient_responders ?? 1} disabled={busy}
-          onCommit={value => onChange({ ambient_responders: value })} />,
+        <span className="engagement-number">
+          <NumberField min={1} max={32} aria-label="Listeners per message"
+            value={effective.ambient_responders ?? 1} disabled={busy}
+            onCommit={value => onChange({ ambient_responders: value })} />
+        </span>,
         warding
           ? `The warden chooses 1 to ${effective.ambient_responders ?? 1} listeners per message. At least 2 lets it run a blind vote.`
           : 'How many listeners consider each message.')}
@@ -241,17 +242,19 @@ export default function EngagementSettings({
           ? `Cycle between 1 and ${effective.ambient_responders ?? 1} listeners.`
           : 'Always use the same number.')}
       {row('ambient_backlog_tail', 'Messages read after a gap',
-        <NumberField min={1} max={16} aria-label="Messages read after a gap" className="border px-2 py-1 w-20"
-          value={effective.ambient_backlog_tail ?? 1} disabled={busy}
-          onCommit={value => onChange({ ambient_backlog_tail: value })} />,
+        <span className="engagement-number">
+          <NumberField min={1} max={16} aria-label="Messages read after a gap"
+            value={effective.ambient_backlog_tail ?? 1} disabled={busy}
+            onCommit={value => onChange({ ambient_backlog_tail: value })} />
+        </span>,
         'After a restart or reconnect, only this many recent messages get a turn.')}
       {row('ambient_max_attempts', 'Tries before giving up',
-        <NumberField min={1} max={8} aria-label="Tries before giving up" className="border px-2 py-1 w-20"
-          value={effective.ambient_max_attempts ?? 2} disabled={busy}
-          onCommit={value => onChange({ ambient_max_attempts: value })} />,
+        <span className="engagement-number">
+          <NumberField min={1} max={8} aria-label="Tries before giving up"
+            value={effective.ambient_max_attempts ?? 2} disabled={busy}
+            onCommit={value => onChange({ ambient_max_attempts: value })} />
+        </span>,
         'Listeners tried before the room is told nobody could answer.')}
-
-
       </details>
       </section>
       {confirmation && <ConfirmDialog title={confirmation.title} confirmLabel="Enable" onClose={() => setConfirmation(null)}

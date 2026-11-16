@@ -421,6 +421,13 @@ export interface WardenView {
   spec_path?: string
 }
 export const getWarden = () => get<WardenView>('/api/warden')
+export const getWardenModels = (decider?: string, endpoint?: string | null) => {
+  const params = new URLSearchParams()
+  if (decider) params.set('decider', decider)
+  if (endpoint) params.set('endpoint', endpoint)
+  const q = params.toString()
+  return get<{ models: string[] }>(`/api/warden/models${q ? `?${q}` : ''}`)
+}
 export const setWardenConfig = (patch: Partial<WardenConfig>) =>
   post<{ ok: boolean; config: WardenConfig }>('/api/warden/config', patch)
 export const setWardenKey = (decider: string, api_key: string | null) =>

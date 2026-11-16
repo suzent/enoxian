@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react'
 import { getAgentConfig, getWarden, setEngagement, type WardenView } from '../api'
 import type { AgentConfigView, SettingsView } from '../types'
 import Dialog from './ui/Dialog'
+import OnboardingSetup from './OnboardingSetup'
 
 /** Bump when the recommendation changes, to ask every device again. */
 export const RECOMMENDED_VERSION = 1
@@ -86,10 +87,11 @@ export function recommendation(cfg: AgentConfigView, warden: WardenView | null) 
 interface Props {
   /** Ask only if this device has not answered and something would change. */
   auto?: boolean
+  circleId?: string | null
   onClose: (applied: boolean) => void
 }
 
-export default function RecommendedSetup({ auto, onClose }: Props) {
+export default function RecommendedSetup({ auto, circleId, onClose }: Props) {
   const [state, setState] = useState<{ cfg: AgentConfigView; warden: WardenView | null } | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -110,7 +112,12 @@ export default function RecommendedSetup({ auto, onClose }: Props) {
   const plan = state && recommendation(state.cfg, state.warden)
   const changes = plan?.rows.filter(r => !r.blocked) ?? []
   const asked = (state?.cfg.recommended_seen ?? 0) >= RECOMMENDED_VERSION
-  const skip = auto && !!state && (asked || changes.length === 0)
+  // A device whose first Circle came from the CLI (`enox init`, `enox enter`,
+  // `enox link`) never passed through the landing card, so it has no agents
+  // enabled yet and never saw the 2-step setup. Offer that full setup instead
+  // of a diff table with nobody in it.
+  const needsOnboarding = auto && !!state && (state.cfg.recommended_seen ?? 0) === 0 && state.cfg.agents.length === 0
+  const skip = auto && !!state && !needsOnboarding && (asked || changes.length === 0)
 
   useEffect(() => { if (skip) onClose(false) }, [skip, onClose])
   if (auto && (!state || skip)) return null
@@ -126,6 +133,14 @@ export default function RecommendedSetup({ auto, onClose }: Props) {
       setError(e instanceof Error ? e.message : String(e))
       setBusy(false)
     }
+  }
+
+  if (needsOnboarding) {
+    return (
+      <Dialog title="Set up this device" onClose={() => void answer(false)} className="settings-confirm recommended-setup">
+        <OnboardingSetup circleId={circleId} onDone={() => onClose(true)} />
+      </Dialog>
+    )
   }
 
   return (

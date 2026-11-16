@@ -135,10 +135,7 @@ fn builtins() -> Vec<Manifest> {
         Manifest {
             id: RULES.into(),
             name: "Built-in rules".into(),
-            description: "No model: short messages get one listener, long ones a blind vote, as \
-                          the spec's rules say. Free, and the fallback whenever a decider cannot \
-                          be asked."
-                .into(),
+            description: "Local heuristic by message length.".into(),
             protocol: Protocol::Rules,
             endpoint: None,
             model: None,
@@ -146,32 +143,27 @@ fn builtins() -> Vec<Manifest> {
             key_url: None,
             builtin: true,
         },
-        // Hosted deciders, asked directly. Models are pinned, because the
-        // spec's thresholds are calibrated against what a model answers.
+        // Hosted decision APIs, asked directly.
         Manifest {
             id: "jev".into(),
             name: "TypeSafe Jev".into(),
-            description: "TypeSafe's System One model, the one the default thresholds are tuned \
-                          against. Fast and inexpensive."
-                .into(),
+            description: "Fast routing model tuned for Enoxian.".into(),
             protocol: Protocol::Systemone,
             endpoint: Some("https://api.typesafe.ai/v1/systemone".into()),
-            model: Some("jev-1.14.0".into()),
+            model: None,
             needs_key: true,
             key_url: Some("https://docs.typesafe.ai/models".into()),
             builtin: true,
         },
-        // Chat models, asked for probabilities through a JSON schema. The
-        // default thresholds are not tuned against them, so the model here is
-        // a cheap default the person can change.
+        // Chat models, asked for probabilities through a JSON schema. Models
+        // are fetched from the provider rather than hardcoded here.
         Manifest {
             id: "openai".into(),
             name: "OpenAI".into(),
-            description: "An OpenAI model through the Responses API, with an OpenAI API key."
-                .into(),
+            description: "OpenAI Responses API.".into(),
             protocol: Protocol::OpenaiResponses,
             endpoint: Some("https://api.openai.com/v1/responses".into()),
-            model: Some("gpt-6-luna".into()),
+            model: None,
             needs_key: true,
             key_url: Some("https://platform.openai.com/api-keys".into()),
             builtin: true,
@@ -179,11 +171,10 @@ fn builtins() -> Vec<Manifest> {
         Manifest {
             id: "anthropic".into(),
             name: "Anthropic".into(),
-            description: "A Claude model through the Messages API, with an Anthropic API key."
-                .into(),
+            description: "Anthropic Messages API.".into(),
             protocol: Protocol::AnthropicMessages,
             endpoint: Some("https://api.anthropic.com/v1/messages".into()),
-            model: Some("claude-haiku-5-5".into()),
+            model: None,
             needs_key: true,
             key_url: Some("https://console.anthropic.com/settings/keys".into()),
             builtin: true,
@@ -191,11 +182,10 @@ fn builtins() -> Vec<Manifest> {
         Manifest {
             id: "gemini".into(),
             name: "Google Gemini".into(),
-            description: "A Gemini model through the Gemini API, with a Google AI Studio API key."
-                .into(),
+            description: "Google Gemini API.".into(),
             protocol: Protocol::Gemini,
             endpoint: Some("https://generativelanguage.googleapis.com/v1beta".into()),
-            model: Some("gemini-3.5-flash-lite".into()),
+            model: None,
             needs_key: true,
             key_url: Some("https://aistudio.google.com/apikey".into()),
             builtin: true,
@@ -205,10 +195,7 @@ fn builtins() -> Vec<Manifest> {
         Manifest {
             id: "openai-compatible".into(),
             name: "OpenAI-compatible endpoint".into(),
-            description: "Any server that speaks OpenAI Chat Completions with JSON schema \
-                          output, such as OpenRouter, DeepSeek, Ollama, vLLM or a LiteLLM proxy. \
-                          Give its address and a model."
-                .into(),
+            description: "OpenRouter, DeepSeek, Ollama, vLLM, or LiteLLM proxy.".into(),
             protocol: Protocol::OpenaiChat,
             endpoint: None,
             model: None,
@@ -219,11 +206,10 @@ fn builtins() -> Vec<Manifest> {
         Manifest {
             id: "openai-decisions".into(),
             name: "OpenAI Decisions".into(),
-            description: "OpenAI's Decisions API, which answers with probabilities of its own."
-                .into(),
+            description: "OpenAI Decisions API.".into(),
             protocol: Protocol::Decisions,
             endpoint: Some("https://api.openai.com/v1/decisions".into()),
-            model: Some("gpt-6-luna".into()),
+            model: None,
             needs_key: true,
             key_url: Some("https://platform.openai.com/api-keys".into()),
             builtin: true,
@@ -1278,6 +1264,145 @@ async fn ask_now(decider: &Resolved, input: &str, questions: &[Question]) -> any
     Ok(reply)
 }
 
+/// The URL to query a provider's model catalog from its configured endpoint.
+pub fn models_url(protocol: Protocol, endpoint: &str) -> Option<String> {
+    if protocol == Protocol::Rules {
+        return None;
+    }
+    let mut url = reqwest::Url::parse(endpoint.trim()).ok()?;
+    let path = url.path().trim_end_matches('/').to_string();
+    if protocol == Protocol::Gemini {
+        if let Some((prefix, _)) = path.split_once("/models") {
+            let prefix = prefix.trim_end_matches('/');
+            url.set_path(&if prefix.is_empty() {
+                "/v1beta/models".to_string()
+            } else {
+                format!("{prefix}/models")
+            });
+        } else if path.is_empty() {
+            url.set_path("/v1beta/models");
+        } else {
+            url.set_path(&format!("{path}/models"));
+        }
+        return Some(url.to_string());
+    }
+    let mut base = path.as_str();
+    for suffix in [
+        "/chat/completions",
+        "/responses",
+        "/messages",
+        "/systemone",
+        "/decisions",
+        "/models",
+    ] {
+        if let Some(stripped) = base.strip_suffix(suffix) {
+            base = stripped;
+            break;
+        }
+    }
+    let base = base.trim_end_matches('/');
+    if base.is_empty() {
+        url.set_path("/v1/models");
+    } else {
+        url.set_path(&format!("{base}/models"));
+    }
+    Some(url.to_string())
+}
+
+/// Extract model identifiers from a `/models` JSON payload (`{"data": [...]}`
+/// for OpenAI/Anthropic/compatible servers, or `{"models": [...]}` for Gemini).
+pub fn parse_models(protocol: Protocol, body: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(items) = body.get("data").and_then(Value::as_array) {
+        for item in items {
+            if let Some(id) = item
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if !out.iter().any(|x| x == id) {
+                    out.push(id.to_string());
+                }
+            }
+        }
+    } else if let Some(items) = body.get("models").and_then(Value::as_array) {
+        for item in items {
+            if protocol == Protocol::Gemini {
+                if let Some(methods) = item
+                    .get("supportedGenerationMethods")
+                    .and_then(Value::as_array)
+                {
+                    if !methods
+                        .iter()
+                        .any(|m| m.as_str() == Some("generateContent"))
+                    {
+                        continue;
+                    }
+                }
+            }
+            if let Some(raw) = item
+                .get("id")
+                .or_else(|| item.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+            {
+                let id = raw.trim_start_matches("models/");
+                if !id.is_empty() && !out.iter().any(|x| x == id) {
+                    out.push(id.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Fetch the available models from the selected provider using its configured
+/// endpoint and stored API key.
+pub async fn fetch_models(
+    cfg: &WardenConfig,
+    decider_override: Option<&str>,
+    endpoint_override: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let id = decider_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&cfg.decider);
+    let manifest = find(id).ok_or_else(|| format!("no decider named {id:?}"))?;
+    if manifest.protocol == Protocol::Rules {
+        return Ok(Vec::new());
+    }
+    let endpoint = endpoint_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| cfg.endpoint.clone().filter(|s| !s.trim().is_empty()))
+        .or_else(|| manifest.endpoint.clone())
+        .ok_or("no endpoint is configured")?;
+    let url =
+        models_url(manifest.protocol, &endpoint).ok_or("the endpoint must be an http(s) URL")?;
+    let key = match &cfg.key_env {
+        Some(var) if !var.trim().is_empty() => std::env::var(var).ok(),
+        _ => secrets::get(&manifest.id),
+    };
+    if manifest.needs_key && key.is_none() {
+        return Err("no API key is set".into());
+    }
+    let request = crate::outbound::client()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(10));
+    let request = authorize(request, manifest.protocol, key.as_deref());
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    let status = response.status();
+    let text = response.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        let detail: String = text.chars().take(200).collect();
+        return Err(format!("provider returned {status}: {detail}"));
+    }
+    let value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    Ok(parse_models(manifest.protocol, &value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1412,14 +1537,14 @@ mod tests {
     }
 
     #[test]
-    fn hosted_deciders_are_pinned_and_need_a_key() {
+    fn hosted_deciders_have_no_hardcoded_model_and_need_a_key() {
         let jev = find("jev").unwrap();
         assert_eq!(jev.protocol, Protocol::Systemone);
         assert_eq!(
             jev.endpoint.as_deref(),
             Some("https://api.typesafe.ai/v1/systemone")
         );
-        assert_eq!(jev.model.as_deref(), Some("jev-1.14.0"));
+        assert_eq!(jev.model, None);
         assert!(jev.needs_key && jev.builtin);
         let openai = find("openai-decisions").unwrap();
         assert_eq!(openai.protocol, Protocol::Decisions);
@@ -1427,7 +1552,7 @@ mod tests {
             openai.endpoint.as_deref(),
             Some("https://api.openai.com/v1/decisions")
         );
-        assert_eq!(openai.model.as_deref(), Some("gpt-6-luna"));
+        assert_eq!(openai.model, None);
         assert!(openai.needs_key);
     }
 
@@ -1873,18 +1998,23 @@ mod tests {
 
     #[test]
     fn chat_builtins_resolve_to_their_routes() {
-        let openai = resolve_with_key("openai", None, None).unwrap();
+        assert_eq!(
+            resolve_with_key("openai", None, None).unwrap_err(),
+            "no model is configured"
+        );
+        let openai = resolve_with_key("openai", None, Some("m-openai")).unwrap();
         assert_eq!(openai.manifest.protocol, Protocol::OpenaiResponses);
         assert_eq!(
             openai.endpoint.as_deref(),
             Some("https://api.openai.com/v1/responses")
         );
-        let anthropic = resolve_with_key("anthropic", None, None).unwrap();
+        assert_eq!(openai.model.as_deref(), Some("m-openai"));
+        let anthropic = resolve_with_key("anthropic", None, Some("m-claude")).unwrap();
         assert_eq!(
             anthropic.endpoint.as_deref(),
             Some("https://api.anthropic.com/v1/messages")
         );
-        assert_eq!(anthropic.model.as_deref(), Some("claude-haiku-5-5"));
+        assert_eq!(anthropic.model.as_deref(), Some("m-claude"));
         let gemini = resolve_with_key("gemini", None, Some("gemini-y")).unwrap();
         assert_eq!(
             gemini.endpoint.as_deref(),
@@ -1919,10 +2049,61 @@ mod tests {
         for id in ["openai", "anthropic", "gemini"] {
             let m = find(id).unwrap();
             assert!(
-                m.builtin && m.needs_key && m.key_url.is_some() && m.model.is_some(),
+                m.builtin && m.needs_key && m.key_url.is_some() && m.model.is_none(),
                 "{id}"
             );
         }
+    }
+
+    #[test]
+    fn models_urls_and_payloads_parse_across_providers() {
+        assert_eq!(
+            models_url(
+                Protocol::OpenaiResponses,
+                "https://api.openai.com/v1/responses"
+            )
+            .as_deref(),
+            Some("https://api.openai.com/v1/models")
+        );
+        assert_eq!(
+            models_url(
+                Protocol::AnthropicMessages,
+                "https://api.anthropic.com/v1/messages"
+            )
+            .as_deref(),
+            Some("https://api.anthropic.com/v1/models")
+        );
+        assert_eq!(
+            models_url(
+                Protocol::Gemini,
+                "https://generativelanguage.googleapis.com/v1beta"
+            )
+            .as_deref(),
+            Some("https://generativelanguage.googleapis.com/v1beta/models")
+        );
+        assert_eq!(
+            models_url(Protocol::OpenaiChat, "https://openrouter.ai/api/v1").as_deref(),
+            Some("https://openrouter.ai/api/v1/models")
+        );
+        assert_eq!(
+            parse_models(
+                Protocol::OpenaiResponses,
+                &json!({ "data": [{ "id": "m-a" }, { "id": "m-b" }] })
+            ),
+            vec!["m-a", "m-b"]
+        );
+        assert_eq!(
+            parse_models(
+                Protocol::Gemini,
+                &json!({
+                    "models": [
+                        { "name": "models/m-embed", "supportedGenerationMethods": ["embedContent"] },
+                        { "name": "models/m-gen", "supportedGenerationMethods": ["generateContent"] }
+                    ]
+                })
+            ),
+            vec!["m-gen"]
+        );
     }
 
     #[test]

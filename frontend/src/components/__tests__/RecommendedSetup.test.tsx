@@ -22,7 +22,15 @@ const warden = (hint: string | null): WardenView => ({
 const getAgentConfig = vi.fn()
 const getWarden = vi.fn()
 const setEngagement = vi.fn(async () => ({ ok: true }))
-vi.mock('../../api', () => ({ getAgentConfig, getWarden, setEngagement }))
+const getAgentPlugins = vi.fn(async () => ({ plugins: [] }))
+const discoverAgents = vi.fn(async () => ({ agents: [] }))
+const getAgentAuth = vi.fn(async () => ({}))
+vi.mock('../../api', () => ({
+  getAgentConfig, getWarden, setEngagement,
+  getAgentPlugins, discoverAgents, installAgentPlugin: vi.fn(), addAgent: vi.fn(),
+  getAgentAuth, startAgentAuth: vi.fn(), cancelAgentAuth: vi.fn(),
+  setWardenConfig: vi.fn(), setWardenKey: vi.fn(), testWarden: vi.fn(),
+}))
 
 const { default: RecommendedSetup, recommendation } = await import('../RecommendedSetup')
 
@@ -95,5 +103,13 @@ describe('RecommendedSetup', () => {
     getWarden.mockResolvedValue(warden(null))
     render(<RecommendedSetup onClose={vi.fn()} />)
     expect(await screen.findByRole('button', { name: 'USE RECOMMENDED' })).toBeTruthy()
+  })
+
+  it('opens the 2-step onboarding setup when a CLI-initialized device has no agents configured yet', async () => {
+    getAgentConfig.mockResolvedValue({ ...config({}, 0), agents: [] })
+    getWarden.mockResolvedValue(warden(null))
+    render(<RecommendedSetup auto circleId="c1" onClose={vi.fn()} />)
+    expect(await screen.findByText('Set up this device')).toBeTruthy()
+    expect(await screen.findByText('YOUR AGENTS')).toBeTruthy()
   })
 })
