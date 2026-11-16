@@ -39,6 +39,10 @@ pub fn attachment_mime(data: &[u8]) -> &'static str {
 }
 
 /// Identify a payload by magic bytes. Returns `None` for anything unrecognised.
+///
+/// Only binary media formats with unambiguous magic headers are recognised here;
+/// text formats that can carry active content (SVG, HTML) intentionally return
+/// `None` so they are always served as `application/octet-stream` downloads.
 pub fn sniff_mime(data: &[u8]) -> Option<&'static str> {
     if data.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Some("image/png");
@@ -49,10 +53,54 @@ pub fn sniff_mime(data: &[u8]) -> Option<&'static str> {
     if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
         return Some("image/gif");
     }
-    if data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP" {
-        return Some("image/webp");
+    if data.len() >= 12 && data.starts_with(b"RIFF") {
+        if &data[8..12] == b"WEBP" {
+            return Some("image/webp");
+        }
+        if &data[8..12] == b"WAVE" {
+            return Some("audio/wav");
+        }
+    }
+    if data.starts_with(b"%PDF-") {
+        return Some("application/pdf");
+    }
+    if data.starts_with(b"OggS") {
+        return Some("audio/ogg");
+    }
+    if data.starts_with(b"fLaC") {
+        return Some("audio/flac");
+    }
+    if data.starts_with(b"ID3")
+        || (data.len() >= 2
+            && data[0] == 0xFF
+            && (data[1] & 0xE0) == 0xE0
+            && (data[1] & 0x18) != 0x08
+            && (data[1] & 0x06) != 0x00)
+    {
+        return Some("audio/mpeg");
+    }
+    if data.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        return Some("video/webm");
+    }
+    if data.len() >= 12 && &data[4..8] == b"ftyp" {
+        match &data[8..12] {
+            b"avif" | b"avis" => return Some("image/avif"),
+            b"M4A " | b"M4B " => return Some("audio/mp4"),
+            b"qt  " => return Some("video/quicktime"),
+            b"isom" | b"iso2" | b"iso3" | b"iso4" | b"iso5" | b"iso6" | b"mp41" | b"mp42"
+            | b"avc1" | b"MSNV" | b"dash" | b"M4V " | b"f4v " => return Some("video/mp4"),
+            _ => {}
+        }
     }
     None
+}
+
+/// Whether `mime` is a safe inline multimedia type.
+pub fn is_inline_media_mime(mime: &str) -> bool {
+    mime.starts_with("image/")
+        || mime.starts_with("video/")
+        || mime.starts_with("audio/")
+        || mime == "application/pdf"
 }
 
 /// Intrinsic pixel size read from the format header.
@@ -147,9 +195,20 @@ pub fn sanitize_name(raw: &str, mime: &str) -> String {
         .collect::<String>();
     let base = base.trim().trim_start_matches('.').to_string();
     if base.is_empty() {
-        let ext = mime.rsplit('/').next().unwrap_or("bin");
-        if mime.starts_with("image/") {
-            format!("image.{ext}")
+        let ext = match mime {
+            "audio/mpeg" => "mp3",
+            "audio/mp4" => "m4a",
+            "video/quicktime" => "mov",
+            _ => mime.rsplit('/').next().unwrap_or("bin"),
+        };
+        if let Some(kind) = mime
+            .split('/')
+            .next()
+            .filter(|k| matches!(*k, "image" | "video" | "audio"))
+        {
+            format!("{kind}.{ext}")
+        } else if mime == "application/pdf" {
+            "document.pdf".to_string()
         } else {
             "attachment.bin".to_string()
         }
@@ -268,7 +327,7 @@ pub async fn get_blob(
             (header::CONTENT_TYPE, mime),
             (
                 header::CONTENT_DISPOSITION,
-                if mime.starts_with("image/") {
+                if is_inline_media_mime(mime) {
                     "inline"
                 } else {
                     "attachment"
@@ -282,7 +341,7 @@ pub async fn get_blob(
             ),
             (
                 header::CONTENT_SECURITY_POLICY,
-                "default-src 'none'; img-src 'self'; sandbox",
+                "default-src 'none'; img-src 'self'; media-src 'self'; object-src 'self'; sandbox",
             ),
         ],
         bytes,
