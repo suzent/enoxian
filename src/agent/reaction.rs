@@ -2217,6 +2217,78 @@ async fn react(
 /// taken minutes and is the thing being protected.
 const POST_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Extract standalone `ATTACH: <path>` directives from an agent's reply,
+/// storing each referenced file in the Circle's blob store and returning the
+/// cleaned reply text alongside the resolved [`crate::control::Attachment`]s.
+fn extract_reply_attachments(
+    state: &AppState,
+    raw_reply: &str,
+) -> (String, Vec<crate::control::Attachment>) {
+    let Ok(blobs) = state.blobs() else {
+        return (raw_reply.to_string(), Vec::new());
+    };
+    let mut kept_lines = Vec::new();
+    let mut attachments = Vec::new();
+    let mut in_fence = false;
+
+    for line in raw_reply.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            kept_lines.push(line);
+            continue;
+        }
+        if !in_fence && attachments.len() < 10 {
+            if let Some(rest) = trimmed
+                .strip_prefix("ATTACH:")
+                .or_else(|| trimmed.strip_prefix("attach:"))
+            {
+                let raw_path = rest.trim().trim_matches(|c| matches!(c, '`' | '"' | '\''));
+                if !raw_path.is_empty() {
+                    let candidate = std::path::Path::new(raw_path);
+                    let resolved = if candidate.is_absolute() {
+                        candidate.to_path_buf()
+                    } else {
+                        state.workspace.join(candidate)
+                    };
+                    if let Ok(bytes) = std::fs::read(&resolved) {
+                        if !bytes.is_empty()
+                            && bytes.len() <= crate::api::attachments::MAX_ATTACHMENT_BYTES
+                        {
+                            if let Ok(hash) = blobs.put(&bytes) {
+                                let mime = crate::api::attachments::attachment_mime(&bytes);
+                                let (width, height) =
+                                    match crate::api::attachments::image_dimensions(mime, &bytes) {
+                                        Some((w, h)) => (Some(w), Some(h)),
+                                        None => (None, None),
+                                    };
+                                let file_name =
+                                    resolved.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                                attachments.push(crate::control::Attachment {
+                                    hash,
+                                    mime: mime.to_string(),
+                                    name: crate::api::attachments::sanitize_name(file_name, mime),
+                                    size: bytes.len() as u64,
+                                    width,
+                                    height,
+                                });
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        kept_lines.push(line);
+    }
+
+    if attachments.is_empty() {
+        (raw_reply.to_string(), Vec::new())
+    } else {
+        (kept_lines.join("\n").trim().to_string(), attachments)
+    }
+}
+
 /// Post an agent's reply, waiting for the control doc if it is momentarily busy.
 ///
 /// `post_reply` takes the doc with `try_transact_mut`, which fails at once if
@@ -2236,14 +2308,15 @@ async fn post_when_free(
     message_id: &str,
     patience: std::time::Duration,
 ) -> anyhow::Result<String> {
+    let (clean_reply, attachments) = extract_reply_attachments(state, reply);
     let deadline = tokio::time::Instant::now() + patience;
     let mut wait = std::time::Duration::from_millis(20);
     loop {
         let attempt = crate::api::chat::post_reply(
             state,
             agent_id.to_string(),
-            reply.to_string(),
-            Vec::new(),
+            clean_reply.clone(),
+            attachments.clone(),
             crate::api::chat::Trigger::AgentReply {
                 agent: agent_id.to_string(),
                 parent: relay.clone(),
@@ -5529,6 +5602,25 @@ mod tests {
         assert!(
             receipts.is_none_or(|map| map.get(&txn, &entry.run_id).is_none()),
             "no receipt was published"
+        );
+    }
+
+    #[test]
+    fn extracts_attach_directives_from_agent_reply_and_ignores_code_fences() {
+        let (state, dir) = test_state("local", "suzy");
+        let png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x04\x00\x00\x00\x02\x08\x06\x00\x00\x00";
+        std::fs::write(dir.path().join("chart.png"), png).unwrap();
+
+        let reply = "Here is the chart:\nATTACH: chart.png\n```\nATTACH: chart.png\n```\nDone.";
+        let (cleaned, attachments) = extract_reply_attachments(&state, reply);
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].name, "chart.png");
+        assert_eq!(attachments[0].mime, "image/png");
+        assert_eq!(attachments[0].width, Some(4));
+        assert_eq!(attachments[0].height, Some(2));
+        assert_eq!(
+            cleaned,
+            "Here is the chart:\n```\nATTACH: chart.png\n```\nDone."
         );
     }
 }

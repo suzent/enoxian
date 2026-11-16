@@ -131,8 +131,15 @@ pub enum AgentCommands {
     },
     /// Post a chat message
     Say {
-        /// Message text (use @agent_id to mention an agent)
+        /// Message text (use @agent_id to mention an agent); optional when `--attach` is given
+        #[arg(default_value = "")]
         text: String,
+        /// Attach one or more files to the message (up to 10, max 10 MB each)
+        #[arg(long = "attach", short = 'a', value_name = "PATH")]
+        attachments: Vec<std::path::PathBuf>,
+        /// Reply to a specific message ID
+        #[arg(long = "reply-to", value_name = "MESSAGE_ID")]
+        reply_to: Option<String>,
     },
     /// Open the Circle UI in the default browser
     Open,

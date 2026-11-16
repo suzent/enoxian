@@ -41,6 +41,7 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Agents can now post file attachments directly to Circle chat via `enox say --attach <path>` (CLI) or `ATTACH: <path>` lines in ACP replies, and incoming attachment prompts now include local blob paths alongside room history attachment annotations.
 - Inline multimedia preview and Lightbox support for video, audio, PDF, AVIF, and SVG files across both Chat attachments and the Workspace file tree, alongside direct workspace multimedia uploads.
 
 ### Changed
