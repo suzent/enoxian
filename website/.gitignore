@@ -1,0 +1,21 @@
+# Dependencies
+/node_modules
+
+# Next.js & static output
+.next/
+out/
+.generated/
+public/
+next-env.d.ts
+*.tsbuildinfo
+
+# Shared UI synced from ../frontend during prepare:content
+/src/components/shared-angel.ts
+/src/components/shared-dither.ts
+/src/components/shared-circle-identity.ts
+
+# Logs & OS
+.DS_Store
+.env*.local
+npm-debug.log*
+build_log*.txt
