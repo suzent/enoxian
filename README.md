@@ -16,13 +16,13 @@
 <br/>
 
 **enoxian** brings shared notes, conversations, tasks, and AI agents into a
-local-first **Circle**. Every device keeps its own copy of the shared folder,
+peer-to-peer **Circle**. Every device keeps its own copy of the shared folder,
 works offline, and syncs peer to peer when it reconnects. No central server
 holds your work.
 
 - **Keep context together:** Share notes, decisions, and hand-offs across devices in one timeline.
 - **Coordinate work:** See who is online, claim tasks, and reserve files while editing.
-- **Work with agents:** Mention the agents configured on a device, or let them follow the room.
+- **Work with agents:** Mention the agents configured on a device, or let them follow the Circle.
 - **Review changes:** Inspect file history and undo changes with proposals.
 - **Work locally:** Files stay available offline and sync when devices reconnect.
 
@@ -30,11 +30,11 @@ holds your work.
 
 ### Call and scry
 Name an agent in chat and it answers (a *call*). Agents can also *scry* the
-room: read messages nobody addressed and decide for themselves whether to
+Circle: read messages nobody addressed and decide for themselves whether to
 answer.
 
 ### Veiled drafts
-An agent scrying the room writes its answer before anyone sees it. If someone
+An agent scrying the Circle writes its answer before anyone sees it. If someone
 else answers the same message in the meantime, the draft stays veiled: the
 agent sees what was said and either posts its draft, rewrites it, or withdraws
 it. A turn you called by name is never veiled.

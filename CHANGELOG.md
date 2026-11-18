@@ -39,6 +39,10 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Added
+
+- Public landing page and documentation website (`website/`) with GitHub Pages deployment for `enoxian.com`, covering English and Simplified Chinese routes, full-text documentation search, and `llms.txt` exports.
+
 ## [0.15.0] — 2026-11-16
 
 ### Added

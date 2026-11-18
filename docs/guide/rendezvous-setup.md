@@ -4,7 +4,7 @@
 > project-operated defaults: `relay.enoxian.com` plus Iroh's public relays.
 > Running your own server as described here, and pointing Circles at it,
 > replaces that default. See
-> [privacy and security](../concepts/security.md#relay-and-rendezvous).
+> [privacy and security](../concepts/security.md#relays).
 
 Every Circle connects over Iroh. Devices find each other by public key through
 an Iroh relay, and traffic goes through that relay until Iroh opens a direct

@@ -1,0 +1,400 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+@source '../../node_modules/fumadocs-ui/dist/**/*.js';
+
+:root {
+  --enox-bg: #f4f3ef;
+  --enox-panel: #ffffff;
+  --enox-surface: #eceae3;
+  --enox-fg: #0a0a0a;
+  --enox-muted: #52524e;
+  --enox-border: #0a0a0a;
+  --enox-border-subtle: rgba(10, 10, 10, 0.16);
+  --enox-dither-soft: radial-gradient(rgba(10, 10, 10, 0.2) 0.65px, transparent 0.7px);
+  --enox-dither-dense: radial-gradient(rgba(10, 10, 10, 0.36) 0.75px, transparent 0.8px);
+  --enox-stripe-h: repeating-linear-gradient(
+    0deg,
+    rgba(10, 10, 10, 0.12) 0 1px,
+    transparent 1px 3px
+  );
+  --enox-stripe-v: repeating-linear-gradient(
+    90deg,
+    rgba(10, 10, 10, 0.1) 0 1px,
+    transparent 1px 4px
+  );
+
+  --font-title: "Cinzel", Georgia, serif;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Fumadocs neutral monochrome overrides */
+  --color-fd-background: #f4f3ef;
+  --color-fd-card: #ffffff;
+  --color-fd-muted: #ebe9e1;
+  --color-fd-foreground: #0a0a0a;
+  --color-fd-muted-foreground: #555550;
+  --color-fd-primary: #0a0a0a;
+  --color-fd-primary-foreground: #ffffff;
+  --color-fd-border: #d4d2c8;
+  --color-fd-accent: #e5e3da;
+  --color-fd-accent-foreground: #0a0a0a;
+  --fd-layout-width: 1440px;
+}
+
+.dark {
+  --enox-bg: #0c0c0b;
+  --enox-panel: #141413;
+  --enox-surface: #1c1c1a;
+  --enox-fg: #f4f3ef;
+  --enox-muted: #a09f98;
+  --enox-border: #e5e4de;
+  --enox-border-subtle: rgba(244, 243, 239, 0.18);
+  --enox-dither-soft: radial-gradient(rgba(244, 243, 239, 0.18) 0.65px, transparent 0.7px);
+  --enox-dither-dense: radial-gradient(rgba(244, 243, 239, 0.32) 0.75px, transparent 0.8px);
+  --enox-stripe-h: repeating-linear-gradient(
+    0deg,
+    rgba(244, 243, 239, 0.1) 0 1px,
+    transparent 1px 3px
+  );
+  --enox-stripe-v: repeating-linear-gradient(
+    90deg,
+    rgba(244, 243, 239, 0.08) 0 1px,
+    transparent 1px 4px
+  );
+
+  --color-fd-background: #0c0c0b;
+  --color-fd-card: #141413;
+  --color-fd-muted: #1c1c1a;
+  --color-fd-foreground: #f4f3ef;
+  --color-fd-muted-foreground: #9d9c95;
+  --color-fd-primary: #f4f3ef;
+  --color-fd-primary-foreground: #0c0c0b;
+  --color-fd-border: #2a2a27;
+  --color-fd-accent: #22221f;
+  --color-fd-accent-foreground: #f4f3ef;
+}
+
+body {
+  background: var(--enox-bg);
+  color: var(--enox-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Crisp orthogonal geometry across docs & landing */
+.enox-nav {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: color-mix(in srgb, var(--enox-bg) 90%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--enox-border);
+}
+
+.enox-nav-inner {
+  max-width: 1240px;
+  margin: 0 auto;
+  height: 58px;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.enox-nav-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--enox-fg);
+  text-decoration: none;
+}
+
+.enox-nav-title {
+  font-family: var(--font-title);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.18em;
+}
+
+.enox-nav-links {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+.enox-nav-link {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--enox-muted);
+  text-decoration: none;
+  transition: color 0.18s ease;
+}
+
+.enox-nav-link:hover {
+  color: var(--enox-fg);
+}
+
+.enox-nav-utils {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 12px;
+  border-left: 1px solid var(--enox-border-subtle);
+}
+
+.enox-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 28px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--enox-fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: border-color 0.18s ease, background-color 0.18s ease;
+}
+
+.enox-nav-btn:hover {
+  border-color: var(--enox-border);
+  background-color: var(--enox-panel);
+}
+
+/* Docs chrome */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-title);
+  font-size: 14px;
+  letter-spacing: 0.15em;
+  font-weight: 700;
+}
+
+.brand small {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: var(--color-fd-muted-foreground);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--color-fd-muted-foreground);
+  margin-bottom: 6px;
+}
+
+#nd-page h1 {
+  font-size: clamp(1.95rem, 3.6vw, 2.75rem);
+  letter-spacing: -0.03em;
+  font-weight: 600;
+}
+
+#nd-page .prose {
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+#nd-page .prose h2 {
+  letter-spacing: -0.02em;
+  font-weight: 600;
+  margin-top: 2.4rem;
+}
+
+#nd-page .prose code {
+  font-family: var(--font-mono);
+}
+
+.sidebar-note {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-fd-muted-foreground);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+}
+
+.sidebar-note a {
+  margin-left: auto;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--enox-fg);
+}
+
+.edit-link {
+  display: inline-block;
+  margin-top: 24px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-fd-muted-foreground);
+}
+
+.doc-search {
+  position: relative;
+  margin: 8px 0 18px;
+}
+
+.doc-search input {
+  width: 100%;
+  padding: 9px 11px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0;
+  background: var(--color-fd-card);
+  color: var(--color-fd-foreground);
+}
+
+.doc-search input:focus {
+  outline: 1px solid var(--enox-fg);
+}
+
+.search-results {
+  display: grid;
+  position: absolute;
+  top: 42px;
+  z-index: 30;
+  background: var(--color-fd-card);
+  border: 1px solid var(--enox-border);
+  padding: 8px;
+  box-shadow: 4px 4px 0 var(--enox-border);
+  max-height: 60vh;
+  overflow-y: auto;
+  min-width: 100%;
+  width: 320px;
+  max-width: calc(100vw - 48px);
+  font-size: 13px;
+}
+
+.search-results a {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  text-decoration: none;
+}
+
+.search-results a:hover {
+  background: var(--color-fd-accent);
+}
+
+.search-results span {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--color-fd-muted-foreground);
+}
+
+.translation-note {
+  padding: 10px 14px;
+  border: 1px solid var(--color-fd-border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-fd-muted-foreground);
+  background: var(--color-fd-card);
+}
+
+.document-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr));
+  gap: 14px;
+}
+
+.document-card {
+  display: block;
+  padding: 20px;
+  border: 1px solid var(--color-fd-border);
+  background: var(--color-fd-card);
+  text-decoration: none !important;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.document-card:hover {
+  border-color: var(--enox-border);
+  box-shadow: 3px 3px 0 var(--enox-border);
+}
+
+.document-card strong {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.document-card strong span {
+  float: right;
+}
+
+.document-card p {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-fd-muted-foreground);
+  margin: 8px 0 0;
+}
+
+.editorial {
+  width: min(820px, 100%);
+  padding: 72px 24px 96px;
+  margin: auto;
+  flex: 1;
+}
+
+.editorial h1 {
+  font-family: var(--font-title);
+  font-size: clamp(2.2rem, 5vw, 3.4rem);
+  font-weight: 700;
+  margin: 0 0 16px;
+}
+
+.site-footer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 24px;
+  padding: 28px 24px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  border-top: 1px solid var(--enox-border);
+  background: var(--enox-bg);
+  color: var(--enox-muted);
+}
+
+.site-footer a {
+  color: var(--enox-fg);
+  text-decoration: none;
+}
+
+.site-footer a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+@media (max-width: 680px) {
+  .enox-hide-mobile {
+    display: none;
+  }
+  .enox-nav-links {
+    gap: 14px;
+  }
+  .search-results {
+    width: 100%;
+  }
+}
