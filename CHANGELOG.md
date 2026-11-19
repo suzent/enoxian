@@ -39,6 +39,13 @@ refuses to publish a version whose section is missing or empty.
 
 ## [Unreleased]
 
+### Changed
+
+- Agents run by the daemon get a shorter prompt: when a session cannot be resumed, recent
+  room history and the request are no longer sent twice, the brief no longer repeats how
+  the agent was woken (and no longer tells a private turn its reply goes to the room), and
+  other agents' card summaries now sit beside their handles in the member list.
+
 ## [0.15.0] — 2026-11-16
 
 ### Added
