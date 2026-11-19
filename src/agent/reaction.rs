@@ -1250,6 +1250,7 @@ fn warden_offer(
         _ => Vec::new(),
     };
     let reason = decision.reason.clone();
+    let warden_note = super::warden::Note::from_decision(&decision, &choice.agents);
     log::append(
         &state.circle_dir,
         &log::Record {
@@ -1290,14 +1291,17 @@ fn warden_offer(
         message,
         now,
         &selected,
-        Some(vote_pool(
-            mode,
-            choice.max_listeners,
-            choice.agents,
-            listeners,
-            settings.ambient_responders,
-            spec,
-        )),
+        Some(super::warden::Assignment {
+            note: Some(warden_note),
+            ..vote_pool(
+                mode,
+                choice.max_listeners,
+                choice.agents,
+                listeners,
+                settings.ambient_responders,
+                spec,
+            )
+        }),
     );
     true
 }
@@ -1327,7 +1331,12 @@ fn vote_pool(
         super::warden::spec::ModeKind::Vote => max.max(spec.vote.max.min(ceiling).min(pool.len())),
         _ => max,
     };
-    super::warden::Assignment { mode, max, pool }
+    super::warden::Assignment {
+        mode,
+        max,
+        pool,
+        note: None,
+    }
 }
 
 /// FNV-1a over the message id.
@@ -2129,13 +2138,15 @@ async fn react(
             state,
             agent_id,
             message_id,
+            // A voter that passed read the message and stayed quiet; the routing
+            // strip under the message says so, not the composer.
             if passed {
-                ChatActivityKind::Skipped
+                ChatActivityKind::Seen
             } else {
                 ChatActivityKind::Working
             },
             passed,
-            passed.then(|| "nothing to add".to_string()),
+            None,
         );
         return Ok(Some(
             if passed { PASSED_DETAIL } else { VOTED_DETAIL }.into(),
@@ -2147,7 +2158,8 @@ async fn react(
     // conversational half.
     // An unaddressed agent that declines says PASS (§2.3). Suppress the post,
     // but still advance its seen-mark and say so in the activity indicator —
-    // "considered and passed" must not look like "never ran".
+    // "considered and passed" must not look like "never ran": it reads as seen,
+    // and the routing strip under the message says it passed.
     if ambient
         && outcome
             .reply
@@ -2162,9 +2174,9 @@ async fn react(
             state,
             agent_id,
             message_id,
-            ChatActivityKind::Skipped,
+            ChatActivityKind::Seen,
             true,
-            Some("nothing to add".to_string()),
+            None,
         );
         return Ok(Some(PASSED_DETAIL.into()));
     }
@@ -2415,15 +2427,16 @@ pub(crate) async fn post_vote(
     posted
 }
 
-/// Say that a voter's answer was not the one posted.
+/// Settle a voter whose answer was not the one posted: it read the message,
+/// and the routing strip under the message says it voted.
 pub(crate) fn publish_voted(state: &AppState, agent_id: &str, message_id: &str) {
     publish_agent_activity_detailed(
         state,
         agent_id,
         message_id,
-        ChatActivityKind::Skipped,
+        ChatActivityKind::Seen,
         true,
-        Some("voted; another answer was posted".to_string()),
+        None,
     );
 }
 
@@ -3775,6 +3788,10 @@ mod tests {
         let assignment = inbox.entries()[0].request.warden.clone().unwrap();
         assert_eq!(assignment.mode, super::super::warden::spec::ModeKind::Vote);
         assert_eq!(assignment.max, 3);
+        // The turn carries why, for the receipt every device reads.
+        let note = assignment.note.expect("a warden turn carries its note");
+        assert_eq!(note.decider, "builtin:rules");
+        assert!(!note.reason.is_empty());
 
         run_until_idle(&state, &inbox, &cfg).await;
 

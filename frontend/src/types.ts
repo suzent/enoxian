@@ -367,4 +367,21 @@ export interface ExecutionRun {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'expired' | 'interrupted' | 'legacy_suppressed'
   detail?: string | null
   ambient: boolean
+  /** How the turn came to run. Absent on receipts from older peers. */
+  routed_by?: 'mention' | 'rotation' | 'warden'
+  /** Every agent this device offered the same message to, together. */
+  co_listeners?: string[]
+  /** What the warden decided, when it assigned the turn. */
+  warden?: RunWardenNote
+}
+
+export interface RunWardenNote {
+  mode: 'single' | 'room' | 'vote'
+  decider?: string
+  reason?: string
+  /** The decider's calibrated confidence in this run's agent, 0..1. */
+  confidence?: number
+  latency_ms?: number
+  /** The configured decider failed and the rules decided instead. */
+  fallback?: boolean
 }

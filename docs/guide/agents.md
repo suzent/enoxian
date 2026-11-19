@@ -772,7 +772,7 @@ If you would rather not wait for the budget, **stop chain** appears in the
 activity strip while a delegated turn is running, and anyone in the Circle can
 press it. It does not interrupt the turn already running — it stops every
 further one, on every device. A chain that was stopped or ran out of budget
-says so in the activity strip (`codex not triggered · relay budget spent`)
+says so in the activity strip (`codex did not run · relay budget spent`)
 rather than leaving a permanent line in the transcript.
 
 A reply that arrived through delegation is marked `via @claude` next to the
