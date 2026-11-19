@@ -84,6 +84,16 @@ describe('deriveRouting', () => {
     expect(texts).toContain('codex on mini: voted')
   })
 
+  it('says why a handed-on run was stopped', () => {
+    const runs = [
+      run({ ...warden, run_id: 'a', status: 'failed', admitted_at: 100, updated_at: 130, detail: 'session limit' }),
+      run({ run_id: 'b', agent_id: 'codex', status: 'cancelled', admitted_at: 131, updated_at: 131, detail: 'another agent is already working on this' }),
+    ]
+    const step = deriveRouting(runs, [], [], nameOf)!.steps.find(s => s.key === 'b')!
+    expect(step.text).toBe('Handed on to codex on jessair: stopped')
+    expect(step.detail).toBe('another agent is already working on this')
+  })
+
   it('does not count a co-listener admitted with the failed run as handed on', () => {
     const runs = [
       run({ ...warden, run_id: 'a', status: 'failed', admitted_at: 100, updated_at: 100 }),

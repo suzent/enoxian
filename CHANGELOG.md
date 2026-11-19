@@ -59,6 +59,7 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- A message handed on after an agent failed (for example on its usage limit) no longer stops with "another agent is already working on this" because the failed agent's "working" marker outlived its run. The daemon now ignores that marker for an agent whose run on the same device has ended, retries activity updates briefly when the circle is busy rather than dropping them, and the routing strip says why a run was stopped.
 - The "No agent could answer this" notice no longer lingers in chat after another agent goes on to answer the message; it is folded into the message's routing strip instead.
 - An agent paired again no longer fails every turn with "Could not restore ACP session" when the agent says the new authorization cannot access the saved session (ACP `-32000`); that session is treated as gone and a fresh one starts.
 - The activity strip above the composer no longer says "not triggered" for agents that read a message and passed, or voted for another answer — they show as having seen it, and the routing strip under the message says what they did. Agents that were never run (relay budget spent, chain stopped, a failed turn) now read "did not run".
