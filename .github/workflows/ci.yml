@@ -107,7 +107,12 @@ jobs:
           # installers job guards against CRLF.
           matches installers '^(scripts/|\.gitattributes$)'
           matches audit      '^(Cargo\.(toml|lock)$|\.cargo/)'
-          matches docker     '^(Dockerfile$|\.dockerignore$|Cargo\.(toml|lock)$|build\.rs$|src/|scripts/rendezvous/(release\.Dockerfile|docker-compose\.yml)$)'
+          # Only the image's own files. A source change cannot break the image
+          # in a way the Rust jobs miss: they compile the same code with the
+          # same toolchain and the `iroh-relay-server` feature. Rebuilding
+          # here meant an uncached six-minute release build on every code
+          # change; main and the merge queue still build it every time.
+          matches docker     '^(Dockerfile$|\.dockerignore$|scripts/rendezvous/(release\.Dockerfile|docker-compose\.yml)$)'
 
   workflows:
     name: Workflow lint
@@ -301,7 +306,13 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
 
+      # Only main saves. A pull request's cache is visible to that pull
+      # request alone, yet each one weighed 1-1.6 GB and pushed the repository
+      # past the 10 GB Actions cache limit, which evicted main's caches and
+      # sent the next runs into cold builds. Pull requests restore main's.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -352,10 +363,12 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
+      # Saved from main only; see the quality job.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: env.RUN == 'true'
         with:
           key: ${{ matrix.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Test
         if: env.RUN == 'true'
@@ -423,7 +436,7 @@ jobs:
     name: Bootstrap image
     needs: changes
     # A full release build is expensive, so a pull request only rebuilds when
-    # something that feeds the image changed. Every push to main rebuilds
+    # the image's own files changed. Every push to main rebuilds
     # unconditionally, which is what keeps the image from rotting unnoticed.
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.docker == 'true') }}
     runs-on: ubuntu-latest
