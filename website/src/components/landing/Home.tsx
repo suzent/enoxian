@@ -79,6 +79,10 @@ const COPY: Record<
     veilEyebrow: string;
     veilTitle: string;
     veilPromptLabel: string;
+    playLabel: string;
+    pauseLabel: string;
+    replayLabel: string;
+    tickLabels: [string, string, string, string, string];
     leftColTitle: string;
     leftColSub: string;
     rightColTitle: string;
@@ -178,7 +182,17 @@ const COPY: Record<
 
     veilEyebrow: "02 · DRAFT · HOLD · EDIT",
     veilTitle: "Agents Draft Behind a Veil—and Adapt Before Posting",
-    veilPromptLabel: "While @suzent is drafting:",
+    veilPromptLabel: "Scenario:",
+    playLabel: "▶ Play",
+    pauseLabel: "❚❚ Pause",
+    replayLabel: "↻ Replay",
+    tickLabels: [
+      "00s · Question",
+      "01s · Agent Drafts",
+      "04s · Peer Speaks",
+      "06s · Agent Holds",
+      "08s · Final Output",
+    ],
     leftColTitle: "Shared Circle Timeline",
     leftColSub: "visible to all 4 peers",
     rightColTitle: "@suzent · Home Mini (Veiled Buffer)",
@@ -322,7 +336,17 @@ const COPY: Record<
 
     veilEyebrow: "02 · 起草 · 挂起 (HOLD) · 改写 (EDIT)",
     veilTitle: "智能体在隐纱后起草——发送前看清局势再改口",
-    veilPromptLabel: "当 @suzent 正在后台起草时：",
+    veilPromptLabel: "切换场景：",
+    playLabel: "▶ 播放",
+    pauseLabel: "❚❚ 暂停",
+    replayLabel: "↻ 重播",
+    tickLabels: [
+      "00s · 成员提问",
+      "01s · 隐纱起草",
+      "04s · 同伴发言",
+      "06s · 自动挂起",
+      "08s · 改写输出",
+    ],
     leftColTitle: "Circle 公共时间线",
     leftColSub: "4 位成员实时可见",
     rightColTitle: "@suzent · Home Mini（本机隐纱缓冲区）",
@@ -420,16 +444,66 @@ export default function Home({ locale }: { locale: Locale }) {
   const [copied, setCopied] = useState(false);
   const [erupted, setErupted] = useState(false);
   const [veilCase, setVeilCase] = useState<VeilCaseKey>("edit");
+  const [step, setStep] = useState(0);
+  const [playing, setPlaying] = useState(true);
+  const [typedChars, setTypedChars] = useState(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (typeof navigator !== "undefined" && /Win/i.test(navigator.platform)) {
       setOsTab("win");
     }
+    if (
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      setPlaying(false);
+      setStep(4);
+    }
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, []);
+
+  // Chronological auto-advance through the 5 timestamps (0 -> 1 -> 2 -> 3 -> 4 -> loop)
+  useEffect(() => {
+    if (!playing) return;
+    const durations = [1350, 1750, 1550, 1650, 2900];
+    const id = setTimeout(() => {
+      setStep((s) => (s + 1) % 5);
+    }, durations[step] ?? 1600);
+    return () => clearTimeout(id);
+  }, [playing, step, veilCase]);
+
+  // Typewriter stream inside the Agent's veiled buffer during step 1
+  useEffect(() => {
+    const fullLen = t.initialDraftText.length;
+    if (step < 1) {
+      setTypedChars(0);
+      return;
+    }
+    if (step > 1 || !playing) {
+      setTypedChars(fullLen);
+      return;
+    }
+    setTypedChars(8);
+    const iv = setInterval(() => {
+      setTypedChars((c) => {
+        if (c >= fullLen) {
+          clearInterval(iv);
+          return fullLen;
+        }
+        return c + 3;
+      });
+    }, 28);
+    return () => clearInterval(iv);
+  }, [step, playing, t.initialDraftText]);
+
+  function selectScenario(key: VeilCaseKey) {
+    setVeilCase(key);
+    setStep(0);
+    setPlaying(true);
+  }
 
   const cmd = osTab === "unix" ? UNIX_INSTALL : WIN_INSTALL;
 
@@ -623,7 +697,7 @@ export default function Home({ locale }: { locale: Locale }) {
         </div>
       </section>
 
-      {/* ── 02. VEILED DRAFT STATE MACHINE (DRAFT -> HOLD -> EDIT/DROP) ─ */}
+      {/* ── 02. CHRONOLOGICAL VEILED DRAFT PLAYER ────────────────────── */}
       <section className={styles.section}>
         <div className={styles.container}>
           <div className={styles.sectionHeader}>
@@ -645,117 +719,293 @@ export default function Home({ locale }: { locale: Locale }) {
                   styles.scenarioBtn,
                   veilCase === key && styles.scenarioBtnActive,
                 )}
-                onClick={() => setVeilCase(key)}
+                onClick={() => selectScenario(key)}
               >
                 {t.veilCases[key].tab}
               </button>
             ))}
           </div>
 
-          <div className={styles.veilSplitBoard}>
-            {/* Left: Public Circle Chat */}
-            <div className={styles.veilTrackCol}>
-              <div className={styles.trackHeader}>
-                <span>{t.leftColTitle}</span>
-                <span className={styles.trackSubTag}>{t.leftColSub}</span>
-              </div>
-
-              <div className={styles.chatEventCard}>
-                <div className={styles.chatEventTop}>
-                  <span className={styles.chatEventWho}>
-                    <span className={styles.avatarHuman}>L</span>
-                    <span>leo · Lab Server</span>
-                  </span>
-                  <span className={styles.chatEventTime}>00:00s</span>
-                </div>
-                <p className={styles.chatEventText}>{t.initialQText}</p>
-              </div>
-
-              <div className={styles.chatEventCard}>
-                <div className={styles.chatEventTop}>
-                  <span className={styles.chatEventWho}>
-                    <span className={styles.avatarHuman}>
-                      {activeVeil.interruptionWho[0].toUpperCase()}
-                    </span>
-                    <span>
-                      {activeVeil.interruptionWho} · {activeVeil.interruptionHost}
-                    </span>
-                  </span>
-                  <span className={styles.chatEventTime}>
-                    {activeVeil.interruptionTime}
-                  </span>
-                </div>
-                <p className={styles.chatEventText}>
-                  {activeVeil.interruptionText}
-                </p>
-              </div>
-
-              <div className={styles.chatEventCard}>
-                <div className={styles.chatEventTop}>
-                  <span className={styles.chatEventWho}>
-                    {activeVeil.chatOutcomeWho ? (
-                      <>
-                        <span className={styles.avatarAgent}>◇</span>
-                        <span>{activeVeil.chatOutcomeWho}</span>
-                      </>
-                    ) : (
-                      <span>✓ Circle</span>
+          <div className={styles.veilPlayerFrame}>
+            {/* Chronological Scrubber & Play/Pause Bar */}
+            <div className={styles.timelineBar}>
+              <div className={styles.timeStepsRow}>
+                {t.tickLabels.map((label, idx) => (
+                  <button
+                    key={label}
+                    type="button"
+                    className={clsx(
+                      styles.timeTickBtn,
+                      step > idx && styles.timeTickPast,
+                      step === idx && styles.timeTickCurrent,
                     )}
-                  </span>
-                  <span className={styles.chatEventTime}>00:08s</span>
-                </div>
-                <p className={styles.chatEventText}>
-                  {activeVeil.chatOutcomeText}
-                </p>
+                    onClick={() => {
+                      setPlaying(false);
+                      setStep(idx);
+                    }}
+                  >
+                    <span className={styles.timeTickDot} />
+                    <span>{label}</span>
+                  </button>
+                ))}
               </div>
+              <button
+                type="button"
+                className={styles.playToggleBtn}
+                onClick={() => {
+                  if (!playing && step === 4) {
+                    setStep(0);
+                    setPlaying(true);
+                  } else {
+                    setPlaying((p) => !p);
+                  }
+                }}
+              >
+                {playing
+                  ? t.pauseLabel
+                  : step === 4
+                    ? t.replayLabel
+                    : t.playLabel}
+              </button>
+            </div>
+            <div className={styles.timeProgressTrack} aria-hidden="true">
+              <div
+                className={styles.timeProgressFill}
+                style={{ width: `${((step + 1) / 5) * 100}%` }}
+              />
             </div>
 
-            {/* Right: Agent's Private Veiled Buffer (Draft -> Hold -> Edit/Drop) */}
-            <div className={styles.veilTrackCol}>
-              <div className={styles.trackHeader}>
-                <span>{t.rightColTitle}</span>
-                <span className={styles.trackSubTag}>{t.rightColSub}</span>
-              </div>
-
-              {/* Step 1: Initial Draft */}
-              <div className={styles.draftStepBox}>
-                <div className={styles.draftStepHead}>
-                  <span className={styles.statePill}>{t.draftStageTitle}</span>
-                  <span>00:01s – 00:06s</span>
-                </div>
-                <p className={styles.draftTextLive}>{t.initialDraftText}</p>
-              </div>
-
-              {/* Step 2: Hold & Re-check */}
-              <div className={styles.draftStepBox}>
-                <div className={styles.draftStepHead}>
-                  <span className={styles.statePill}>{activeVeil.holdBadge}</span>
-                  <span>00:06s</span>
-                </div>
-                <p className={styles.chatEventText}>{activeVeil.holdReason}</p>
-              </div>
-
-              {/* Step 3: Edited / Dropped / Posted */}
+            <div className={styles.veilSplitBoard}>
+              {/* Center boundary gate & flying packet when Agent dispatches out of Veil */}
               <div
                 className={clsx(
-                  styles.draftStepBox,
-                  styles.draftStepBoxSolid,
+                  styles.veilGateBadge,
+                  step === 4 &&
+                    activeVeil.chatOutcomeWho &&
+                    styles.veilGateDispatch,
+                  step === 4 &&
+                    !activeVeil.chatOutcomeWho &&
+                    styles.veilGateBlocked,
                 )}
+                aria-hidden="true"
               >
-                <div className={styles.draftStepHead}>
-                  <span
-                    className={clsx(styles.statePill, styles.statePillInvert)}
-                  >
-                    {activeVeil.finalActionBadge}
+                {step === 4 ? (activeVeil.chatOutcomeWho ? "←" : "×") : "·"}
+              </div>
+              {step === 4 && activeVeil.chatOutcomeWho && (
+                <div
+                  key={`pkt-${veilCase}`}
+                  className={styles.dispatchPacket}
+                  aria-hidden="true"
+                >
+                  <span>←</span>
+                  <span>
+                    {locale === "zh-Hans" ? "发送至 CIRCLE" : "SEND TO CIRCLE"}
                   </span>
-                  <span>00:08s</span>
                 </div>
-                {activeVeil.strikeDraft && (
-                  <p className={styles.draftTextStrike}>
-                    {activeVeil.strikeDraft}
+              )}
+
+              {/* Left: Public Circle Chat */}
+              <div className={styles.veilTrackCol}>
+                <div className={styles.trackHeader}>
+                  <span>{t.leftColTitle}</span>
+                  <span className={styles.trackSubTag}>{t.leftColSub}</span>
+                </div>
+
+                {/* Step 0 (00s): Leo asks */}
+                <div
+                  key={`q-${veilCase}-${step === 0 ? "send" : "sent"}`}
+                  className={clsx(
+                    styles.chatEventCard,
+                    styles.seqItem,
+                    step >= 0 && styles.seqItemVisible,
+                    step === 0 && styles.seqItemActive,
+                    step === 0 && styles.chatEventSent,
+                  )}
+                >
+                  <div className={styles.chatEventTop}>
+                    <span className={styles.chatEventWho}>
+                      <span className={styles.avatarHuman}>L</span>
+                      <span>leo · Lab Server</span>
+                    </span>
+                    <span className={styles.chatEventTime}>
+                      00:00s
+                      <span className={styles.syncReceiptTag}>✓✓ 4 peers</span>
+                    </span>
+                  </div>
+                  <p className={styles.chatEventText}>{t.initialQText}</p>
+                </div>
+
+                {/* Step 2 (04s): Peer replies in Circle */}
+                <div
+                  key={`p-${veilCase}-${step === 2 ? "send" : "sent"}`}
+                  className={clsx(
+                    styles.chatEventCard,
+                    styles.seqItem,
+                    step >= 2 && styles.seqItemVisible,
+                    step === 2 && styles.seqItemActive,
+                    step === 2 && styles.chatEventSent,
+                  )}
+                >
+                  <div className={styles.chatEventTop}>
+                    <span className={styles.chatEventWho}>
+                      <span className={styles.avatarHuman}>
+                        {activeVeil.interruptionWho[0].toUpperCase()}
+                      </span>
+                      <span>
+                        {activeVeil.interruptionWho} ·{" "}
+                        {activeVeil.interruptionHost}
+                      </span>
+                    </span>
+                    <span className={styles.chatEventTime}>
+                      {activeVeil.interruptionTime}
+                      {veilCase !== "post" && (
+                        <span className={styles.syncReceiptTag}>
+                          ✓✓ 4 peers
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  <p className={styles.chatEventText}>
+                    {activeVeil.interruptionText}
                   </p>
-                )}
-                <p className={styles.draftTextLive}>{activeVeil.finalDraft}</p>
+                </div>
+
+                {/* Step 4 (08s): Agent posts adapted reply across from veil (or stays silent) */}
+                <div
+                  key={`${veilCase}-${step === 4 ? "live" : "wait"}`}
+                  className={clsx(
+                    styles.chatEventCard,
+                    styles.seqItem,
+                    step >= 4 && styles.seqItemVisible,
+                    step === 4 && styles.seqItemActive,
+                    step === 4 &&
+                      activeVeil.chatOutcomeWho &&
+                      styles.chatEventFromVeil,
+                  )}
+                >
+                  <div className={styles.chatEventTop}>
+                    <span className={styles.chatEventWho}>
+                      {activeVeil.chatOutcomeWho ? (
+                        <>
+                          <span className={styles.avatarAgent}>◇</span>
+                          <span>{activeVeil.chatOutcomeWho}</span>
+                        </>
+                      ) : (
+                        <span>✓ Circle</span>
+                      )}
+                    </span>
+                    <span className={styles.chatEventTime}>
+                      00:08s
+                      {activeVeil.chatOutcomeWho && (
+                        <span className={styles.syncReceiptTag}>
+                          ✓✓ 4 peers
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  <p className={styles.chatEventText}>
+                    {activeVeil.chatOutcomeText}
+                  </p>
+                </div>
+              </div>
+
+              {/* Right: Agent's Private Veiled Buffer (Draft -> Hold -> Edit/Drop) */}
+              <div className={styles.veilTrackCol}>
+                <div className={styles.trackHeader}>
+                  <span>{t.rightColTitle}</span>
+                  <span className={styles.trackSubTag}>{t.rightColSub}</span>
+                </div>
+
+                {/* Step 1 (01s): Initial Draft streaming */}
+                <div
+                  className={clsx(
+                    styles.draftStepBox,
+                    styles.seqItem,
+                    step >= 1 && styles.seqItemVisible,
+                    step === 1 && styles.seqItemActive,
+                  )}
+                >
+                  <div className={styles.draftStepHead}>
+                    <span
+                      className={clsx(
+                        styles.statePill,
+                        step === 1 && styles.statePillInvert,
+                      )}
+                    >
+                      {t.draftStageTitle}
+                    </span>
+                    <span>00:01s</span>
+                  </div>
+                  <p className={styles.draftTextLive}>
+                    {step >= 1 ? t.initialDraftText.slice(0, typedChars) : ""}
+                    {step === 1 && playing && (
+                      <span className={styles.typingCursor} />
+                    )}
+                  </p>
+                </div>
+
+                {/* Step 3 (06s): Hold & Re-check */}
+                <div
+                  className={clsx(
+                    styles.draftStepBox,
+                    styles.seqItem,
+                    step >= 3 && styles.seqItemVisible,
+                    step === 3 && styles.seqItemActive,
+                  )}
+                >
+                  <div className={styles.draftStepHead}>
+                    <span
+                      className={clsx(
+                        styles.statePill,
+                        step === 3 && styles.statePillInvert,
+                      )}
+                    >
+                      {activeVeil.holdBadge}
+                    </span>
+                    <span>00:06s</span>
+                  </div>
+                  <p className={styles.chatEventText}>
+                    {activeVeil.holdReason}
+                  </p>
+                </div>
+
+                {/* Step 4 (08s): Edited / Dropped / Posted */}
+                <div
+                  key={`final-${veilCase}-${step === 4 ? "fire" : "idle"}`}
+                  className={clsx(
+                    styles.draftStepBox,
+                    styles.draftStepBoxSolid,
+                    styles.seqItem,
+                    step >= 4 && styles.seqItemVisible,
+                    step === 4 && styles.seqItemActive,
+                    step === 4 &&
+                      activeVeil.chatOutcomeWho &&
+                      styles.draftStepDispatched,
+                    step === 4 &&
+                      !activeVeil.chatOutcomeWho &&
+                      styles.draftStepDropped,
+                  )}
+                >
+                  <div className={styles.draftStepHead}>
+                    <span
+                      className={clsx(
+                        styles.statePill,
+                        step === 4 && styles.statePillInvert,
+                      )}
+                    >
+                      {activeVeil.finalActionBadge}
+                    </span>
+                    <span>00:08s</span>
+                  </div>
+                  {activeVeil.strikeDraft && (
+                    <p className={styles.draftTextStrike}>
+                      {activeVeil.strikeDraft}
+                    </p>
+                  )}
+                  <p className={styles.draftTextLive}>
+                    {activeVeil.finalDraft}
+                  </p>
+                </div>
               </div>
             </div>
           </div>
