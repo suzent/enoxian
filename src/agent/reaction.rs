@@ -1903,18 +1903,27 @@ fn launch_rejection(
     // offered the message to together are not competitors — that set is the
     // plan — and an agent never blocks itself, which a requeued turn would
     // otherwise do through its own heartbeat from the attempt a restart killed.
-    // Nor does an agent on this device whose own run for the message is over:
-    // this device's inbox says so, while the "working" it published can
-    // outlive the run when the write that would end it found the circle busy.
-    // That stale claim used to cancel the hand-off after a failure outright.
+    // Nor does the run heartbeat of an agent on this device whose own run for
+    // the message is over: this device's inbox says so, while the "working"
+    // it published can outlive the run when the write that would end it found
+    // the circle busy. That stale heartbeat used to cancel the hand-off after a
+    // failure outright. An explicit claim the agent made since still counts.
     if request.ambient {
         let mut mine = request.co_listeners.clone();
         mine.push(request.agent.clone());
-        mine.extend(ended.iter().cloned());
-        let claims = super::claims::live_claims(
+        let mut claims = super::claims::live_claims(
             &crate::api::chat::live_activities(state, chrono::Utc::now().timestamp())
                 .unwrap_or_default(),
         );
+        if let Some(on_message) = claims.get_mut(&request.message.id) {
+            on_message.retain(|claim| {
+                claim.explicit
+                    || claim.peer_id != state.peer_id
+                    || !ended
+                        .iter()
+                        .any(|agent| agent.eq_ignore_ascii_case(&claim.agent))
+            });
+        }
         if super::claims::blocking(&claims, &request.message.id, &state.peer_id, &mine).is_some() {
             return Ok(Some("another agent is already working on this"));
         }
@@ -4836,7 +4845,8 @@ mod tests {
         let Admission::Accepted { entry, .. } = inbox.admit(first, 20, 100).unwrap() else {
             panic!("claude's turn was not admitted");
         };
-        claim(&state, "limit", "claude", "local", 60);
+        // The heartbeat a running turn publishes, not an explicit claim.
+        publish_agent_activity(&state, "claude", "limit", ChatActivityKind::Working, true);
 
         let mut hand_off = request("limit", "codex");
         hand_off.message = message;
