@@ -174,6 +174,15 @@ shows it in the activity panel and in `enox runs`. A turn quiet for ten
 minutes with no tool call open is flagged as possibly stuck; nothing more
 happens unless you act.
 
+Other devices in the circle see a shorter version beside the agent's name above
+the composer, such as "is working · running cargo · step 2/4: Write the tests".
+It is built from the agent's ACP tool-call and plan updates on the device
+running it, and keeps only what is safe to share: the kind of tool, the program
+name for a command (never its arguments), a file path inside the shared folder,
+and the plan step in progress. Tool titles, command lines and paths outside the
+shared folder stay on the running device. It refreshes at most every five
+seconds. Private turns are never shown.
+
 A turn ends when the agent ends it, when its process exits, or when it is
 stopped:
 

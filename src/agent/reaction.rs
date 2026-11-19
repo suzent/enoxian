@@ -2080,16 +2080,28 @@ async fn react(
     let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     heartbeat.tick().await;
+    // What the turn is doing goes out with the lease, and in between whenever
+    // it changes — at most once per `PROGRESS_MIN_GAP`, since every write to
+    // the activity map reaches every member.
+    let mut sampler = tokio::time::interval(PROGRESS_SAMPLE);
+    sampler.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut published = ProgressGate::default();
     let outcome = loop {
         tokio::select! {
             result = &mut launch => break result?,
-            _ = heartbeat.tick() => { state.actor_tokens.renew(&actor_token); publish_agent_activity(
-                state,
-                agent_id,
-                message_id,
-                ChatActivityKind::Working,
-                true,
-            ); },
+            _ = heartbeat.tick() => {
+                state.actor_tokens.renew(&actor_token);
+                let progress = turn_progress(state, run_id);
+                published.sent(progress.clone(), tokio::time::Instant::now());
+                publish_agent_progress(state, agent_id, message_id, progress);
+            },
+            _ = sampler.tick() => {
+                let progress = turn_progress(state, run_id);
+                if published.should_send(&progress, tokio::time::Instant::now()) {
+                    published.sent(progress.clone(), tokio::time::Instant::now());
+                    publish_agent_progress(state, agent_id, message_id, progress);
+                }
+            },
         }
     };
 
@@ -2450,6 +2462,73 @@ fn publish_agent_activity(
     publish_agent_activity_detailed(state, agent_id, message_id, kind, live, None)
 }
 
+/// How often a running turn's progress is looked at.
+const PROGRESS_SAMPLE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The least time between two progress writes for one turn. The lease
+/// heartbeat writes regardless.
+const PROGRESS_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The room's view of a running turn, or `None` before the agent has started
+/// (the turn is listed once its process runs) or on a device that cannot say.
+fn turn_progress(state: &AppState, run_id: &str) -> Option<crate::control::RunProgress> {
+    let run = state.live_runs.get(run_id)?;
+    let activity = run.activity.lock().unwrap().clone();
+    Some(activity.progress(run.started_at, &state.workspace))
+}
+
+/// Decides when a progress change is worth a write.
+///
+/// `last_activity_at` moves with every chunk the agent streams, so it is not a
+/// change by itself; it rides along with the next write.
+#[derive(Default)]
+struct ProgressGate {
+    last: Option<(Option<crate::control::RunProgress>, tokio::time::Instant)>,
+}
+
+impl ProgressGate {
+    fn should_send(
+        &self,
+        progress: &Option<crate::control::RunProgress>,
+        now: tokio::time::Instant,
+    ) -> bool {
+        let shape = |p: &Option<crate::control::RunProgress>| {
+            p.clone().map(|mut p| {
+                p.last_activity_at = None;
+                p
+            })
+        };
+        match &self.last {
+            None => progress.is_some(),
+            Some((last, at)) => {
+                shape(last) != shape(progress) && now.duration_since(*at) >= PROGRESS_MIN_GAP
+            }
+        }
+    }
+
+    fn sent(&mut self, progress: Option<crate::control::RunProgress>, at: tokio::time::Instant) {
+        self.last = Some((progress, at));
+    }
+}
+
+/// A live `Working` activity carrying what the turn is doing.
+fn publish_agent_progress(
+    state: &AppState,
+    agent_id: &str,
+    message_id: &str,
+    progress: Option<crate::control::RunProgress>,
+) {
+    publish_agent_activity_with(
+        state,
+        agent_id,
+        message_id,
+        ChatActivityKind::Working,
+        true,
+        None,
+        progress,
+    )
+}
+
 fn publish_agent_activity_detailed(
     state: &AppState,
     agent_id: &str,
@@ -2457,6 +2536,18 @@ fn publish_agent_activity_detailed(
     kind: ChatActivityKind,
     live: bool,
     detail: Option<String>,
+) {
+    publish_agent_activity_with(state, agent_id, message_id, kind, live, detail, None)
+}
+
+fn publish_agent_activity_with(
+    state: &AppState,
+    agent_id: &str,
+    message_id: &str,
+    kind: ChatActivityKind,
+    live: bool,
+    detail: Option<String>,
+    progress: Option<crate::control::RunProgress>,
 ) {
     // Activities replicate, and would show the room a turn on a message it
     // has never seen.
@@ -2477,6 +2568,7 @@ fn publish_agent_activity_detailed(
         } else {
             now - 1
         },
+        progress,
     };
     if let Err(error) = crate::api::chat::put_activity(state, activity) {
         tracing::debug!("[agent] failed to publish chat activity: {error}");
@@ -4560,6 +4652,7 @@ mod tests {
                 message_id: Some(message.into()),
                 updated_at: now,
                 expires_at: now + expires_in,
+                progress: None,
             },
         )
         .unwrap();
@@ -5653,5 +5746,32 @@ mod tests {
             cleaned,
             "Here is the chart:\n```\nATTACH: chart.png\n```\nDone."
         );
+    }
+
+    /// Progress goes out when it changes, but not faster than the floor, and a
+    /// reply streaming in is not a change by itself.
+    #[test]
+    fn progress_is_sent_on_change_at_most_once_per_gap() {
+        let start = tokio::time::Instant::now();
+        let at = |secs: u64| start + std::time::Duration::from_secs(secs);
+        let progress = |plan_done: u16, last: i64| {
+            Some(crate::control::RunProgress {
+                started_at: 0,
+                last_activity_at: Some(last),
+                plan_done,
+                plan_total: 3,
+                ..Default::default()
+            })
+        };
+        let mut gate = ProgressGate::default();
+        assert!(!gate.should_send(&None, at(0)), "nothing to say yet");
+        assert!(gate.should_send(&progress(0, 1), at(0)));
+        gate.sent(progress(0, 1), at(0));
+        assert!(
+            !gate.should_send(&progress(0, 9), at(10)),
+            "only the agent spoke"
+        );
+        assert!(!gate.should_send(&progress(1, 2), at(2)), "too soon");
+        assert!(gate.should_send(&progress(1, 2), at(5)));
     }
 }

@@ -14,6 +14,7 @@ import MentionPopup, { buildMentionItems, type MentionItem } from './MentionPopu
 import MentionInput, { draftText, type DraftNode, type MentionInputHandle } from './MentionInput'
 import Lightbox from './Lightbox'
 import { renderChatMarkdown } from '../lib/markdown'
+import { describeProgress } from '../lib/runProgress'
 import { splitVoteNote } from '../lib/voteNote'
 
 // Backfill retry budget: ~0.5s + 1s + 1.5s + 2s before giving up and telling
@@ -1171,7 +1172,8 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
     if (activity.kind === 'skipped') {
       return `${actor} did not run${activity.detail ? ` · ${activity.detail}` : ''}`
     }
-    return `${actor} is working…`
+    const progress = describeProgress(activity.progress)
+    return progress ? `${actor} is working · ${progress}` : `${actor} is working…`
   }
 
   // Several agents scrying the room start, pass and finish together. One
@@ -1198,6 +1200,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
             agent: !!label.agent,
             device: (label.agent ? host?.device_label : label.device) || null,
             detail: activity.detail ?? null,
+            progress: describeProgress(activity.progress) ?? null,
             description: describeActivity(activity),
           }
         })
@@ -1457,6 +1460,11 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
                       {activityVerb(group.kind, group.actors.length, terse)}
                       {group.kind === 'skipped' && group.actors.length === 1 && group.actors[0].detail && activityDensity === 0
                         ? <span className="chat-activity__detail"> · {group.actors[0].detail}</span>
+                        : null}
+                      {/* One agent at work: say what it is doing, from its
+                          ACP updates (summarised on the running device). */}
+                      {group.kind === 'working' && group.actors.length === 1 && group.actors[0].progress && activityDensity === 0
+                        ? <span className="chat-activity__detail"> · {group.actors[0].progress}</span>
                         : null}
                     </span>
                   )}

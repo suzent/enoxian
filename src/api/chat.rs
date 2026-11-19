@@ -272,6 +272,7 @@ pub async fn post_activity(
         message_id: None,
         updated_at: now,
         expires_at,
+        progress: None,
     };
     match put_activity(&state, activity) {
         Ok(()) => Json(json!({"ok": true})).into_response(),
@@ -646,6 +647,7 @@ mod tests {
             message_id: None,
             updated_at: 10,
             expires_at,
+            progress: None,
         }
     }
 
@@ -665,6 +667,29 @@ mod tests {
         assert_eq!(value["type"], "chat_activity_changed");
         assert_eq!(value["activity"]["kind"], "typing");
         assert_eq!(value["activity"]["actor_id"], "alice");
+        // Nothing new on the wire for an activity without progress.
+        assert!(value["activity"].get("progress").is_none());
+    }
+
+    /// Peers on either side of the `progress` field still read each other.
+    #[test]
+    fn progress_is_optional_on_the_wire() {
+        let old = r#"{"activity_id":"a","actor_id":"claude","peer_id":"p","kind":"working",
+            "message_id":"m","updated_at":1,"expires_at":2}"#;
+        let parsed: ChatActivity = serde_json::from_str(old).unwrap();
+        assert!(parsed.progress.is_none());
+
+        let mut working = activity(16);
+        working.progress = Some(crate::control::RunProgress {
+            started_at: 1,
+            plan_done: 1,
+            plan_total: 2,
+            ..Default::default()
+        });
+        let value = serde_json::to_value(&working).unwrap();
+        assert_eq!(value["progress"]["plan_total"], 2);
+        let back: ChatActivity = serde_json::from_value(value).unwrap();
+        assert_eq!(back.progress, working.progress);
     }
 }
 

@@ -759,6 +759,58 @@ pub struct ChatActivity {
     pub message_id: Option<String>,
     pub updated_at: i64,
     pub expires_at: i64,
+    /// What a running turn is doing, for [`ChatActivityKind::Working`] only.
+    /// Absent from peers predating the field, and from turns that have not
+    /// reported anything yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<RunProgress>,
+}
+
+/// A running turn's progress as the room sees it: a summary of the agent's
+/// ACP `tool_call` and `plan` updates, built by `liveness::Activity::progress`.
+///
+/// Every field is safe to replicate. The device running the turn keeps the
+/// full account (tool titles, finished calls) to itself; titles often carry
+/// whole command lines, so none is sent. A tool call is described by its ACP
+/// kind, the program it runs, and a file location inside the workspace.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunProgress {
+    /// When the turn started (Unix seconds, the running device's clock).
+    pub started_at: i64,
+    /// When the agent last reported anything.
+    #[serde(default)]
+    pub last_activity_at: Option<i64>,
+    /// The tool call it is in, if any: the most recently announced open one.
+    #[serde(default)]
+    pub tool: Option<ToolProgress>,
+    /// How many tool calls are open, including `tool`.
+    #[serde(default)]
+    pub open_tools: u16,
+    /// Plan entries completed, out of `plan_total`. Both 0 with no plan.
+    #[serde(default)]
+    pub plan_done: u16,
+    #[serde(default)]
+    pub plan_total: u16,
+    /// The plan entry in progress, clipped.
+    #[serde(default)]
+    pub plan_step: Option<String>,
+}
+
+/// One open tool call, reduced to what may leave the device.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolProgress {
+    /// ACP `ToolKind`: `read`, `edit`, `delete`, `move`, `search`, `execute`,
+    /// `think`, `fetch`, `switch_mode`, or `other` (also for anything unknown).
+    pub kind: String,
+    /// For `execute`, the program's name alone — never its arguments.
+    #[serde(default)]
+    pub program: Option<String>,
+    /// A location the call reported, relative to the workspace. Locations
+    /// outside it are left out.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// When the call was announced.
+    pub since: i64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

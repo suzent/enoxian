@@ -936,7 +936,7 @@ data: <json>\n\n
 | `member_pending` | `peer_id` | Member awaiting admission |
 | `message_posted` | `message` | Chat message posted |
 | `agent_mentioned` | `agent_id`, `message` | An agent was @mentioned in chat |
-| `chat_activity_changed` | `activity` | Agent chat activity (`typing`/`seen`/`working`/`skipped`) changed |
+| `chat_activity_changed` | `activity` | Agent chat activity (`typing`/`seen`/`working`/`skipped`) changed. A `working` activity may carry `progress`: `started_at`, `last_activity_at`, `tool` (`kind`, `program`, `path`, `since`), `open_tools`, `plan_done`, `plan_total`, `plan_step` — a redacted summary of the agent's ACP updates that replicates to every member |
 | `relay_stopped` | `root` | A delegation cascade was halted; no further relayed turns run |
 | `engagement_changed` | `peer_id` | A peer dismissed its follow-up window |
 | `attachment_available` | `hash` | Attachment bytes finished downloading from a peer |
