@@ -3,8 +3,9 @@ import { createPortal } from 'react-dom'
 import { Users, FileText, Download, Info } from 'lucide-react'
 import ExecutionStatus from './ExecutionStatus'
 import { Fragment, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
-import type { Attachment, ChatActivity, ChatMessage, EngagementView, Member, Presence } from '../types'
-import { getChat, postChat, chatStream, getChatActivity, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, getEngagement, exitEngagement, getAgentConfigFor, MAX_ATTACHMENT_BYTES } from '../api'
+import type { Attachment, ChatActivity, ChatMessage, EngagementView, ExecutionRun, Member, Presence } from '../types'
+import { getChat, postChat, chatStream, getChatActivity, getExecutions, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, getEngagement, exitEngagement, getAgentConfigFor, MAX_ATTACHMENT_BYTES } from '../api'
+import RoutingStrip, { deriveRouting, isRoutingNotice, type Routing } from './RoutingStrip'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 import CircleActivityButton from './CircleActivityButton'
@@ -481,6 +482,9 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
   const [members, setMembers] = useState<Member[]>([])
   const [presence, setPresence] = useState<Presence[]>([])
   const [activities, setActivities] = useState<Record<string, ChatActivity>>({})
+  // Every device's execution receipts, by run id: who each message was routed
+  // to and how each turn went. Drives the routing strip under a message.
+  const [receipts, setReceipts] = useState<Record<string, ExecutionRun>>({})
   const [activityClock, setActivityClock] = useState(() => Math.floor(Date.now() / 1000))
   // What the next message will do if it names no agent. Implicit routing that
   // is invisible is a bug, so the composer says so before you press Enter.
@@ -594,6 +598,22 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
     setMembers([])
     setPresence([])
     setActivities({})
+    setReceipts({})
+
+    // The stream carries every receipt change from here on; this fills in what
+    // happened before it opened, and again after a reconnect.
+    const refreshReceipts = () => {
+      getExecutions(activeCircleId)
+        .then(page => {
+          if (cancelled) return
+          setReceipts(prev => {
+            const next = { ...prev }
+            for (const run of page.runs ?? []) next[run.run_id] = run
+            return next
+          })
+        })
+        .catch(() => {})
+    }
 
     const refreshRoster = () => {
       getMembers(activeCircleId).then(m => { if (!cancelled) setMembers(m) }).catch(() => {})
@@ -647,7 +667,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
     }
 
     const es = chatStream(activeCircleId)
-    es.onopen = catchUp
+    es.onopen = () => { catchUp(); refreshReceipts() }
     es.addEventListener('message', e => {
       try {
         const data = JSON.parse(e.data)
@@ -658,6 +678,10 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
           addMsg(data.message)
         }
         if (data.type === 'chat_activity_changed') ingestActivity(data.activity)
+        if (data.type === 'execution_receipt_changed' && data.receipt?.run_id) {
+          const run = data.receipt as ExecutionRun
+          setReceipts(prev => ({ ...prev, [run.run_id]: run }))
+        }
         if (data.type === 'attachment_available' && data.hash) {
           setBlobNonces(prev => ({ ...prev, [data.hash]: (prev[data.hash] ?? 0) + 1 }))
         }
@@ -667,6 +691,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
       } catch {}
     })
     catchUp()
+    refreshReceipts()
     return () => {
       cancelled = true
       if (catchUpTimer !== undefined) window.clearTimeout(catchUpTimer)
@@ -757,6 +782,52 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
       agent: agentName,
     }
   }, [members, selfOwner])
+
+  // The routing strip for each message that has one, and the daemon notices it
+  // takes the place of. A notice is folded into its message's strip, and gone
+  // once an agent answers: it was one device's verdict at one moment, and the
+  // receipts say what happened since.
+  const { routings, folded } = useMemo(() => {
+    const nameOf = (agent: string, peer?: string) => {
+      const l = getSenderLabel(agent, peer)
+      const name = l.agent ?? agent
+      return l.device ? `${name} on ${l.device}` : name
+    }
+    const ids = new Set(messages.map(m => m.id))
+    const runsBy = new Map<string, ExecutionRun[]>()
+    for (const run of Object.values(receipts)) {
+      if (!ids.has(run.message_id)) continue
+      const list = runsBy.get(run.message_id)
+      if (list) list.push(run)
+      else runsBy.set(run.message_id, [run])
+    }
+    const answers = new Map<string, string[]>()
+    const notices = new Map<string, ChatMessage[]>()
+    const folded = new Set<string>()
+    for (const m of messages) {
+      if (!m.reply_to || !ids.has(m.reply_to)) continue
+      if (isRoutingNotice(m)) {
+        folded.add(m.id)
+        notices.set(m.reply_to, [...(notices.get(m.reply_to) ?? []), m])
+        continue
+      }
+      const byAgent = m.author ? m.author === 'agent' : m.agent_id !== 'system' && !!getSenderLabel(m.agent_id, m.peer_id).agent
+      if (!byAgent) continue
+      const name = nameOf(m.agent_id, m.peer_id)
+      const list = answers.get(m.reply_to) ?? []
+      if (!list.includes(name)) answers.set(m.reply_to, [...list, name])
+    }
+    const routings = new Map<string, Routing>()
+    for (const id of new Set([...runsBy.keys(), ...notices.keys()])) {
+      const routing = deriveRouting(runsBy.get(id) ?? [], answers.get(id) ?? [], notices.get(id) ?? [], nameOf)
+      if (routing) routings.set(id, routing)
+    }
+    return { routings, folded }
+  }, [messages, receipts, getSenderLabel])
+  const shownMessages = useMemo(
+    () => (folded.size === 0 ? messages : messages.filter(m => !folded.has(m.id))),
+    [messages, folded],
+  )
 
   /** Upload dropped/pasted/picked files and stage them for the next send.
    *  Each upload is independent: one rejected file does not discard the rest. */
@@ -1266,11 +1337,12 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
             <strong>{chatError}</strong>
           </div>
         )}
-        {messages.map((msg, i) => {
+        {shownMessages.map((msg, i) => {
           const label = getSenderLabel(msg.agent_id, msg.peer_id)
           const isThisDevice = msg.agent_id === status?.agent_id
           const isMine = label.user === 'you'
-          const prev = messages[i - 1]
+          const prev = shownMessages[i - 1]
+          const routing = routings.get(msg.id)
           const startsNewDay = !prev || calendarDay(prev.ts) !== calendarDay(msg.ts)
           // Same agent name from two devices is two speakers, so the peer is
           // part of the grouping key.
@@ -1298,9 +1370,10 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
                 onReply={startReply}
                 replyParent={parent}
                 replyParentName={parent ? (() => { const l = getSenderLabel(parent.agent_id, parent.peer_id); return l.agent || l.user })() : undefined}
-                showQuote={needsQuote(messages, i)}
+                showQuote={needsQuote(shownMessages, i)}
                 onJumpTo={jumpTo}
               />
+              {routing && <RoutingStrip routing={routing} />}
             </Fragment>
           )
         })}

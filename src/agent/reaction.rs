@@ -1250,6 +1250,7 @@ fn warden_offer(
         _ => Vec::new(),
     };
     let reason = decision.reason.clone();
+    let warden_note = super::warden::Note::from_decision(&decision, &choice.agents);
     log::append(
         &state.circle_dir,
         &log::Record {
@@ -1290,14 +1291,17 @@ fn warden_offer(
         message,
         now,
         &selected,
-        Some(vote_pool(
-            mode,
-            choice.max_listeners,
-            choice.agents,
-            listeners,
-            settings.ambient_responders,
-            spec,
-        )),
+        Some(super::warden::Assignment {
+            note: Some(warden_note),
+            ..vote_pool(
+                mode,
+                choice.max_listeners,
+                choice.agents,
+                listeners,
+                settings.ambient_responders,
+                spec,
+            )
+        }),
     );
     true
 }
@@ -1327,7 +1331,12 @@ fn vote_pool(
         super::warden::spec::ModeKind::Vote => max.max(spec.vote.max.min(ceiling).min(pool.len())),
         _ => max,
     };
-    super::warden::Assignment { mode, max, pool }
+    super::warden::Assignment {
+        mode,
+        max,
+        pool,
+        note: None,
+    }
 }
 
 /// FNV-1a over the message id.
@@ -3761,6 +3770,10 @@ mod tests {
         let assignment = inbox.entries()[0].request.warden.clone().unwrap();
         assert_eq!(assignment.mode, super::super::warden::spec::ModeKind::Vote);
         assert_eq!(assignment.max, 3);
+        // The turn carries why, for the receipt every device reads.
+        let note = assignment.note.expect("a warden turn carries its note");
+        assert_eq!(note.decider, "builtin:rules");
+        assert!(!note.reason.is_empty());
 
         run_until_idle(&state, &inbox, &cfg).await;
 

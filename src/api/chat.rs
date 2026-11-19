@@ -558,6 +558,7 @@ pub async fn chat_stream(
                 CircleEvent::MessagePosted { .. }
                     | CircleEvent::AgentMentioned { .. }
                     | CircleEvent::ChatActivityChanged { .. }
+                    | CircleEvent::ExecutionReceiptChanged { .. }
                     | CircleEvent::AttachmentAvailable { .. }
                     | CircleEvent::MemberAdded { .. }
                     | CircleEvent::MemberRemoved { .. }

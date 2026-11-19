@@ -746,6 +746,152 @@ button[role="tab"][aria-selected="true"] {
   font-variant-numeric: tabular-nums;
 }
 
+/* Who a message was routed to, and how it went: a one-line chip that opens
+   into the lifecycle steps. Indented to the message body, like a footnote. */
+.chat-routing {
+  align-self: stretch;
+  padding: 0 var(--chat-reading-gutter, 16px) 6px calc(var(--chat-reading-gutter, 16px) + 48px);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-slate);
+}
+
+/* A quiet line of type, not a box: it only gains a ground on hover. */
+.chat-routing__chip {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 6px;
+  max-width: 100%;
+  margin-left: -6px;
+  padding: 1px 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  transition: background var(--control-motion), color var(--control-motion);
+}
+
+.chat-routing__chip:hover {
+  background: var(--control-hover-dither);
+  background-size: 3px 3px;
+  color: var(--fg-obsidian);
+}
+
+.chat-routing__chip:focus-visible {
+  outline: 1px solid var(--fg-obsidian);
+  outline-offset: 1px;
+}
+
+.chat-routing__caret {
+  display: inline-block;
+  width: 8px;
+  font-size: 8px;
+  transition: transform var(--control-motion);
+}
+
+.chat-routing__chip[aria-expanded='true'] .chat-routing__caret {
+  transform: rotate(90deg);
+}
+
+.chat-routing__who {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+}
+
+.chat-routing__agents {
+  color: var(--fg-obsidian);
+  font-weight: 600;
+}
+
+.chat-routing__state {
+  margin-left: 2px;
+  padding: 0 5px;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: rgba(10, 10, 10, 0.06);
+  color: var(--fg-slate);
+}
+
+.chat-routing__state--answered {
+  background: var(--fg-obsidian);
+  color: var(--surface-panel);
+}
+
+.chat-routing__state--failed {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--fg-obsidian);
+  color: var(--fg-obsidian);
+}
+
+/* Timeline: a solid hairline threads the steps through their markers. */
+.chat-routing__steps {
+  list-style: none;
+  margin: 4px 0 2px;
+  padding: 0;
+  display: grid;
+}
+
+.chat-routing__step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: baseline;
+  padding-bottom: 3px;
+  overflow-wrap: anywhere;
+}
+
+.chat-routing__step:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 0.95em;
+  bottom: -0.35em;
+  width: 1px;
+  background: rgba(10, 10, 10, 0.18);
+}
+
+.chat-routing__dot {
+  position: relative;
+  justify-self: center;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--fg-obsidian);
+  background: var(--surface-panel);
+  border-radius: 50% !important;
+  transform: translateY(-1px);
+}
+
+.chat-routing__step--done .chat-routing__dot { background: var(--fg-obsidian); }
+.chat-routing__step--muted .chat-routing__dot { border-color: rgba(10, 10, 10, 0.3); }
+.chat-routing__step--muted .chat-routing__text { opacity: 0.7; }
+.chat-routing__step--failed .chat-routing__dot { border-radius: 0 !important; transform: translateY(-1px) rotate(45deg); }
+.chat-routing__step--active .chat-routing__dot { animation: chat-routing-pulse 1.4s ease-in-out infinite; }
+.chat-routing__step--failed .chat-routing__text { color: var(--fg-obsidian); }
+
+.chat-routing__detail {
+  grid-column: 2;
+  color: var(--fg-slate);
+  opacity: 0.85;
+  white-space: pre-wrap;
+}
+
+@keyframes chat-routing-pulse {
+  50% { background: var(--fg-obsidian); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-routing__chip, .chat-routing__caret { transition: none; }
+  .chat-routing__step--active .chat-routing__dot { animation: none; background: rgba(10, 10, 10, 0.35); }
+}
+
 .chat-empty-state {
   align-self: center;
   margin-block: auto;
