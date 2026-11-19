@@ -1612,7 +1612,8 @@ async fn run_next_cancellable(
     pending.sort_by_key(|e| e.request.ambient);
     for entry in pending {
         let request = &entry.request;
-        let rejection = match launch_rejection(state, request, cfg) {
+        let ended = ended_here(inbox, &request.message.id);
+        let rejection = match launch_rejection(state, request, cfg, &ended) {
             Ok(reason) => reason,
             Err(_) => continue, // Unknown stop state is retried, never treated as permission.
         };
@@ -1832,12 +1833,47 @@ fn announce_failure(state: &AppState, request: &super::inbox::Request, reason: &
     announce(state, &request.message.id, &prefix, text);
 }
 
+/// Agents on this device whose run for `message_id` has ended, with none of
+/// theirs for it still running or queued. A "working" claim one of them left
+/// behind is stale, whatever the synced activity map still says.
+fn ended_here(inbox: &super::inbox::Inbox, message_id: &str) -> Vec<String> {
+    use super::inbox::Status;
+    let entries: Vec<_> = inbox
+        .entries()
+        .into_iter()
+        .filter(|e| e.request.message.id == message_id)
+        .collect();
+    let mut ended: Vec<String> = entries
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.status,
+                Status::Completed
+                    | Status::Failed
+                    | Status::Cancelled
+                    | Status::Expired
+                    | Status::Interrupted
+            )
+        })
+        .map(|e| e.request.agent.clone())
+        .filter(|agent| {
+            !entries.iter().any(|e| {
+                &e.request.agent == agent && matches!(e.status, Status::Running | Status::Pending)
+            })
+        })
+        .collect();
+    ended.sort();
+    ended.dedup();
+    ended
+}
+
 /// Stop markers are checked at launch, including human-rooted pending turns.
 /// Policy withdrawal pauses work; it never executes a stale persisted command.
 fn launch_rejection(
     state: &AppState,
     request: &super::inbox::Request,
     cfg: &AgentConfig,
+    ended: &[String],
 ) -> anyhow::Result<Option<&'static str>> {
     if let Some(relay) = &request.relay {
         if crate::api::chat::try_relay_is_stopped(state, &relay.root)? {
@@ -1867,13 +1903,27 @@ fn launch_rejection(
     // offered the message to together are not competitors — that set is the
     // plan — and an agent never blocks itself, which a requeued turn would
     // otherwise do through its own heartbeat from the attempt a restart killed.
+    // Nor does the run heartbeat of an agent on this device whose own run for
+    // the message is over: this device's inbox says so, while the "working"
+    // it published can outlive the run when the write that would end it found
+    // the circle busy. That stale heartbeat used to cancel the hand-off after a
+    // failure outright. An explicit claim the agent made since still counts.
     if request.ambient {
         let mut mine = request.co_listeners.clone();
         mine.push(request.agent.clone());
-        let claims = super::claims::live_claims(
+        let mut claims = super::claims::live_claims(
             &crate::api::chat::live_activities(state, chrono::Utc::now().timestamp())
                 .unwrap_or_default(),
         );
+        if let Some(on_message) = claims.get_mut(&request.message.id) {
+            on_message.retain(|claim| {
+                claim.explicit
+                    || claim.peer_id != state.peer_id
+                    || !ended
+                        .iter()
+                        .any(|agent| agent.eq_ignore_ascii_case(&claim.agent))
+            });
+        }
         if super::claims::blocking(&claims, &request.message.id, &state.peer_id, &mine).is_some() {
             return Ok(Some("another agent is already working on this"));
         }
@@ -2586,8 +2636,23 @@ fn publish_agent_activity_with(
         },
         progress,
     };
-    if let Err(error) = crate::api::chat::put_activity(state, activity) {
-        tracing::debug!("[agent] failed to publish chat activity: {error}");
+    // The circle's state is busy only for the length of one transaction, so a
+    // short wait almost always gets the write in. Dropping it is not harmless:
+    // a lost "done" leaves the agent's "working" claim standing for its TTL,
+    // and every other listener reads that as someone already on the message.
+    const ATTEMPTS: u32 = 5;
+    for attempt in 1..=ATTEMPTS {
+        match crate::api::chat::put_activity(state, activity.clone()) {
+            Ok(()) => return,
+            Err(error) if attempt == ATTEMPTS => {
+                tracing::warn!(
+                    "[agent] could not publish chat activity {} ({:?}): {error}",
+                    activity.activity_id,
+                    activity.kind
+                );
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(10 * attempt as u64)),
+        }
     }
 }
 
@@ -4757,7 +4822,63 @@ mod tests {
         req.message = room_message("pair", "how does the retry path work?");
         req.ambient = true;
         req.co_listeners = vec!["claude".into(), "codex".into()];
-        assert_eq!(launch_rejection(&state, &req, &cfg).unwrap(), None);
+        assert_eq!(launch_rejection(&state, &req, &cfg, &[]).unwrap(), None);
+    }
+
+    #[test]
+    fn a_hand_off_is_not_blocked_by_the_claim_a_failed_local_run_left_behind() {
+        // claude failed on this device, but the busy circle swallowed the write
+        // that would have ended its "working" claim. The hand-off to codex must
+        // still run: this device's inbox knows claude's run is over.
+        use super::super::inbox::tests::request;
+        use super::super::inbox::{Admission, Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let mut cfg = inbox_config();
+        cfg.ambient = vec!["claude".into(), "codex".into()];
+        let message = room_message("limit", "how does the retry path work?");
+        add_chat(&state, &message);
+        let mut first = request("limit", "claude");
+        first.message = message.clone();
+        first.ambient = true;
+        first.co_listeners = vec!["claude".into()];
+        let Admission::Accepted { entry, .. } = inbox.admit(first, 20, 100).unwrap() else {
+            panic!("claude's turn was not admitted");
+        };
+        // The heartbeat a running turn publishes, not an explicit claim.
+        publish_agent_activity(&state, "claude", "limit", ChatActivityKind::Working, true);
+
+        let mut hand_off = request("limit", "codex");
+        hand_off.message = message;
+        hand_off.ambient = true;
+        hand_off.co_listeners = vec!["codex".into()];
+
+        // While claude is still running, its claim holds.
+        inbox
+            .transition(&entry.run_id, Status::Pending, Status::Running, None, 101)
+            .unwrap();
+        assert!(ended_here(&inbox, "limit").is_empty());
+        let ended = ended_here(&inbox, "limit");
+        assert_eq!(
+            launch_rejection(&state, &hand_off, &cfg, &ended).unwrap(),
+            Some("another agent is already working on this")
+        );
+
+        inbox
+            .transition(
+                &entry.run_id,
+                Status::Running,
+                Status::Failed,
+                Some("session limit".into()),
+                102,
+            )
+            .unwrap();
+        let ended = ended_here(&inbox, "limit");
+        assert_eq!(ended, vec!["claude".to_string()]);
+        assert_eq!(
+            launch_rejection(&state, &hand_off, &cfg, &ended).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -4775,14 +4896,17 @@ mod tests {
         req.ambient = true;
         req.co_listeners = vec!["claude".into()];
         assert_eq!(
-            launch_rejection(&state, &req, &cfg).unwrap(),
+            launch_rejection(&state, &req, &cfg, &[]).unwrap(),
             Some("another agent is already working on this")
         );
 
         // An addressed turn is owed its answer whoever else is working.
         let mut addressed = req.clone();
         addressed.ambient = false;
-        assert_eq!(launch_rejection(&state, &addressed, &cfg).unwrap(), None);
+        assert_eq!(
+            launch_rejection(&state, &addressed, &cfg, &[]).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -4799,7 +4923,7 @@ mod tests {
         req.message = asked.clone();
         req.ambient = true;
         assert_eq!(
-            launch_rejection(&state, &req, &cfg).unwrap(),
+            launch_rejection(&state, &req, &cfg, &[]).unwrap(),
             None,
             "nothing has been said yet"
         );
@@ -4810,7 +4934,7 @@ mod tests {
         answer.reply_to = Some("asked".into());
         add_chat(&state, &answer);
         assert_eq!(
-            launch_rejection(&state, &req, &cfg).unwrap(),
+            launch_rejection(&state, &req, &cfg, &[]).unwrap(),
             Some("another agent answered first")
         );
 
@@ -4818,7 +4942,10 @@ mod tests {
         // named this agent, and you are still owed its answer.
         let mut addressed = req.clone();
         addressed.ambient = false;
-        assert_eq!(launch_rejection(&state, &addressed, &cfg).unwrap(), None);
+        assert_eq!(
+            launch_rejection(&state, &addressed, &cfg, &[]).unwrap(),
+            None
+        );
     }
 
     #[test]

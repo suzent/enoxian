@@ -133,7 +133,8 @@ export function deriveRouting(
         : TERMINAL_FAILURE.has(r.status) ? 'failed'
         : r.status === 'completed' ? 'done' : 'muted',
       text: `${isHandOff(r) ? 'Handed on to ' : ''}${who}: ${status}`,
-      detail: TERMINAL_FAILURE.has(r.status) && r.detail ? r.detail : undefined,
+      // A stopped run says why, too: "stopped" alone reads as a dead end.
+      detail: (TERMINAL_FAILURE.has(r.status) || r.status === 'cancelled') && r.detail ? r.detail : undefined,
     })
   }
   if (answered) {
