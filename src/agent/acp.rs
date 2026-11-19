@@ -55,7 +55,12 @@ pub fn auth_required(error: &anyhow::Error) -> bool {
 /// Whether `session/load` failed because the agent has no such session: it was
 /// lost with the agent's own state, so loading it can never succeed. ACP's
 /// "resource not found" is -32002; agents also answer "invalid params" (-32602)
-/// naming the session ("no such session '…'").
+/// naming the session ("no such session '…'"). An agent that ties sessions to
+/// the authorization that made them answers "auth required" (-32000) saying
+/// this authorization "cannot access the requested session" once the agent
+/// was paired again: the session belongs to an authorization this daemon no
+/// longer holds, so it is gone for us too. A plain -32000 asking for sign-in
+/// is not: signing in again brings the session back.
 pub fn session_gone(error: &anyhow::Error) -> bool {
     error.downcast_ref::<RpcError>().is_some_and(|error| {
         let message = error.message.to_ascii_lowercase();
@@ -63,6 +68,9 @@ pub fn session_gone(error: &anyhow::Error) -> bool {
             || (error.code == -32602
                 && message.contains("session")
                 && (message.contains("no such") || message.contains("not found")))
+            || (error.code == -32000
+                && message.contains("session")
+                && message.contains("cannot access"))
     })
 }
 
@@ -1219,6 +1227,14 @@ pub(crate) mod tests {
         assert!(session_gone(&rpc(-32002, "Resource not found")));
         assert!(!session_gone(&rpc(-32602, "cwd must be absolute")));
         assert!(!session_gone(&rpc(-32000, "Sign in required")));
+        assert!(session_gone(&rpc(
+            -32000,
+            "This authorization cannot access the requested session"
+        )));
+        assert!(!session_gone(&rpc(
+            -32000,
+            "This authorization cannot access the workspace"
+        )));
         assert!(!session_gone(&anyhow!("no such session")));
     }
 

@@ -2138,13 +2138,15 @@ async fn react(
             state,
             agent_id,
             message_id,
+            // A voter that passed read the message and stayed quiet; the routing
+            // strip under the message says so, not the composer.
             if passed {
-                ChatActivityKind::Skipped
+                ChatActivityKind::Seen
             } else {
                 ChatActivityKind::Working
             },
             passed,
-            passed.then(|| "nothing to add".to_string()),
+            None,
         );
         return Ok(Some(
             if passed { PASSED_DETAIL } else { VOTED_DETAIL }.into(),
@@ -2156,7 +2158,8 @@ async fn react(
     // conversational half.
     // An unaddressed agent that declines says PASS (§2.3). Suppress the post,
     // but still advance its seen-mark and say so in the activity indicator —
-    // "considered and passed" must not look like "never ran".
+    // "considered and passed" must not look like "never ran": it reads as seen,
+    // and the routing strip under the message says it passed.
     if ambient
         && outcome
             .reply
@@ -2171,9 +2174,9 @@ async fn react(
             state,
             agent_id,
             message_id,
-            ChatActivityKind::Skipped,
+            ChatActivityKind::Seen,
             true,
-            Some("nothing to add".to_string()),
+            None,
         );
         return Ok(Some(PASSED_DETAIL.into()));
     }
@@ -2424,15 +2427,16 @@ pub(crate) async fn post_vote(
     posted
 }
 
-/// Say that a voter's answer was not the one posted.
+/// Settle a voter whose answer was not the one posted: it read the message,
+/// and the routing strip under the message says it voted.
 pub(crate) fn publish_voted(state: &AppState, agent_id: &str, message_id: &str) {
     publish_agent_activity_detailed(
         state,
         agent_id,
         message_id,
-        ChatActivityKind::Skipped,
+        ChatActivityKind::Seen,
         true,
-        Some("voted; another answer was posted".to_string()),
+        None,
     );
 }
 
