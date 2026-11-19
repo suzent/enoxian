@@ -887,6 +887,11 @@ pub enum CircleEvent {
     ChatActivityChanged {
         activity: ChatActivity,
     },
+    /// A device's execution receipt for one turn was written or changed, by
+    /// this device or by sync. Drives the routing strip under a message.
+    ExecutionReceiptChanged {
+        receipt: serde_json::Value,
+    },
     /// The proposal engine captured a workspace change (M14).
     ProposalCreated {
         proposal_id: String,

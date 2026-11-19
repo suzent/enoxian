@@ -42,6 +42,11 @@ refuses to publish a version whose section is missing or empty.
 ### Added
 
 - Public landing page and documentation website (`website/`) with GitHub Pages deployment for `enoxian.com`, covering English and Simplified Chinese routes, full-text documentation search, and `llms.txt` exports.
+- Chat now shows under each message how it was routed: a chip naming who the Warden (or rotation) picked, how many listeners and how confident, which expands into a lifecycle of each agent's turn — failures, hand-offs and the final answer. It opens by itself when nobody could answer, and works across devices because the routing travels in the synced execution receipts.
+
+### Fixed
+
+- The "No agent could answer this" notice no longer lingers in chat after another agent goes on to answer the message; it is folded into the message's routing strip instead.
 
 ## [0.15.0] — 2026-11-16
 
