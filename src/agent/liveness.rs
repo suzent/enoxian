@@ -13,9 +13,11 @@
 //! Stopping goes through `session/cancel`, which obliges the agent to wind down
 //! and end the turn as `cancelled`; see `AcpSession::prompt_until`.
 
+use crate::control::{RunProgress, ToolProgress};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
@@ -31,6 +33,14 @@ pub struct OpenTool {
     pub status: String,
     /// When the agent announced it (Unix seconds).
     pub since: i64,
+    /// The first of the call's ACP `locations`, as the agent gave it (an
+    /// absolute path, per the spec). Kept for the room's summary, which
+    /// reduces it to a workspace-relative path; not shown as is.
+    #[serde(skip)]
+    pub location: Option<String>,
+    /// For an `execute` call, the program it runs, read from `rawInput`.
+    #[serde(skip)]
+    pub program: Option<String>,
 }
 
 /// A tool call the agent finished during this turn.
@@ -148,6 +158,10 @@ impl Activity {
             }
             return;
         }
+        // ACP: a `tool_call_update` carries only the fields that changed, and
+        // an omitted one keeps its earlier value.
+        let location = first_location(update);
+        let program = update.get("rawInput").and_then(program_of);
         match self.open_tools.get_mut(id) {
             Some(open) => {
                 if let Some(status) = status {
@@ -158,6 +172,12 @@ impl Activity {
                 }
                 if let Some(kind) = text("kind") {
                     open.kind = Some(kind);
+                }
+                if location.is_some() {
+                    open.location = location;
+                }
+                if program.is_some() {
+                    open.program = program;
                 }
             }
             // An update for a call we never saw announced still means it is
@@ -170,12 +190,213 @@ impl Activity {
                         kind: text("kind"),
                         status: status.unwrap_or("pending").to_string(),
                         since: now,
+                        location,
+                        program,
                     },
                 );
             }
             None => {}
         }
     }
+}
+
+impl Activity {
+    /// What the room is told about this turn: see [`RunProgress`].
+    ///
+    /// Built from the ACP updates already recorded, reduced to what may leave
+    /// the device: no tool titles, no arguments, no paths outside `workspace`.
+    pub fn progress(&self, started_at: i64, workspace: &Path) -> RunProgress {
+        // The call it is in: a running one over one still waiting for input or
+        // approval, then the most recently announced.
+        let tool = self
+            .open_tools
+            .values()
+            .max_by_key(|t| (t.status == "in_progress", t.since))
+            .map(|t| {
+                let kind = tool_kind(t.kind.as_deref());
+                ToolProgress {
+                    program: (kind == "execute").then(|| t.program.clone()).flatten(),
+                    path: t
+                        .location
+                        .as_deref()
+                        .and_then(|p| workspace_relative(p, workspace)),
+                    kind: kind.to_string(),
+                    since: t.since,
+                }
+            });
+        let count = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
+        RunProgress {
+            started_at,
+            last_activity_at: self.last_activity_at,
+            tool,
+            open_tools: count(self.open_tools.len()),
+            plan_done: count(
+                self.plan
+                    .iter()
+                    .filter(|step| step.status == "completed")
+                    .count(),
+            ),
+            plan_total: count(self.plan.len()),
+            plan_step: self
+                .plan
+                .iter()
+                .find(|step| step.status == "in_progress")
+                .map(|step| clip(&step.content, PLAN_STEP_LIMIT)),
+        }
+    }
+}
+
+/// How much of the plan entry in progress the room sees.
+const PLAN_STEP_LIMIT: usize = 80;
+
+/// How much of a workspace path the room sees.
+const PATH_LIMIT: usize = 120;
+
+/// The ACP `ToolKind`s. Anything else, or none, is `other`, as the spec's
+/// default says.
+const TOOL_KINDS: [&str; 10] = [
+    "read",
+    "edit",
+    "delete",
+    "move",
+    "search",
+    "execute",
+    "think",
+    "fetch",
+    "switch_mode",
+    "other",
+];
+
+fn tool_kind(kind: Option<&str>) -> &'static str {
+    kind.and_then(|k| TOOL_KINDS.iter().find(|known| **known == k))
+        .copied()
+        .unwrap_or("other")
+}
+
+/// The path of a tool call's first ACP location, if it gave one.
+fn first_location(update: &Value) -> Option<String> {
+    update
+        .get("locations")?
+        .as_array()?
+        .first()?
+        .get("path")?
+        .as_str()
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+}
+
+/// `path` relative to `workspace`, or `None` when it is outside it. ACP sends
+/// absolute paths; a relative one is taken as already relative to the
+/// workspace. Nothing that climbs out with `..` is kept.
+fn workspace_relative(path: &str, workspace: &Path) -> Option<String> {
+    let path = Path::new(path);
+    let relative = if path.is_absolute() {
+        path.strip_prefix(workspace).ok()?
+    } else {
+        path
+    };
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    Some(clip(
+        &relative.to_string_lossy().replace('\\', "/"),
+        PATH_LIMIT,
+    ))
+}
+
+/// The program an `execute` call runs, from its `rawInput`, or `None`.
+///
+/// `rawInput` is whatever the agent's tool takes, so this reads the shapes
+/// agents actually send — `{"command": "cargo test"}` and
+/// `{"command": ["bash", "-lc", "cargo test"]}` — and gives up on anything
+/// else. Only the program's file name is kept, and only when it looks like
+/// one: arguments are where secrets live.
+fn program_of(raw: &Value) -> Option<String> {
+    let line = match raw.get("command")? {
+        Value::String(line) => line.clone(),
+        Value::Array(argv) => {
+            let argv: Vec<&str> = argv.iter().filter_map(Value::as_str).collect();
+            match argv.as_slice() {
+                // A shell running a script: the script is the command.
+                [shell, flag, script, ..]
+                    if matches!(
+                        program_name(shell).as_deref(),
+                        Some("sh" | "bash" | "zsh" | "dash" | "fish")
+                    ) && flag.starts_with('-')
+                        && flag.contains('c') =>
+                {
+                    script.to_string()
+                }
+                [program, ..] => return program_name(program),
+                [] => return None,
+            }
+        }
+        _ => return None,
+    };
+    first_program(&line)
+}
+
+/// Characters past which a command line is not read: quoting, escapes and
+/// expansions. Splitting on whitespace is only sound before the first of
+/// them — `PASSWORD='a sk-secret b' curl …` otherwise yields `sk-secret` as
+/// the "program" — so the line is cut there, and a program word the cut runs
+/// into is not trusted either.
+const SHELL_SPECIAL: [char; 8] = ['\'', '"', '\\', '$', '`', '(', ')', '#'];
+
+/// The first program a plain shell line runs: the first step that is not
+/// `cd`, past any `VAR=value` prefixes. `None` whenever that cannot be read
+/// without parsing shell quoting.
+fn first_program(line: &str) -> Option<String> {
+    let cut = line.find(SHELL_SPECIAL).unwrap_or(line.len());
+    let plain = &line[..cut];
+    let truncated = cut < line.len();
+    let (word, end) = plain
+        .split(['&', ';', '|', '\n'])
+        .scan(0usize, |offset, step| {
+            let start = *offset;
+            *offset += step.len() + 1;
+            Some((start, step))
+        })
+        .filter_map(|(start, step)| {
+            let mut at = 0;
+            step.split_whitespace()
+                .map(|word| {
+                    at = step[at..].find(word).map_or(at, |i| at + i) + word.len();
+                    (word, start + at)
+                })
+                .find(|(word, _)| !word.contains('='))
+        })
+        .find(|(word, _)| *word != "cd")?;
+    // `cargo"x"` cut to `cargo`: the word went on past what was read.
+    if truncated && end == cut {
+        return None;
+    }
+    program_name(word)
+}
+
+/// The file name of `word` if it reads as a program name.
+fn program_name(word: &str) -> Option<String> {
+    let name = word.rsplit(['/', '\\']).next()?;
+    let ok = !name.is_empty()
+        && name.len() <= 32
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'));
+    ok.then(|| name.to_string())
+}
+
+/// `text` cut to `limit` characters, marked when cut.
+fn clip(text: &str, limit: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(limit.saturating_sub(1)).collect();
+    format!("{}…", kept.trim_end())
 }
 
 /// Why a turn was stopped.
@@ -370,6 +591,20 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A workspace root that is absolute on every platform CI runs on.
+    fn ws() -> std::path::PathBuf {
+        if cfg!(windows) {
+            std::path::PathBuf::from(r"C:\Users\suzy\circle")
+        } else {
+            std::path::PathBuf::from("/home/suzy/circle")
+        }
+    }
+
+    /// `rel` under [`ws`], as the agent would send it in a location.
+    fn abs(rel: &str) -> String {
+        ws().join(rel).to_string_lossy().into_owned()
+    }
+
     fn update(update: Value) -> Value {
         json!({"method": "session/update", "params": {"sessionId": "s", "update": update}})
     }
@@ -530,5 +765,165 @@ mod tests {
         let runs = LiveRuns::default();
         drop(runs.register("r1", "claude", true, 0));
         assert!(runs.get("r1").is_none());
+    }
+
+    /// What the room sees of a turn is a summary built from the ACP updates,
+    /// never the titles: those carry whole command lines.
+    #[test]
+    fn progress_names_the_kind_program_and_workspace_path_only() {
+        let workspace = ws();
+        let workspace = workspace.as_path();
+        let mut a = Activity::default();
+        a.observe(
+            &update(json!({"sessionUpdate": "tool_call", "toolCallId": "t1",
+                "title": "curl -H 'Authorization: Bearer sk-secret' https://x", "kind": "execute",
+                "status": "pending",
+                "rawInput": {"command": "TOKEN=sk-secret curl -H 'Authorization: Bearer sk-secret' https://x"}})),
+            100,
+        );
+        // ACP: the update carries only what changed; kind and rawInput stay.
+        a.observe(
+            &update(
+                json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1",
+                "status": "in_progress"}),
+            ),
+            101,
+        );
+        let p = a.progress(90, workspace);
+        let tool = p.tool.clone().unwrap();
+        assert_eq!(tool.kind, "execute");
+        assert_eq!(tool.program.as_deref(), Some("curl"));
+        assert_eq!(tool.since, 100);
+        let wire = serde_json::to_string(&p).unwrap();
+        assert!(!wire.contains("sk-secret"), "{wire}");
+        assert!(!wire.contains("Authorization"), "{wire}");
+
+        a.observe(
+            &update(json!({"sessionUpdate": "tool_call", "toolCallId": "t2",
+                "title": format!("Read {}", abs("notes/plan.md")), "kind": "read",
+                "status": "in_progress",
+                "locations": [{"path": abs("notes/plan.md"), "line": 3}]})),
+            102,
+        );
+        let p = a.progress(90, workspace);
+        assert_eq!(p.open_tools, 2);
+        let tool = p.tool.unwrap();
+        assert_eq!(tool.kind, "read");
+        assert_eq!(tool.path.as_deref(), Some("notes/plan.md"));
+        assert_eq!(tool.program, None, "only execute calls name a program");
+    }
+
+    #[test]
+    fn paths_outside_the_workspace_and_unknown_kinds_are_not_named() {
+        let workspace = ws();
+        let outside = workspace
+            .parent()
+            .unwrap()
+            .join(".ssh")
+            .join("id_ed25519")
+            .to_string_lossy()
+            .into_owned();
+        for (path, kept) in [
+            (outside.as_str(), None),
+            (&abs("../secret"), None),
+            ("../secret", None),
+            ("src/lib.rs", Some("src/lib.rs")),
+            (&abs("src/lib.rs"), Some("src/lib.rs")),
+            (&workspace.to_string_lossy(), None),
+        ] {
+            assert_eq!(
+                workspace_relative(path, &workspace).as_deref(),
+                kept,
+                "{path}"
+            );
+        }
+        assert_eq!(tool_kind(Some("teleport")), "other");
+        assert_eq!(tool_kind(None), "other");
+        assert_eq!(tool_kind(Some("switch_mode")), "switch_mode");
+    }
+
+    #[test]
+    fn the_program_is_read_from_the_shapes_agents_send() {
+        let program = |raw: Value| program_of(&raw);
+        assert_eq!(
+            program(json!({"command": "cargo test --locked"})).as_deref(),
+            Some("cargo")
+        );
+        assert_eq!(
+            program(json!({"command": "cd crates/x && cargo build"})).as_deref(),
+            Some("cargo")
+        );
+        assert_eq!(
+            program(json!({"command": ["bash", "-lc", "npm run build"]})).as_deref(),
+            Some("npm")
+        );
+        assert_eq!(
+            program(json!({"command": ["/usr/bin/git", "status"]})).as_deref(),
+            Some("git")
+        );
+        assert_eq!(
+            program(json!({"command": "FOO=1 ./scripts/pre-push.sh"})).as_deref(),
+            Some("pre-push.sh")
+        );
+        // Quoted values are not split into words (a secret can look like a
+        // program name), and a word the quoting runs into is not trusted.
+        assert_eq!(
+            program(json!({"command": "PASSWORD='prefix sk-secret suffix' curl https://x"})),
+            None
+        );
+        assert_eq!(
+            program(json!({"command": "TOKEN=\"a sk-secret\" curl"})),
+            None
+        );
+        assert_eq!(
+            program(json!({"command": "cd \"a;sk-secret b\" && cargo test"})),
+            None
+        );
+        assert_eq!(program(json!({"command": "cargo\"x\" test"})), None);
+        assert_eq!(
+            program(json!({"command": ["bash", "-c", "K='x y' make"]})),
+            None
+        );
+        // Quoting after the program is fine: the program came first.
+        assert_eq!(
+            program(json!({"command": "curl -H 'Authorization: Bearer sk-secret' https://x"}))
+                .as_deref(),
+            Some("curl")
+        );
+        assert_eq!(
+            program(json!({"command": "git commit -m \"a b\""})).as_deref(),
+            Some("git")
+        );
+        // Not a program name: dropped rather than guessed at.
+        assert_eq!(program(json!({"command": "$(echo sk-secret)"})), None);
+        assert_eq!(program(json!({"cmd": "cargo test"})), None);
+        assert_eq!(program(json!("cargo test")), None);
+    }
+
+    #[test]
+    fn progress_counts_the_plan_and_names_the_step_in_progress() {
+        let mut a = Activity::default();
+        a.observe(
+            &update(json!({"sessionUpdate": "plan", "entries": [
+                {"content": "Read the spec", "priority": "high", "status": "completed"},
+                {"content": "Write the tests", "priority": "high", "status": "in_progress"},
+                {"content": "Ship it", "priority": "low", "status": "pending"}]})),
+            100,
+        );
+        let p = a.progress(90, Path::new("/w"));
+        assert_eq!((p.plan_done, p.plan_total), (1, 3));
+        assert_eq!(p.plan_step.as_deref(), Some("Write the tests"));
+        assert_eq!(p.tool, None);
+        assert_eq!(p.last_activity_at, Some(100));
+
+        // Each plan update replaces the whole plan (ACP).
+        a.observe(
+            &update(json!({"sessionUpdate": "plan", "entries": [
+                {"content": "x".repeat(200), "priority": "high", "status": "in_progress"}]})),
+            101,
+        );
+        let p = a.progress(90, Path::new("/w"));
+        assert_eq!((p.plan_done, p.plan_total), (0, 1));
+        assert_eq!(p.plan_step.unwrap().chars().count(), PLAN_STEP_LIMIT);
     }
 }

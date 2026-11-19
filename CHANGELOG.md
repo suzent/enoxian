@@ -41,6 +41,11 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Other devices now see what a running agent is doing, not just that it is working: the
+  activity strip shows the tool it is in and its plan step (for example "running cargo ·
+  step 2/4: Write the tests"). Built from the agent's ACP tool-call and plan updates and
+  redacted on the device running it: no command arguments, tool titles, or paths outside
+  the shared folder leave the device, and updates are sent at most every five seconds.
 - Public landing page and documentation website (`website/`) with GitHub Pages deployment for `enoxian.com`, covering English and Simplified Chinese routes, full-text documentation search, and `llms.txt` exports.
 - Chat now shows under each message how it was routed: a chip naming who the Warden (or rotation) picked, how many listeners and how confident, which expands into a lifecycle of each agent's turn — failures, hand-offs and the final answer. It opens by itself when nobody could answer, and works across devices because the routing travels in the synced execution receipts.
 
