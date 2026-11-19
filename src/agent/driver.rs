@@ -536,9 +536,10 @@ async fn run_acp(
     // Now capture only the reply to *this* prompt.
     capturing.store(true, Ordering::Relaxed);
     let prompt = if resume.is_some() && !acp.was_resumed() {
-        let context = coordination.as_ref().map(|state| super::context::recovery_context(state, actor.agent_id, withheld))
-            .unwrap_or_else(|| "Previous ACP session could not be restored; private conversation memory is unavailable. Retrieve Circle chat if needed.\n\n".into());
-        format!("{context}{task}")
+        match coordination.as_ref() {
+            Some(state) => super::context::recover(state, actor.agent_id, withheld, task),
+            None => format!("Previous ACP session could not be restored; private conversation memory is unavailable. Retrieve Circle chat if needed.\n\n{task}"),
+        }
     } else {
         task.to_string()
     };

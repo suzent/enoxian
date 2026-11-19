@@ -122,14 +122,20 @@ Beyond its own memory, an agent needs to know *where it is*. On a **fresh**
 session enoxian prepends a standing brief to the prompt:
 
 - what enoxian is and which circle it is in
-- the member roster (owners, devices, their agents)
+- the member roster (owners, devices, their agents, and each agent's card summary)
 - that its file changes become reviewable proposals
-- that its text reply goes to the circle chat
+- that its text reply goes to the circle chat, unless the turn says otherwise
 - what the shared folder is for (below)
 - the recent conversation in the room
 
 On a **resumed** session the agent already has that history, so it gets only a
 lean per-turn header (`{sender} mentioned you …`) plus the task.
+
+The brief does not say why the agent was woken. The per-turn header does, every
+turn, and a brief carried forward by resume would go stale when the next turn
+is woken differently. If the resume fails, the driver prepends the brief and the
+lines the prompt held back on the assumption that the session remembered them;
+it does not repeat the recent history the prompt already carries.
 
 ### What the shared folder is for
 

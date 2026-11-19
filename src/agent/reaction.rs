@@ -3209,8 +3209,22 @@ mod tests {
             recovery.contains("a decision only I recorded"),
             "recovery must put back what the resume assumption withheld: {recovery}"
         );
-        // Lines the room history already shows are not printed twice.
-        assert_eq!(recovery.matches("filler 19").count(), 1);
+        // The prompt behind the recovery block already shows the room's
+        // recent lines, and the request itself; neither is printed again.
+        let sent = super::super::context::recover(
+            &state,
+            "claude",
+            &delivered.withheld,
+            &delivered.prompt,
+        );
+        assert_eq!(sent.matches("filler 18").count(), 1, "{sent}");
+        assert_eq!(sent.matches("a decision only I recorded").count(), 1);
+        assert!(
+            !recovery.contains("filler 19"),
+            "the request is not history"
+        );
+        // A session that has just started has no "last turn".
+        assert!(!sent.contains("since your last turn"), "{sent}");
         // A fresh session withholds nothing, so recovery adds no extra block.
         let fresh = super::super::context::build_delivery(
             &state,
@@ -3224,7 +3238,7 @@ mod tests {
         assert!(fresh.withheld.is_empty());
         assert!(
             !super::super::context::recovery_context(&state, "claude", &fresh.withheld)
-                .contains("Earlier lines you were assumed to remember")
+                .contains("assumed to remember")
         );
     }
 
