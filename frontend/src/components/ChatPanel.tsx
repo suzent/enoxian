@@ -455,7 +455,7 @@ const ACTIVITY_NAMES_SHOWN = 3
 function activityVerb(kind: ChatActivity['kind'], count: number, terse: boolean) {
   if (kind === 'working') return terse ? 'working' : count > 1 ? 'are working…' : 'is working…'
   if (kind === 'typing') return terse ? 'typing' : count > 1 ? 'are typing…' : 'is typing…'
-  if (kind === 'skipped') return terse ? 'skipped' : 'not triggered'
+  if (kind === 'skipped') return terse ? 'skipped' : 'did not run'
   return ''
 }
 
@@ -1164,10 +1164,12 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
       : `${label.user}${label.device ? ` · ${label.device}` : ''}`
     if (activity.kind === 'typing') return `${actor} is typing…`
     if (activity.kind === 'seen') return `${actor} saw the message`
-    // Considered and not run. Saying so is the whole point: silence that looks
-    // identical to a crashed adapter is what stops people trusting the Circle.
+    // Queued but not run: a relay limit, a stopped chain, a failed turn.
+    // Saying so is the whole point: silence that looks identical to a crashed
+    // adapter is what stops people trusting the Circle. (An agent that ran and
+    // chose to stay quiet reads as seen; the routing strip says it passed.)
     if (activity.kind === 'skipped') {
-      return `${actor} not triggered${activity.detail ? ` · ${activity.detail}` : ''}`
+      return `${actor} did not run${activity.detail ? ` · ${activity.detail}` : ''}`
     }
     return `${actor} is working…`
   }
