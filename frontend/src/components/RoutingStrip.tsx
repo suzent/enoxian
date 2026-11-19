@@ -123,7 +123,10 @@ export function deriveRouting(
   for (const r of ordered) {
     const who = nameOf(r.agent_id, r.peer_id)
     const replied = answeredBy.includes(who) || answeredBy.includes(r.agent_id)
-    const status = r.status === 'completed' ? (replied ? 'answered' : 'passed') : STATUS_TEXT[r.status]
+    // In a vote every listener finishes, and only the chosen answer is posted:
+    // the others voted rather than passed.
+    const voted = (r.warden?.mode ?? note?.mode) === 'vote'
+    const status = r.status === 'completed' ? (replied ? 'answered' : voted ? 'voted' : 'passed') : STATUS_TEXT[r.status]
     steps.push({
       key: r.run_id,
       tone: r.status === 'pending' || r.status === 'running' ? 'active'

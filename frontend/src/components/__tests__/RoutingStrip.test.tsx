@@ -71,6 +71,19 @@ describe('deriveRouting', () => {
     expect(deriveRouting([run(warden)], [], [], nameOf)!.state).toBe('passed')
   })
 
+  it('says the voters whose answer was not posted voted, not passed', () => {
+    const vote = { routed_by: 'warden' as const, warden: { ...warden.warden, mode: 'vote' as const } }
+    const runs = [
+      run({ ...vote, run_id: 'a' }),
+      run({ ...vote, run_id: 'b', agent_id: 'codex', peer_id: 'mini' }),
+    ]
+    const routing = deriveRouting(runs, ['claude on jessair'], [], nameOf)!
+    expect(routing.state).toBe('answered')
+    const texts = routing.steps.map(s => s.text)
+    expect(texts).toContain('claude on jessair: answered')
+    expect(texts).toContain('codex on mini: voted')
+  })
+
   it('does not count a co-listener admitted with the failed run as handed on', () => {
     const runs = [
       run({ ...warden, run_id: 'a', status: 'failed', admitted_at: 100, updated_at: 100 }),

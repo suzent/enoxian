@@ -602,17 +602,26 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
 
     // The stream carries every receipt change from here on; this fills in what
     // happened before it opened, and again after a reconnect.
+    // A snapshot can be older than an event the stream delivered while it was
+    // in flight, so runs the stream touched in that window keep their streamed
+    // copy. Each request watches its own window.
+    const streamedDuring = new Set<Set<string>>()
     const refreshReceipts = () => {
+      const touched = new Set<string>()
+      streamedDuring.add(touched)
       getExecutions(activeCircleId)
         .then(page => {
           if (cancelled) return
           setReceipts(prev => {
             const next = { ...prev }
-            for (const run of page.runs ?? []) next[run.run_id] = run
+            for (const run of page.runs ?? []) {
+              if (!touched.has(run.run_id)) next[run.run_id] = run
+            }
             return next
           })
         })
         .catch(() => {})
+        .finally(() => { streamedDuring.delete(touched) })
     }
 
     const refreshRoster = () => {
@@ -680,6 +689,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
         if (data.type === 'chat_activity_changed') ingestActivity(data.activity)
         if (data.type === 'execution_receipt_changed' && data.receipt?.run_id) {
           const run = data.receipt as ExecutionRun
+          streamedDuring.forEach(touched => touched.add(run.run_id))
           setReceipts(prev => ({ ...prev, [run.run_id]: run }))
         }
         if (data.type === 'attachment_available' && data.hash) {
