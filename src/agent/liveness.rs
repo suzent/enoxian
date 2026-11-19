@@ -337,11 +337,45 @@ fn program_of(raw: &Value) -> Option<String> {
         }
         _ => return None,
     };
-    // The first step that is not `cd`, past any `VAR=value` prefixes.
-    line.split(['&', ';', '|', '\n'])
-        .filter_map(|step| step.split_whitespace().find(|word| !word.contains('=')))
-        .find(|first| *first != "cd")
-        .and_then(program_name)
+    first_program(&line)
+}
+
+/// Characters past which a command line is not read: quoting, escapes and
+/// expansions. Splitting on whitespace is only sound before the first of
+/// them — `PASSWORD='a sk-secret b' curl …` otherwise yields `sk-secret` as
+/// the "program" — so the line is cut there, and a program word the cut runs
+/// into is not trusted either.
+const SHELL_SPECIAL: [char; 8] = ['\'', '"', '\\', '$', '`', '(', ')', '#'];
+
+/// The first program a plain shell line runs: the first step that is not
+/// `cd`, past any `VAR=value` prefixes. `None` whenever that cannot be read
+/// without parsing shell quoting.
+fn first_program(line: &str) -> Option<String> {
+    let cut = line.find(SHELL_SPECIAL).unwrap_or(line.len());
+    let plain = &line[..cut];
+    let truncated = cut < line.len();
+    let (word, end) = plain
+        .split(['&', ';', '|', '\n'])
+        .scan(0usize, |offset, step| {
+            let start = *offset;
+            *offset += step.len() + 1;
+            Some((start, step))
+        })
+        .filter_map(|(start, step)| {
+            let mut at = 0;
+            step.split_whitespace()
+                .map(|word| {
+                    at = step[at..].find(word).map_or(at, |i| at + i) + word.len();
+                    (word, start + at)
+                })
+                .find(|(word, _)| !word.contains('='))
+        })
+        .find(|(word, _)| *word != "cd")?;
+    // `cargo"x"` cut to `cargo`: the word went on past what was read.
+    if truncated && end == cut {
+        return None;
+    }
+    program_name(word)
 }
 
 /// The file name of `word` if it reads as a program name.
@@ -830,6 +864,35 @@ mod tests {
         assert_eq!(
             program(json!({"command": "FOO=1 ./scripts/pre-push.sh"})).as_deref(),
             Some("pre-push.sh")
+        );
+        // Quoted values are not split into words (a secret can look like a
+        // program name), and a word the quoting runs into is not trusted.
+        assert_eq!(
+            program(json!({"command": "PASSWORD='prefix sk-secret suffix' curl https://x"})),
+            None
+        );
+        assert_eq!(
+            program(json!({"command": "TOKEN=\"a sk-secret\" curl"})),
+            None
+        );
+        assert_eq!(
+            program(json!({"command": "cd \"a;sk-secret b\" && cargo test"})),
+            None
+        );
+        assert_eq!(program(json!({"command": "cargo\"x\" test"})), None);
+        assert_eq!(
+            program(json!({"command": ["bash", "-c", "K='x y' make"]})),
+            None
+        );
+        // Quoting after the program is fine: the program came first.
+        assert_eq!(
+            program(json!({"command": "curl -H 'Authorization: Bearer sk-secret' https://x"}))
+                .as_deref(),
+            Some("curl")
+        );
+        assert_eq!(
+            program(json!({"command": "git commit -m \"a b\""})).as_deref(),
+            Some("git")
         );
         // Not a program name: dropped rather than guessed at.
         assert_eq!(program(json!({"command": "$(echo sk-secret)"})), None);
