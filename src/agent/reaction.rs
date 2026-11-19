@@ -2025,6 +2025,21 @@ async fn react(
         framing,
     );
     let mut prompt = delivery.prompt;
+    // Only when the framing put the request where the sender can find it again;
+    // otherwise the prompt goes as one block, as it always did.
+    let shape = super::acp::request_range(&prompt, task).map(|_| super::acp::PromptShape {
+        request: task.to_string(),
+        origin: serde_json::json!({
+            "author": sender,
+            "via": state.circle_name,
+            "framing": match framing {
+                super::context::Framing::Addressed => "addressed",
+                super::context::Framing::Overheard => "overheard",
+                super::context::Framing::Assigned => "assigned",
+                super::context::Framing::Private => "private",
+            },
+        }),
+    });
     if ambient {
         prompt.push_str("\n\n");
         // Co-listeners were all offered the message by this device, so they
@@ -2070,6 +2085,7 @@ async fn react(
             initiator,
             resume: resume.as_ref().map(|r| r.session_id.as_str()),
             withheld: &delivery.withheld,
+            shape,
         },
         cancel,
     );

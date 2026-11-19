@@ -19,6 +19,15 @@ session/load      resume a prior session id — restores conversation memory
 session/prompt    send the task; the agent works until it returns a stop reason
 ```
 
+A room turn's prompt is sent as up to three text blocks that concatenate to the
+full prompt: the background and framing line, the person's request, and any
+turn instructions after it. The first and last carry
+`annotations: {"audience": ["assistant"]}`, so an agent that shows its
+conversation can show only the request. `_meta["com.enoxian/origin"]` names
+the request's `author`, the circle it came `via`, and its `framing`
+(`addressed`, `overheard`, `assigned` or `private`). Agents that ignore both
+read the same prompt as before.
+
 During the prompt turn the agent may call back to enoxian:
 
 | Agent → enoxian call    | enoxian's behavior                                         |
