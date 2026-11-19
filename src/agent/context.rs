@@ -703,6 +703,33 @@ mod tests {
         }
     }
 
+    /// The ACP client marks the request out of the prompt by finding it after
+    /// its framing line, so every framing must keep ending in a colon and line
+    /// break directly before the task.
+    #[test]
+    fn every_framing_lets_the_request_be_found() {
+        for framing in [
+            Framing::Addressed,
+            Framing::Overheard,
+            Framing::Assigned,
+            Framing::Private,
+        ] {
+            let p = compose(
+                "delta",
+                "suzy",
+                "make a test file",
+                Some("brief\n"),
+                Some("  suzy: hi"),
+                FRESH_CHAT_HEADING,
+                framing,
+                "\n\nAttached to this message (1 file):\n  a.png",
+            );
+            let range = super::super::acp::request_range(&p, "make a test file")
+                .unwrap_or_else(|| panic!("{framing:?} hides the request"));
+            assert_eq!(&p[range], "make a test file");
+        }
+    }
+
     #[test]
     fn fresh_prompt_fences_context_and_ends_with_request() {
         let p = compose(

@@ -250,6 +250,9 @@ pub struct LaunchRequest<'a> {
     /// Chat lines the prompt left out because `resume` was expected to carry
     /// them. Used only when the resume fails; see `context::recovery_context`.
     pub withheld: &'a [String],
+    /// Where the person's request sits in `task`, for agents that show their
+    /// conversation; `None` sends the prompt as one block.
+    pub shape: Option<super::acp::PromptShape>,
 }
 
 #[derive(Clone, Copy)]
@@ -377,6 +380,7 @@ pub async fn launch_cancellable(
             &run_dir,
             resume,
             req.withheld,
+            req.shape.as_ref(),
             actor,
             &mut lease,
             req.workspace,
@@ -463,6 +467,7 @@ async fn run_acp(
     run_dir: &Path,
     resume: Option<&str>,
     withheld: &[String],
+    shape: Option<&super::acp::PromptShape>,
     actor: ManagedActor<'_>,
     lease: &mut crate::proposal::runs::RunLease,
     workspace: &Path,
@@ -551,7 +556,7 @@ async fn run_acp(
         }
         _ => 0,
     };
-    let result = acp.prompt_until(&prompt, &stop).await;
+    let result = acp.prompt_shaped_until(&prompt, shape, &stop).await;
     if let Ok(turn) = &result {
         usage.lock().unwrap().add_tokens(turn.tokens);
     }
@@ -790,6 +795,7 @@ mod tests {
                 initiator: Initiator::Local,
                 resume: None,
                 withheld: &[],
+                shape: None,
             }),
         )
         .await
@@ -864,6 +870,7 @@ mod tests {
                 initiator: Initiator::Local,
                 resume: None,
                 withheld: &[],
+                shape: None,
             }),
         )
         .await
@@ -934,6 +941,7 @@ mod tests {
                 initiator: Initiator::Ambient,
                 resume: None,
                 withheld: &[],
+                shape: None,
             }),
         )
         .await
@@ -1020,6 +1028,7 @@ mod tests {
                 initiator: Initiator::Local,
                 resume: None,
                 withheld: &[],
+                shape: None,
             }),
         )
         .await

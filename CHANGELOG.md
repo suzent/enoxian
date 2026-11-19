@@ -50,6 +50,7 @@ refuses to publish a version whose section is missing or empty.
   room history and the request are no longer sent twice, the brief no longer repeats how
   the agent was woken (and no longer tells a private turn its reply goes to the room), and
   other agents' card summaries now sit beside their handles in the member list.
+- Agents that show their conversation to a person, such as Suzent, now show only what was asked and who asked it; the room's background is still sent but marked for the agent alone.
 
 ### Fixed
 
