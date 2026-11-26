@@ -17,8 +17,9 @@
 //! `AcpSession::start`). We store records under the circle dir so they survive
 //! daemon restarts and are naturally scoped per circle.
 //!
-//! One session per (circle, agent): all mentions of `@claude` in a circle share
-//! one evolving conversation, matching "claude is a participant in this room".
+//! One session per (circle, agent, channel): all mentions of `@claude` in one
+//! channel share one evolving conversation. Channels are separate rooms, so an
+//! agent busy in two of them runs two independent sessions.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -46,11 +47,9 @@ fn dir(circle_dir: &Path) -> PathBuf {
     circle_dir.join("agent_sessions")
 }
 
-/// Path of the record for one agent. The agent name is sanitized so a scoped or
-/// odd name can't escape the directory.
-fn path(circle_dir: &Path, agent: &str) -> PathBuf {
-    let safe: String = agent
-        .chars()
+/// A name made safe to use as one path segment.
+fn safe(name: &str) -> String {
+    name.chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '-' || c == '_' {
                 c
@@ -58,17 +57,30 @@ fn path(circle_dir: &Path, agent: &str) -> PathBuf {
                 '_'
             }
         })
-        .collect();
-    dir(circle_dir).join(format!("{safe}.session"))
+        .collect()
 }
 
-/// The stored record for `agent` in this circle, if any.
+/// Path of the record for one agent's conversation in one channel. Names are
+/// sanitized so a scoped or odd name can't escape the directory. `#general`
+/// (`None`) keeps the pre-channel path `<agent>.session`, so existing
+/// conversations carry on; any other channel lives at
+/// `<agent>/<channel>.session`.
+fn path(circle_dir: &Path, agent: &str, channel: Option<&str>) -> PathBuf {
+    match channel {
+        None => dir(circle_dir).join(format!("{}.session", safe(agent))),
+        Some(channel) => dir(circle_dir)
+            .join(safe(agent))
+            .join(format!("{}.session", safe(channel))),
+    }
+}
+
+/// The stored record for `agent` in `channel` of this circle, if any.
 ///
 /// Records written before this file held JSON are a bare session id; they are
 /// read as a record with no seen-mark, which costs that agent one turn without
 /// the chat delta and then self-heals on the next save.
-pub fn load(circle_dir: &Path, agent: &str) -> Option<Record> {
-    let raw = std::fs::read_to_string(path(circle_dir, agent)).ok()?;
+pub fn load(circle_dir: &Path, agent: &str, channel: Option<&str>) -> Option<Record> {
+    let raw = std::fs::read_to_string(path(circle_dir, agent, channel)).ok()?;
     let raw = raw.trim();
     if raw.is_empty() {
         return None;
@@ -84,11 +96,16 @@ pub fn load(circle_dir: &Path, agent: &str) -> Option<Record> {
 }
 
 /// Persist the ACP session id, preserving any seen-mark already stored.
-pub fn save_session(circle_dir: &Path, agent: &str, session_id: &str) -> std::io::Result<()> {
-    let _guard = mutation_lock(circle_dir, agent)?;
-    let mut record = load(circle_dir, agent).unwrap_or_default();
+pub fn save_session(
+    circle_dir: &Path,
+    agent: &str,
+    channel: Option<&str>,
+    session_id: &str,
+) -> std::io::Result<()> {
+    let _guard = mutation_lock(circle_dir, agent, channel)?;
+    let mut record = load(circle_dir, agent, channel).unwrap_or_default();
     record.session_id = session_id.to_string();
-    write(circle_dir, agent, &record)
+    write(circle_dir, agent, channel, &record)
 }
 
 /// Advance an agent's seen-mark, preserving any session id.
@@ -101,40 +118,50 @@ pub fn save_session(circle_dir: &Path, agent: &str, session_id: &str) -> std::io
 pub fn save_seen(
     circle_dir: &Path,
     agent: &str,
+    channel: Option<&str>,
     message_id: &str,
     delivered: Vec<String>,
 ) -> std::io::Result<()> {
-    let _guard = mutation_lock(circle_dir, agent)?;
-    let mut record = load(circle_dir, agent).unwrap_or_default();
+    let _guard = mutation_lock(circle_dir, agent, channel)?;
+    let mut record = load(circle_dir, agent, channel).unwrap_or_default();
     record.last_seen_message = message_id.to_string();
     record.delivered = delivered;
-    write(circle_dir, agent, &record)
+    write(circle_dir, agent, channel, &record)
 }
 
-fn mutation_lock(circle_dir: &Path, agent: &str) -> std::io::Result<std::fs::File> {
-    std::fs::create_dir_all(dir(circle_dir))?;
+fn mutation_lock(
+    circle_dir: &Path,
+    agent: &str,
+    channel: Option<&str>,
+) -> std::io::Result<std::fs::File> {
+    let p = path(circle_dir, agent, channel);
+    std::fs::create_dir_all(p.parent().unwrap_or(&dir(circle_dir)))?;
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(path(circle_dir, agent).with_extension("lock"))?;
+        .open(p.with_extension("lock"))?;
     file.lock()?;
     Ok(file)
 }
 
-fn write(circle_dir: &Path, agent: &str, record: &Record) -> std::io::Result<()> {
-    let d = dir(circle_dir);
-    std::fs::create_dir_all(&d)?;
-    crate::proposal::runs::atomic_json(&path(circle_dir, agent), record)
-        .map_err(std::io::Error::other)
+fn write(
+    circle_dir: &Path,
+    agent: &str,
+    channel: Option<&str>,
+    record: &Record,
+) -> std::io::Result<()> {
+    let p = path(circle_dir, agent, channel);
+    std::fs::create_dir_all(p.parent().unwrap_or(&dir(circle_dir)))?;
+    crate::proposal::runs::atomic_json(&p, record).map_err(std::io::Error::other)
 }
 
 /// Forget an agent's session (e.g. a user "reset conversation" action). Not
 /// wired to a command yet, but kept so the surface is complete.
 #[allow(dead_code)]
-pub fn clear(circle_dir: &Path, agent: &str) -> std::io::Result<()> {
-    let p = path(circle_dir, agent);
+pub fn clear(circle_dir: &Path, agent: &str, channel: Option<&str>) -> std::io::Result<()> {
+    let p = path(circle_dir, agent, channel);
     if p.exists() {
         std::fs::remove_file(p)?;
     }
@@ -155,19 +182,19 @@ mod tests {
     fn roundtrip_and_sanitize() {
         let tmp = tmpdir();
 
-        assert!(load(&tmp, "claude").is_none());
-        save_session(&tmp, "claude", "sess-123").unwrap();
-        assert_eq!(load(&tmp, "claude").unwrap().session_id, "sess-123");
+        assert!(load(&tmp, "claude", None).is_none());
+        save_session(&tmp, "claude", None, "sess-123").unwrap();
+        assert_eq!(load(&tmp, "claude", None).unwrap().session_id, "sess-123");
 
         // A scoped/odd agent name is sanitized to a safe filename.
-        save_session(&tmp, "alice/laptop/claude", "sess-xyz").unwrap();
+        save_session(&tmp, "alice/laptop/claude", None, "sess-xyz").unwrap();
         assert_eq!(
-            load(&tmp, "alice/laptop/claude").unwrap().session_id,
+            load(&tmp, "alice/laptop/claude", None).unwrap().session_id,
             "sess-xyz"
         );
 
-        clear(&tmp, "claude").unwrap();
-        assert!(load(&tmp, "claude").is_none());
+        clear(&tmp, "claude", None).unwrap();
+        assert!(load(&tmp, "claude", None).is_none());
 
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -176,16 +203,16 @@ mod tests {
     fn session_and_seen_mark_do_not_clobber_each_other() {
         let tmp = tmpdir();
 
-        save_session(&tmp, "claude", "sess-1").unwrap();
-        save_seen(&tmp, "claude", "msg-7", Vec::new()).unwrap();
-        let record = load(&tmp, "claude").unwrap();
+        save_session(&tmp, "claude", None, "sess-1").unwrap();
+        save_seen(&tmp, "claude", None, "msg-7", Vec::new()).unwrap();
+        let record = load(&tmp, "claude", None).unwrap();
         assert_eq!(record.session_id, "sess-1");
         assert_eq!(record.last_seen_message, "msg-7");
 
         // A later session id (e.g. the agent lost its session and started a
         // fresh one) keeps the seen-mark.
-        save_session(&tmp, "claude", "sess-2").unwrap();
-        let record = load(&tmp, "claude").unwrap();
+        save_session(&tmp, "claude", None, "sess-2").unwrap();
+        let record = load(&tmp, "claude", None).unwrap();
         assert_eq!(record.session_id, "sess-2");
         assert_eq!(record.last_seen_message, "msg-7");
 
@@ -196,15 +223,15 @@ mod tests {
     fn legacy_bare_session_id_still_loads() {
         let tmp = tmpdir();
         std::fs::create_dir_all(dir(&tmp)).unwrap();
-        std::fs::write(path(&tmp, "claude"), "sess-legacy\n").unwrap();
+        std::fs::write(path(&tmp, "claude", None), "sess-legacy\n").unwrap();
 
-        let record = load(&tmp, "claude").unwrap();
+        let record = load(&tmp, "claude", None).unwrap();
         assert_eq!(record.session_id, "sess-legacy");
         assert!(record.last_seen_message.is_empty());
 
         // Writing a seen-mark upgrades the file in place.
-        save_seen(&tmp, "claude", "msg-1", Vec::new()).unwrap();
-        let record = load(&tmp, "claude").unwrap();
+        save_seen(&tmp, "claude", None, "msg-1", Vec::new()).unwrap();
+        let record = load(&tmp, "claude", None).unwrap();
         assert_eq!(record.session_id, "sess-legacy");
         assert_eq!(record.last_seen_message, "msg-1");
 
@@ -217,16 +244,33 @@ mod tests {
         // session. Dropping the record made the mark unreadable, so it re-read
         // the same history on every later turn.
         let tmp = tmpdir();
-        save_seen(&tmp, "claude", "msg-1", Vec::new()).unwrap();
-        let record = load(&tmp, "claude").expect("a mark alone is worth keeping");
+        save_seen(&tmp, "claude", None, "msg-1", Vec::new()).unwrap();
+        let record = load(&tmp, "claude", None).expect("a mark alone is worth keeping");
         assert_eq!(record.last_seen_message, "msg-1");
         assert!(record.session_id.is_empty());
 
         // And a session id arriving later joins it rather than replacing it.
-        save_session(&tmp, "claude", "sess-1").unwrap();
-        let record = load(&tmp, "claude").unwrap();
+        save_session(&tmp, "claude", None, "sess-1").unwrap();
+        let record = load(&tmp, "claude", None).unwrap();
         assert_eq!(record.session_id, "sess-1");
         assert_eq!(record.last_seen_message, "msg-1");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn channels_keep_separate_conversations() {
+        let tmp = tmpdir();
+        save_session(&tmp, "claude", None, "sess-general").unwrap();
+        save_session(&tmp, "claude", Some("ops-id"), "sess-ops").unwrap();
+        assert_eq!(
+            load(&tmp, "claude", None).unwrap().session_id,
+            "sess-general"
+        );
+        assert_eq!(
+            load(&tmp, "claude", Some("ops-id")).unwrap().session_id,
+            "sess-ops"
+        );
+        assert!(load(&tmp, "claude", Some("other")).is_none());
         std::fs::remove_dir_all(&tmp).ok();
     }
 }

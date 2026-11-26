@@ -11,6 +11,13 @@ pub const PRESENCE_KEY: &str = "presence";
 pub const CHAT_ACTIVITY_KEY: &str = "chat_activity";
 pub const MEMBER_LIST_KEY: &str = "member_list";
 pub const CHAT_KEY: &str = "chat";
+/// Messages posted in a topic channel other than `#general`: one array for every
+/// channel, each message tagged with [`ChatMessage::channel`]. Kept apart from
+/// [`CHAT_KEY`] so a peer predating channels never reads a channel message as a
+/// `#general` one and answers it there.
+pub const CHANNEL_CHAT_KEY: &str = "channel_chat";
+/// Topic channels: `channel id -> JSON ChannelInfo`. See `crate::channel`.
+pub const CHANNELS_KEY: &str = "channels";
 /// Delegation cascades a person has halted: `root message id -> stopped-at ts`.
 ///
 /// This lives in the synced control doc rather than in one daemon's memory
@@ -675,6 +682,10 @@ pub struct ChatMessage {
     /// back to the window.
     #[serde(default)]
     pub reply_to: Option<String>,
+    /// Topic channel id; `None` is `#general`. Only messages stored under
+    /// [`CHANNEL_CHAT_KEY`] carry one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
 }
 
 /// Authorship of a chat message. The durable signal behind "only human
@@ -860,6 +871,9 @@ pub enum CircleEvent {
     MemberPending {
         peer_id: String,
     },
+    /// A topic channel was created, renamed or archived, here or on a peer.
+    /// Viewers refetch the channel list.
+    ChannelsChanged {},
     /// A chat message was posted to the circle.
     MessagePosted {
         message: ChatMessage,

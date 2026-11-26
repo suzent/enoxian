@@ -34,7 +34,9 @@
 //! encryption is M17; until then this is a known at-rest exposure, documented in
 //! `docs/concepts/security.md`.
 
-use crate::control::{CHAT_KEY, MEMBER_LIST_KEY, MLS_REMOVED_KEY, TASKS_KEY};
+use crate::control::{
+    CHANNELS_KEY, CHANNEL_CHAT_KEY, CHAT_KEY, MEMBER_LIST_KEY, MLS_REMOVED_KEY, TASKS_KEY,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use yrs::{Any, Array, Map, Out, ReadTxn, Transact, WriteTxn};
@@ -59,6 +61,14 @@ struct ControlSnapshot {
     /// Chat messages (JSON strings, as stored in the CRDT array), time-windowed.
     #[serde(default)]
     chat: Vec<String>,
+    /// Messages in channels other than `#general`, windowed like `chat` but
+    /// with the message cap applied per channel, so a busy channel cannot push
+    /// a quiet one's history out.
+    #[serde(default)]
+    channel_chat: Vec<String>,
+    /// channel id -> ChannelInfo JSON. Channels are archived, never deleted.
+    #[serde(default)]
+    channels: std::collections::BTreeMap<String, String>,
     /// task_id → task JSON string.
     #[serde(default)]
     tasks: std::collections::BTreeMap<String, String>,
@@ -137,6 +147,27 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
         deduplicate_messages(&mut chat);
         retain_latest_messages(&mut chat);
 
+        let mut channel_chat: Vec<String> = txn
+            .get_array(CHANNEL_CHAT_KEY)
+            .into_iter()
+            .flat_map(|chat| chat.iter(&txn))
+            .filter_map(|v| match v {
+                Out::Any(Any::String(s)) => Some(s.to_string()),
+                _ => None,
+            })
+            .filter(|s| {
+                serde_json::from_str::<TsOnly>(s)
+                    .map(|m| m.ts >= cutoff)
+                    .unwrap_or(true)
+            })
+            .collect();
+        deduplicate_messages(&mut channel_chat);
+        retain_latest_per_channel(&mut channel_chat);
+        let channels = txn
+            .get_map(CHANNELS_KEY)
+            .map(|map| map_strings(&map, &txn))
+            .unwrap_or_default();
+
         let tasks = txn
             .get_map(TASKS_KEY)
             .map(|map| map_strings(&map, &txn))
@@ -199,6 +230,8 @@ pub fn save(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
                 .unwrap_or_default(),
             relay_stops,
             chat,
+            channel_chat,
+            channels,
             tasks,
             members,
             removed,
@@ -237,6 +270,8 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
     let persisted_chat_count = snap.chat.len();
     deduplicate_messages(&mut snap.chat);
     retain_latest_messages(&mut snap.chat);
+    deduplicate_messages(&mut snap.channel_chat);
+    retain_latest_per_channel(&mut snap.channel_chat);
     if persisted_chat_count > snap.chat.len() {
         tracing::warn!(
             "[control] loading the latest {} of {} persisted chat messages",
@@ -266,6 +301,11 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
         let membership = txn.get_or_insert_map(crate::control::MEMBERSHIP_KEY);
         let distrusted = txn.get_or_insert_map(crate::control::DISTRUSTED_USERS_KEY);
         let deletions = txn.get_or_insert_map(crate::control::DELETIONS_KEY);
+        let channel_chat = txn.get_or_insert_array(CHANNEL_CHAT_KEY);
+        let channels = txn.get_or_insert_map(CHANNELS_KEY);
+        for (k, v) in &snap.channels {
+            channels.insert(&mut txn, k.as_str(), v.as_str());
+        }
         let chat = txn.get_or_insert_array(CHAT_KEY);
         let locks = txn.get_or_insert_array(crate::control::LOCK_LOG_KEY);
         if locks.len(&txn) == 0 {
@@ -306,6 +346,11 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
                 chat.push_back(&mut txn, Any::String(msg.as_str().into()));
             }
         }
+        if channel_chat.len(&txn) == 0 && !snap.channel_chat.is_empty() {
+            for msg in &snap.channel_chat {
+                channel_chat.push_back(&mut txn, Any::String(msg.as_str().into()));
+            }
+        }
     }
 
     tracing::info!(
@@ -318,6 +363,27 @@ pub fn restore(circle_dir: &Path, control: &yrs::Doc) -> anyhow::Result<()> {
         snap.deletions.len()
     );
     Ok(())
+}
+
+/// Keep the latest [`CHAT_RETENTION_MESSAGES`] of each channel, preserving order.
+fn retain_latest_per_channel(chat: &mut Vec<String>) {
+    #[derive(Deserialize)]
+    struct ChannelOnly {
+        #[serde(default)]
+        channel: Option<String>,
+    }
+    let mut counts: std::collections::HashMap<Option<String>, usize> = Default::default();
+    let mut keep = vec![false; chat.len()];
+    for (i, raw) in chat.iter().enumerate().rev() {
+        let channel = serde_json::from_str::<ChannelOnly>(raw)
+            .map(|m| m.channel)
+            .unwrap_or(None);
+        let count = counts.entry(channel).or_default();
+        *count += 1;
+        keep[i] = *count <= CHAT_RETENTION_MESSAGES;
+    }
+    let mut keep = keep.into_iter();
+    chat.retain(|_| keep.next().unwrap_or(true));
 }
 
 fn retain_latest_messages(chat: &mut Vec<String>) {

@@ -61,6 +61,7 @@ pub fn request(
         relay: None,
         author: Author::Human,
         reply_to: None,
+        channel: None,
     };
     super::inbox::Request {
         agent: agent.to_string(),

@@ -4,6 +4,7 @@ pub mod agent_cards;
 pub mod agent_config;
 pub mod attachments;
 pub mod auth;
+pub mod channels;
 pub mod chat;
 pub mod connectivity;
 pub mod events;
@@ -158,6 +159,15 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
         )
         // Private: tell one local agent something the Circle does not hear.
         .route("/circles/{circle_id}/api/inbox/inject", post(inbox::inject))
+        // Topic channels
+        .route(
+            "/circles/{circle_id}/api/channels",
+            get(channels::list_channels).post(channels::create_channel),
+        )
+        .route(
+            "/circles/{circle_id}/api/channels/{channel}",
+            axum::routing::patch(channels::update_channel),
+        )
         // M9 chat
         .route(
             "/circles/{circle_id}/api/chat",

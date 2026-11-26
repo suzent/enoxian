@@ -42,6 +42,7 @@ refuses to publish a version whose section is missing or empty.
 ### Added
 
 - Public landing page and documentation website (`website/`) with GitHub Pages deployment for `enoxian.com`, covering English and Simplified Chinese routes, full-text documentation search, and `llms.txt` exports.
+- Topic channels: a Circle's chat can split into `#general` plus named channels (`enox channels`, `enox chat --channel`, `enox say --channel`), listed under the active circle in the web sidebar with unread counts. Each agent keeps a separate conversation per channel, runs turns in different channels in parallel, replies in the channel it was asked in, and sees a short index of what is new in the other channels.
 
 ## [0.15.0] — 2026-11-16
 

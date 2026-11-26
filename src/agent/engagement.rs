@@ -187,6 +187,7 @@ mod tests {
             relay: Some(crate::agent::relay::mint(id, peer)),
             author: crate::control::Author::Human,
             reply_to: None,
+            channel: None,
         }
     }
 
@@ -204,6 +205,7 @@ mod tests {
             relay: Some(crate::agent::relay::extend(&parent, agent)),
             author: crate::control::Author::Agent,
             reply_to: None,
+            channel: None,
         }
     }
 

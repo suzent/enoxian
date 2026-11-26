@@ -25,6 +25,9 @@ vi.mock('../../api', () => ({
   stopRelay: vi.fn(async () => ({ ok: true, root: 'r' })),
   getEngagement: vi.fn(async () => ({ agent: null, window_secs: 180 })),
   exitEngagement: vi.fn(async () => ({ ok: true })),
+  getChannels: vi.fn(async () => []),
+  createChannel: vi.fn(),
+  updateChannel: vi.fn(),
   blobUrl: (_c: string, h: string) => `/blob/${h}`,
   MAX_ATTACHMENT_BYTES: 10 * 1024 * 1024,
   chatStream: () => ({
@@ -107,6 +110,6 @@ describe('file attachments', () => {
     expect(await screen.findByText('brief.pdf')).toBeTruthy()
     expect(postChat).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'EXEC' }))
-    await waitFor(() => expect(postChat).toHaveBeenCalledWith('c1', '', 'alice', [{ hash: 'pdf-hash', name: 'brief.pdf' }], undefined))
+    await waitFor(() => expect(postChat).toHaveBeenCalledWith('c1', '', 'alice', [{ hash: 'pdf-hash', name: 'brief.pdf' }], undefined, null))
   })
 })

@@ -51,8 +51,12 @@ pub async fn list(
             .or_else(|| m["claimed_by"]["agent"].as_str())
             .map(|who| format!("  [{who} has it]"))
             .unwrap_or_default();
+        let place = m["channel"]
+            .as_str()
+            .map(|c| format!("#{c} "))
+            .unwrap_or_default();
         println!(
-            "  {}  {}: {}{held}",
+            "  {}  {place}{}: {}{held}",
             short(&m["message_id"]),
             m["from"].as_str().unwrap_or("?"),
             line(&m["text"])

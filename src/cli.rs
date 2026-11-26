@@ -120,8 +120,14 @@ pub enum AgentCommands {
     Runs(RunsArgs),
     /// The warden: who answers messages nobody addressed, and its records
     Warden(WardenArgs),
+    /// List, create and archive topic channels
+    Channels(ChannelsArgs),
     /// Show recent chat messages
     Chat {
+        /// Channel to read (name or id). Defaults to the channel an agent run
+        /// is in, else #general. Reading never marks anything as seen.
+        #[arg(long, env = "ENOXIAN_CHANNEL")]
+        channel: Option<String>,
         /// Stream new messages as they arrive
         #[arg(long, short = 'f')]
         follow: bool,
@@ -140,6 +146,10 @@ pub enum AgentCommands {
         /// Reply to a specific message ID
         #[arg(long = "reply-to", value_name = "MESSAGE_ID")]
         reply_to: Option<String>,
+        /// Channel to post in (name or id). Defaults to the channel an agent
+        /// run is in, else #general. A reply always posts in its parent's channel.
+        #[arg(long, env = "ENOXIAN_CHANNEL")]
+        channel: Option<String>,
     },
     /// Open the Circle UI in the default browser
     Open,
@@ -338,6 +348,34 @@ pub enum IdentityAction {
         handle: String,
         /// The 24-word mnemonic (quote the whole phrase)
         mnemonic: String,
+    },
+}
+
+#[derive(Parser)]
+pub struct ChannelsArgs {
+    #[command(subcommand)]
+    pub action: Option<ChannelsAction>,
+}
+
+#[derive(Subcommand)]
+pub enum ChannelsAction {
+    /// Create a channel
+    Create {
+        /// Name: a-z, 0-9, '-' and '_', at most 32 characters
+        name: String,
+        /// What the channel is for, shown to agents in it
+        #[arg(long, default_value = "")]
+        purpose: String,
+    },
+    /// Archive a channel: its history stays readable, it leaves the list
+    Archive {
+        /// Channel name or id
+        channel: String,
+    },
+    /// Bring an archived channel back
+    Unarchive {
+        /// Channel name or id
+        channel: String,
     },
 }
 

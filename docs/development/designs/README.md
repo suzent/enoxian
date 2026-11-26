@@ -7,6 +7,7 @@ of everything currently implemented.
 - [Scrying the room](read-the-room.md) — remaining questions and design context
 - [The warden](warden.md) — how it decides, what experiments may change, episodes
 - [File index](file-index.md) — proposals for tracking files, deletion, and renames
+- [Channels](channels.md) — topic channels and one agent session per channel
 
 When work ships, document current behavior in the relevant guide or reference,
 and retire the completed proposal. Git history preserves earlier designs.

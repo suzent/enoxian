@@ -752,6 +752,7 @@ pub(crate) mod tests {
                 relay: Some(crate::agent::relay::mint(id, "sender")),
                 author: Author::Human,
                 reply_to: None,
+                channel: None,
             },
             relay: Some(crate::agent::relay::mint(id, "sender")),
             implicit: false,

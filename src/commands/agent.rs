@@ -234,7 +234,7 @@ pub async fn run(
 
     // Resume the agent's remembered conversation for this circle, if any.
     let circle_dir = crate::config::circle_dir(&circle_id)?;
-    let resume = crate::agent::memory::load(&circle_dir, &agent);
+    let resume = crate::agent::memory::load(&circle_dir, &agent, None);
 
     println!(
         "→ running agent '{agent}' ({:?}) in {}",
@@ -250,6 +250,7 @@ pub async fn run(
         coordination: None,
         // A one-off CLI run builds no room context, so it withholds none.
         withheld: &[],
+        channel: None,
         agent_name: &agent,
         cmd: &cmd,
         task: &task,

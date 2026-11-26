@@ -5,14 +5,33 @@ use std::collections::HashSet;
 pub async fn run(
     client: &reqwest::Client,
     base: &str,
+    channel: Option<String>,
     follow: bool,
     since: Option<i64>,
 ) -> Result<()> {
-    let mut url = format!("{base}/chat");
+    // Resolved here so `--follow` can tell this channel's messages apart.
+    let channel = super::channels::resolve(client, base, channel.as_deref()).await?;
+    let mut query: Vec<(&str, String)> = Vec::new();
     if let Some(s) = since {
-        url.push_str(&format!("?since={s}"));
+        query.push(("since", s.to_string()));
     }
-    let messages: Vec<ChatMessage> = client.get(&url).send().await?.json().await?;
+    if let Some(id) = &channel {
+        query.push(("channel", id.clone()));
+    }
+    let resp = client
+        .get(format!("{base}/chat"))
+        .query(&query)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let err: serde_json::Value = resp.json().await.unwrap_or_default();
+        anyhow::bail!(
+            "{} ({status})",
+            err["error"].as_str().unwrap_or("chat unavailable")
+        );
+    }
+    let messages: Vec<ChatMessage> = resp.json().await?;
     for msg in &messages {
         print_message(msg);
     }
@@ -45,7 +64,7 @@ pub async fn run(
                         if let Ok(msg) =
                             serde_json::from_value::<ChatMessage>(val["message"].clone())
                         {
-                            if !seen.contains(&msg.id) {
+                            if !seen.contains(&msg.id) && msg.channel == channel {
                                 print_message(&msg);
                             }
                         }

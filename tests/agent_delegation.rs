@@ -371,7 +371,7 @@ async fn a_managed_run_posting_through_the_api_is_the_agent_not_a_person() {
     let (token, _) =
         state
             .actor_tokens
-            .issue_for_run(CIRCLE, "peer-local", "claude", root.relay.clone());
+            .issue_for_run(CIRCLE, "peer-local", "claude", root.relay.clone(), None);
     let mut rx = state.events.subscribe();
 
     let (status, _) = send(

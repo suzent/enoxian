@@ -1,4 +1,4 @@
-import type { Circle, Status, Presence, ChatMessage, Attachment, ChatActivity, EngagementView, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin, ConnectivitySettings, InviteConnectivity, WardenMode } from './types'
+import type { Circle, Status, Presence, ChatMessage, Attachment, ChatActivity, EngagementView, Channel, Task, Member, PendingEntry, Proposal, ProposalDetail, AgentConfigView, DiscoveredAgent, AgentPlugin, ConnectivitySettings, InviteConnectivity, WardenMode } from './types'
 
 const api = (circleId: string) => `/circles/${circleId}/api`
 
@@ -97,6 +97,14 @@ async function post<T>(url: string, body: unknown, timeoutMs = REQUEST_TIMEOUT_M
   }, 0, timeoutMs)
 }
 
+async function patch<T>(url: string, body: unknown): Promise<T> {
+  return request<T>(url, {
+    method: 'PATCH',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+  })
+}
+
 
 export const getCircles = () => get<Circle[]>('/circles')
 // Device-level (not circle-scoped): how this device reacts to chat mentions.
@@ -142,15 +150,39 @@ export const setForceRelay = (id: string, forceRelay: boolean) =>
     `${api(id)}/connectivity`, { force_relay: forceRelay },
   )
 export const getWho = (id: string) => get<Presence[]>(`${api(id)}/who`)
-export const getChat = (id: string, since?: number) =>
-  get<ChatMessage[]>(`${api(id)}/chat${since ? `?since=${since}` : ''}`)
+/** Query string selecting a channel; empty for `#general`. */
+const channelQuery = (channel?: string | null) =>
+  channel ? `?channel=${encodeURIComponent(channel)}` : ''
+
+/** One channel's transcript; `channel` is an id, null/undefined for `#general`. */
+export const getChat = (id: string, since?: number, channel?: string | null) => {
+  const params = new URLSearchParams()
+  if (since) params.set('since', String(since))
+  if (channel) params.set('channel', channel)
+  const qs = params.toString()
+  return get<ChatMessage[]>(`${api(id)}/chat${qs ? `?${qs}` : ''}`)
+}
 export const postChat = (
   id: string,
   text: string,
   agentId: string,
   attachments: { hash: string; name: string }[] = [],
   replyTo?: string | null,
-) => post(`${api(id)}/chat`, { text, agent_id: agentId, attachments, reply_to: replyTo ?? null })
+  channel?: string | null,
+) => post(`${api(id)}/chat`, {
+  text, agent_id: agentId, attachments, reply_to: replyTo ?? null,
+  ...(channel ? { channel } : {}),
+})
+
+/** Every channel, `#general` (id null) first. */
+export const getChannels = (id: string) => get<Channel[]>(`${api(id)}/channels`)
+export const createChannel = (id: string, name: string, purpose: string, agentId: string) =>
+  post<Channel>(`${api(id)}/channels`, { name, purpose, agent_id: agentId })
+export const updateChannel = (
+  id: string,
+  channel: string,
+  change: { purpose?: string; archived?: boolean },
+) => patch<Channel>(`${api(id)}/channels/${encodeURIComponent(channel)}`, change)
 
 /** Largest upload the daemon will accept. Mirrors MAX_ATTACHMENT_BYTES. */
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
@@ -227,11 +259,11 @@ export const getChatActivity = (id: string) =>
 export const setChatTyping = (id: string, actorId: string, typing: boolean) =>
   post<{ok: boolean}>(`${api(id)}/chat/activity`, { actor_id: actorId, typing })
 /** What the next mention-less message will do: route to an agent, or nothing. */
-export const getEngagement = (id: string) =>
-  get<EngagementView>(`${api(id)}/chat/engagement`)
+export const getEngagement = (id: string, channel?: string | null) =>
+  get<EngagementView>(`${api(id)}/chat/engagement${channelQuery(channel)}`)
 /** Dismiss the follow-up window — the composer's Esc. */
-export const exitEngagement = (id: string) =>
-  post<{ ok: boolean }>(`${api(id)}/chat/engagement/exit`, {})
+export const exitEngagement = (id: string, channel?: string | null) =>
+  post<{ ok: boolean }>(`${api(id)}/chat/engagement/exit${channelQuery(channel)}`, {})
 
 /** Halt a delegation cascade: no further relayed turns run, on any device.
  *  `root` comes off any message in the cascade (`msg.relay.root`). */

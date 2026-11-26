@@ -56,6 +56,10 @@ pub struct LocalChangeSession {
     /// says who asked, which for a delegated turn is a different answer.
     #[serde(default)]
     pub relay_path: Vec<String>,
+    /// Channel the turn ran in; `None` for `#general` and for runs that are not
+    /// chat turns. One agent may run once per channel at a time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -73,6 +77,7 @@ impl LocalChangeSession {
             actor_hint: None,
             confidence: mode.default_confidence(),
             relay_path: Vec::new(),
+            channel: None,
             started_at: chrono::Utc::now(),
             finished_at: None,
         }

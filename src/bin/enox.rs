@@ -358,13 +358,26 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
-                AgentCommands::Chat { follow, since } => {
-                    enoxian::commands::chat::run(&client, &base, follow, since).await
+                AgentCommands::Channels(args) => {
+                    enoxian::commands::channels::run(
+                        &client,
+                        &base,
+                        args.action,
+                        actor_token.as_deref(),
+                        cli.json,
+                    )
+                    .await
                 }
+                AgentCommands::Chat {
+                    channel,
+                    follow,
+                    since,
+                } => enoxian::commands::chat::run(&client, &base, channel, follow, since).await,
                 AgentCommands::Say {
                     text,
                     attachments,
                     reply_to,
+                    channel,
                 } => {
                     enoxian::commands::say::run(
                         &client,
@@ -372,6 +385,7 @@ async fn main() -> anyhow::Result<()> {
                         text,
                         attachments,
                         reply_to,
+                        channel,
                         actor_token.as_deref(),
                     )
                     .await

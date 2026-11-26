@@ -53,7 +53,9 @@ pub async fn get_inbox(
     };
     let live = claims::live_claims(&activities);
     let roster = Roster::load(&state);
-    let transcript = state.transcript();
+    // Every channel, oldest first, so the window below is the latest overall.
+    let mut transcript = state.all_messages();
+    transcript.sort_by_key(|m| m.ts);
 
     let answered: std::collections::HashSet<&str> = transcript
         .iter()
@@ -75,6 +77,7 @@ pub async fn get_inbox(
                 "from": m.agent_id,
                 "text": m.text,
                 "ts": m.ts,
+                "channel": m.channel.as_ref().map(|_| crate::channel::name_of(&state, m.channel.as_deref())),
                 "claimed_by": live.get(&m.id).and_then(|c| c.first()).map(|c| claim_json(c, &roster)),
             })
         })
@@ -182,7 +185,7 @@ fn set_claim(
         Ok(actor) => actor,
         Err(error) => return error.into_response(),
     };
-    let message = match resolve_message(&state.transcript(), &req.message_id) {
+    let message = match resolve_message(&state.all_messages(), &req.message_id) {
         Ok(message) => message,
         Err(Lookup::TooShort) => return bad_request("message id must be at least 4 characters"),
         Err(Lookup::NotFound) => return not_found("no message with that id"),

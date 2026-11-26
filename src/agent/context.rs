@@ -116,7 +116,11 @@ pub fn build_delivery(
     trigger_id: &str,
     framing: Framing,
 ) -> Delivery {
-    let all = state.transcript();
+    // The channel is the trigger's: each channel is its own conversation, and
+    // the other channels reach the agent only as the index below.
+    let channel = state.find_message(trigger_id).and_then(|m| m.channel);
+    let channel = channel.as_deref();
+    let all = state.channel_transcript(channel);
     // Loaded once. History is where namesakes are most confusing: a fresh
     // session's page can hold "claude: …" from two machines, one of them the
     // reader, with nothing to tell them apart.
@@ -199,7 +203,7 @@ pub fn build_delivery(
         );
     }
     if end < all.len() || (after.is_none() && start > 0) {
-        recent.push_str(&format!("\nHistory omitted from this prompt. Retrieve pages from GET /circles/{}/api/chat?after_id={}&limit=100. Omitted lines have NOT been delivered.", state.circle_id, if after.is_some() { cursor.as_deref().unwrap_or("") } else { "" }));
+        recent.push_str(&format!("\nHistory omitted from this prompt. Retrieve pages from GET /circles/{}/api/chat?after_id={}&limit=100{}. Omitted lines have NOT been delivered.", state.circle_id, if after.is_some() { cursor.as_deref().unwrap_or("") } else { "" }, channel.map(|c| format!("&channel={c}")).unwrap_or_default()));
     }
     // Include ancestors of the explicit request even if outside the room page.
     // `supplied` covers every block above, not just the contiguous page, so an
@@ -243,25 +247,116 @@ pub fn build_delivery(
         .find(|m| m.id == trigger_id)
         .map(|m| attachment_note_with_blobs(&state.circle_id, blobs.as_deref(), m))
         .unwrap_or_default();
+    let mut prompt = compose(
+        &state.circle_name,
+        sender,
+        task,
+        brief.as_deref(),
+        (!recent.trim().is_empty()).then_some(recent.as_str()),
+        if resumed {
+            DELTA_CHAT_HEADING
+        } else {
+            FRESH_CHAT_HEADING
+        },
+        framing,
+        &attachments,
+    );
+    prompt.push_str(&channel_index(state, agent_id, channel));
     Delivery {
-        prompt: compose(
-            &state.circle_name,
-            sender,
-            task,
-            brief.as_deref(),
-            (!recent.trim().is_empty()).then_some(recent.as_str()),
-            if resumed {
-                DELTA_CHAT_HEADING
-            } else {
-                FRESH_CHAT_HEADING
-            },
-            framing,
-            &attachments,
-        ),
+        prompt,
         delivered: carry_forward(&all, start, carried, shown, trigger_id),
         withheld,
         cursor,
     }
+}
+
+/// Most channels the cross-channel index lists before summarizing the rest.
+const CHANNEL_INDEX_LIMIT: usize = 12;
+
+/// Where the agent is, and what is happening in the Circle's other channels.
+///
+/// Each channel is a separate conversation with its own session, so a turn in
+/// one channel sees none of another's lines. This index is how it learns they
+/// exist: one line per channel with how much is new since this agent last took
+/// a turn there, and the commands to read or post in it. Empty for a Circle
+/// that has only `#general`, so prompts there read as they did before channels.
+fn channel_index(state: &AppState, agent_id: &str, current: Option<&str>) -> String {
+    let channels: Vec<crate::channel::ChannelInfo> = crate::channel::list_with_general(state)
+        .into_iter()
+        .filter(|c| !c.archived || c.id.as_deref() == current)
+        .collect();
+    if channels.len() <= 1 && current.is_none() {
+        return String::new();
+    }
+    let all = state.all_messages();
+    let mut out = String::new();
+    let here = channels.iter().find(|c| c.id.as_deref() == current);
+    let here_name = crate::channel::name_of(state, current);
+    out.push_str(&format!("\n\nYou are in #{here_name}"));
+    match here.map(|c| c.purpose.trim()).filter(|p| !p.is_empty()) {
+        Some(purpose) => out.push_str(&format!(" — {purpose}.")),
+        None => out.push('.'),
+    }
+    out.push_str(" Your reply posts here.");
+    let others: Vec<_> = channels
+        .iter()
+        .filter(|c| c.id.as_deref() != current)
+        .map(|c| {
+            let lines: Vec<&ChatMessage> = all
+                .iter()
+                .filter(|m| m.channel.as_deref() == c.id.as_deref())
+                .collect();
+            let seen = super::memory::load(&state.circle_dir, agent_id, c.id.as_deref())
+                .map(|r| r.last_seen_message)
+                .filter(|id| !id.is_empty());
+            let new = match seen.and_then(|id| lines.iter().position(|m| m.id == id)) {
+                Some(i) => lines.len() - i - 1,
+                None => lines.len(),
+            };
+            let mentions = lines
+                .iter()
+                .rev()
+                .take(new)
+                .filter(|m| m.mentions.iter().any(|n| n.eq_ignore_ascii_case(agent_id)))
+                .count();
+            (
+                c,
+                lines.last().map(|m| m.ts).unwrap_or(c.created_at),
+                new,
+                mentions,
+            )
+        })
+        .collect();
+    if others.is_empty() {
+        return out;
+    }
+    let mut ranked = others;
+    // Busiest first: what mentions this agent, then what moved most recently.
+    ranked.sort_by(|a, b| (b.3, b.2 > 0, b.1).cmp(&(a.3, a.2 > 0, a.1)));
+    out.push_str(
+        "\nOther channels in this Circle — separate conversations you are not \
+         shown here. Read one with `enox chat --channel <name>`; post into one \
+         with `enox say --channel <name> \"…\"`. Only do so when it bears on \
+         your work:",
+    );
+    for (c, _, new, mentions) in ranked.iter().take(CHANNEL_INDEX_LIMIT) {
+        out.push_str(&format!("\n  #{}", c.name));
+        if !c.purpose.trim().is_empty() {
+            out.push_str(&format!(" — {}", c.purpose.trim()));
+        }
+        match (new, mentions) {
+            (0, _) => out.push_str(" (nothing new)"),
+            (n, 0) => out.push_str(&format!(" ({n} new)")),
+            (n, m) => out.push_str(&format!(" ({n} new, {m} mention you)")),
+        }
+    }
+    if ranked.len() > CHANNEL_INDEX_LIMIT {
+        out.push_str(&format!(
+            "\n  …and {} more; list them with `enox channels`.",
+            ranked.len() - CHANNEL_INDEX_LIMIT
+        ));
+    }
+    out
 }
 
 /// The memo to store with the new cursor.
@@ -314,8 +409,13 @@ fn carry_forward(
 /// proved wrong, so those lines are restored here — otherwise they would be
 /// skipped for good, the cursor having advanced past them. Lines the room
 /// history below already shows are not repeated.
-pub fn recovery_context(state: &AppState, agent: &str, withheld: &[String]) -> String {
-    let all = state.transcript();
+pub fn recovery_context(
+    state: &AppState,
+    agent: &str,
+    channel: Option<&str>,
+    withheld: &[String],
+) -> String {
+    let all = state.channel_transcript(channel);
     let roster = Roster::load(state);
     let history = window(&all, None, "", &roster);
     // The history block below is the room's last few lines; anything inside it
@@ -687,6 +787,7 @@ mod tests {
             relay: None,
             author: crate::control::Author::Human,
             reply_to: None,
+            channel: None,
         }
     }
 
@@ -1018,7 +1119,7 @@ mod tests {
             Framing::Addressed,
         );
         assert!(!resumed.prompt.contains("knowledge base and index"));
-        assert!(recovery_context(&state, "claude", &resumed.withheld)
+        assert!(recovery_context(&state, "claude", None, &resumed.withheld)
             .contains("knowledge base and index"));
     }
 

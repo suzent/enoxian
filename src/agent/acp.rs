@@ -118,6 +118,11 @@ pub trait ClientHooks: Send + 'static {
     fn run_id(&self) -> Option<&str> {
         None
     }
+    /// Channel the run belongs to, exported as `ENOXIAN_CHANNEL` so the
+    /// agent's CLI calls default to it.
+    fn channel(&self) -> Option<&str> {
+        None
+    }
     fn write_file(&self, path: &Path, content: &[u8]) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -294,6 +299,9 @@ impl<H: ClientHooks> AcpSession<H> {
         super::spawn::apply_actor_env(&mut command, agent_id, circle_id, actor_token);
         if let Some(id) = hooks.run_id() {
             command.env("ENOXIAN_RUN_ID", id);
+        }
+        if let Some(channel) = hooks.channel() {
+            command.env("ENOXIAN_CHANNEL", channel);
         }
         command
             .current_dir(workspace)

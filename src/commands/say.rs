@@ -8,6 +8,7 @@ pub async fn run(
     text: String,
     attachments: Vec<PathBuf>,
     reply_to: Option<String>,
+    channel: Option<String>,
     actor_token: Option<&str>,
 ) -> Result<()> {
     if text.trim().is_empty() && attachments.is_empty() {
@@ -65,6 +66,9 @@ pub async fn run(
         "attachments": uploaded,
         "reply_to": reply_to,
     });
+    if let Some(channel) = channel.filter(|c| !c.trim().is_empty()) {
+        body["channel"] = Value::String(channel);
+    }
     if let Some(token) = actor_token {
         body["actor_token"] = Value::String(token.to_string());
     }
@@ -89,7 +93,7 @@ pub async fn run(
     Ok(())
 }
 
-async fn fetch_agent_id(client: &reqwest::Client, base: &str) -> String {
+pub(crate) async fn fetch_agent_id(client: &reqwest::Client, base: &str) -> String {
     async {
         let val: Value = client
             .get(format!("{base}/status"))
