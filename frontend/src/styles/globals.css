@@ -5651,9 +5651,9 @@ input.invite-link-value:focus-visible {
   .active-channel__purpose { display: none; }
 }
 
-/* No hover on touch: offer Archive on the open channel only, always shown. */
+/* No hover on touch: offer Rename and Archive on the open channel only, always shown. */
 @media (hover: none) {
-  .channel-row__archive { display: none; }
-  .channel-row.is-current .channel-row__archive { display: grid; opacity: 1; }
-  .channel-row.is-current .channel-row__select { padding-right: 30px; }
+  .channel-row__tools { display: none; }
+  .channel-row.is-current .channel-row__tools { display: flex; opacity: 1; pointer-events: auto; }
+  .channel-row.is-current.is-editable .channel-row__select { padding-right: 52px; }
 }
