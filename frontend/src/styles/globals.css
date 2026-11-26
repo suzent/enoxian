@@ -5299,17 +5299,17 @@ input.invite-link-value:focus-visible {
   position: relative;
   z-index: 1;
   margin: 2px 0 8px;
-  padding: 0 10px 0 36px;
+  padding: 0 10px 0 20px;
   font-family: var(--font-mono);
 }
 
-/* One hairline runs down from the circle's ordinal, beside the channels. */
+/* One hairline runs down beside the channels. */
 .channel-list::before {
   content: '';
   position: absolute;
   top: -4px;
   bottom: 6px;
-  left: 21px;
+  left: 13px;
   border-left: 1px solid rgba(0,0,0,0.14);
 }
 
@@ -5389,7 +5389,7 @@ input.invite-link-value:focus-visible {
 .channel-row.is-current::before {
   content: '';
   position: absolute;
-  left: -16px;
+  left: -8px;
   top: 6px;
   bottom: 6px;
   border-left: 3px solid var(--fg-obsidian);
