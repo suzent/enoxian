@@ -159,7 +159,7 @@ looking in a channel it has no reason to think about.
 |-------|-|
 | `GET /circles/{id}/api/channels` | Every channel, `#general` (id `null`) first, with `message_count`, `last_message_id`, `last_ts`. |
 | `POST /circles/{id}/api/channels` | `{ name, purpose?, agent_id }`; 400 on a bad or taken name. |
-| `PATCH /circles/{id}/api/channels/{ref}` | `{ purpose?, archived? }`; `#general` cannot be changed. |
+| `PATCH /circles/{id}/api/channels/{ref}` | `{ name?, purpose?, archived? }`; `#general` cannot be changed. A new name follows the create rules and may not match another live channel. |
 | `GET /chat?channel=` | One channel's transcript (id or name). |
 | `POST /chat` | Takes `channel` in the body. |
 
@@ -172,6 +172,7 @@ changed. The inbox's open list carries each message's channel name.
 ```bash
 enox channels                              # list: name, purpose, message count
 enox channels create <name> [--purpose …]
+enox channels rename <channel> <name>
 enox channels archive <channel>
 enox channels unarchive <channel>
 enox chat --channel <name> [--since <ts>] [--follow]
@@ -188,8 +189,12 @@ cursor records what the daemon put in front of the agent, nothing else.
 
 Channels are listed in the left sidebar, nested under the active circle's row
 (`ChannelList`): one row per live channel (`#general` first), an unread count
-on rows other than the open one, an Archive action on hover (on touch, on the
-open channel only), and an inline form to create a channel. Other circles stay
+on rows other than the open one, Rename and Archive actions on hover (on touch,
+on the open channel only), and an inline form to create a channel. Renaming
+happens in place: the row turns into an input (also on double-click); Enter
+saves, Escape or leaving the field cancels, and a refused name shows its reason
+under the row. Messages and agent sessions are keyed by the channel id, so a
+rename keeps both. Other circles stay
 collapsed; the chat stream only covers the active circle, so their channels
 would have no unread counts to show. In the phone drawer, picking a channel
 closes the drawer.
@@ -215,7 +220,6 @@ A `channels_changed` event refreshes the list.
   managed runs, proposals by trigger id).
 - **Unread across sessions.** The frontend's unread counts live in memory and
   start from zero on reload; there is no per-viewer read cursor.
-- **Renaming** a channel. Only purpose and archived can change.
 
 ## Open questions
 

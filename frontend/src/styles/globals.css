@@ -5298,23 +5298,22 @@ input.invite-link-value:focus-visible {
 .channel-list {
   position: relative;
   z-index: 1;
-  margin: -2px 0 6px;
-  padding: 2px 0 4px 44px;
+  margin: 2px 0 8px;
+  padding: 0 10px 0 20px;
   font-family: var(--font-mono);
 }
 
-/* A dotted guide hangs from the circle's ordinal down the channel rows. */
-.channel-list__items::before {
+/* One hairline runs down beside the channels. */
+.channel-list::before {
   content: '';
   position: absolute;
-  top: -2px;
-  bottom: 14px;
-  left: -23px;
-  border-left: 1px dashed rgba(0,0,0,0.28);
+  top: -4px;
+  bottom: 6px;
+  left: 13px;
+  border-left: 1px solid rgba(0,0,0,0.14);
 }
 
 .channel-list__items {
-  position: relative;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -5329,47 +5328,38 @@ input.invite-link-value:focus-visible {
   align-items: center;
 }
 
-/* The tick joining a row to the guide. */
-.channel-row::before {
-  content: '';
-  position: absolute;
-  left: -22px;
-  top: 50%;
-  width: 14px;
-  border-top: 1px dashed rgba(0,0,0,0.28);
-}
-
 .channel-row__select {
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 4px 8px;
-  border: 1px solid transparent;
+  gap: 6px;
+  padding: 0 8px;
+  border: 0;
   background: transparent;
   color: var(--fg-slate);
-  font: 500 12.5px/1.3 var(--font-mono);
+  font: 500 12.5px/1 var(--font-mono);
   text-align: left;
   cursor: pointer;
-  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .channel-row__select:hover {
   color: var(--fg-obsidian);
-  background: var(--control-hover-dither) 0 0 / 3px 3px;
+  background: rgba(0,0,0,0.045);
 }
 
 .channel-row__select:focus-visible {
-  outline: 1px dashed var(--fg-obsidian);
+  outline: 1px solid var(--fg-obsidian);
   outline-offset: -1px;
 }
 
 .channel-row__hash {
-  width: 12px;
+  width: 9px;
   flex: 0 0 auto;
-  opacity: 0.45;
+  color: rgba(0,0,0,0.32);
+  font-weight: 500;
 }
 
 .channel-row__name {
@@ -5385,21 +5375,24 @@ input.invite-link-value:focus-visible {
   font-weight: 800;
 }
 
+/* The open channel: ink text, a soft fill, and a mark on the hairline. */
 .channel-row.is-current .channel-row__select {
   color: var(--fg-obsidian);
   font-weight: 800;
-  border-color: rgba(0,0,0,0.18);
-  background: var(--control-selected-dither) 0 0 / 3px 3px, #fff;
-  box-shadow: inset 2px 0 0 var(--fg-obsidian);
+  background: rgba(0,0,0,0.07);
 }
 
 .channel-row.is-current .channel-row__hash {
-  opacity: 1;
+  color: var(--fg-obsidian);
 }
 
 .channel-row.is-current::before {
-  border-top-style: solid;
-  border-top-color: var(--fg-obsidian);
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 6px;
+  bottom: 6px;
+  border-left: 3px solid var(--fg-obsidian);
 }
 
 .channel-row.is-archived .channel-row__name {
@@ -5409,7 +5402,6 @@ input.invite-link-value:focus-visible {
 
 .channel-row__tag {
   flex: 0 0 auto;
-  margin-left: 6px;
   color: var(--fg-slate);
   font-size: 9.5px;
   font-weight: 800;
@@ -5420,72 +5412,133 @@ input.invite-link-value:focus-visible {
 .channel-row__count {
   flex: 0 0 auto;
   min-width: 18px;
-  margin-left: 6px;
-  padding: 1px 4px;
+  padding: 2px 5px;
+  border-radius: 9px;
   background: var(--fg-obsidian);
   color: #fff;
   font-size: 10px;
   font-weight: 800;
-  line-height: 1.35;
+  line-height: 1.2;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
 
-/* Archive appears on hover, over the row's right edge. */
-.channel-row__archive {
+/* Rename and archive appear on hover, over the row's right edge. */
+.channel-row__tools {
   position: absolute;
-  right: 4px;
+  right: 3px;
   top: 50%;
+  display: flex;
+  gap: 1px;
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease;
+  pointer-events: none;
+}
+
+.channel-row:hover .channel-row__tools,
+.channel-row__tools:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.channel-row.is-editable:hover .channel-row__count,
+.channel-row.is-editable:focus-within .channel-row__count {
+  visibility: hidden;
+}
+
+.channel-row__tools button {
   width: 22px;
   height: 22px;
   display: grid;
   place-items: center;
   padding: 0;
-  border: 1px solid transparent;
+  border: 0;
   background: transparent;
   color: var(--fg-slate);
   cursor: pointer;
-  opacity: 0;
-  transform: translateY(-50%);
-  transition: opacity 120ms ease;
 }
 
-.channel-row:hover .channel-row__archive,
-.channel-row__archive:focus-visible {
-  opacity: 1;
-}
-
-.channel-row:hover .channel-row__count {
-  visibility: hidden;
-}
-
-.channel-row__archive:hover {
+.channel-row__tools button:hover,
+.channel-row__tools button:focus-visible {
   color: var(--fg-obsidian);
-  border-color: rgba(0,0,0,0.25);
+  background: rgba(0,0,0,0.08);
+  outline: none;
+}
+
+/* Renaming in place: the row turns into its own input, same size. */
+.channel-row.is-renaming {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.channel-rename {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
   background: #fff;
+  box-shadow: inset 0 0 0 1px var(--fg-obsidian);
+  font: 500 12.5px/1 var(--font-mono);
+}
+
+.channel-rename .channel-row__hash {
+  color: var(--fg-obsidian);
+}
+
+.channel-rename input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg-obsidian);
+  font: 800 12.5px/1 var(--font-mono);
+}
+
+.channel-rename__hint {
+  flex: 0 0 auto;
+  color: rgba(0,0,0,0.35);
+  font-size: 11px;
+}
+
+.channel-rename__error {
+  padding: 4px 8px 2px;
+  color: #b42318;
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .channel-list__new {
-  position: relative;
-  min-height: 26px;
+  height: 26px;
   display: flex;
   align-items: center;
   gap: 6px;
   margin-top: 2px;
-  padding: 4px 8px;
-  border: 1px dashed transparent;
+  padding: 0 8px;
+  border: 0;
   background: transparent;
-  color: rgba(0,0,0,0.42);
-  font: 500 11.5px/1.3 var(--font-mono);
-  letter-spacing: 0.02em;
+  color: rgba(0,0,0,0.4);
+  font: 500 11.5px/1 var(--font-mono);
   cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.channel-list__new svg {
+  width: 9px;
 }
 
 .channel-list__new:hover,
 .channel-list__new:focus-visible {
   color: var(--fg-obsidian);
-  border-color: rgba(0,0,0,0.3);
   outline: none;
+}
+
+.channel-list__new:focus-visible span {
+  text-decoration: underline;
 }
 
 .channel-form {
@@ -5598,9 +5651,9 @@ input.invite-link-value:focus-visible {
   .active-channel__purpose { display: none; }
 }
 
-/* No hover on touch: offer Archive on the open channel only, always shown. */
+/* No hover on touch: offer Rename and Archive on the open channel only, always shown. */
 @media (hover: none) {
-  .channel-row__archive { display: none; }
-  .channel-row.is-current .channel-row__archive { display: grid; opacity: 1; }
-  .channel-row.is-current .channel-row__select { padding-right: 30px; }
+  .channel-row__tools { display: none; }
+  .channel-row.is-current .channel-row__tools { display: flex; opacity: 1; pointer-events: auto; }
+  .channel-row.is-current.is-editable .channel-row__select { padding-right: 52px; }
 }

@@ -32,6 +32,21 @@ pub async fn run(
             }
             Ok(())
         }
+        Some(ChannelsAction::Rename { channel, name }) => {
+            let reference = channel.trim().trim_start_matches('#');
+            let resp = client
+                .patch(format!("{base}/channels/{reference}"))
+                .json(&json!({ "name": name }))
+                .send()
+                .await?;
+            let info = checked(resp).await?;
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&info)?);
+            } else {
+                println!("✓ renamed to #{}", info["name"].as_str().unwrap_or("?"));
+            }
+            Ok(())
+        }
         Some(ChannelsAction::Archive { channel }) => {
             set_archived(client, base, &channel, true, json_out).await
         }

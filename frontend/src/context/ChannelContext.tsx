@@ -16,6 +16,8 @@ interface ChannelContextValue {
   selectChannel: (id: string | null) => void
   createChannel: (name: string, purpose: string) => Promise<void>
   archiveChannel: (id: string) => Promise<void>
+  /** Rename a channel; rejects with the daemon's reason (taken, invalid). */
+  renameChannel: (id: string, name: string) => Promise<void>
   refreshChannels: () => void
   /** Count a message that arrived in a channel other than the open one. */
   noteUnread: (channel: string | null | undefined) => void
@@ -28,6 +30,7 @@ const ChannelContext = createContext<ChannelContextValue>({
   selectChannel: () => {},
   createChannel: async () => {},
   archiveChannel: async () => {},
+  renameChannel: async () => {},
   refreshChannels: () => {},
   noteUnread: () => {},
 })
@@ -91,6 +94,14 @@ export function ChannelProvider({ children }: { children: ReactNode }) {
     if (channelRef.current === id) selectChannel(null)
   }, [activeCircleId, selectChannel])
 
+  const renameChannel = useCallback(async (id: string, name: string) => {
+    if (!activeCircleId) return
+    const renamed = await updateChannel(activeCircleId, id, { name })
+    // Show the new name at once; the refresh confirms it.
+    setChannels(prev => prev.map(c => (c.id === id ? { ...c, name: renamed.name } : c)))
+    refreshRef.current()
+  }, [activeCircleId])
+
   const noteUnread = useCallback((id: string | null | undefined) => {
     const key = channelKey(id)
     if (key === channelKey(channelRef.current)) return
@@ -98,8 +109,8 @@ export function ChannelProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo(() => ({
-    channels, channel, unread, selectChannel, createChannel, archiveChannel, refreshChannels, noteUnread,
-  }), [channels, channel, unread, selectChannel, createChannel, archiveChannel, refreshChannels, noteUnread])
+    channels, channel, unread, selectChannel, createChannel, archiveChannel, renameChannel, refreshChannels, noteUnread,
+  }), [channels, channel, unread, selectChannel, createChannel, archiveChannel, renameChannel, refreshChannels, noteUnread])
 
   return <ChannelContext.Provider value={value}>{children}</ChannelContext.Provider>
 }

@@ -19,7 +19,7 @@ type Modal = 'init' | 'enter' | null
 
 export default function CircleSidebar({ onRitual, onNavigate }: Props) {
   const { circles, activeCircleId, setActiveCircleId, reloadCircles, status } = useApp()
-  const { channels, channel, unread, selectChannel, createChannel, archiveChannel } = useChannels()
+  const { channels, channel, unread, selectChannel, createChannel, archiveChannel, renameChannel } = useChannels()
   const activeCircle = circles.find(circle => circle.circle_id === activeCircleId)
 
   const [modal, setModal] = useState<Modal>(null)
@@ -174,6 +174,7 @@ export default function CircleSidebar({ onRitual, onNavigate }: Props) {
                   onSelect={id => { selectChannel(id); onNavigate?.() }}
                   onCreate={async (name, purpose) => { await createChannel(name, purpose); onNavigate?.() }}
                   onArchive={archiveChannel}
+                  onRename={renameChannel}
                 />
               )}
               </Fragment>

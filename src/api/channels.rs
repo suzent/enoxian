@@ -97,6 +97,7 @@ pub async fn create_channel(
 
 #[derive(Deserialize)]
 pub struct UpdateChannelRequest {
+    pub name: Option<String>,
     pub purpose: Option<String>,
     pub archived: Option<bool>,
 }
@@ -120,7 +121,13 @@ pub async fn update_channel(
         }
         Err(error) => return not_found(&error),
     };
-    match channel::update(&state, &id, req.purpose.as_deref(), req.archived) {
+    match channel::update(
+        &state,
+        &id,
+        req.name.as_deref(),
+        req.purpose.as_deref(),
+        req.archived,
+    ) {
         Ok(info) => {
             let _ = state.events.send(CircleEvent::ChannelsChanged {});
             Json(info).into_response()

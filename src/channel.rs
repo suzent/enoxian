@@ -190,15 +190,28 @@ pub fn create(
     Ok(info)
 }
 
-/// Update a channel's purpose and/or archived flag. Channels are archived,
-/// never deleted: their history stays readable.
+/// Update a channel's name, purpose and/or archived flag. Channels are
+/// archived, never deleted: their history stays readable. Messages carry the
+/// channel's id, so a rename keeps its history and agent sessions.
 pub fn update(
     state: &AppState,
     id: &str,
+    name: Option<&str>,
     purpose: Option<&str>,
     archived: Option<bool>,
 ) -> Result<ChannelInfo, String> {
     let mut info = get(state, id).ok_or_else(|| format!("unknown channel {id}"))?;
+    if let Some(name) = name {
+        let name = validate_name(name)?;
+        if name != info.name
+            && list(state)
+                .iter()
+                .any(|c| c.name == name && !c.archived && c.id.as_deref() != Some(id))
+        {
+            return Err(format!("#{name} already exists"));
+        }
+        info.name = name;
+    }
     if let Some(purpose) = purpose {
         let purpose = purpose.trim();
         if purpose.chars().count() > MAX_PURPOSE_LEN {
@@ -240,5 +253,36 @@ mod tests {
         assert!(validate_name("has space").is_err());
         assert!(validate_name("general").is_err());
         assert!(validate_name(&"a".repeat(33)).is_err());
+    }
+
+    #[test]
+    fn rename_keeps_the_id_and_refuses_a_taken_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(
+            "c1".into(),
+            "circle".into(),
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            String::new(),
+            "label".into(),
+            1,
+            "peer".into(),
+            crate::config::JoinPolicy::Manual,
+            "alice".into(),
+            crate::mls::new_mls_state(crate::mls::MlsIdentity::generate("peer").unwrap(), None),
+        );
+        let ops = create(&state, "ops", "", "alice").unwrap();
+        create(&state, "design", "", "alice").unwrap();
+        let id = ops.id.clone().unwrap();
+
+        let renamed = update(&state, &id, Some("#Infra"), None, None).unwrap();
+        assert_eq!(renamed.name, "infra");
+        assert_eq!(resolve(&state, Some("infra")).unwrap(), Some(id.clone()));
+        assert!(resolve(&state, Some("ops")).is_err());
+
+        assert!(update(&state, &id, Some("design"), None, None).is_err());
+        assert!(update(&state, &id, Some("general"), None, None).is_err());
+        // Renaming to its own name is a no-op, not a clash.
+        assert!(update(&state, &id, Some("infra"), None, None).is_ok());
     }
 }
