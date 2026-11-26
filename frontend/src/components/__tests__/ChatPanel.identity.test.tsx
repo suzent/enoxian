@@ -12,7 +12,7 @@ vi.mock('../../api', () => ({
   getEngagement: vi.fn(async () => ({agent: null, window_secs: 180})),
   getExecutions: vi.fn(async () => ({runs: []})),
   chatStream: () => ({onopen: null, close: vi.fn(), addEventListener: (_: string, cb: typeof receive) => { receive = cb }}),
-  postChat: vi.fn(), setChatTyping: vi.fn(), uploadAttachment: vi.fn(), stopRelay: vi.fn(), exitEngagement: vi.fn(),
+  postChat: vi.fn(), setChatTyping: vi.fn(), uploadAttachment: vi.fn(), stopRelay: vi.fn(), exitEngagement: vi.fn(), getChannels: vi.fn(async () => []), createChannel: vi.fn(), updateChannel: vi.fn(),
   blobUrl: vi.fn(), MAX_ATTACHMENT_BYTES: 100,
 }))
 vi.mock('../../context/AppContext', () => ({useApp: () => ({

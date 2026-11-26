@@ -6,6 +6,7 @@ import { Fragment, useState, useEffect, useLayoutEffect, useRef, useCallback, us
 import type { Attachment, ChatActivity, ChatMessage, EngagementView, ExecutionRun, Member, Presence } from '../types'
 import { getChat, postChat, chatStream, getChatActivity, getExecutions, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, getEngagement, exitEngagement, getAgentConfigFor, MAX_ATTACHMENT_BYTES } from '../api'
 import RoutingStrip, { deriveRouting, isRoutingNotice, type Routing } from './RoutingStrip'
+import { channelKey, useChannels } from '../context/ChannelContext'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 import CircleActivityButton from './CircleActivityButton'
@@ -477,6 +478,10 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
   const upgrade = status?.upgrade_required
   const upgradeKey = upgrade ? `${status?.circle_id}:${upgrade.min_version}` : null
   selfAgentRef.current = status?.agent_id
+  // The open channel (null = #general). The sidebar lists and switches them;
+  // this panel loads, streams and posts into the open one.
+  const { channel, channels, noteUnread, refreshChannels } = useChannels()
+  const openChannel = channels.find(c => c.id === channel)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [chatLoaded, setChatLoaded] = useState(false)
   const [chatError, setChatError] = useState<string | null>(null)
@@ -528,14 +533,16 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
   // Last plaintext the composer reported, so a report that merely repeats the
   // current contents can be told apart from someone actually typing.
   const lastTypedTextRef = useRef('')
-  // Unsent composer contents, one entry per circle. The panel stays mounted
-  // across a circle switch, so without this a half-written message and any
-  // staged image would follow you into the next circle — and send there.
+  // Unsent composer contents, one entry per (circle, channel). The panel stays
+  // mounted across a circle or channel switch, so without this a half-written
+  // message and any staged image would follow you into the next one — and
+  // send there.
+  const draftKey = activeCircleId ? `${activeCircleId}#${channelKey(channel)}` : null
   const draftsRef = useRef<Record<string, Draft>>({})
-  // The circle the composer's current contents belong to. Only the switch
-  // effect below moves it, so every write attributes to the right circle even
-  // when it lands in the same commit as a switch.
-  const draftCircleRef = useRef<string | null>(activeCircleId)
+  // The (circle, channel) the composer's current contents belong to. Only the
+  // switch effect below moves it, so every write attributes to the right place
+  // even when it lands in the same commit as a switch.
+  const draftCircleRef = useRef<string | null>(draftKey)
 
   const writeDraft = useCallback((patch: Partial<Draft>) => {
     const id = draftCircleRef.current
@@ -547,13 +554,13 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
   // send), so mirror them into the draft from one place rather than each.
   useEffect(() => { writeDraft({ attachments: pending }) }, [pending, writeDraft])
 
-  // Park the outgoing circle's draft and bring back the incoming one. The
+  // Park the outgoing draft and bring back the incoming one. The
   // outgoing draft is already stored — every edit above writes it as it
   // happens — so this only has to swap what the composer is showing.
   useEffect(() => {
-    if (draftCircleRef.current === activeCircleId) return
-    draftCircleRef.current = activeCircleId
-    const draft = (activeCircleId && draftsRef.current[activeCircleId]) || EMPTY_DRAFT
+    if (draftCircleRef.current === draftKey) return
+    draftCircleRef.current = draftKey
+    const draft = (draftKey && draftsRef.current[draftKey]) || EMPTY_DRAFT
     const text = draftText(draft.nodes)
     inputRef.current?.restore(draft.nodes)
     setInput(text)
@@ -564,7 +571,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
     setAttachError(null)
     // A restore is not a keystroke: keep the typing indicator out of it.
     lastTypedTextRef.current = text
-  }, [activeCircleId])
+  }, [draftKey])
 
   const ingestActivity = useCallback((activity: ChatActivity) => {
     setActivities(prev => {
@@ -656,7 +663,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
 
     const catchUp = () => {
       const since = latestTsRef.current === null ? undefined : Math.max(0, latestTsRef.current - 1)
-      getChat(activeCircleId, since)
+      getChat(activeCircleId, since, channel)
         .then(msgs => {
           if (cancelled) return
           catchUpAttempts = 0
@@ -682,11 +689,16 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
       try {
         const data = JSON.parse(e.data)
         if (data.type === 'message_posted') {
+          if (channelKey(data.message.channel) !== channelKey(channel)) {
+            if (data.message.agent_id !== selfAgentRef.current) noteUnread(data.message.channel)
+            return
+          }
           const list = messageListRef.current
           const reading = document.visibilityState === 'visible' && document.hasFocus() && list && !list.closest('[aria-hidden="true"]') && list.scrollHeight - list.scrollTop - list.clientHeight < 48
           if (!hydratingChatRef.current && !seenRef.current.has(data.message.id) && data.message.agent_id !== selfAgentRef.current && !reading) setUnread(true)
           addMsg(data.message)
         }
+        if (data.type === 'channels_changed') refreshChannels()
         if (data.type === 'chat_activity_changed') ingestActivity(data.activity)
         if (data.type === 'execution_receipt_changed' && data.receipt?.run_id) {
           const run = data.receipt as ExecutionRun
@@ -708,7 +720,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
       if (catchUpTimer !== undefined) window.clearTimeout(catchUpTimer)
       es.close()
     }
-  }, [activeCircleId, addMsg, ingestActivity])
+  }, [activeCircleId, channel, addMsg, ingestActivity, noteUnread, refreshChannels])
 
   useEffect(() => {
     const timer = window.setInterval(
@@ -913,8 +925,8 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
     // Capture what the composer holds before clearing it. The clear is
     // optimistic — it has to be, or sending feels laggy — so the only way a
     // failure does not cost the user their message is to keep a copy.
-    const sentNodes = (activeCircleId && draftsRef.current[activeCircleId]?.nodes) || []
-    const sentCircleId = activeCircleId
+    const sentNodes = (draftKey && draftsRef.current[draftKey]?.nodes) || []
+    const sentDraftKey = draftKey
 
     inputRef.current?.clear()
     setInput('')
@@ -928,23 +940,23 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
     setAttachError(null)
     const sentReplyTo = replyTo
     setReplyTo(null)
-    postChat(activeCircleId, text, status.agent_id, attachments, sentReplyTo?.id).catch(error => {
+    postChat(activeCircleId, text, status.agent_id, attachments, sentReplyTo?.id, channel).catch(error => {
       // Put the message back exactly as it was — text included. Losing a long
       // message to a moment of contention is worse than any error copy.
       //
       // Only restore into the composer if the user is still looking at the
-      // circle they sent from; otherwise park it in that circle's draft, where
-      // switching back will bring it up.
+      // circle and channel they sent from; otherwise park it in that draft,
+      // where switching back will bring it up.
       const restored = { nodes: sentNodes, attachments: sentAttachments }
-      if (draftCircleRef.current === sentCircleId) {
+      if (draftCircleRef.current === sentDraftKey) {
         inputRef.current?.restore(sentNodes)
         setInput(text)
         setPending(prev => [...sentAttachments, ...prev])
         setReplyTo(sentReplyTo)
         lastTypedTextRef.current = text
         setAttachError(sendErrorText(error))
-      } else if (sentCircleId) {
-        draftsRef.current[sentCircleId] = restored
+      } else if (sentDraftKey) {
+        draftsRef.current[sentDraftKey] = restored
       }
     })
   }
@@ -1101,6 +1113,8 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
   // An explicit reply target, set by the "reply" affordance on an agent
   // message. Outranks the follow-up window: pointing beats guessing.
   const [replyTo, setReplyTo] = useState<{ id: string; agent: string } | null>(null)
+  // A reply target belongs to the transcript it was picked from.
+  useEffect(() => { setReplyTo(null) }, [activeCircleId, channel])
   const startReply = useCallback((msg: ChatMessage) => {
     const path = msg.relay?.path ?? []
     const agent = path.length > 0 ? path[path.length - 1] : msg.agent_id
@@ -1112,8 +1126,8 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
 
   const refreshEngagement = useCallback(() => {
     if (!activeCircleId) return
-    getEngagement(activeCircleId).then(setEngagement).catch(() => {})
-  }, [activeCircleId])
+    getEngagement(activeCircleId, channel).then(setEngagement).catch(() => {})
+  }, [activeCircleId, channel])
 
   // Re-read whenever the transcript changes: a reply opens the window, and
   // sending into it moves it on.
@@ -1126,11 +1140,11 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
     // Clear locally first so Esc feels instant; the daemon is the record.
     setEngagement(prev => (prev ? { ...prev, agent: null } : prev))
     try {
-      await exitEngagement(activeCircleId)
+      await exitEngagement(activeCircleId, channel)
     } finally {
       refreshEngagement()
     }
-  }, [activeCircleId, refreshEngagement])
+  }, [activeCircleId, channel, refreshEngagement])
 
   // Bring a quoted message into view and mark it for a moment, so the eye
   // lands on the right one after the jump.
@@ -1275,6 +1289,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
               working={liveActivities.filter(activity => activity.kind === 'working').length}
               typing={liveActivities.filter(activity => activity.kind === 'typing').length}
               onOpen={() => onOpenCircleDetails?.('activity')}
+              channel={openChannel && openChannel.id !== null ? openChannel : null}
             />
           </div>
           <button type="button" className="circle-members-shortcut" aria-pressed={activeDetail === 'members'} onClick={() => onOpenCircleDetails?.('members')} aria-label={`View ${members.length} members, ${onlineCount} online`}>
@@ -1293,6 +1308,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
           <strong>THIS CIRCLE IS DISABLED · ENABLE IT TO RESUME</strong>
         </div>
       )}
+
 
       <div ref={messageListRef} className="chat-message-list" onScroll={event => {
         const list = event.currentTarget
@@ -1574,7 +1590,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
           ref={inputRef}
           onChange={onInputChange}
           onKeyDown={onInputKeyDown}
-          placeholder={activeCircle?.disabled ? 'Circle disabled — enable to resume' : replyTo?.agent || engagement?.agent ? 'Write a reply…' : 'Message the circle...  (@ to mention)'}
+          placeholder={activeCircle?.disabled ? 'Circle disabled — enable to resume' : replyTo?.agent || engagement?.agent ? 'Write a reply…' : openChannel && openChannel.id !== null ? `Message #${openChannel.name}...  (@ to mention)` : 'Message the circle...  (@ to mention)'}
           className={`chat-composer__input${activeCircle?.disabled ? ' chat-composer__input--disabled' : ''}`}
           disabled={activeCircle?.disabled}
           onPaste={onPaste}

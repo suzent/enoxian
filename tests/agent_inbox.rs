@@ -38,6 +38,7 @@ fn harness() -> (axum::Router, AppState, tempfile::TempDir) {
 fn post(state: &AppState, id: &str, text: &str, author: Author, reply_to: Option<&str>) {
     let message = ChatMessage {
         thread_root: None,
+        channel: None,
         id: id.into(),
         agent_id: if author == Author::Agent {
             "codex"

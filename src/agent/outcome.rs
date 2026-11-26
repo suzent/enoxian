@@ -132,6 +132,7 @@ fn called_after_pass(
         .filter(|m| {
             m.id != asked.id
                 && m.author == Author::Human
+                && m.channel == asked.channel
                 && same_person(m, asked, roster)
                 && !m.mentions.is_empty()
                 && m.ts > asked.ts
@@ -172,6 +173,7 @@ mod tests {
             relay: None,
             author,
             reply_to: None,
+            channel: None,
         }
     }
 

@@ -68,7 +68,7 @@ pub fn build(state: &AppState, since: Option<i64>) -> Vec<Episode> {
         .flatten()
         .map(|s| s.entries)
         .unwrap_or_default();
-    let transcript = state.transcript();
+    let transcript = state.all_messages();
     let proposals = crate::proposal::store::ProposalStore::open(&state.workspace)
         .map(|store| store.list_proposals())
         .unwrap_or_default();

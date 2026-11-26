@@ -90,7 +90,7 @@ pub async fn list(
     let mut outcomes = crate::agent::outcome::derive(
         &page,
         &proposals,
-        &state.transcript(),
+        &state.all_messages(),
         &crate::agent::label::Roster::load(&state),
     );
     let runs: Vec<_> = page
@@ -737,7 +737,7 @@ mod tests {
 
         let live = state
             .live_runs
-            .register(&entry.run_id, "claude", false, 101);
+            .register(&entry.run_id, "claude", None, false, 101);
         let (status, body) = cancel(&daemon, &entry.run_id).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "stopping");

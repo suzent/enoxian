@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
 import { AppProvider } from './context/AppContext'
+import { ChannelProvider } from './context/ChannelContext'
 import ChatPanel from './components/ChatPanel'
 import EditorPanel, { type FileViewMode } from './components/EditorPanel'
 import RightPanel, { type RightPanelTab } from './components/RightPanel'
@@ -395,6 +396,7 @@ function Layout() {
             <div className={`mobile-drawer mobile-drawer--left${mobileDrawer === 'circles' ? ' open' : ''}`}>
               <CircleSidebar
                 onRitual={(mode, label, circleId) => { setRitual({ mode, label, circleId }); setMobileDrawer(null) }}
+                onNavigate={() => setMobileDrawer(null)}
                   />
             </div>
           </div>
@@ -407,7 +409,9 @@ function Layout() {
 export default function App() {
   return (
     <AppProvider>
-      <Layout />
+      <ChannelProvider>
+        <Layout />
+      </ChannelProvider>
     </AppProvider>
   )
 }

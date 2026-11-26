@@ -1,7 +1,20 @@
 use crate::control::{
     ChatActivity, ChatMessage, CircleEvent, MemberEntry, Presence, Task, TaskStatus,
-    CHAT_ACTIVITY_KEY, CHAT_KEY, MEMBER_LIST_KEY, MLS_PENDING_KEY, PRESENCE_KEY, TASKS_KEY,
+    CHANNEL_CHAT_KEY, CHAT_ACTIVITY_KEY, CHAT_KEY, MEMBER_LIST_KEY, MLS_PENDING_KEY, PRESENCE_KEY,
+    TASKS_KEY,
 };
+
+fn read_chat_array<T: ReadTxn>(txn: &T, key: &str) -> Vec<ChatMessage> {
+    let Some(arr) = txn.get_array(key) else {
+        return Vec::new();
+    };
+    arr.iter(txn)
+        .filter_map(|item| match item {
+            Out::Any(Any::String(s)) => serde_json::from_str::<ChatMessage>(&s).ok(),
+            _ => None,
+        })
+        .collect()
+}
 use dashmap::DashMap;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -197,22 +210,59 @@ impl AppState {
     /// members address it by. Anything comparing against an incoming mention
     /// must use this rather than the local `identity.toml`, since the two can
     /// drift.
-    /// The Circle transcript in chronological order, deduplicated.
+    /// The `#general` transcript in chronological order, deduplicated.
     pub fn transcript(&self) -> Vec<ChatMessage> {
+        self.channel_transcript(None)
+    }
+
+    /// One channel's transcript (`None` is `#general`) in chronological order,
+    /// deduplicated. Positions in it are stable, which `agent/context.rs`
+    /// cursors rely on.
+    pub fn channel_transcript(&self, channel: Option<&str>) -> Vec<ChatMessage> {
         let Ok(txn) = self.control.try_transact() else {
             return Vec::new();
         };
-        let Some(arr) = txn.get_array(CHAT_KEY) else {
+        let mut seen = std::collections::HashSet::new();
+        match channel {
+            None => read_chat_array(&txn, CHAT_KEY)
+                .into_iter()
+                .map(|mut m| {
+                    m.channel = None;
+                    m
+                })
+                .filter(|m| seen.insert(m.id.clone()))
+                .collect(),
+            Some(id) => read_chat_array(&txn, CHANNEL_CHAT_KEY)
+                .into_iter()
+                .filter(|m| m.channel.as_deref() == Some(id))
+                .filter(|m| seen.insert(m.id.clone()))
+                .collect(),
+        }
+    }
+
+    /// Every channel's messages: `#general` first, then the rest, each in
+    /// order. For lookups by id; positions mean nothing across channels.
+    pub fn all_messages(&self) -> Vec<ChatMessage> {
+        let Ok(txn) = self.control.try_transact() else {
             return Vec::new();
         };
         let mut seen = std::collections::HashSet::new();
-        arr.iter(&txn)
-            .filter_map(|item| match item {
-                Out::Any(Any::String(s)) => serde_json::from_str::<ChatMessage>(&s).ok(),
-                _ => None,
-            })
+        let general = read_chat_array(&txn, CHAT_KEY).into_iter().map(|mut m| {
+            m.channel = None;
+            m
+        });
+        let rest = read_chat_array(&txn, CHANNEL_CHAT_KEY)
+            .into_iter()
+            .filter(|m| m.channel.is_some());
+        general
+            .chain(rest)
             .filter(|m| seen.insert(m.id.clone()))
             .collect()
+    }
+
+    /// The message with this id, in any channel.
+    pub fn find_message(&self, id: &str) -> Option<ChatMessage> {
+        self.all_messages().into_iter().find(|m| m.id == id)
     }
 
     /// What this peer last dismissed, if anything.
@@ -289,56 +339,86 @@ impl AppState {
             .expect("observe control doc failed");
         std::mem::forget(sub);
 
-        // Observe chat array for P2P-delivered messages and fire SSE events.
+        // Observe the chat arrays for P2P-delivered messages and fire SSE events.
         // Local posts already fire events in post_chat(); this covers remote peers.
-        let chat_arr = control.get_or_insert_array(CHAT_KEY);
-        let events_for_chat = events_tx.clone();
+        // `#general` lives in CHAT_KEY and every other channel in
+        // CHANNEL_CHAT_KEY; the ids seen are shared so a message is announced
+        // once whichever array it lands in.
         let seen_chat_ids = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
-        // A message arriving from a peer references attachment bytes we do not
-        // have yet. Ask for them now rather than waiting for a reconnect.
-        let blob_wants_for_chat = blob_wants_tx.clone();
-        let blob_dir_for_chat = circle_dir.join("blobs");
-        let chat_sub = chat_arr.observe(
-            move |txn: &yrs::TransactionMut, event: &yrs::types::array::ArrayEvent| {
-                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
-                let mut seen = seen_chat_ids.lock().unwrap();
-                for change in event.delta(txn) {
-                    if let yrs::types::Change::Added(values) = change {
+        for (key, channelled) in [(CHAT_KEY, false), (CHANNEL_CHAT_KEY, true)] {
+            let chat_arr = control.get_or_insert_array(key);
+            let events_for_chat = events_tx.clone();
+            let seen_chat_ids = seen_chat_ids.clone();
+            // A message arriving from a peer references attachment bytes we do not
+            // have yet. Ask for them now rather than waiting for a reconnect.
+            let blob_wants_for_chat = blob_wants_tx.clone();
+            let blob_dir_for_chat = circle_dir.join("blobs");
+            let chat_sub = chat_arr.observe(
+                move |txn: &yrs::TransactionMut, event: &yrs::types::array::ArrayEvent| {
+                    let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                    let mut seen = seen_chat_ids.lock().unwrap();
+                    for change in event.delta(txn) {
+                        let yrs::types::Change::Added(values) = change else {
+                            continue;
+                        };
                         for val in values {
-                            if let yrs::Out::Any(yrs::Any::String(s)) = val {
-                                if let Ok(msg) = serde_json::from_str::<ChatMessage>(s) {
-                                    if !seen.insert(msg.id.clone()) || !is_p2p {
-                                        continue;
-                                    }
-                                    if !msg.attachments.is_empty() {
-                                        if let Ok(store) = crate::proposal::blob::BlobStore::open(
-                                            &blob_dir_for_chat,
-                                        ) {
-                                            for att in &msg.attachments {
-                                                if !store.contains(&att.hash) {
-                                                    let _ =
-                                                        blob_wants_for_chat.send(att.hash.clone());
-                                                }
-                                            }
+                            let yrs::Out::Any(yrs::Any::String(s)) = val else {
+                                continue;
+                            };
+                            let Ok(mut msg) = serde_json::from_str::<ChatMessage>(s) else {
+                                continue;
+                            };
+                            if channelled {
+                                // A channel-array entry without a channel is
+                                // unreadable as anything; drop it.
+                                if msg.channel.is_none() {
+                                    continue;
+                                }
+                            } else {
+                                msg.channel = None;
+                            }
+                            if !seen.insert(msg.id.clone()) || !is_p2p {
+                                continue;
+                            }
+                            if !msg.attachments.is_empty() {
+                                if let Ok(store) =
+                                    crate::proposal::blob::BlobStore::open(&blob_dir_for_chat)
+                                {
+                                    for att in &msg.attachments {
+                                        if !store.contains(&att.hash) {
+                                            let _ = blob_wants_for_chat.send(att.hash.clone());
                                         }
-                                    }
-                                    let _ = events_for_chat.send(CircleEvent::MessagePosted {
-                                        message: msg.clone(),
-                                    });
-                                    for mention in &msg.mentions {
-                                        let _ = events_for_chat.send(CircleEvent::AgentMentioned {
-                                            agent_id: mention.clone(),
-                                            message: msg.clone(),
-                                        });
                                     }
                                 }
                             }
+                            let _ = events_for_chat.send(CircleEvent::MessagePosted {
+                                message: msg.clone(),
+                            });
+                            for mention in &msg.mentions {
+                                let _ = events_for_chat.send(CircleEvent::AgentMentioned {
+                                    agent_id: mention.clone(),
+                                    message: msg.clone(),
+                                });
+                            }
                         }
                     }
+                },
+            );
+            std::mem::forget(chat_sub);
+        }
+
+        // Channels created or archived on a peer: tell viewers to refetch.
+        let channels_map = control.get_or_insert_map(crate::control::CHANNELS_KEY);
+        let events_for_channels = events_tx.clone();
+        let channels_sub = channels_map.observe(
+            move |txn: &yrs::TransactionMut, _event: &yrs::types::map::MapEvent| {
+                let is_p2p = txn.origin().map(|o| o.as_ref() == b"p2p").unwrap_or(false);
+                if is_p2p {
+                    let _ = events_for_channels.send(CircleEvent::ChannelsChanged {});
                 }
             },
         );
-        std::mem::forget(chat_sub);
+        std::mem::forget(channels_sub);
 
         // Deletions arriving from peers. The live `\0delete/` frame handles the
         // common case with lower latency; this observer covers deletions that

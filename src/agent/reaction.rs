@@ -77,7 +77,7 @@ async fn run(state: AppState, token: CancellationToken) -> anyhow::Result<()> {
     let ledger = super::ledger::AmbientLedger::load(
         &state.circle_dir,
         &state
-            .transcript()
+            .all_messages()
             .into_iter()
             .map(|m| m.id)
             .collect::<Vec<_>>(),
@@ -198,7 +198,7 @@ fn reconcile_requests_with_config(
     wake: &tokio::sync::Notify,
     cfg: &AgentConfig,
 ) {
-    let mut history = state.transcript();
+    let mut history = state.all_messages();
     for (message_id, mention_key) in handled.entries() {
         let Some(message) = history.iter().find(|m| m.id == message_id) else {
             continue;
@@ -538,7 +538,7 @@ fn drain_ambient(
 ) -> usize {
     use super::ledger::Decision;
     let now = chrono::Utc::now().timestamp();
-    let history = state.transcript();
+    let history = state.all_messages();
     // CRDT insertion order, which every peer agrees on and which involves no
     // clock at all. Deliberately not `ts` order: sorting a backlog by the
     // authors' clocks is the same mistake one layer down.
@@ -751,7 +751,7 @@ fn drain_ambient(
                         &spec,
                         super::warden::features(
                             state,
-                            &history,
+                            &in_channel(&history, message.channel.as_deref()),
                             message,
                             &listeners,
                             settings.ambient_responders,
@@ -805,9 +805,14 @@ fn drain_ambient(
     // Collapse to the tail, never discard it. However late a message arrives,
     // and however long the daemon was down, the most recent thing said in the
     // room is read (§2.3).
-    let carried = settings.ambient_backlog_tail.min(eligible.len());
-    let collapsed = eligible.len() - carried;
-    for message in eligible.drain(..collapsed) {
+    //
+    // Per channel: `history` lists `#general` before every other channel
+    // regardless of time, so one tail over all of it would let a busy topic
+    // channel push `#general`'s latest question into the backlog. Within a
+    // channel the order is CRDT order, which is what the tail wants.
+    let (eligible, backlog) = backlog_tail_per_channel(eligible, settings.ambient_backlog_tail);
+    let collapsed = backlog.len();
+    for message in backlog {
         ledger.record(&message.id, Decision::Backlog, now);
         note(
             state,
@@ -818,6 +823,10 @@ fn drain_ambient(
     }
     let mut decided = collapsed + eligible.len() + reopened.len();
     for message in eligible {
+        // The warden judges a message by its own channel: who spoke recently
+        // there, and what was said. Another channel's lines would make an
+        // agent that just answered in `#ops` look busy for `#design`.
+        let history = in_channel(&history, message.channel.as_deref());
         match warden_mode {
             super::warden::WardenMode::Off => {
                 offer_to_listeners(
@@ -1107,7 +1116,7 @@ fn offer_to_listeners(
     now: i64,
 ) -> Vec<String> {
     let settings = cfg.resolved(&state.circle_id);
-    let history = state.transcript();
+    let history = state.channel_transcript(message.channel.as_deref());
     let available = available_listeners(
         handled,
         inbox,
@@ -1413,6 +1422,47 @@ fn ambient_route_allowed(
     message.reply_to.is_none() && engagement.is_none() && !mentions_an_agent(message)
 }
 
+/// Split ambient candidates into the ones read and the ones left as backlog,
+/// keeping the last `tail` of each channel. Both keep their input order.
+fn backlog_tail_per_channel(
+    eligible: Vec<&crate::control::ChatMessage>,
+    tail: usize,
+) -> (
+    Vec<&crate::control::ChatMessage>,
+    Vec<&crate::control::ChatMessage>,
+) {
+    let mut kept: std::collections::HashMap<Option<&str>, usize> = Default::default();
+    let mut read = vec![false; eligible.len()];
+    for (i, message) in eligible.iter().enumerate().rev() {
+        let count = kept.entry(message.channel.as_deref()).or_default();
+        if *count < tail {
+            *count += 1;
+            read[i] = true;
+        }
+    }
+    let mut carried = Vec::new();
+    let mut backlog = Vec::new();
+    for (message, read) in eligible.into_iter().zip(read) {
+        if read {
+            carried.push(message);
+        } else {
+            backlog.push(message);
+        }
+    }
+    (carried, backlog)
+}
+
+/// The lines of one channel, in order, from a transcript spanning several.
+fn in_channel(
+    all: &[crate::control::ChatMessage],
+    channel: Option<&str>,
+) -> Vec<crate::control::ChatMessage> {
+    all.iter()
+        .filter(|m| m.channel.as_deref() == channel)
+        .cloned()
+        .collect()
+}
+
 /// Resolve a follow-up for a message that named no agent, including remote
 /// targets. The caller filters execution to the target device after deciding
 /// whether the message belongs to an addressed conversation.
@@ -1421,7 +1471,12 @@ fn resolve_followup(
     message: &crate::control::ChatMessage,
     cfg: &AgentConfig,
 ) -> Option<super::engagement::Engagement> {
-    resolve_followup_in(&state.transcript(), state, message, cfg)
+    resolve_followup_in(
+        &state.channel_transcript(message.channel.as_deref()),
+        state,
+        message,
+        cfg,
+    )
 }
 
 /// As [`resolve_followup`], over a transcript the caller already holds.
@@ -1437,7 +1492,8 @@ fn resolve_followup_in(
     if !super::engagement::is_followup_candidate(message, mentions_an_agent(message)) {
         return None;
     }
-    let mut history = all.to_vec();
+    // A follow-up continues a conversation in its own channel only.
+    let mut history = in_channel(all, message.channel.as_deref());
     // An explicit reply-to wins outright: the user pointed at a message, which
     // is addressing, so no window and no recency guess applies (§1.4).
     if let Some(reply_to) = &message.reply_to {
@@ -1477,14 +1533,25 @@ fn device_permits() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
 /// same conversation (`run_next_cancellable` runs addressed work first). This
 /// is what a time limit on unaddressed turns used to be for, without cutting
 /// off one that nothing is waiting behind.
+/// One conversation: an agent in one channel (`None` is `#general`). An agent
+/// runs at most one turn per lane at a time, and lanes run independently, so
+/// an agent can answer in two channels at once.
+type Lane = (String, Option<String>);
+
+fn lane_of(request: &super::inbox::Request) -> Lane {
+    (request.agent.clone(), request.message.channel.clone())
+}
+
 fn preempt_for_addressed(
     state: &AppState,
     request: &super::inbox::Request,
-    active: &std::collections::HashSet<String>,
+    active: &std::collections::HashSet<Lane>,
 ) -> bool {
     !request.ambient
-        && active.contains(&request.agent)
-        && state.live_runs.preempt_ambient(&request.agent)
+        && active.contains(&lane_of(request))
+        && state
+            .live_runs
+            .preempt_ambient(&request.agent, request.message.channel.as_deref())
 }
 
 fn spawn_run_worker(
@@ -1508,8 +1575,8 @@ fn spawn_run_worker(
                 .filter(|e| e.status == super::inbox::Status::Pending)
             {
                 preempt_for_addressed(&state, &entry.request, &active);
-                let agent = entry.request.agent;
-                if paused.contains(&agent) || !active.insert(agent.clone()) {
+                let lane = lane_of(&entry.request);
+                if paused.contains(&lane) || !active.insert(lane.clone()) {
                     continue;
                 }
                 let state = state.clone();
@@ -1527,13 +1594,14 @@ fn spawn_run_worker(
                             &state,
                             &inbox,
                             &AgentConfig::load(),
-                            Some(&agent),
+                            Some(&lane.0),
+                            Some(lane.1.as_deref()),
                             &cancel,
                         )
                         .await
                     }
                     .await;
-                    (agent, result)
+                    (lane, result)
                 });
             }
             tokio::select! {
@@ -1541,14 +1609,14 @@ fn spawn_run_worker(
                 _ = wake.notified() => { paused.clear(); },
                 joined = tasks.join_next(), if !tasks.is_empty() => {
                     match joined {
-                        Some(Ok((agent, Ok(progress)))) => {
-                            active.remove(&agent);
+                        Some(Ok((lane, Ok(progress)))) => {
+                            active.remove(&lane);
                             // Whatever a waiting request was owed from this
                             // turn, it has now: the agent is free.
-                            state.live_runs.clear_waiting(&agent);
-                            if !progress { paused.insert(agent); }
+                            state.live_runs.clear_waiting(&lane.0, lane.1.as_deref());
+                            if !progress { paused.insert(lane); }
                         },
-                        Some(Ok((agent, Err(error)))) => {
+                        Some(Ok(((agent, _), Err(error)))) => {
                             tracing::error!("[agent] execution worker {agent} stopped: {error:#}");
                             failure = Some(error);
                             token.cancel();
@@ -1585,7 +1653,7 @@ async fn run_next_for_agent(
     cfg: &AgentConfig,
     agent: Option<&str>,
 ) -> anyhow::Result<bool> {
-    run_next_cancellable(state, inbox, cfg, agent, &CancellationToken::new()).await
+    run_next_cancellable(state, inbox, cfg, agent, None, &CancellationToken::new()).await
 }
 
 async fn run_next_cancellable(
@@ -1593,6 +1661,7 @@ async fn run_next_cancellable(
     inbox: &super::inbox::Inbox,
     cfg: &AgentConfig,
     agent: Option<&str>,
+    channel: Option<Option<&str>>,
     cancel: &CancellationToken,
 ) -> anyhow::Result<bool> {
     use super::inbox::Status;
@@ -1605,7 +1674,11 @@ async fn run_next_cancellable(
     let mut pending: Vec<_> = inbox
         .entries()
         .into_iter()
-        .filter(|e| e.status == Status::Pending && agent.is_none_or(|a| e.request.agent == a))
+        .filter(|e| {
+            e.status == Status::Pending
+                && agent.is_none_or(|a| e.request.agent == a)
+                && channel.is_none_or(|c| e.request.message.channel.as_deref() == c)
+        })
         .collect();
     // Addressed work before unaddressed, oldest first within each: a request
     // that stopped an ambient turn to go first must not queue behind another.
@@ -1673,6 +1746,7 @@ async fn run_next_cancellable(
                 ambient: request.ambient,
                 co_listeners: &request.co_listeners,
                 warden: request.warden.as_ref(),
+                channel: request.message.channel.as_deref(),
             },
             cancel,
         )
@@ -1769,7 +1843,12 @@ fn announce(state: &AppState, message_id: &str, prefix: &str, text: String) {
     if answered_by_an_agent(state, message_id) {
         return;
     }
-    let transcript = state.transcript();
+    let transcript = state.channel_transcript(
+        state
+            .find_message(message_id)
+            .and_then(|m| m.channel)
+            .as_deref(),
+    );
     let recent = &transcript[transcript.len().saturating_sub(ANNOUNCE_SCAN)..];
     if recent.iter().any(|m| {
         m.author == crate::control::Author::System
@@ -1945,7 +2024,7 @@ fn launch_rejection(
 /// it, so a direct child by an agent is the whole test.
 fn answered_by_an_agent(state: &AppState, message_id: &str) -> bool {
     state
-        .transcript()
+        .all_messages()
         .iter()
         .any(|m| is_agent_answer(m, message_id))
 }
@@ -1971,7 +2050,7 @@ fn is_agent_answer(m: &crate::control::ChatMessage, message_id: &str) -> bool {
 /// the answer, which would wake that agent on the next pass.
 pub(super) fn answering_agents(state: &AppState, message_id: &str) -> Vec<(String, String)> {
     let answers: Vec<_> = state
-        .transcript()
+        .all_messages()
         .into_iter()
         .filter(|m| is_agent_answer(m, message_id))
         .collect();
@@ -2014,6 +2093,9 @@ struct Turn<'a> {
     co_listeners: &'a [String],
     /// What the warden asked of this turn, when it chose the listener.
     warden: Option<&'a super::warden::Assignment>,
+    /// Channel of the message this turn answers; `None` is `#general`. Picks
+    /// which of the agent's per-channel conversations runs.
+    channel: Option<&'a str>,
 }
 
 struct ManagedToken {
@@ -2043,6 +2125,7 @@ async fn react(
         ambient,
         co_listeners,
         warden,
+        channel,
     } = turn;
     publish_agent_activity(state, agent_id, message_id, ChatActivityKind::Working, true);
 
@@ -2053,7 +2136,7 @@ async fn react(
 
     // Resume the agent's prior conversation if we remember one. Best-effort:
     // the driver falls back to a fresh session if the id no longer loads.
-    let resume = super::memory::load(&state.circle_dir, agent_id);
+    let resume = super::memory::load(&state.circle_dir, agent_id, channel);
 
     // Give the agent enough context about where it is. On a resumed session the
     // agent already has history, so we send a lean per-turn header; on a fresh
@@ -2108,10 +2191,13 @@ async fn react(
     // Bound to this turn's cascade: an agent that posts with `enox say`
     // instead of its turn reply is still the agent, and still spends from the
     // budget that woke it (#254).
-    let (actor_token, _) =
-        state
-            .actor_tokens
-            .issue_for_run(&state.circle_id, &state.peer_id, agent_id, relay.clone());
+    let (actor_token, _) = state.actor_tokens.issue_for_run(
+        &state.circle_id,
+        &state.peer_id,
+        agent_id,
+        relay.clone(),
+        channel.map(str::to_string),
+    );
     let _token_lease = ManagedToken {
         registry: state.actor_tokens.clone(),
         token: actor_token.clone(),
@@ -2135,6 +2221,7 @@ async fn react(
             initiator,
             resume: resume.as_ref().map(|r| r.session_id.as_str()),
             withheld: &delivery.withheld,
+            channel,
             shape,
         },
         cancel,
@@ -2181,7 +2268,7 @@ async fn react(
     // conversation, which the next turn resumes, so it counts as seen.
     if let Some(cause) = outcome.stopped {
         if let Some(cursor) = &delivery.cursor {
-            mark_seen(state, agent_id, cursor, &delivery.delivered);
+            mark_seen(state, agent_id, channel, cursor, &delivery.delivered);
         }
         publish_agent_activity(
             state,
@@ -2210,7 +2297,7 @@ async fn react(
         let passed = cast == super::warden::vote::Cast::Pass;
         state.warden.votes.cast(message_id, agent_id, cast);
         if let Some(cursor) = &delivery.cursor {
-            mark_seen(state, agent_id, cursor, &delivery.delivered);
+            mark_seen(state, agent_id, channel, cursor, &delivery.delivered);
         }
         publish_agent_activity_detailed(
             state,
@@ -2246,7 +2333,7 @@ async fn react(
     {
         tracing::info!("[agent] `{agent_id}` passed on {message_id}");
         if let Some(cursor) = &delivery.cursor {
-            mark_seen(state, agent_id, cursor, &delivery.delivered);
+            mark_seen(state, agent_id, channel, cursor, &delivery.delivered);
         }
         publish_agent_activity_detailed(
             state,
@@ -2269,7 +2356,7 @@ async fn react(
         // local inbox entry, where whoever delivered the message reads it.
         record_reply(state, run_id, reply);
         if let Some(cursor) = &delivery.cursor {
-            mark_seen(state, agent_id, cursor, &delivery.delivered);
+            mark_seen(state, agent_id, channel, cursor, &delivery.delivered);
         }
     } else if let Some(reply) = outcome
         .reply
@@ -2282,12 +2369,12 @@ async fn react(
         // budget the rooting human message minted — see `agent::relay`.
         post_when_free(state, agent_id, reply, relay, message_id, POST_PATIENCE).await?;
         if let Some(cursor) = &delivery.cursor {
-            mark_seen(state, agent_id, cursor, &delivery.delivered);
+            mark_seen(state, agent_id, channel, cursor, &delivery.delivered);
         }
     } else {
         tracing::debug!("[agent] `{agent_id}` produced no text reply to post");
         if let Some(cursor) = &delivery.cursor {
-            mark_seen(state, agent_id, cursor, &delivery.delivered);
+            mark_seen(state, agent_id, channel, cursor, &delivery.delivered);
         }
     }
     publish_agent_activity(
@@ -2440,10 +2527,20 @@ async fn post_when_free(
 /// what the room said in between. `delivered` records the lines this prompt
 /// showed *ahead* of that cursor, which the next turn subtracts. Best-effort: a
 /// failure here costs the next prompt a few already-seen lines, not correctness.
-fn mark_seen(state: &AppState, agent_id: &str, message_id: &str, delivered: &[String]) {
-    if let Err(e) =
-        super::memory::save_seen(&state.circle_dir, agent_id, message_id, delivered.to_vec())
-    {
+fn mark_seen(
+    state: &AppState,
+    agent_id: &str,
+    channel: Option<&str>,
+    message_id: &str,
+    delivered: &[String],
+) {
+    if let Err(e) = super::memory::save_seen(
+        &state.circle_dir,
+        agent_id,
+        channel,
+        message_id,
+        delivered.to_vec(),
+    ) {
         tracing::debug!("[agent] failed to persist seen-mark for `{agent_id}`: {e}");
     }
 }
@@ -2849,6 +2946,7 @@ mod tests {
                 relay: Some(super::super::relay::extend(&parent, "claude")),
                 author: Author::Agent,
                 reply_to: None,
+                channel: None,
             };
             {
                 let mut txn = state.control.transact_mut();
@@ -2870,6 +2968,7 @@ mod tests {
                 relay: Some(super::super::relay::mint("next", "human")),
                 author: Author::Human,
                 reply_to: None,
+                channel: None,
             };
             let mut cfg = AgentConfig {
                 engagement_window_secs: 180,
@@ -3377,7 +3476,7 @@ mod tests {
         // m1 has long fallen out of the room-history window, so without the
         // withheld list the restarted session would never see it again.
         let recovery =
-            super::super::context::recovery_context(&state, "claude", &delivered.withheld);
+            super::super::context::recovery_context(&state, "claude", None, &delivered.withheld);
         assert!(
             recovery.contains("a decision only I recorded"),
             "recovery must put back what the resume assumption withheld: {recovery}"
@@ -3387,6 +3486,7 @@ mod tests {
         let sent = super::super::context::recover(
             &state,
             "claude",
+            None,
             &delivered.withheld,
             &delivered.prompt,
         );
@@ -3410,7 +3510,7 @@ mod tests {
         );
         assert!(fresh.withheld.is_empty());
         assert!(
-            !super::super::context::recovery_context(&state, "claude", &fresh.withheld)
+            !super::super::context::recovery_context(&state, "claude", None, &fresh.withheld)
                 .contains("assumed to remember")
         );
     }
@@ -3661,7 +3761,7 @@ mod tests {
                     let running = runs
                         .get_by_agent(agent)
                         .is_some_and(|run| !run.activity.lock().unwrap().open_tools.is_empty());
-                    if running && runs.preempt_ambient(agent) {
+                    if running && runs.preempt_ambient(agent, None) {
                         return;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -3697,8 +3797,8 @@ mod tests {
     fn only_a_waiting_addressed_request_stops_the_agents_aside() {
         use super::super::inbox::tests::request;
         let (state, _dir) = test_state("local", "suzy");
-        let busy: std::collections::HashSet<String> = ["claude".to_string()].into();
-        let aside = state.live_runs.register("r1", "claude", true, 0);
+        let busy: std::collections::HashSet<Lane> = [("claude".to_string(), None)].into();
+        let aside = state.live_runs.register("r1", "claude", None, true, 0);
 
         let mut ambient = request("m1", "claude");
         ambient.ambient = true;
@@ -3722,7 +3822,7 @@ mod tests {
 
         // An addressed turn in progress is never stopped for another.
         let (state, _dir) = test_state("local", "suzy");
-        let addressed = state.live_runs.register("r2", "claude", false, 0);
+        let addressed = state.live_runs.register("r2", "claude", None, false, 0);
         assert!(!preempt_for_addressed(
             &state,
             &request("m4", "claude"),
@@ -3865,6 +3965,28 @@ mod tests {
     ) {
         add_chat(state, message);
         drain_ambient(state, handled, inbox, ledger, wake, cfg);
+    }
+
+    /// A busy topic channel must not push `#general`'s latest question into
+    /// the backlog: `all_messages` lists `#general` first whatever the time,
+    /// so the tail is kept per channel.
+    #[test]
+    fn backlog_tail_is_kept_per_channel() {
+        let general = room_message("g1", "is the build green?");
+        let ops: Vec<_> = (1..=3)
+            .map(|i| {
+                let mut m = room_message(&format!("o{i}"), "deploy notes");
+                m.channel = Some("c-ops".into());
+                m
+            })
+            .collect();
+        let eligible: Vec<&crate::control::ChatMessage> =
+            std::iter::once(&general).chain(ops.iter()).collect();
+        let (read, backlog) = super::backlog_tail_per_channel(eligible, 1);
+        let ids =
+            |v: &[&crate::control::ChatMessage]| v.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&read), ["g1", "o3"]);
+        assert_eq!(ids(&backlog), ["o1", "o2"]);
     }
 
     /// A human message that names nobody — the population ambient exists for.

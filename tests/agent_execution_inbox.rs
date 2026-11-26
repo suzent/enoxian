@@ -44,6 +44,7 @@ fn work(id: &str) -> Work {
         task: "private request body".into(),
         message: ChatMessage {
             thread_root: None,
+            channel: None,
             id: id.into(),
             agent_id: "human".into(),
             text: "private request body".into(),

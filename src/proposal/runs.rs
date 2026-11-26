@@ -57,7 +57,14 @@ impl RunLease {
             .context("run requires an agent")?;
         let root = dir.join("managed_runs");
         std::fs::create_dir_all(&root)?;
-        let key = super::blob::BlobStore::hash(agent.as_bytes());
+        // One lock per conversation: an agent runs at most once per channel.
+        // `#general` keeps the pre-channel key so a daemon upgrade mid-run
+        // still sees the old lock.
+        let channel = session.channel.as_deref();
+        let key = match channel {
+            None => super::blob::BlobStore::hash(agent.as_bytes()),
+            Some(channel) => super::blob::BlobStore::hash(format!("{agent}#{channel}").as_bytes()),
+        };
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -72,6 +79,7 @@ impl RunLease {
         // Refuse to overlap it; PID uncertainty is conservative, never a kill.
         for prior in list(dir)? {
             if prior.session.actor_id.as_deref() == Some(agent)
+                && prior.session.channel.as_deref() == channel
                 && prior.session.is_open()
                 && prior.child_pid.is_some_and(process_alive)
             {

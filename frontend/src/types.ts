@@ -114,6 +114,22 @@ export interface ChatMessage {
   author?: 'human' | 'agent' | 'system'
   /** The message this replies to — explicit addressing, no timer. */
   reply_to?: string | null
+  /** Topic channel id; absent/null is `#general`. */
+  channel?: string | null
+}
+
+/** A topic channel, as `GET /channels` lists it. `#general` has id null. */
+export interface Channel {
+  id: string | null
+  name: string
+  purpose: string
+  created_by: string
+  created_at: number
+  archived: boolean
+  /** Present on the list endpoint only. */
+  message_count?: number
+  last_message_id?: string | null
+  last_ts?: number | null
 }
 
 export interface Proposal {

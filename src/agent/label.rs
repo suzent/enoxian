@@ -105,6 +105,7 @@ mod tests {
             relay: None,
             author,
             reply_to: None,
+            channel: None,
         }
     }
 

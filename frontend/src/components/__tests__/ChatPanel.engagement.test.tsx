@@ -25,6 +25,9 @@ vi.mock('../../api', () => ({
   stopRelay: vi.fn(async () => ({ ok: true, root: 'r' })),
   getEngagement,
   exitEngagement,
+  getChannels: vi.fn(async () => [{ id: null, name: "general", purpose: "", created_by: "", created_at: 0, archived: false }]),
+  createChannel: vi.fn(),
+  updateChannel: vi.fn(),
   getAgentConfigFor: vi.fn(async () => ({ global_settings: { max_relay_turns: 6 }, circle: null })),
   blobUrl: (_c: string, h: string) => `/blob/${h}`,
   MAX_ATTACHMENT_BYTES: 10 * 1024 * 1024,
@@ -71,7 +74,7 @@ describe('the recipient token', () => {
     getEngagement.mockResolvedValue({ agent: null, window_secs: 180 })
     await userEvent.click(exit)
 
-    await waitFor(() => expect(exitEngagement).toHaveBeenCalledWith('c1'))
+    await waitFor(() => expect(exitEngagement).toHaveBeenCalledWith('c1', null))
     await waitFor(() => expect(screen.queryByRole('button', { name: /Stop sending to/ })).toBeNull())
   })
 

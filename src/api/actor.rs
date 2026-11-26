@@ -46,7 +46,7 @@ pub async fn register_actor(
     let (token, actor) = if req.managed_run {
         state
             .actor_tokens
-            .issue_for_run(&state.circle_id, &state.peer_id, agent_id, None)
+            .issue_for_run(&state.circle_id, &state.peer_id, agent_id, None, None)
     } else {
         state
             .actor_tokens

@@ -29,6 +29,8 @@ pub struct ChatQuery {
     pub since: Option<i64>,
     pub after_id: Option<String>,
     pub limit: Option<usize>,
+    /// Channel name or id; absent or `general` is `#general`.
+    pub channel: Option<String>,
 }
 
 pub async fn get_chat(
@@ -46,24 +48,18 @@ pub async fn get_chat(
                 .into_response()
         }
     };
-    let txn = match state.control.try_transact() {
-        Ok(txn) => txn,
-        Err(_) => return super::circle_busy(),
+    let channel = match crate::channel::resolve(&state, q.channel.as_deref()) {
+        Ok(channel) => channel,
+        Err(error) => {
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": error }))).into_response()
+        }
     };
-    let Some(arr) = txn.get_array(CHAT_KEY) else {
-        return Json(Vec::<ChatMessage>::new()).into_response();
-    };
-    let mut seen = std::collections::HashSet::new();
-    let messages: Vec<ChatMessage> = arr
-        .iter(&txn)
-        .filter_map(|item| {
-            if let Out::Any(Any::String(s)) = item {
-                serde_json::from_str::<ChatMessage>(&s).ok()
-            } else {
-                None
-            }
-        })
-        .filter(|message| seen.insert(message.id.clone()))
+    if state.control.try_transact().is_err() {
+        return super::circle_busy();
+    }
+    let messages: Vec<ChatMessage> = state
+        .channel_transcript(channel.as_deref())
+        .into_iter()
         .filter(|m| q.since.map(|s| m.ts > s).unwrap_or(true))
         .collect();
     let start = match q.after_id.as_deref().filter(|id| !id.is_empty()) {
@@ -100,6 +96,11 @@ pub struct PostChatRequest {
     /// agent posted it, with no timer and no ambiguity.
     #[serde(default)]
     pub reply_to: Option<String>,
+    /// Channel name or id to post in; absent is `#general`. Ignored for a
+    /// reply, which stays in its parent's channel. A managed agent run that
+    /// gives none posts in the channel of the turn it is running.
+    #[serde(default)]
+    pub channel: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -175,6 +176,7 @@ pub async fn post_chat(
     // agent talking, however it reached the API. Posting it as a person's would
     // mint a fresh relay and offer it to every agent reading the room, which
     // gets around both the relay budget and ambient's human-only rule (#254).
+    let run_channel = actor.managed_run.as_ref().and_then(|r| r.channel.clone());
     let trigger = match actor.managed_run {
         Some(run) => Trigger::AgentReply {
             agent: actor.agent_id.clone(),
@@ -198,7 +200,37 @@ pub async fn post_chat(
         )
             .into_response();
     }
-    match post_reply(&state, sender, req.text, attachments, trigger, req.reply_to) {
+    let channel = match req.channel.as_deref().filter(|c| !c.trim().is_empty()) {
+        // An agent run that names no channel speaks where its turn is.
+        None => run_channel,
+        Some(reference) => match crate::channel::resolve(&state, Some(reference)) {
+            Ok(channel) => channel,
+            Err(error) => {
+                return (StatusCode::NOT_FOUND, Json(json!({ "error": error }))).into_response()
+            }
+        },
+    };
+    if let Some(info) = channel
+        .as_deref()
+        .and_then(|id| crate::channel::get(&state, id))
+    {
+        if info.archived && req.reply_to.is_none() {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": format!("#{} is archived", info.name)})),
+            )
+                .into_response();
+        }
+    }
+    match post_in_channel(
+        &state,
+        sender,
+        req.text,
+        attachments,
+        trigger,
+        req.reply_to,
+        channel,
+    ) {
         Ok(id) => (StatusCode::CREATED, Json(json!({ "id": id }))).into_response(),
         Err(error) if error.to_string().contains("state busy") => super::circle_busy(),
         Err(error) => (
@@ -392,7 +424,21 @@ pub fn post_reply(
     trigger: Trigger,
     reply_to: Option<String>,
 ) -> anyhow::Result<String> {
-    post_inner(state, sender, text, attachments, trigger, reply_to)
+    post_inner(state, sender, text, attachments, trigger, reply_to, None)
+}
+
+/// As [`post_reply`], posting into `channel` (`None` is `#general`). A reply
+/// always lands in its parent's channel, whatever `channel` says.
+pub fn post_in_channel(
+    state: &crate::state::AppState,
+    sender: String,
+    text: String,
+    attachments: Vec<crate::control::Attachment>,
+    trigger: Trigger,
+    reply_to: Option<String>,
+    channel: Option<String>,
+) -> anyhow::Result<String> {
+    post_inner(state, sender, text, attachments, trigger, reply_to, channel)
 }
 
 /// As [`post_message`], but carries attachment metadata. The bytes must already
@@ -404,7 +450,7 @@ pub fn post_message_with_attachments(
     attachments: Vec<crate::control::Attachment>,
     trigger: Trigger,
 ) -> anyhow::Result<String> {
-    post_inner(state, sender, text, attachments, trigger, None)
+    post_inner(state, sender, text, attachments, trigger, None, None)
 }
 
 fn post_inner(
@@ -414,6 +460,7 @@ fn post_inner(
     attachments: Vec<crate::control::Attachment>,
     trigger: Trigger,
     reply_to: Option<String>,
+    channel: Option<String>,
 ) -> anyhow::Result<String> {
     let mentions = crate::agent::mention::extract(&text);
     let id = uuid::Uuid::new_v4().to_string();
@@ -438,17 +485,18 @@ fn post_inner(
         )),
         Trigger::System => None,
     };
-    let thread_root = reply_to
-        .as_ref()
-        .map(|parent| {
-            state
-                .transcript()
-                .iter()
-                .find(|m| &m.id == parent)
-                .and_then(|m| m.thread_root.clone())
-                .unwrap_or_else(|| parent.clone())
-        })
-        .or_else(|| Some(id.clone()));
+    let parent = reply_to.as_deref().and_then(|p| state.find_message(p));
+    let thread_root = match (&reply_to, &parent) {
+        (Some(_), Some(p)) => p.thread_root.clone().or_else(|| Some(p.id.clone())),
+        (Some(p), None) => Some(p.clone()),
+        (None, _) => Some(id.clone()),
+    };
+    // A reply stays in its parent's channel: the daemon decides where an
+    // agent's answer goes, never the model.
+    let channel = match &parent {
+        Some(p) => p.channel.clone(),
+        None => channel.filter(|c| !c.is_empty()),
+    };
     let msg = ChatMessage {
         thread_root,
         id,
@@ -461,6 +509,7 @@ fn post_inner(
         relay,
         author,
         reply_to,
+        channel,
     };
 
     let json_str = serde_json::to_string(&msg)?;
@@ -469,7 +518,12 @@ fn post_inner(
             .control
             .try_transact_mut()
             .map_err(|_| anyhow::anyhow!("circle state busy"))?;
-        let arr = txn.get_or_insert_array(CHAT_KEY);
+        let key = if msg.channel.is_some() {
+            crate::control::CHANNEL_CHAT_KEY
+        } else {
+            CHAT_KEY
+        };
+        let arr = txn.get_or_insert_array(key);
         arr.push_back(&mut txn, Any::String(json_str.as_str().into()));
     }
 
@@ -517,17 +571,9 @@ fn post_inner(
 /// reaches nobody, so a freshly established sync stream re-asks for whatever is
 /// still missing.
 pub fn transcript_attachment_hashes(state: &crate::state::AppState) -> Vec<String> {
-    let Ok(txn) = state.control.try_transact() else {
-        return Vec::new();
-    };
-    let Some(arr) = txn.get_array(CHAT_KEY) else {
-        return Vec::new();
-    };
-    arr.iter(&txn)
-        .filter_map(|item| match item {
-            Out::Any(Any::String(s)) => serde_json::from_str::<ChatMessage>(&s).ok(),
-            _ => None,
-        })
+    state
+        .all_messages()
+        .into_iter()
         .flat_map(|m| m.attachments.into_iter().map(|a| a.hash))
         .collect()
 }
@@ -561,6 +607,7 @@ pub async fn chat_stream(
                     | CircleEvent::ChatActivityChanged { .. }
                     | CircleEvent::ExecutionReceiptChanged { .. }
                     | CircleEvent::AttachmentAvailable { .. }
+                    | CircleEvent::ChannelsChanged { .. }
                     | CircleEvent::MemberAdded { .. }
                     | CircleEvent::MemberRemoved { .. }
                     | CircleEvent::PresenceChanged { .. }
@@ -699,9 +746,23 @@ mod tests {
 ///
 /// The composer uses this to say what will happen to the next message typed —
 /// implicit routing that is invisible is a bug (§1.2).
+#[derive(Deserialize, Default)]
+pub struct EngagementQuery {
+    /// Channel name or id the composer is in; absent is `#general`.
+    pub channel: Option<String>,
+}
+
+/// The transcript follow-up routing reads for `reference`: a message only
+/// follows up a reply in its own channel.
+fn engagement_history(state: &crate::state::AppState, reference: Option<&str>) -> Vec<ChatMessage> {
+    let channel = crate::channel::resolve(state, reference).ok().flatten();
+    state.channel_transcript(channel.as_deref())
+}
+
 pub async fn get_engagement(
     State(daemon): State<DaemonState>,
     Path(circle_id): Path<String>,
+    Query(q): Query<EngagementQuery>,
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
@@ -718,7 +779,7 @@ pub async fn get_engagement(
     let window = crate::agent::config::AgentConfig::load()
         .resolved(&circle_id)
         .followup_window_secs();
-    let history = state.transcript();
+    let history = engagement_history(&state, q.channel.as_deref());
     let engagement = crate::agent::engagement::resolve(
         &history,
         &state.peer_id,
@@ -746,6 +807,7 @@ pub async fn get_engagement(
 pub async fn exit_engagement(
     State(daemon): State<DaemonState>,
     Path(circle_id): Path<String>,
+    Query(q): Query<EngagementQuery>,
 ) -> impl IntoResponse {
     let state = match daemon.get(&circle_id) {
         Some(s) => s,
@@ -765,7 +827,7 @@ pub async fn exit_engagement(
         .resolved(&circle_id)
         .followup_window_secs();
     let current = crate::agent::engagement::resolve(
-        &state.transcript(),
+        &engagement_history(&state, q.channel.as_deref()),
         &state.peer_id,
         chrono::Utc::now().timestamp(),
         window,

@@ -186,6 +186,7 @@ mod tests {
             relay,
             author: crate::control::Author::Human,
             reply_to: None,
+            channel: None,
         }
     }
 

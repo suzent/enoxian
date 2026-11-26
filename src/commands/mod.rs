@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod bind;
+pub mod channels;
 pub mod chat;
 pub mod circles;
 pub mod claim;

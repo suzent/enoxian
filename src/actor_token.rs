@@ -29,6 +29,9 @@ pub struct ManagedRun {
     /// The relay of the message that woke the run; `None` when that message
     /// came from a peer that predates relays.
     pub relay: Option<crate::control::Relay>,
+    /// Channel of the turn (`None` is `#general`): where an unqualified post
+    /// from the run lands.
+    pub channel: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -49,8 +52,14 @@ impl ActorTokenRegistry {
         peer_id: &str,
         agent_id: &str,
         relay: Option<crate::control::Relay>,
+        channel: Option<String>,
     ) -> (String, ActorIdentity) {
-        self.issue_inner(circle_id, peer_id, agent_id, Some(ManagedRun { relay }))
+        self.issue_inner(
+            circle_id,
+            peer_id,
+            agent_id,
+            Some(ManagedRun { relay, channel }),
+        )
     }
 
     fn issue_inner(

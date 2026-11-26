@@ -12,10 +12,12 @@ interface Props {
   typing: number
   voided?: boolean
   onOpen: () => void
+  /** The open channel, shown after the name; omitted for #general. */
+  channel?: { name: string; purpose?: string } | null
 }
 
 /** A quiet identity mark that becomes a shortcut to real Circle activity. */
-export default function CircleActivityButton({ name, circleId=name, unread, onRead, size, working, typing, voided, onOpen }: Props) {
+export default function CircleActivityButton({ name, circleId=name, unread, onRead, size, working, typing, voided, onOpen, channel }: Props) {
   const family = circleFamily(circleId)
   const [focused, setFocused] = useState(false)
   const active = !voided && (working > 0 || typing > 0)
@@ -25,7 +27,16 @@ export default function CircleActivityButton({ name, circleId=name, unread, onRe
       <span data-circle-dock aria-hidden="true">
         <CircleGlyph circleId={circleId} family={family} unread={unread} name={name} size={size} voided={voided} active={active} engaged={focused} />
       </span>
-      <span className="circle-activity-button__name" title={name}>{name}</span>
+      <span className="circle-activity-button__name" title={channel ? `${name} / #${channel.name}${channel.purpose ? ` — ${channel.purpose}` : ''}` : name}>
+        {name}
+        {channel && (
+          <span className="active-channel">
+            <span className="active-channel__slash" aria-hidden="true">/</span>
+            #{channel.name}
+            {channel.purpose && <span className="active-channel__purpose">{channel.purpose}</span>}
+          </span>
+        )}
+      </span>
       <button
       type="button"
       className={`circle-activity-button${active ? ' is-active' : ''}`}

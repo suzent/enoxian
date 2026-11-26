@@ -134,6 +134,9 @@ impl ClientHooks for PolicyHooks {
     fn run_id(&self) -> Option<&str> {
         Some(&self.session.session_id)
     }
+    fn channel(&self) -> Option<&str> {
+        self.session.channel.as_deref()
+    }
     fn write_file(&self, path: &Path, content: &[u8]) -> Result<()> {
         use yrs::{ReadTxn, Transact};
         let _order = crate::proposal::evidence::WRITE_ORDER
@@ -250,6 +253,9 @@ pub struct LaunchRequest<'a> {
     /// Chat lines the prompt left out because `resume` was expected to carry
     /// them. Used only when the resume fails; see `context::recovery_context`.
     pub withheld: &'a [String],
+    /// Channel this turn belongs to; `None` is `#general`. Selects which of the
+    /// agent's per-channel conversations is resumed and saved.
+    pub channel: Option<&'a str>,
     /// Where the person's request sits in `task`, for agents that show their
     /// conversation; `None` sends the prompt as one block.
     pub shape: Option<super::acp::PromptShape>,
@@ -301,6 +307,7 @@ pub async fn launch_cancellable(
     session.trigger_id = req.trigger_id.map(str::to_string);
     session.requested_agent = Some(req.agent_name.to_string());
     session.relay_path = req.relay_path.clone();
+    session.channel = req.channel.map(str::to_string);
     session.actor_id = Some(req.agent_name.to_string());
     let mut lease = crate::proposal::runs::RunLease::acquire(req.circle_dir, session.clone())?;
     if let (Some(state), Some(token)) = (&req.coordination, req.actor_token) {
@@ -312,6 +319,7 @@ pub async fn launch_cancellable(
         (Some(state), Some(run_id)) => Some(state.live_runs.register(
             run_id,
             req.agent_name,
+            req.channel,
             req.initiator == Initiator::Ambient,
             chrono::Utc::now().timestamp(),
         )),
@@ -362,7 +370,7 @@ pub async fn launch_cancellable(
         token: req.actor_token,
     };
 
-    let memory = super::memory::load(req.circle_dir, req.agent_name);
+    let memory = super::memory::load(req.circle_dir, req.agent_name, req.channel);
     let resume = resumable_session(memory.as_ref(), req.resume);
     let stop = live_run
         .as_ref()
@@ -393,7 +401,7 @@ pub async fn launch_cancellable(
     };
 
     if let Ok((_, _, Some(sid), _)) = &run_result {
-        super::memory::save_session(req.circle_dir, req.agent_name, sid)?;
+        super::memory::save_session(req.circle_dir, req.agent_name, req.channel, sid)?;
     }
     lease.finish()?;
     if let Some(state) = &req.coordination {
@@ -441,6 +449,9 @@ async fn run_argv(
     let mut command = super::spawn::command(program, args);
     super::spawn::apply_actor_env(&mut command, actor.agent_id, actor.circle_id, actor.token);
     command.env("ENOXIAN_RUN_ID", &lease.record.session.session_id);
+    if let Some(channel) = &lease.record.session.channel {
+        command.env("ENOXIAN_CHANNEL", channel);
+    }
     let mut child = command
         .current_dir(run_dir)
         .kill_on_drop(true)
@@ -542,7 +553,7 @@ async fn run_acp(
     capturing.store(true, Ordering::Relaxed);
     let prompt = if resume.is_some() && !acp.was_resumed() {
         match coordination.as_ref() {
-            Some(state) => super::context::recover(state, actor.agent_id, withheld, task),
+            Some(state) => super::context::recover(state, actor.agent_id, lease.record.session.channel.as_deref(), withheld, task),
             None => format!("Previous ACP session could not be restored; private conversation memory is unavailable. Retrieve Circle chat if needed.\n\n{task}"),
         }
     } else {
@@ -756,8 +767,8 @@ mod tests {
     #[test]
     fn seen_only_memory_does_not_attempt_an_empty_resume() {
         let dir = tempfile::tempdir().unwrap();
-        super::super::memory::save_seen(dir.path(), "a", "message", Vec::new()).unwrap();
-        let memory = super::super::memory::load(dir.path(), "a").unwrap();
+        super::super::memory::save_seen(dir.path(), "a", None, "message", Vec::new()).unwrap();
+        let memory = super::super::memory::load(dir.path(), "a", None).unwrap();
         assert_eq!(resumable_session(Some(&memory), Some("")), None);
         assert_eq!(
             resumable_session(Some(&memory), Some("fallback")),
@@ -795,6 +806,7 @@ mod tests {
                 initiator: Initiator::Local,
                 resume: None,
                 withheld: &[],
+                channel: None,
                 shape: None,
             }),
         )
@@ -870,6 +882,7 @@ mod tests {
                 initiator: Initiator::Local,
                 resume: None,
                 withheld: &[],
+                channel: None,
                 shape: None,
             }),
         )
@@ -941,6 +954,7 @@ mod tests {
                 initiator: Initiator::Ambient,
                 resume: None,
                 withheld: &[],
+                channel: None,
                 shape: None,
             }),
         )
@@ -957,7 +971,7 @@ mod tests {
         assert_eq!(outcome.acp_session_id.as_deref(), Some("fake-session"));
         assert!(outcome.detail.contains("cancelled"), "{}", outcome.detail);
         assert!(state.live_runs.get(&run_id).is_none(), "no longer listed");
-        let memory = super::super::memory::load(dir.path(), agent).unwrap();
+        let memory = super::super::memory::load(dir.path(), agent, None).unwrap();
         assert_eq!(memory.session_id, "fake-session");
     }
 
@@ -1028,6 +1042,7 @@ mod tests {
                 initiator: Initiator::Local,
                 resume: None,
                 withheld: &[],
+                channel: None,
                 shape: None,
             }),
         )

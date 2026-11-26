@@ -1,6 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { Fragment, useState, useEffect, useRef, useCallback } from 'react'
 import { Settings, Plus, LogIn } from 'lucide-react'
 import { useApp } from '../context/AppContext'
+import { useChannels } from '../context/ChannelContext'
+import ChannelList from './ChannelList'
 import { initCircle, enterCircle, getIdentity, type IdentityInfo } from '../api'
 import { shortenAgentId } from '../lib/displayName'
 import { joinedCircleName } from '../lib/circleName'
@@ -9,12 +11,15 @@ import type { RitualMode } from './RitualTransition'
 
 interface Props {
   onRitual?: (mode: RitualMode, label: string | undefined, circleId: string) => void
+  /** Called after opening a channel, so a drawer can close. */
+  onNavigate?: () => void
 }
 
 type Modal = 'init' | 'enter' | null
 
-export default function CircleSidebar({ onRitual }: Props) {
+export default function CircleSidebar({ onRitual, onNavigate }: Props) {
   const { circles, activeCircleId, setActiveCircleId, reloadCircles, status } = useApp()
+  const { channels, channel, unread, selectChannel, createChannel, archiveChannel } = useChannels()
   const activeCircle = circles.find(circle => circle.circle_id === activeCircleId)
 
   const [modal, setModal] = useState<Modal>(null)
@@ -144,8 +149,8 @@ export default function CircleSidebar({ onRitual }: Props) {
           {circles.map((circle, index) => {
             const isActive = circle.circle_id === activeCircleId
             return (
+              <Fragment key={circle.circle_id}>
               <button
-                key={circle.circle_id}
                 ref={el => { if (el) rowRefMap.current.set(circle.circle_id, el); else rowRefMap.current.delete(circle.circle_id) }}
                 onClick={() => switchCircle(circle.circle_id)}
                 className={`circle-row${isActive ? ' circle-row-active' : ''}${circle.disabled ? ' circle-row--void' : ''}`}
@@ -161,6 +166,17 @@ export default function CircleSidebar({ onRitual }: Props) {
                 </div>
                 <span className="circle-row__marker" aria-hidden="true">{circle.disabled ? '×' : '→'}</span>
               </button>
+              {isActive && !circle.disabled && channels.length > 0 && (
+                <ChannelList
+                  channels={channels}
+                  current={channel}
+                  unread={unread}
+                  onSelect={id => { selectChannel(id); onNavigate?.() }}
+                  onCreate={async (name, purpose) => { await createChannel(name, purpose); onNavigate?.() }}
+                  onArchive={archiveChannel}
+                />
+              )}
+              </Fragment>
             )
           })}
         </div>
