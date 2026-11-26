@@ -805,9 +805,14 @@ fn drain_ambient(
     // Collapse to the tail, never discard it. However late a message arrives,
     // and however long the daemon was down, the most recent thing said in the
     // room is read (§2.3).
-    let carried = settings.ambient_backlog_tail.min(eligible.len());
-    let collapsed = eligible.len() - carried;
-    for message in eligible.drain(..collapsed) {
+    //
+    // Per channel: `history` lists `#general` before every other channel
+    // regardless of time, so one tail over all of it would let a busy topic
+    // channel push `#general`'s latest question into the backlog. Within a
+    // channel the order is CRDT order, which is what the tail wants.
+    let (eligible, backlog) = backlog_tail_per_channel(eligible, settings.ambient_backlog_tail);
+    let collapsed = backlog.len();
+    for message in backlog {
         ledger.record(&message.id, Decision::Backlog, now);
         note(
             state,
@@ -818,6 +823,10 @@ fn drain_ambient(
     }
     let mut decided = collapsed + eligible.len() + reopened.len();
     for message in eligible {
+        // The warden judges a message by its own channel: who spoke recently
+        // there, and what was said. Another channel's lines would make an
+        // agent that just answered in `#ops` look busy for `#design`.
+        let history = in_channel(&history, message.channel.as_deref());
         match warden_mode {
             super::warden::WardenMode::Off => {
                 offer_to_listeners(
@@ -1411,6 +1420,36 @@ fn ambient_route_allowed(
     engagement: Option<&super::engagement::Engagement>,
 ) -> bool {
     message.reply_to.is_none() && engagement.is_none() && !mentions_an_agent(message)
+}
+
+/// Split ambient candidates into the ones read and the ones left as backlog,
+/// keeping the last `tail` of each channel. Both keep their input order.
+fn backlog_tail_per_channel(
+    eligible: Vec<&crate::control::ChatMessage>,
+    tail: usize,
+) -> (
+    Vec<&crate::control::ChatMessage>,
+    Vec<&crate::control::ChatMessage>,
+) {
+    let mut kept: std::collections::HashMap<Option<&str>, usize> = Default::default();
+    let mut read = vec![false; eligible.len()];
+    for (i, message) in eligible.iter().enumerate().rev() {
+        let count = kept.entry(message.channel.as_deref()).or_default();
+        if *count < tail {
+            *count += 1;
+            read[i] = true;
+        }
+    }
+    let mut carried = Vec::new();
+    let mut backlog = Vec::new();
+    for (message, read) in eligible.into_iter().zip(read) {
+        if read {
+            carried.push(message);
+        } else {
+            backlog.push(message);
+        }
+    }
+    (carried, backlog)
 }
 
 /// The lines of one channel, in order, from a transcript spanning several.
@@ -3926,6 +3965,28 @@ mod tests {
     ) {
         add_chat(state, message);
         drain_ambient(state, handled, inbox, ledger, wake, cfg);
+    }
+
+    /// A busy topic channel must not push `#general`'s latest question into
+    /// the backlog: `all_messages` lists `#general` first whatever the time,
+    /// so the tail is kept per channel.
+    #[test]
+    fn backlog_tail_is_kept_per_channel() {
+        let general = room_message("g1", "is the build green?");
+        let ops: Vec<_> = (1..=3)
+            .map(|i| {
+                let mut m = room_message(&format!("o{i}"), "deploy notes");
+                m.channel = Some("c-ops".into());
+                m
+            })
+            .collect();
+        let eligible: Vec<&crate::control::ChatMessage> =
+            std::iter::once(&general).chain(ops.iter()).collect();
+        let (read, backlog) = super::backlog_tail_per_channel(eligible, 1);
+        let ids =
+            |v: &[&crate::control::ChatMessage]| v.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&read), ["g1", "o3"]);
+        assert_eq!(ids(&backlog), ["o1", "o2"]);
     }
 
     /// A human message that names nobody — the population ambient exists for.

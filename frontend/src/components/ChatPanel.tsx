@@ -533,14 +533,16 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
   // Last plaintext the composer reported, so a report that merely repeats the
   // current contents can be told apart from someone actually typing.
   const lastTypedTextRef = useRef('')
-  // Unsent composer contents, one entry per circle. The panel stays mounted
-  // across a circle switch, so without this a half-written message and any
-  // staged image would follow you into the next circle — and send there.
+  // Unsent composer contents, one entry per (circle, channel). The panel stays
+  // mounted across a circle or channel switch, so without this a half-written
+  // message and any staged image would follow you into the next one — and
+  // send there.
+  const draftKey = activeCircleId ? `${activeCircleId}#${channelKey(channel)}` : null
   const draftsRef = useRef<Record<string, Draft>>({})
-  // The circle the composer's current contents belong to. Only the switch
-  // effect below moves it, so every write attributes to the right circle even
-  // when it lands in the same commit as a switch.
-  const draftCircleRef = useRef<string | null>(activeCircleId)
+  // The (circle, channel) the composer's current contents belong to. Only the
+  // switch effect below moves it, so every write attributes to the right place
+  // even when it lands in the same commit as a switch.
+  const draftCircleRef = useRef<string | null>(draftKey)
 
   const writeDraft = useCallback((patch: Partial<Draft>) => {
     const id = draftCircleRef.current
@@ -552,13 +554,13 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
   // send), so mirror them into the draft from one place rather than each.
   useEffect(() => { writeDraft({ attachments: pending }) }, [pending, writeDraft])
 
-  // Park the outgoing circle's draft and bring back the incoming one. The
+  // Park the outgoing draft and bring back the incoming one. The
   // outgoing draft is already stored — every edit above writes it as it
   // happens — so this only has to swap what the composer is showing.
   useEffect(() => {
-    if (draftCircleRef.current === activeCircleId) return
-    draftCircleRef.current = activeCircleId
-    const draft = (activeCircleId && draftsRef.current[activeCircleId]) || EMPTY_DRAFT
+    if (draftCircleRef.current === draftKey) return
+    draftCircleRef.current = draftKey
+    const draft = (draftKey && draftsRef.current[draftKey]) || EMPTY_DRAFT
     const text = draftText(draft.nodes)
     inputRef.current?.restore(draft.nodes)
     setInput(text)
@@ -569,7 +571,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
     setAttachError(null)
     // A restore is not a keystroke: keep the typing indicator out of it.
     lastTypedTextRef.current = text
-  }, [activeCircleId])
+  }, [draftKey])
 
   const ingestActivity = useCallback((activity: ChatActivity) => {
     setActivities(prev => {
@@ -923,8 +925,8 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
     // Capture what the composer holds before clearing it. The clear is
     // optimistic — it has to be, or sending feels laggy — so the only way a
     // failure does not cost the user their message is to keep a copy.
-    const sentNodes = (activeCircleId && draftsRef.current[activeCircleId]?.nodes) || []
-    const sentCircleId = activeCircleId
+    const sentNodes = (draftKey && draftsRef.current[draftKey]?.nodes) || []
+    const sentDraftKey = draftKey
 
     inputRef.current?.clear()
     setInput('')
@@ -943,18 +945,18 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
       // message to a moment of contention is worse than any error copy.
       //
       // Only restore into the composer if the user is still looking at the
-      // circle they sent from; otherwise park it in that circle's draft, where
-      // switching back will bring it up.
+      // circle and channel they sent from; otherwise park it in that draft,
+      // where switching back will bring it up.
       const restored = { nodes: sentNodes, attachments: sentAttachments }
-      if (draftCircleRef.current === sentCircleId) {
+      if (draftCircleRef.current === sentDraftKey) {
         inputRef.current?.restore(sentNodes)
         setInput(text)
         setPending(prev => [...sentAttachments, ...prev])
         setReplyTo(sentReplyTo)
         lastTypedTextRef.current = text
         setAttachError(sendErrorText(error))
-      } else if (sentCircleId) {
-        draftsRef.current[sentCircleId] = restored
+      } else if (sentDraftKey) {
+        draftsRef.current[sentDraftKey] = restored
       }
     })
   }
