@@ -233,6 +233,50 @@ fn recent_receipts(
     active
 }
 
+/// How a turn came to run, for the routing chip under the message it answers.
+///
+/// `routed_by` is `mention` for an addressed turn, `rotation` for one this
+/// device's ambient rotation chose, and `warden` for one the warden assigned;
+/// a warden turn also carries the mode, the other listeners and a short note
+/// on why. Every device reads these from the synced receipt, so the room sees
+/// the same account whichever device's warden decided.
+fn routing(request: &crate::agent::inbox::Request) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    let by = match (&request.warden, request.ambient) {
+        (Some(_), _) => "warden",
+        (None, true) => "rotation",
+        (None, false) => "mention",
+    };
+    out.insert("routed_by".into(), json!(by));
+    if !request.co_listeners.is_empty() {
+        out.insert("co_listeners".into(), json!(request.co_listeners));
+    }
+    if let Some(assignment) = &request.warden {
+        let mut warden = serde_json::Map::new();
+        warden.insert("mode".into(), json!(assignment.mode));
+        if let Some(note) = &assignment.note {
+            warden.insert("decider".into(), json!(note.decider));
+            warden.insert("reason".into(), json!(note.reason));
+            let confidence = note
+                .p_agent
+                .iter()
+                .find(|(agent, _)| agent.eq_ignore_ascii_case(&request.agent))
+                .map(|(_, p)| *p);
+            if let Some(p) = confidence {
+                warden.insert("confidence".into(), json!(p));
+            }
+            if let Some(ms) = note.latency_ms {
+                warden.insert("latency_ms".into(), json!(ms));
+            }
+            if note.fallback {
+                warden.insert("fallback".into(), json!(true));
+            }
+        }
+        out.insert("warden".into(), serde_json::Value::Object(warden));
+    }
+    out
+}
+
 pub fn publish(state: &crate::state::AppState, inbox: &Inbox) -> anyhow::Result<()> {
     use yrs::{Any, Map, Transact, WriteTxn};
     // A private delivery leaves no receipt: the room must not learn it happened.
@@ -268,10 +312,13 @@ pub fn publish(state: &crate::state::AppState, inbox: &Inbox) -> anyhow::Result<
     // Publish only retained records, otherwise the next reconcile resurrects
     // every terminal receipt just pruned from the replicated map.
     for e in entries {
-        let summary = json!({"run_id": e.run_id, "message_id": e.request.message.id,
+        let mut summary = json!({"run_id": e.run_id, "message_id": e.request.message.id,
             "agent_id": e.request.agent, "peer_id": state.peer_id, "status": e.status,
             "detail": e.detail, "ambient": e.request.ambient, "updated_at": e.updated_at,
             "admitted_at": e.admitted_at });
+        if let Some(fields) = summary.as_object_mut() {
+            fields.extend(routing(&e.request));
+        }
         let value = serde_json::to_string(&summary)?;
         let unchanged = map
             .get(&txn, &e.run_id)
@@ -475,6 +522,80 @@ mod tests {
             .await
             .unwrap();
         (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    /// Every receipt says how its turn came to run, and a warden turn carries
+    /// the note the room is shown, with this agent's confidence picked out.
+    #[test]
+    fn a_receipt_says_how_its_turn_was_routed() {
+        use crate::agent::warden::{spec::ModeKind, Assignment, Note};
+        let asked = request("m", "claude");
+        assert_eq!(routing(&asked)["routed_by"], "mention");
+        assert!(!routing(&asked).contains_key("warden"));
+
+        let mut rotated = request("m", "claude");
+        rotated.ambient = true;
+        rotated.co_listeners = vec!["claude".into(), "codex".into()];
+        let fields = routing(&rotated);
+        assert_eq!(fields["routed_by"], "rotation");
+        assert_eq!(fields["co_listeners"], json!(["claude", "codex"]));
+
+        let mut assigned = rotated.clone();
+        assigned.warden = Some(Assignment {
+            mode: ModeKind::Single,
+            max: 1,
+            pool: vec!["claude".into()],
+            note: Some(Note {
+                decider: "builtin:rules".into(),
+                reason: "a direct question".into(),
+                p_agent: [("Claude".to_string(), 0.82), ("codex".to_string(), 0.3)].into(),
+                latency_ms: Some(12),
+                fallback: false,
+            }),
+        });
+        let fields = routing(&assigned);
+        assert_eq!(fields["routed_by"], "warden");
+        assert_eq!(
+            fields["warden"],
+            json!({"mode": "single", "decider": "builtin:rules",
+                   "reason": "a direct question", "confidence": 0.82, "latency_ms": 12})
+        );
+
+        // A warden turn queued before notes existed still says it was the warden's.
+        assigned.warden.as_mut().unwrap().note = None;
+        assert_eq!(routing(&assigned)["warden"], json!({"mode": "single"}));
+    }
+
+    /// Publishing a receipt tells the chat stream, so the routing strip under a
+    /// message moves without polling.
+    #[tokio::test]
+    async fn publishing_a_receipt_raises_an_event_with_its_routing() {
+        let (_daemon, state, inbox, _dir) = circle();
+        let mut events = state.events.subscribe();
+        let mut rotated = request("m", "claude");
+        rotated.ambient = true;
+        inbox.admit(rotated, 20, 100).unwrap();
+        publish(&state, &inbox).unwrap();
+        let receipt = loop {
+            match events.try_recv() {
+                Ok(crate::control::CircleEvent::ExecutionReceiptChanged { receipt }) => {
+                    break receipt
+                }
+                Ok(_) => continue,
+                Err(e) => panic!("no receipt event: {e:?}"),
+            }
+        };
+        assert_eq!(receipt["message_id"], "m");
+        assert_eq!(receipt["routed_by"], "rotation");
+        assert_eq!(receipt["status"], "pending");
+        // Unchanged, it is not written again, and nothing is raised.
+        publish(&state, &inbox).unwrap();
+        assert!(
+            !std::iter::from_fn(|| events.try_recv().ok()).any(|e| matches!(
+                e,
+                crate::control::CircleEvent::ExecutionReceiptChanged { .. }
+            ))
+        );
     }
 
     /// A listed run says what became of it: a pass that someone followed by

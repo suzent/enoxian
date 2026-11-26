@@ -210,6 +210,7 @@ fn set_claim(
         message_id: Some(message.id.clone()),
         updated_at: now,
         expires_at,
+        progress: None,
     };
     match crate::api::chat::put_activity(&state, activity) {
         Ok(()) => Json(json!({

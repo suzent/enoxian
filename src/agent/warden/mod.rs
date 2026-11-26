@@ -54,6 +54,54 @@ pub struct Assignment {
     /// next unused one.
     #[serde(default)]
     pub pool: Vec<String>,
+    /// Why the warden chose this, as the room is shown it. Published with the
+    /// turn's receipt so every device can say who the warden assigned and why,
+    /// not only the one whose warden decided. `None` on entries written before
+    /// this existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<Note>,
+}
+
+/// The part of a warden decision the room sees next to the message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Note {
+    pub decider: String,
+    /// One line, trimmed to [`NOTE_REASON_CHARS`].
+    pub reason: String,
+    /// The decider's confidence per candidate agent, calibrated.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub p_agent: std::collections::BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    /// The configured decider was not used and the rules decided instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fallback: bool,
+}
+
+/// How much of a decider's reason travels with a receipt. The full text stays
+/// in this device's decision log.
+pub const NOTE_REASON_CHARS: usize = 200;
+
+impl Note {
+    pub fn from_decision(decision: &policy::Decision, candidates: &[String]) -> Self {
+        let reason = decision.reason.trim();
+        let reason = match reason.char_indices().nth(NOTE_REASON_CHARS) {
+            Some((cut, _)) => format!("{}…", reason[..cut].trim_end()),
+            None => reason.to_string(),
+        };
+        Note {
+            decider: decision.decider.clone(),
+            reason,
+            p_agent: decision
+                .p_agent
+                .iter()
+                .filter(|(agent, _)| candidates.iter().any(|c| c.eq_ignore_ascii_case(agent)))
+                .map(|(agent, p)| (agent.clone(), *p))
+                .collect(),
+            latency_ms: decision.latency_ms,
+            fallback: decision.fallback.is_some(),
+        }
+    }
 }
 
 /// The instruction for a turn the warden assigned, in place of the scry one.
@@ -317,6 +365,7 @@ mod tests {
             mode: ModeKind::Single,
             max: 1,
             pool: vec![],
+            note: None,
         };
         let text = instruction(&single, &["claude".into()], "claude", |n| n.to_string());
         assert!(text.contains("needs an answer"));
@@ -325,6 +374,7 @@ mod tests {
             mode: ModeKind::Room,
             max: 2,
             pool: vec![],
+            note: None,
         };
         let text = instruction(&room, &["claude".into(), "codex".into()], "claude", |n| {
             format!("{n} (on x)")
@@ -334,6 +384,7 @@ mod tests {
             mode: ModeKind::Vote,
             max: 3,
             pool: vec![],
+            note: None,
         };
         assert!(
             instruction(&vote, &["a".into(), "b".into()], "a", |n| n.into()).contains("ANSWER:")
@@ -349,6 +400,38 @@ mod tests {
             .count();
         assert!((350..650).contains(&hits), "{hits}");
         assert_eq!(sampled("m1", 0.5), sampled("m1", 0.5));
+    }
+
+    #[test]
+    fn a_note_keeps_what_the_room_is_shown_and_trims_the_reason() {
+        let decision: policy::Decision = serde_json::from_value(serde_json::json!({
+            "choice": {"admit": true, "mode": "single", "listeners": 1,
+                       "max_listeners": 1, "agents": ["claude", "codex"]},
+            "decider": "openai:gpt",
+            "spec_version": "1",
+            "p_agent": {"Claude": 0.82, "codex": 0.4, "gemini": 0.1},
+            "reason": format!("  {}  ", "é".repeat(NOTE_REASON_CHARS + 5)),
+            "fallback": "timed out",
+            "latency_ms": 900,
+        }))
+        .unwrap();
+        let note = Note::from_decision(&decision, &["claude".into(), "codex".into()]);
+        assert_eq!(note.decider, "openai:gpt");
+        // Only the candidates' confidence travels, matched without case.
+        assert_eq!(note.p_agent.len(), 2);
+        assert_eq!(note.p_agent["Claude"], 0.82);
+        assert!(!note.p_agent.contains_key("gemini"));
+        // Cut on a character, not a byte, and marked as cut.
+        assert_eq!(note.reason.chars().count(), NOTE_REASON_CHARS + 1);
+        assert!(note.reason.ends_with('…'));
+        assert!(note.fallback);
+        assert_eq!(note.latency_ms, Some(900));
+
+        // An entry queued before notes existed still reads.
+        let old: Assignment =
+            serde_json::from_value(serde_json::json!({"mode": "room", "max": 2, "pool": []}))
+                .unwrap();
+        assert_eq!(old.note, None);
     }
 
     #[tokio::test]

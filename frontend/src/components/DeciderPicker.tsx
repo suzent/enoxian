@@ -51,7 +51,15 @@ export default function DeciderPicker({
   const [key, setKey] = useState('')
   const [models, setModels] = useState<string[]>([])
   const [fetchingModels, setFetchingModels] = useState(false)
-  useEffect(() => { setKey('') }, [value])
+  // A key typed for one provider is not offered to another. Reset while
+  // rendering, only when the choice really changes: an effect would also run
+  // on mount, and if that run is still pending when the first keystroke
+  // lands, it wipes the key the user just typed.
+  const [keyFor, setKeyFor] = useState(value)
+  if (keyFor !== value) {
+    setKeyFor(value)
+    setKey('')
+  }
   useEffect(() => { onKeyDraftChange?.(!!key) }, [key, onKeyDraftChange])
 
   const featured = FEATURED.map(id => kinds.find(k => k.id === id)).filter((k): k is WardenKind => !!k)

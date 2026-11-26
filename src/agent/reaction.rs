@@ -1250,6 +1250,7 @@ fn warden_offer(
         _ => Vec::new(),
     };
     let reason = decision.reason.clone();
+    let warden_note = super::warden::Note::from_decision(&decision, &choice.agents);
     log::append(
         &state.circle_dir,
         &log::Record {
@@ -1290,14 +1291,17 @@ fn warden_offer(
         message,
         now,
         &selected,
-        Some(vote_pool(
-            mode,
-            choice.max_listeners,
-            choice.agents,
-            listeners,
-            settings.ambient_responders,
-            spec,
-        )),
+        Some(super::warden::Assignment {
+            note: Some(warden_note),
+            ..vote_pool(
+                mode,
+                choice.max_listeners,
+                choice.agents,
+                listeners,
+                settings.ambient_responders,
+                spec,
+            )
+        }),
     );
     true
 }
@@ -1327,7 +1331,12 @@ fn vote_pool(
         super::warden::spec::ModeKind::Vote => max.max(spec.vote.max.min(ceiling).min(pool.len())),
         _ => max,
     };
-    super::warden::Assignment { mode, max, pool }
+    super::warden::Assignment {
+        mode,
+        max,
+        pool,
+        note: None,
+    }
 }
 
 /// FNV-1a over the message id.
@@ -1637,7 +1646,8 @@ async fn run_next_cancellable(
     pending.sort_by_key(|e| e.request.ambient);
     for entry in pending {
         let request = &entry.request;
-        let rejection = match launch_rejection(state, request, cfg) {
+        let ended = ended_here(inbox, &request.message.id);
+        let rejection = match launch_rejection(state, request, cfg, &ended) {
             Ok(reason) => reason,
             Err(_) => continue, // Unknown stop state is retried, never treated as permission.
         };
@@ -1863,12 +1873,47 @@ fn announce_failure(state: &AppState, request: &super::inbox::Request, reason: &
     announce(state, &request.message.id, &prefix, text);
 }
 
+/// Agents on this device whose run for `message_id` has ended, with none of
+/// theirs for it still running or queued. A "working" claim one of them left
+/// behind is stale, whatever the synced activity map still says.
+fn ended_here(inbox: &super::inbox::Inbox, message_id: &str) -> Vec<String> {
+    use super::inbox::Status;
+    let entries: Vec<_> = inbox
+        .entries()
+        .into_iter()
+        .filter(|e| e.request.message.id == message_id)
+        .collect();
+    let mut ended: Vec<String> = entries
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.status,
+                Status::Completed
+                    | Status::Failed
+                    | Status::Cancelled
+                    | Status::Expired
+                    | Status::Interrupted
+            )
+        })
+        .map(|e| e.request.agent.clone())
+        .filter(|agent| {
+            !entries.iter().any(|e| {
+                &e.request.agent == agent && matches!(e.status, Status::Running | Status::Pending)
+            })
+        })
+        .collect();
+    ended.sort();
+    ended.dedup();
+    ended
+}
+
 /// Stop markers are checked at launch, including human-rooted pending turns.
 /// Policy withdrawal pauses work; it never executes a stale persisted command.
 fn launch_rejection(
     state: &AppState,
     request: &super::inbox::Request,
     cfg: &AgentConfig,
+    ended: &[String],
 ) -> anyhow::Result<Option<&'static str>> {
     if let Some(relay) = &request.relay {
         if crate::api::chat::try_relay_is_stopped(state, &relay.root)? {
@@ -1898,13 +1943,27 @@ fn launch_rejection(
     // offered the message to together are not competitors — that set is the
     // plan — and an agent never blocks itself, which a requeued turn would
     // otherwise do through its own heartbeat from the attempt a restart killed.
+    // Nor does the run heartbeat of an agent on this device whose own run for
+    // the message is over: this device's inbox says so, while the "working"
+    // it published can outlive the run when the write that would end it found
+    // the circle busy. That stale heartbeat used to cancel the hand-off after a
+    // failure outright. An explicit claim the agent made since still counts.
     if request.ambient {
         let mut mine = request.co_listeners.clone();
         mine.push(request.agent.clone());
-        let claims = super::claims::live_claims(
+        let mut claims = super::claims::live_claims(
             &crate::api::chat::live_activities(state, chrono::Utc::now().timestamp())
                 .unwrap_or_default(),
         );
+        if let Some(on_message) = claims.get_mut(&request.message.id) {
+            on_message.retain(|claim| {
+                claim.explicit
+                    || claim.peer_id != state.peer_id
+                    || !ended
+                        .iter()
+                        .any(|agent| agent.eq_ignore_ascii_case(&claim.agent))
+            });
+        }
         if super::claims::blocking(&claims, &request.message.id, &state.peer_id, &mine).is_some() {
             return Ok(Some("another agent is already working on this"));
         }
@@ -2060,6 +2119,21 @@ async fn react(
         framing,
     );
     let mut prompt = delivery.prompt;
+    // Only when the framing put the request where the sender can find it again;
+    // otherwise the prompt goes as one block, as it always did.
+    let shape = super::acp::request_range(&prompt, task).map(|_| super::acp::PromptShape {
+        request: task.to_string(),
+        origin: serde_json::json!({
+            "author": sender,
+            "via": state.circle_name,
+            "framing": match framing {
+                super::context::Framing::Addressed => "addressed",
+                super::context::Framing::Overheard => "overheard",
+                super::context::Framing::Assigned => "assigned",
+                super::context::Framing::Private => "private",
+            },
+        }),
+    });
     if ambient {
         prompt.push_str("\n\n");
         // Co-listeners were all offered the message by this device, so they
@@ -2109,6 +2183,7 @@ async fn react(
             resume: resume.as_ref().map(|r| r.session_id.as_str()),
             withheld: &delivery.withheld,
             channel,
+            shape,
         },
         cancel,
     );
@@ -2119,16 +2194,28 @@ async fn react(
     let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     heartbeat.tick().await;
+    // What the turn is doing goes out with the lease, and in between whenever
+    // it changes — at most once per `PROGRESS_MIN_GAP`, since every write to
+    // the activity map reaches every member.
+    let mut sampler = tokio::time::interval(PROGRESS_SAMPLE);
+    sampler.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut published = ProgressGate::default();
     let outcome = loop {
         tokio::select! {
             result = &mut launch => break result?,
-            _ = heartbeat.tick() => { state.actor_tokens.renew(&actor_token); publish_agent_activity(
-                state,
-                agent_id,
-                message_id,
-                ChatActivityKind::Working,
-                true,
-            ); },
+            _ = heartbeat.tick() => {
+                state.actor_tokens.renew(&actor_token);
+                let progress = turn_progress(state, run_id);
+                published.sent(progress.clone(), tokio::time::Instant::now());
+                publish_agent_progress(state, agent_id, message_id, progress);
+            },
+            _ = sampler.tick() => {
+                let progress = turn_progress(state, run_id);
+                if published.should_send(&progress, tokio::time::Instant::now()) {
+                    published.sent(progress.clone(), tokio::time::Instant::now());
+                    publish_agent_progress(state, agent_id, message_id, progress);
+                }
+            },
         }
     };
 
@@ -2177,13 +2264,15 @@ async fn react(
             state,
             agent_id,
             message_id,
+            // A voter that passed read the message and stayed quiet; the routing
+            // strip under the message says so, not the composer.
             if passed {
-                ChatActivityKind::Skipped
+                ChatActivityKind::Seen
             } else {
                 ChatActivityKind::Working
             },
             passed,
-            passed.then(|| "nothing to add".to_string()),
+            None,
         );
         return Ok(Some(
             if passed { PASSED_DETAIL } else { VOTED_DETAIL }.into(),
@@ -2195,7 +2284,8 @@ async fn react(
     // conversational half.
     // An unaddressed agent that declines says PASS (§2.3). Suppress the post,
     // but still advance its seen-mark and say so in the activity indicator —
-    // "considered and passed" must not look like "never ran".
+    // "considered and passed" must not look like "never ran": it reads as seen,
+    // and the routing strip under the message says it passed.
     if ambient
         && outcome
             .reply
@@ -2210,9 +2300,9 @@ async fn react(
             state,
             agent_id,
             message_id,
-            ChatActivityKind::Skipped,
+            ChatActivityKind::Seen,
             true,
-            Some("nothing to add".to_string()),
+            None,
         );
         return Ok(Some(PASSED_DETAIL.into()));
     }
@@ -2473,15 +2563,16 @@ pub(crate) async fn post_vote(
     posted
 }
 
-/// Say that a voter's answer was not the one posted.
+/// Settle a voter whose answer was not the one posted: it read the message,
+/// and the routing strip under the message says it voted.
 pub(crate) fn publish_voted(state: &AppState, agent_id: &str, message_id: &str) {
     publish_agent_activity_detailed(
         state,
         agent_id,
         message_id,
-        ChatActivityKind::Skipped,
+        ChatActivityKind::Seen,
         true,
-        Some("voted; another answer was posted".to_string()),
+        None,
     );
 }
 
@@ -2495,6 +2586,73 @@ fn publish_agent_activity(
     publish_agent_activity_detailed(state, agent_id, message_id, kind, live, None)
 }
 
+/// How often a running turn's progress is looked at.
+const PROGRESS_SAMPLE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The least time between two progress writes for one turn. The lease
+/// heartbeat writes regardless.
+const PROGRESS_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The room's view of a running turn, or `None` before the agent has started
+/// (the turn is listed once its process runs) or on a device that cannot say.
+fn turn_progress(state: &AppState, run_id: &str) -> Option<crate::control::RunProgress> {
+    let run = state.live_runs.get(run_id)?;
+    let activity = run.activity.lock().unwrap().clone();
+    Some(activity.progress(run.started_at, &state.workspace))
+}
+
+/// Decides when a progress change is worth a write.
+///
+/// `last_activity_at` moves with every chunk the agent streams, so it is not a
+/// change by itself; it rides along with the next write.
+#[derive(Default)]
+struct ProgressGate {
+    last: Option<(Option<crate::control::RunProgress>, tokio::time::Instant)>,
+}
+
+impl ProgressGate {
+    fn should_send(
+        &self,
+        progress: &Option<crate::control::RunProgress>,
+        now: tokio::time::Instant,
+    ) -> bool {
+        let shape = |p: &Option<crate::control::RunProgress>| {
+            p.clone().map(|mut p| {
+                p.last_activity_at = None;
+                p
+            })
+        };
+        match &self.last {
+            None => progress.is_some(),
+            Some((last, at)) => {
+                shape(last) != shape(progress) && now.duration_since(*at) >= PROGRESS_MIN_GAP
+            }
+        }
+    }
+
+    fn sent(&mut self, progress: Option<crate::control::RunProgress>, at: tokio::time::Instant) {
+        self.last = Some((progress, at));
+    }
+}
+
+/// A live `Working` activity carrying what the turn is doing.
+fn publish_agent_progress(
+    state: &AppState,
+    agent_id: &str,
+    message_id: &str,
+    progress: Option<crate::control::RunProgress>,
+) {
+    publish_agent_activity_with(
+        state,
+        agent_id,
+        message_id,
+        ChatActivityKind::Working,
+        true,
+        None,
+        progress,
+    )
+}
+
 fn publish_agent_activity_detailed(
     state: &AppState,
     agent_id: &str,
@@ -2502,6 +2660,18 @@ fn publish_agent_activity_detailed(
     kind: ChatActivityKind,
     live: bool,
     detail: Option<String>,
+) {
+    publish_agent_activity_with(state, agent_id, message_id, kind, live, detail, None)
+}
+
+fn publish_agent_activity_with(
+    state: &AppState,
+    agent_id: &str,
+    message_id: &str,
+    kind: ChatActivityKind,
+    live: bool,
+    detail: Option<String>,
+    progress: Option<crate::control::RunProgress>,
 ) {
     // Activities replicate, and would show the room a turn on a message it
     // has never seen.
@@ -2522,9 +2692,25 @@ fn publish_agent_activity_detailed(
         } else {
             now - 1
         },
+        progress,
     };
-    if let Err(error) = crate::api::chat::put_activity(state, activity) {
-        tracing::debug!("[agent] failed to publish chat activity: {error}");
+    // The circle's state is busy only for the length of one transaction, so a
+    // short wait almost always gets the write in. Dropping it is not harmless:
+    // a lost "done" leaves the agent's "working" claim standing for its TTL,
+    // and every other listener reads that as someone already on the message.
+    const ATTEMPTS: u32 = 5;
+    for attempt in 1..=ATTEMPTS {
+        match crate::api::chat::put_activity(state, activity.clone()) {
+            Ok(()) => return,
+            Err(error) if attempt == ATTEMPTS => {
+                tracing::warn!(
+                    "[agent] could not publish chat activity {} ({:?}): {error}",
+                    activity.activity_id,
+                    activity.kind
+                );
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(10 * attempt as u64)),
+        }
     }
 }
 
@@ -3256,8 +3442,23 @@ mod tests {
             recovery.contains("a decision only I recorded"),
             "recovery must put back what the resume assumption withheld: {recovery}"
         );
-        // Lines the room history already shows are not printed twice.
-        assert_eq!(recovery.matches("filler 19").count(), 1);
+        // The prompt behind the recovery block already shows the room's
+        // recent lines, and the request itself; neither is printed again.
+        let sent = super::super::context::recover(
+            &state,
+            "claude",
+            None,
+            &delivered.withheld,
+            &delivered.prompt,
+        );
+        assert_eq!(sent.matches("filler 18").count(), 1, "{sent}");
+        assert_eq!(sent.matches("a decision only I recorded").count(), 1);
+        assert!(
+            !recovery.contains("filler 19"),
+            "the request is not history"
+        );
+        // A session that has just started has no "last turn".
+        assert!(!sent.contains("since your last turn"), "{sent}");
         // A fresh session withholds nothing, so recovery adds no extra block.
         let fresh = super::super::context::build_delivery(
             &state,
@@ -3271,7 +3472,7 @@ mod tests {
         assert!(fresh.withheld.is_empty());
         assert!(
             !super::super::context::recovery_context(&state, "claude", None, &fresh.withheld)
-                .contains("Earlier lines you were assumed to remember")
+                .contains("assumed to remember")
         );
     }
 
@@ -3821,6 +4022,10 @@ mod tests {
         let assignment = inbox.entries()[0].request.warden.clone().unwrap();
         assert_eq!(assignment.mode, super::super::warden::spec::ModeKind::Vote);
         assert_eq!(assignment.max, 3);
+        // The turn carries why, for the receipt every device reads.
+        let note = assignment.note.expect("a warden turn carries its note");
+        assert_eq!(note.decider, "builtin:rules");
+        assert!(!note.reason.is_empty());
 
         run_until_idle(&state, &inbox, &cfg).await;
 
@@ -4589,6 +4794,7 @@ mod tests {
                 message_id: Some(message.into()),
                 updated_at: now,
                 expires_at: now + expires_in,
+                progress: None,
             },
         )
         .unwrap();
@@ -4677,7 +4883,63 @@ mod tests {
         req.message = room_message("pair", "how does the retry path work?");
         req.ambient = true;
         req.co_listeners = vec!["claude".into(), "codex".into()];
-        assert_eq!(launch_rejection(&state, &req, &cfg).unwrap(), None);
+        assert_eq!(launch_rejection(&state, &req, &cfg, &[]).unwrap(), None);
+    }
+
+    #[test]
+    fn a_hand_off_is_not_blocked_by_the_claim_a_failed_local_run_left_behind() {
+        // claude failed on this device, but the busy circle swallowed the write
+        // that would have ended its "working" claim. The hand-off to codex must
+        // still run: this device's inbox knows claude's run is over.
+        use super::super::inbox::tests::request;
+        use super::super::inbox::{Admission, Inbox, Status};
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = Inbox::open(dir.path(), 100).unwrap();
+        let mut cfg = inbox_config();
+        cfg.ambient = vec!["claude".into(), "codex".into()];
+        let message = room_message("limit", "how does the retry path work?");
+        add_chat(&state, &message);
+        let mut first = request("limit", "claude");
+        first.message = message.clone();
+        first.ambient = true;
+        first.co_listeners = vec!["claude".into()];
+        let Admission::Accepted { entry, .. } = inbox.admit(first, 20, 100).unwrap() else {
+            panic!("claude's turn was not admitted");
+        };
+        // The heartbeat a running turn publishes, not an explicit claim.
+        publish_agent_activity(&state, "claude", "limit", ChatActivityKind::Working, true);
+
+        let mut hand_off = request("limit", "codex");
+        hand_off.message = message;
+        hand_off.ambient = true;
+        hand_off.co_listeners = vec!["codex".into()];
+
+        // While claude is still running, its claim holds.
+        inbox
+            .transition(&entry.run_id, Status::Pending, Status::Running, None, 101)
+            .unwrap();
+        assert!(ended_here(&inbox, "limit").is_empty());
+        let ended = ended_here(&inbox, "limit");
+        assert_eq!(
+            launch_rejection(&state, &hand_off, &cfg, &ended).unwrap(),
+            Some("another agent is already working on this")
+        );
+
+        inbox
+            .transition(
+                &entry.run_id,
+                Status::Running,
+                Status::Failed,
+                Some("session limit".into()),
+                102,
+            )
+            .unwrap();
+        let ended = ended_here(&inbox, "limit");
+        assert_eq!(ended, vec!["claude".to_string()]);
+        assert_eq!(
+            launch_rejection(&state, &hand_off, &cfg, &ended).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -4695,14 +4957,17 @@ mod tests {
         req.ambient = true;
         req.co_listeners = vec!["claude".into()];
         assert_eq!(
-            launch_rejection(&state, &req, &cfg).unwrap(),
+            launch_rejection(&state, &req, &cfg, &[]).unwrap(),
             Some("another agent is already working on this")
         );
 
         // An addressed turn is owed its answer whoever else is working.
         let mut addressed = req.clone();
         addressed.ambient = false;
-        assert_eq!(launch_rejection(&state, &addressed, &cfg).unwrap(), None);
+        assert_eq!(
+            launch_rejection(&state, &addressed, &cfg, &[]).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -4719,7 +4984,7 @@ mod tests {
         req.message = asked.clone();
         req.ambient = true;
         assert_eq!(
-            launch_rejection(&state, &req, &cfg).unwrap(),
+            launch_rejection(&state, &req, &cfg, &[]).unwrap(),
             None,
             "nothing has been said yet"
         );
@@ -4730,7 +4995,7 @@ mod tests {
         answer.reply_to = Some("asked".into());
         add_chat(&state, &answer);
         assert_eq!(
-            launch_rejection(&state, &req, &cfg).unwrap(),
+            launch_rejection(&state, &req, &cfg, &[]).unwrap(),
             Some("another agent answered first")
         );
 
@@ -4738,7 +5003,10 @@ mod tests {
         // named this agent, and you are still owed its answer.
         let mut addressed = req.clone();
         addressed.ambient = false;
-        assert_eq!(launch_rejection(&state, &addressed, &cfg).unwrap(), None);
+        assert_eq!(
+            launch_rejection(&state, &addressed, &cfg, &[]).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -5682,5 +5950,32 @@ mod tests {
             cleaned,
             "Here is the chart:\n```\nATTACH: chart.png\n```\nDone."
         );
+    }
+
+    /// Progress goes out when it changes, but not faster than the floor, and a
+    /// reply streaming in is not a change by itself.
+    #[test]
+    fn progress_is_sent_on_change_at_most_once_per_gap() {
+        let start = tokio::time::Instant::now();
+        let at = |secs: u64| start + std::time::Duration::from_secs(secs);
+        let progress = |plan_done: u16, last: i64| {
+            Some(crate::control::RunProgress {
+                started_at: 0,
+                last_activity_at: Some(last),
+                plan_done,
+                plan_total: 3,
+                ..Default::default()
+            })
+        };
+        let mut gate = ProgressGate::default();
+        assert!(!gate.should_send(&None, at(0)), "nothing to say yet");
+        assert!(gate.should_send(&progress(0, 1), at(0)));
+        gate.sent(progress(0, 1), at(0));
+        assert!(
+            !gate.should_send(&progress(0, 9), at(10)),
+            "only the agent spoke"
+        );
+        assert!(!gate.should_send(&progress(1, 2), at(2)), "too soon");
+        assert!(gate.should_send(&progress(1, 2), at(5)));
     }
 }

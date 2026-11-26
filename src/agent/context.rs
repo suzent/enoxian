@@ -239,8 +239,8 @@ pub fn build_delivery(
         parent = message.reply_to.clone();
     }
     // A resumed session already holds the brief. If session/load falls back to
-    // session/new, the driver prepends `recovery_context`, which carries it.
-    let brief = (!resumed).then(|| standing_brief(state, agent_id, framing));
+    // session/new, the driver sends it through `recover`.
+    let brief = (!resumed).then(|| standing_brief(state, agent_id));
     let blobs = state.blobs().ok();
     let attachments = all
         .iter()
@@ -404,11 +404,13 @@ fn carry_forward(
 
 /// Context prepended when `session/load` failed and the agent starts fresh.
 ///
-/// `withheld` is what the prompt left out on the assumption that the resumed
-/// session still held it (see [`Delivery::withheld`]). That assumption has just
-/// proved wrong, so those lines are restored here — otherwise they would be
-/// skipped for good, the cursor having advanced past them. Lines the room
-/// history below already shows are not repeated.
+/// The prompt behind it was built for a resumed session, so it already carries
+/// the room's recent lines; repeating them here put the same history — and the
+/// request itself — in front of the agent twice. What it lacks is the brief and
+/// `withheld`: the lines it left out on the assumption that the resumed session
+/// still held them (see [`Delivery::withheld`]). That assumption has just proved
+/// wrong, so those lines are restored here — otherwise they would be skipped for
+/// good, the cursor having advanced past them.
 pub fn recovery_context(
     state: &AppState,
     agent: &str,
@@ -417,32 +419,47 @@ pub fn recovery_context(
 ) -> String {
     let all = state.channel_transcript(channel);
     let roster = Roster::load(state);
-    let history = window(&all, None, "", &roster);
-    // The history block below is the room's last few lines; anything inside it
-    // is already on screen.
-    let tail: std::collections::HashSet<&str> = all[all.len().saturating_sub(RECENT_CHAT_LINES)..]
+    let wanted: std::collections::HashSet<&str> = withheld.iter().map(String::as_str).collect();
+    let restored: Vec<String> = all
         .iter()
-        .map(|m| m.id.as_str())
-        .collect();
-    let restored: Vec<&ChatMessage> = withheld
-        .iter()
-        .filter(|id| !tail.contains(id.as_str()))
-        .filter_map(|id| all.iter().find(|m| &m.id == id))
+        .filter(|m| wanted.contains(m.id.as_str()))
+        .map(|m| {
+            format!(
+                "  {}: {}{}",
+                roster.speaker(m),
+                m.text.replace('\n', " "),
+                inline_attachments(m)
+            )
+        })
         .collect();
     let restored = if restored.is_empty() {
         String::new()
     } else {
-        format!(
-            "Earlier lines you were assumed to remember:\n{}\n",
-            restored
-                .iter()
-                .map(|m| format!("  {}: {}", roster.speaker(m), m.text.replace('\n', " ")))
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
+        format!("{RESTORED_HEADING}\n{}\n", restored.join("\n"))
     };
-    format!("<context>\nThe previous ACP conversation could not be restored. Its private memory is unavailable.\n{}\n{restored}Recent room history:\n{history}\nFor older history, retrieve GET /circles/{}/api/chat?limit=100, then continue with after_id equal to the last returned message ID.\n</context>\n\n",
-        standing_brief(state, agent, Framing::Addressed), state.circle_id)
+    format!("<context>\nThe previous ACP conversation could not be restored. Its private memory is unavailable.\n{}\n{restored}For older history, retrieve GET /circles/{}/api/chat?limit=100, then continue with after_id equal to the last returned message ID.\n</context>\n\n",
+        standing_brief(state, agent), state.circle_id)
+}
+
+/// Heading for lines a failed resume puts back.
+const RESTORED_HEADING: &str =
+    "Lines you were assumed to remember from your previous session, which is gone:";
+
+/// The prompt to send when a resume failed: [`recovery_context`] in front of
+/// the prompt built for the resume, whose chat heading would otherwise call the
+/// lines "since your last turn" to a session that has no last turn.
+pub fn recover(
+    state: &AppState,
+    agent: &str,
+    channel: Option<&str>,
+    withheld: &[String],
+    task: &str,
+) -> String {
+    format!(
+        "{}{}",
+        recovery_context(state, agent, channel, withheld),
+        task.replacen(DELTA_CHAT_HEADING, FRESH_CHAT_HEADING, 1)
+    )
 }
 
 /// Pure prompt composition. `brief` is `Some` only for a fresh session; `recent`
@@ -499,12 +516,11 @@ fn compose(
         )),
         Framing::Overheard => out.push_str(&format!(
             "MESSAGE overheard in circle \"{circle_name}\". {sender} posted this to the room; it \
-             names no agent and you were not addressed. Decide whether it is worth saying \
-             anything:\n"
+             names no agent and you were not addressed:\n"
         )),
         Framing::Assigned => out.push_str(&format!(
             "MESSAGE posted in circle \"{circle_name}\". {sender} posted this to the room; it \
-             names no agent, and the room's warden chose you to answer it:\n"
+             names no agent. What to do with it follows the message:\n"
         )),
         Framing::Private => out.push_str(&format!(
             "PRIVATE REQUEST from {sender}, said to you directly on this device. It was not \
@@ -584,8 +600,14 @@ fn inline_attachments(message: &ChatMessage) -> String {
 
 /// The standing brief describing the enoxian environment. Sent once per fresh
 /// session; the agent carries it forward via resume after that.
-fn standing_brief(state: &AppState, agent_id: &str, framing: Framing) -> String {
-    let members = member_labels(state);
+///
+/// It says nothing about why *this* turn is happening. The request header in
+/// [`compose`] does, every turn, and the ambient or warden instruction says it
+/// again where it matters; a brief that also said it repeated them — and, being
+/// carried into later turns by resume, went stale the first time a session woken
+/// by a mention was later shown the room, or the reverse.
+pub(super) fn standing_brief(state: &AppState, agent_id: &str) -> String {
+    let members = member_labels(state, agent_id);
     let roster = if members.is_empty() {
         String::new()
     } else {
@@ -619,35 +641,17 @@ fn standing_brief(state: &AppState, agent_id: &str, framing: Framing) -> String 
             agent = agent_id,
         ),
     };
-    // How this agent came to be running, stated once and accurately. The brief
-    // used to assert an @mention unconditionally, including on the turns that
-    // exist precisely because nobody mentioned anyone (§5).
-    let woken = match framing {
-        Framing::Overheard => {
-            "This is a group room: several people and agents share it, and most of what is said \
-             here is not addressed to you. You are seeing this message because you are configured \
-             to read the room, not because anyone asked you for anything."
-        }
-        Framing::Assigned => {
-            "This is a group room: several people and agents share it. Nobody named you, but you \
-             read the room, and its warden judged that this message needs an answer and chose you \
-             to give it."
-        }
-        Framing::Addressed => "You were woken by an @mention in the circle's chat.",
-        Framing::Private => {
-            "You were woken by a message said to you directly on this device, not in the \
-             circle's chat."
-        }
-    };
     format!(
         "You are \"{agent}\", an agent participating in an enoxian circle named \"{circle}\".\n\
-         enoxian is a peer-to-peer workspace shared by the members below. {woken} You are working \
-         directly in the shared workspace at the current directory.\n\
+         enoxian is a peer-to-peer workspace shared by the members below; its chat is a group room, \
+         and each turn says how you came to be asked. You are working directly in the shared \
+         workspace at the current directory.\n\
          {addressing}\
          {roster}\
-         Anything you write to files here is captured as a reviewable *proposal* that members can \
-         accept, reject, or revert — so make focused, clear changes and explain what you did. \
-         Your text reply is posted back into the circle chat, so answer conversationally. \
+         When a turn has you change files, anything you write here is captured as a reviewable \
+         *proposal* that members can accept, reject, or revert — so make focused, clear changes \
+         and explain what you did. Unless the turn says otherwise, your text reply is posted back \
+         into the circle chat, so answer conversationally. \
          To attach a file to your chat reply without storing it in the shared workspace, include \
          `ATTACH: <path>` on its own line in your reply (or run `enox say \"<text>\" --attach <path>`).\n\
          {conventions}\
@@ -664,7 +668,6 @@ fn standing_brief(state: &AppState, agent_id: &str, framing: Framing) -> String 
         circle = state.circle_name,
         addressing = addressing,
         roster = roster,
-        woken = woken,
         conventions = WORKSPACE_CONVENTIONS,
         cards = super::cards::brief_section(state, agent_id),
     )
@@ -695,8 +698,9 @@ fn self_identity(state: &AppState) -> Option<(String, String)> {
     (!me.owner.is_empty() && !me.device_label.is_empty()).then_some((me.owner, me.device_label))
 }
 
-/// Member display labels (owner + device) for the roster line.
-fn member_labels(state: &AppState) -> Vec<String> {
+/// Member display labels (owner + device) for the roster line, each agent's
+/// handle followed by its card summary where it has written one.
+fn member_labels(state: &AppState, agent_id: &str) -> Vec<String> {
     let Ok(txn) = state.control.try_transact() else {
         return Vec::new();
     };
@@ -725,9 +729,24 @@ fn member_labels(state: &AppState) -> Vec<String> {
                         .iter()
                         .map(|agent| {
                             if m.owner.is_empty() || m.device_label.is_empty() {
-                                format!("@{agent}")
-                            } else {
-                                format!("@{}/{}/{}", m.owner, m.device_label, agent)
+                                return format!("@{agent}");
+                            }
+                            let handle = format!("@{}/{}/{}", m.owner, m.device_label, agent);
+                            // What the agent says about itself, from its card,
+                            // beside the handle it goes with. This agent's own
+                            // card is shown in full by the cards section.
+                            let own =
+                                m.peer_id == state.peer_id && agent.eq_ignore_ascii_case(agent_id);
+                            match super::cards::read(
+                                &state.workspace,
+                                &m.owner,
+                                &m.device_label,
+                                agent,
+                            )
+                            .filter(|card| !own && !card.summary.is_empty())
+                            {
+                                Some(card) => format!("{handle} ({})", card.summary),
+                                None => handle,
                             }
                         })
                         .collect();
@@ -788,6 +807,33 @@ mod tests {
             author: crate::control::Author::Human,
             reply_to: None,
             channel: None,
+        }
+    }
+
+    /// The ACP client marks the request out of the prompt by finding it after
+    /// its framing line, so every framing must keep ending in a colon and line
+    /// break directly before the task.
+    #[test]
+    fn every_framing_lets_the_request_be_found() {
+        for framing in [
+            Framing::Addressed,
+            Framing::Overheard,
+            Framing::Assigned,
+            Framing::Private,
+        ] {
+            let p = compose(
+                "delta",
+                "suzy",
+                "make a test file",
+                Some("brief\n"),
+                Some("  suzy: hi"),
+                FRESH_CHAT_HEADING,
+                framing,
+                "\n\nAttached to this message (1 file):\n  a.png",
+            );
+            let range = super::super::acp::request_range(&p, "make a test file")
+                .unwrap_or_else(|| panic!("{framing:?} hides the request"));
+            assert_eq!(&p[range], "make a test file");
         }
     }
 
@@ -1061,7 +1107,7 @@ mod tests {
     }
 
     /// Every fresh session is told what the shared folder is for, and where
-    /// the Circle's own conventions live, whichever way the agent was woken.
+    /// the Circle's own conventions live.
     #[test]
     fn brief_states_the_shared_folder_conventions() {
         let state = AppState::new(
@@ -1080,8 +1126,8 @@ mod tests {
                 None,
             ),
         );
-        for framing in [Framing::Addressed, Framing::Overheard] {
-            let brief = standing_brief(&state, "claude", framing);
+        {
+            let brief = standing_brief(&state, "claude");
             assert!(brief.contains("knowledge base and index, not a place to build software"));
             assert!(brief.contains("Do not clone"));
             assert!(brief.contains("AGENTS.md at its root, read it first"));

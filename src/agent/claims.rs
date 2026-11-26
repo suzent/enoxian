@@ -102,6 +102,7 @@ mod tests {
             message_id: Some(message.into()),
             updated_at: 0,
             expires_at: 100,
+            progress: None,
         }
     }
 

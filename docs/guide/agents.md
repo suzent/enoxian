@@ -174,6 +174,15 @@ shows it in the activity panel and in `enox runs`. A turn quiet for ten
 minutes with no tool call open is flagged as possibly stuck; nothing more
 happens unless you act.
 
+Other devices in the circle see a shorter version beside the agent's name above
+the composer, such as "is working · running cargo · step 2/4: Write the tests".
+It is built from the agent's ACP tool-call and plan updates on the device
+running it, and keeps only what is safe to share: the kind of tool, the program
+name for a command (never its arguments), a file path inside the shared folder,
+and the plan step in progress. Tool titles, command lines and paths outside the
+shared folder stay on the running device. It refreshes at most every five
+seconds. Private turns are never shown.
+
 A turn ends when the agent ends it, when its process exits, or when it is
 stopped:
 
@@ -772,7 +781,7 @@ If you would rather not wait for the budget, **stop chain** appears in the
 activity strip while a delegated turn is running, and anyone in the Circle can
 press it. It does not interrupt the turn already running — it stops every
 further one, on every device. A chain that was stopped or ran out of budget
-says so in the activity strip (`codex not triggered · relay budget spent`)
+says so in the activity strip (`codex did not run · relay budget spent`)
 rather than leaving a permanent line in the transcript.
 
 A reply that arrived through delegation is marked `via @claude` next to the

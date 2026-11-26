@@ -224,6 +224,31 @@ export interface ChatActivity {
   message_id: string | null
   updated_at: number
   expires_at: number
+  /** What a running turn is doing, for 'working' only. Absent from older
+   *  devices. See `RunProgress` in `src/control/mod.rs`. */
+  progress?: RunProgress | null
+}
+
+/** One open ACP tool call, reduced to what may leave the running device. */
+export interface ToolProgress {
+  /** ACP ToolKind: read, edit, delete, move, search, execute, think, fetch, switch_mode, other. */
+  kind: string
+  /** For execute, the program's name only. */
+  program?: string | null
+  /** A location inside the workspace, relative to it. */
+  path?: string | null
+  since: number
+}
+
+/** A running turn's progress as the room sees it. */
+export interface RunProgress {
+  started_at: number
+  last_activity_at?: number | null
+  tool?: ToolProgress | null
+  open_tools: number
+  plan_done: number
+  plan_total: number
+  plan_step?: string | null
 }
 
 /** The follow-up window for this device, from `GET /api/chat/engagement`. */
@@ -383,4 +408,21 @@ export interface ExecutionRun {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'expired' | 'interrupted' | 'legacy_suppressed'
   detail?: string | null
   ambient: boolean
+  /** How the turn came to run. Absent on receipts from older peers. */
+  routed_by?: 'mention' | 'rotation' | 'warden'
+  /** Every agent this device offered the same message to, together. */
+  co_listeners?: string[]
+  /** What the warden decided, when it assigned the turn. */
+  warden?: RunWardenNote
+}
+
+export interface RunWardenNote {
+  mode: 'single' | 'room' | 'vote'
+  decider?: string
+  reason?: string
+  /** The decider's calibrated confidence in this run's agent, 0..1. */
+  confidence?: number
+  latency_ms?: number
+  /** The configured decider failed and the rules decided instead. */
+  fallback?: boolean
 }

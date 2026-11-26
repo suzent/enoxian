@@ -256,6 +256,9 @@ pub struct LaunchRequest<'a> {
     /// Channel this turn belongs to; `None` is `#general`. Selects which of the
     /// agent's per-channel conversations is resumed and saved.
     pub channel: Option<&'a str>,
+    /// Where the person's request sits in `task`, for agents that show their
+    /// conversation; `None` sends the prompt as one block.
+    pub shape: Option<super::acp::PromptShape>,
 }
 
 #[derive(Clone, Copy)]
@@ -385,6 +388,7 @@ pub async fn launch_cancellable(
             &run_dir,
             resume,
             req.withheld,
+            req.shape.as_ref(),
             actor,
             &mut lease,
             req.workspace,
@@ -474,6 +478,7 @@ async fn run_acp(
     run_dir: &Path,
     resume: Option<&str>,
     withheld: &[String],
+    shape: Option<&super::acp::PromptShape>,
     actor: ManagedActor<'_>,
     lease: &mut crate::proposal::runs::RunLease,
     workspace: &Path,
@@ -547,9 +552,10 @@ async fn run_acp(
     // Now capture only the reply to *this* prompt.
     capturing.store(true, Ordering::Relaxed);
     let prompt = if resume.is_some() && !acp.was_resumed() {
-        let context = coordination.as_ref().map(|state| super::context::recovery_context(state, actor.agent_id, lease.record.session.channel.as_deref(), withheld))
-            .unwrap_or_else(|| "Previous ACP session could not be restored; private conversation memory is unavailable. Retrieve Circle chat if needed.\n\n".into());
-        format!("{context}{task}")
+        match coordination.as_ref() {
+            Some(state) => super::context::recover(state, actor.agent_id, lease.record.session.channel.as_deref(), withheld, task),
+            None => format!("Previous ACP session could not be restored; private conversation memory is unavailable. Retrieve Circle chat if needed.\n\n{task}"),
+        }
     } else {
         task.to_string()
     };
@@ -561,7 +567,7 @@ async fn run_acp(
         }
         _ => 0,
     };
-    let result = acp.prompt_until(&prompt, &stop).await;
+    let result = acp.prompt_shaped_until(&prompt, shape, &stop).await;
     if let Ok(turn) = &result {
         usage.lock().unwrap().add_tokens(turn.tokens);
     }
@@ -801,6 +807,7 @@ mod tests {
                 resume: None,
                 withheld: &[],
                 channel: None,
+                shape: None,
             }),
         )
         .await
@@ -876,6 +883,7 @@ mod tests {
                 resume: None,
                 withheld: &[],
                 channel: None,
+                shape: None,
             }),
         )
         .await
@@ -947,6 +955,7 @@ mod tests {
                 resume: None,
                 withheld: &[],
                 channel: None,
+                shape: None,
             }),
         )
         .await
@@ -1034,6 +1043,7 @@ mod tests {
                 resume: None,
                 withheld: &[],
                 channel: None,
+                shape: None,
             }),
         )
         .await

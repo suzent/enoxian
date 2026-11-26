@@ -36,6 +36,72 @@ use super::liveness::Activity;
 /// Supported major protocol version.
 const PROTOCOL_VERSION: u32 = 1;
 
+/// `_meta` key under which a prompt names the person whose words it relays.
+/// ACP leaves `_meta` to extensions namespaced by the producer's domain.
+pub const ORIGIN_META_KEY: &str = "com.enoxian/origin";
+
+/// Which part of a prompt is the person's own words, and whose they are.
+///
+/// The rest of the prompt — the room's background before the request and any
+/// instructions after it — is for the agent alone. Sending it as separate
+/// blocks marked `audience: ["assistant"]` lets an agent that shows its
+/// conversation to a person (Suzent's chat window, an editor's transcript)
+/// show what was asked instead of the whole briefing. The blocks concatenate to
+/// exactly the original text, so an agent that ignores annotations reads the
+/// same prompt as before.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PromptShape {
+    /// The person's request, exactly as it appears in the prompt. Located when
+    /// the prompt is sent, so whatever is put around it on the way (a recovery
+    /// briefing after a failed resume) stays with the agent's part.
+    pub request: String,
+    /// Sent as `_meta["com.enoxian/origin"]`: `{"author", "via", "framing"}`.
+    pub origin: Value,
+}
+
+/// Where `task` sits in a prompt built around it: right after the framing line
+/// that introduces it, which ends in a colon. Later text (the attachment list,
+/// a turn's instructions) follows it, so the last match is the request.
+pub fn request_range(prompt: &str, task: &str) -> Option<std::ops::Range<usize>> {
+    if task.trim().is_empty() {
+        return None;
+    }
+    let start = prompt.rfind(&format!(":\n{task}"))? + 2;
+    Some(start..start + task.len())
+}
+
+/// The `session/prompt` params for `text`, split by audience when `shape`
+/// marks out a request that is really in it.
+pub fn prompt_params(session_id: &str, text: &str, shape: Option<&PromptShape>) -> Value {
+    let request = shape.and_then(|s| request_range(text, &s.request));
+    let Some(request) = request else {
+        return json!({
+            "sessionId": session_id,
+            "prompt": [{ "type": "text", "text": text }]
+        });
+    };
+    let for_agent = |part: &str| {
+        json!({
+            "type": "text",
+            "text": part,
+            "annotations": { "audience": ["assistant"] }
+        })
+    };
+    let mut blocks = Vec::new();
+    if request.start > 0 {
+        blocks.push(for_agent(&text[..request.start]));
+    }
+    blocks.push(json!({ "type": "text", "text": &text[request.clone()] }));
+    if request.end < text.len() {
+        blocks.push(for_agent(&text[request.end..]));
+    }
+    let mut params = json!({ "sessionId": session_id, "prompt": blocks });
+    if let Some(shape) = shape {
+        params["_meta"] = json!({ ORIGIN_META_KEY: shape.origin });
+    }
+    params
+}
+
 const MAX_FRAME: usize = 1024 * 1024;
 const MAX_BUFFER: usize = 16 * 1024 * 1024;
 
@@ -55,7 +121,12 @@ pub fn auth_required(error: &anyhow::Error) -> bool {
 /// Whether `session/load` failed because the agent has no such session: it was
 /// lost with the agent's own state, so loading it can never succeed. ACP's
 /// "resource not found" is -32002; agents also answer "invalid params" (-32602)
-/// naming the session ("no such session '…'").
+/// naming the session ("no such session '…'"). An agent that ties sessions to
+/// the authorization that made them answers "auth required" (-32000) saying
+/// this authorization "cannot access the requested session" once the agent
+/// was paired again: the session belongs to an authorization this daemon no
+/// longer holds, so it is gone for us too. A plain -32000 asking for sign-in
+/// is not: signing in again brings the session back.
 pub fn session_gone(error: &anyhow::Error) -> bool {
     error.downcast_ref::<RpcError>().is_some_and(|error| {
         let message = error.message.to_ascii_lowercase();
@@ -63,6 +134,9 @@ pub fn session_gone(error: &anyhow::Error) -> bool {
             || (error.code == -32602
                 && message.contains("session")
                 && (message.contains("no such") || message.contains("not found")))
+            || (error.code == -32000
+                && message.contains("session")
+                && message.contains("cannot access"))
     })
 }
 
@@ -482,6 +556,17 @@ impl<H: ClientHooks> AcpSession<H> {
         task: &str,
         stop: &CancellationToken,
     ) -> Result<TurnResult> {
+        self.prompt_shaped_until(task, None, stop).await
+    }
+
+    /// [`Self::prompt_until`] for a prompt whose request is marked out, so the
+    /// agent can tell the person's words from the briefing around them.
+    pub async fn prompt_shaped_until(
+        &mut self,
+        task: &str,
+        shape: Option<&PromptShape>,
+        stop: &CancellationToken,
+    ) -> Result<TurnResult> {
         let sid = self
             .session_id
             .clone()
@@ -491,10 +576,7 @@ impl<H: ClientHooks> AcpSession<H> {
         let result = self
             .exchange(
                 "session/prompt",
-                json!({
-                    "sessionId": sid,
-                    "prompt": [{ "type": "text", "text": task }]
-                }),
+                prompt_params(&sid, task, shape),
                 Some(stop),
             )
             .await?;
@@ -905,6 +987,88 @@ fn compact(v: &Value) -> String {
 pub(crate) mod tests {
     use super::*;
 
+    fn texts(params: &Value) -> Vec<(String, Option<Value>)> {
+        params["prompt"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| {
+                (
+                    b["text"].as_str().unwrap().to_string(),
+                    b.get("annotations").cloned(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_shaped_prompt_keeps_the_briefing_for_the_agent() {
+        let prompt = "<context>room</context>\n\nREQUEST from ann:\nfix it\n\nReply PASS if not.";
+        let shape = PromptShape {
+            request: "fix it".into(),
+            origin: json!({ "author": "ann", "via": "delta" }),
+        };
+        let params = prompt_params("s1", prompt, Some(&shape));
+        let blocks = texts(&params);
+        let agent_only = Some(json!({ "audience": ["assistant"] }));
+        assert_eq!(
+            blocks,
+            vec![
+                (
+                    "<context>room</context>\n\nREQUEST from ann:\n".to_string(),
+                    agent_only.clone()
+                ),
+                ("fix it".to_string(), None),
+                ("\n\nReply PASS if not.".to_string(), agent_only),
+            ]
+        );
+        // An agent that ignores annotations reads exactly the old prompt.
+        assert_eq!(
+            blocks.iter().map(|(t, _)| t.as_str()).collect::<String>(),
+            prompt
+        );
+        assert_eq!(params["_meta"][ORIGIN_META_KEY]["author"], "ann");
+    }
+
+    #[test]
+    fn an_unshaped_or_mismatched_prompt_is_one_block() {
+        let plain = prompt_params("s1", "hello", None);
+        assert_eq!(texts(&plain), vec![("hello".to_string(), None)]);
+        assert!(plain.get("_meta").is_none());
+
+        let elsewhere = PromptShape {
+            request: "bye".into(),
+            origin: json!({}),
+        };
+        assert_eq!(
+            texts(&prompt_params("s1", "hello", Some(&elsewhere))).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_request_is_found_after_its_framing_line() {
+        let prompt =
+            "notes: ok\nREQUEST from ann:\nok\n\nAttached to this message (1 file):\n  ok.png";
+        let range = request_range(prompt, "ok").unwrap();
+        assert_eq!(&prompt[range.clone()], "ok");
+        assert_eq!(range.start, prompt.find("ann:\nok").unwrap() + 5);
+        assert_eq!(request_range(prompt, "  "), None);
+        assert_eq!(request_range("REQUEST:\nsomething else", "fix"), None);
+    }
+
+    #[test]
+    fn a_briefing_put_in_front_later_stays_with_the_agent() {
+        let shape = PromptShape {
+            request: "fix it".into(),
+            origin: json!({}),
+        };
+        let prompt = "<context>restored</context>\n\nREQUEST from ann:\nfix it";
+        let blocks = texts(&prompt_params("s1", prompt, Some(&shape)));
+        assert_eq!(blocks[1].0, "fix it");
+        assert!(blocks[0].0.starts_with("<context>restored"));
+    }
+
     #[test]
     fn pick_option_never_reverses_the_decision() {
         let params = json!({
@@ -1227,6 +1391,14 @@ pub(crate) mod tests {
         assert!(session_gone(&rpc(-32002, "Resource not found")));
         assert!(!session_gone(&rpc(-32602, "cwd must be absolute")));
         assert!(!session_gone(&rpc(-32000, "Sign in required")));
+        assert!(session_gone(&rpc(
+            -32000,
+            "This authorization cannot access the requested session"
+        )));
+        assert!(!session_gone(&rpc(
+            -32000,
+            "This authorization cannot access the workspace"
+        )));
         assert!(!session_gone(&anyhow!("no such session")));
     }
 

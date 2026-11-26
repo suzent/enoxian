@@ -36,10 +36,6 @@ const OWN_CARD_LIMIT: usize = 1_500;
 /// How long one line about another agent may be.
 pub const SUMMARY_LIMIT: usize = 160;
 
-/// How many other agents the brief lists. A Circle with more than this many
-/// agents is not one where an agent picks who to hand over to from a list.
-const OTHERS_LIMIT: usize = 16;
-
 /// One agent's card, as read from the shared folder.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Card {
@@ -634,8 +630,8 @@ pub fn local_summary(state: &AppState, agent: &str) -> String {
     }
 }
 
-/// The part of the standing brief about cards: this agent's own, and one line
-/// for each other agent that has said something about itself.
+/// The part of the standing brief about cards: this agent's own. The others'
+/// summaries are in the member list (see `context::member_labels`).
 pub fn brief_section(state: &AppState, agent_id: &str) -> String {
     let me = state.self_member().filter(|m| !m.device_label.is_empty());
     let own_line = match &me {
@@ -659,34 +655,14 @@ pub fn brief_section(state: &AppState, agent_id: &str) -> String {
         }
         None => String::new(),
     };
-    let others: Vec<String> = roster_cards(state)
-        .into_iter()
-        .filter(|(member, agent, _)| {
-            !(member.peer_id == state.peer_id && agent.eq_ignore_ascii_case(agent_id))
-        })
-        .filter_map(|(member, agent, card)| {
-            let card = card.filter(|c| !c.summary.is_empty())?;
-            Some(format!(
-                "  @{}/{}/{} — {}",
-                member.owner, member.device_label, agent, card.summary
-            ))
-        })
-        .take(OTHERS_LIMIT)
-        .collect();
-    let others = if others.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "What the other agents here say about themselves (their cards, under {DIR}/):\n{}\n",
-            others.join("\n")
-        )
-    };
-    if own_line.is_empty() && others.is_empty() {
+    if own_line.is_empty() {
         return String::new();
     }
+    // The other agents' summaries sit beside their handles in the member list,
+    // which already names every agent; listing them again here repeated it.
     format!(
         "Each agent in this circle may describe itself in a card at \
-         {DIR}/<owner>/<device>/<agent>.md.\n{own_line}{others}"
+         {DIR}/<owner>/<device>/<agent>.md; the member list above quotes the others'.\n{own_line}"
     )
 }
 
@@ -778,10 +754,10 @@ mod tests {
         ]);
         // No cards anywhere: the agent is told where its own would go, and
         // nothing about the others, who have said nothing.
-        let brief = brief_section(&state, "claude");
+        let brief = super::super::context::standing_brief(&state, "claude");
         assert!(brief.contains("has not been written yet"), "{brief}");
         assert!(brief.contains("agents/suzy/jessair/claude.md"));
-        assert!(!brief.contains("@bob/spark/codex"));
+        assert!(!brief.contains("@bob/spark/codex ("));
 
         std::fs::create_dir_all(dir.path().join("agents/bob/spark")).unwrap();
         std::fs::write(
@@ -792,16 +768,16 @@ mod tests {
         // An untouched template is not a description.
         write_template(dir.path(), "bob", "spark", "gemini");
         write_template(dir.path(), "suzy", "jessair", "claude");
-        let brief = brief_section(&state, "claude");
+        let brief = super::super::context::standing_brief(&state, "claude");
         assert!(
             brief.contains("Your card is agents/suzy/jessair/claude.md"),
             "{brief}"
         );
-        assert!(brief.contains("@bob/spark/codex — Runs the test suite on the GPU box"));
-        assert!(!brief.contains("@bob/spark/gemini"));
+        assert!(brief.contains("@bob/spark/codex (Runs the test suite on the GPU box)"));
+        assert!(!brief.contains("@bob/spark/gemini ("));
         assert!(
-            !brief.contains("@suzy/jessair/claude —"),
-            "never listed as someone else"
+            !brief.contains("@suzy/jessair/claude ("),
+            "its own card is shown in full, not summarised as someone else's"
         );
         assert_eq!(local_summary(&state, "claude"), "claude (on suzy/jessair)");
     }

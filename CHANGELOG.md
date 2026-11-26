@@ -41,8 +41,34 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
-- Public landing page and documentation website (`website/`) with GitHub Pages deployment for `enoxian.com`, covering English and Simplified Chinese routes, full-text documentation search, and `llms.txt` exports.
 - Topic channels: a Circle's chat can split into `#general` plus named channels (`enox channels`, `enox chat --channel`, `enox say --channel`), listed under the active circle in the web sidebar with unread counts. Each agent keeps a separate conversation per channel, runs turns in different channels in parallel, replies in the channel it was asked in, and sees a short index of what is new in the other channels.
+
+## [0.16.0] — 2026-11-22
+
+### Added
+
+- Other devices now see what a running agent is doing, not just that it is working: the
+  activity strip shows the tool it is in and its plan step (for example "running cargo ·
+  step 2/4: Write the tests"). Built from the agent's ACP tool-call and plan updates and
+  redacted on the device running it: no command arguments, tool titles, or paths outside
+  the shared folder leave the device, and updates are sent at most every five seconds.
+- Public landing page and documentation website (`website/`) with GitHub Pages deployment for `enoxian.com`, covering English and Simplified Chinese routes, chronological veiled-draft animations, full-text documentation search, and `llms.txt` exports.
+- Chat now shows under each message how it was routed: a chip naming who the Warden (or rotation) picked, how many listeners and how confident, which expands into a lifecycle of each agent's turn — failures, hand-offs and the final answer. It opens by itself when nobody could answer, and works across devices because the routing travels in the synced execution receipts.
+
+### Changed
+
+- Agents run by the daemon get a shorter prompt: when a session cannot be resumed, recent
+  room history and the request are no longer sent twice, the brief no longer repeats how
+  the agent was woken (and no longer tells a private turn its reply goes to the room), and
+  other agents' card summaries now sit beside their handles in the member list.
+- Agents that show their conversation to a person, such as Suzent, now show only what was asked and who asked it; the room's background is still sent but marked for the agent alone.
+
+### Fixed
+
+- A message handed on after an agent failed (for example on its usage limit) no longer stops with "another agent is already working on this" because the failed agent's "working" marker outlived its run. The daemon now ignores that marker for an agent whose run on the same device has ended, retries activity updates briefly when the circle is busy rather than dropping them, and the routing strip says why a run was stopped.
+- The "No agent could answer this" notice no longer lingers in chat after another agent goes on to answer the message; it is folded into the message's routing strip instead.
+- An agent paired again no longer fails every turn with "Could not restore ACP session" when the agent says the new authorization cannot access the saved session (ACP `-32000`); that session is treated as gone and a fresh one starts.
+- The activity strip above the composer no longer says "not triggered" for agents that read a message and passed, or voted for another answer — they show as having seen it, and the routing strip under the message says what they did. Agents that were never run (relay budget spent, chain stopped, a failed turn) now read "did not run".
 
 ## [0.15.0] — 2026-11-16
 
@@ -1396,7 +1422,8 @@ Baseline release prior to the agent-execution and packaging work above. The
 M1–M14 feature set covered P2P sync, presence/tasks/locks/chat, members and MLS
 membership, WAN bootstrap, and the local workspace proposal layer.
 
-[Unreleased]: https://github.com/suzent/enoxian/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/suzent/enoxian/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/suzent/enoxian/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/suzent/enoxian/compare/v0.14.2...v0.15.0
 [0.14.2]: https://github.com/suzent/enoxian/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/suzent/enoxian/compare/v0.14.0...v0.14.1

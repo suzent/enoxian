@@ -505,14 +505,14 @@
   background: var(--enox-panel);
 }
 
-/* ── 02. VEILED DRAFT STATE MACHINE (DRAFT -> HOLD -> REWRITE/DROP) ───── */
+/* ── 02. CHRONOLOGICAL VEILED DRAFT PLAYER ───────────────────────────── */
 
 .veilControlBar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 
 .veilControlLabel {
@@ -540,19 +540,110 @@
   box-shadow: 3px 3px 0 var(--enox-muted);
 }
 
-.veilSplitBoard {
+.veilPlayerFrame {
   border: 1px solid var(--enox-border);
   background: var(--enox-panel);
   box-shadow: 6px 6px 0 var(--enox-border);
+}
+
+.timelineBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--enox-border);
+  background: var(--enox-surface);
+  position: relative;
+}
+
+.playToggleBtn {
+  padding: 4px 10px;
+  border: 1px solid var(--enox-border);
+  background: var(--enox-panel);
+  color: var(--enox-fg);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.playToggleBtn:hover {
+  background: var(--enox-fg);
+  color: var(--enox-panel);
+}
+
+.timeStepsRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+}
+
+.timeTickBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--enox-muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.timeTickPast {
+  color: var(--enox-fg);
+}
+
+.timeTickCurrent {
+  border-color: var(--enox-border);
+  background: var(--enox-fg);
+  color: var(--enox-panel);
+  font-weight: 700;
+}
+
+.timeTickDot {
+  width: 6px;
+  height: 6px;
+  border: 1px solid currentColor;
+}
+
+.timeTickCurrent .timeTickDot {
+  background: currentColor;
+}
+
+.timeProgressTrack {
+  height: 2px;
+  background: var(--enox-border-subtle);
+  width: 100%;
+  overflow: hidden;
+}
+
+.timeProgressFill {
+  height: 100%;
+  background: var(--enox-fg);
+  transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.veilSplitBoard {
   display: grid;
   grid-template-columns: 1fr 1.15fr;
+  position: relative;
+  overflow: hidden;
 }
 
 .veilTrackCol {
   padding: 22px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 13px;
+  position: relative;
 }
 
 .veilTrackCol + .veilTrackCol {
@@ -560,6 +651,84 @@
   background-color: var(--enox-bg);
   background-image: var(--enox-dither-soft);
   background-size: 6px 6px;
+}
+
+/* Cross-veil packet dispatch & center gate */
+.veilGateBadge {
+  position: absolute;
+  left: 46.5%;
+  bottom: 46px;
+  transform: translateX(-50%);
+  z-index: 6;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--enox-border);
+  background: var(--enox-panel);
+  color: var(--enox-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  transition: transform 0.28s ease, background-color 0.25s ease, color 0.25s ease;
+  pointer-events: none;
+}
+
+.veilGateDispatch {
+  background: var(--enox-fg);
+  color: var(--enox-panel);
+  transform: translateX(-50%) scale(1.18);
+  box-shadow: 3px 3px 0 var(--enox-muted);
+}
+
+.veilGateBlocked {
+  border-style: dashed;
+  background: var(--enox-surface);
+  color: var(--enox-fg);
+}
+
+.dispatchPacket {
+  position: absolute;
+  bottom: 49px;
+  left: 58%;
+  z-index: 7;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--enox-border);
+  background: var(--enox-fg);
+  color: var(--enox-panel);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  box-shadow: 3px 3px 0 var(--enox-muted);
+  pointer-events: none;
+  animation: flyOutAcrossVeil 0.62s cubic-bezier(0.2, 0.9, 0.25, 1) forwards;
+}
+
+@keyframes flyOutAcrossVeil {
+  0% {
+    left: 62%;
+    opacity: 0;
+    transform: scale(0.88);
+  }
+  16% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  78% {
+    left: 24%;
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    left: 18%;
+    opacity: 0;
+    transform: scale(0.92);
+  }
 }
 
 .trackHeader {
@@ -581,10 +750,104 @@
   color: var(--enox-muted);
 }
 
+/* Chronological reveal transition */
+.seqItem {
+  opacity: 0.14;
+  transform: translateY(6px);
+  filter: grayscale(1);
+  transition:
+    opacity 0.36s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.36s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.28s ease,
+    border-color 0.28s ease;
+  pointer-events: none;
+}
+
+.seqItemVisible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.seqItemActive {
+  box-shadow: 4px 4px 0 var(--enox-border);
+}
+
 .chatEventCard {
   border: 1px solid var(--enox-border);
   background: var(--enox-bg);
   padding: 12px 14px;
+  position: relative;
+}
+
+/* Human message composer send-up feel */
+.chatEventSent {
+  animation: popSentMessage 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes popSentMessage {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Agent reply arriving right after the packet flies across the veil */
+.chatEventFromVeil {
+  animation: receiveFromVeil 0.68s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes receiveFromVeil {
+  0%,
+  42% {
+    opacity: 0;
+    transform: translateX(44px) scale(0.97);
+  }
+  76% {
+    opacity: 1;
+    transform: translateX(-2px) scale(1.005);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+.syncReceiptTag {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  padding: 1px 5px;
+  border: 1px solid var(--enox-border-subtle);
+  background: var(--enox-panel);
+  color: var(--enox-fg);
+  margin-left: 6px;
+}
+
+/* Source buffer recoil when dispatching */
+.draftStepDispatched {
+  animation: sourceDispatchPulse 0.52s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes sourceDispatchPulse {
+  0% {
+    transform: translateX(0);
+  }
+  30% {
+    transform: translateX(-8px);
+    box-shadow: 6px 6px 0 var(--enox-fg);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+.draftStepDropped {
+  border-style: dashed;
+  opacity: 0.72;
 }
 
 .chatEventTop {
@@ -645,6 +908,21 @@
 .statePillInvert {
   background: var(--enox-fg);
   color: var(--enox-panel);
+}
+
+.typingCursor {
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: var(--enox-fg);
+  animation: cursorBlink 0.8s steps(2) infinite;
+}
+
+@keyframes cursorBlink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
 }
 
 .draftTextStrike {
@@ -796,9 +1074,23 @@
     animation: none;
     top: 50%;
   }
+  .seqItem,
+  .timeProgressFill,
+  .chatEventSent,
+  .chatEventFromVeil,
+  .dispatchPacket,
+  .draftStepDispatched,
+  .typingCursor {
+    transition: none;
+    animation: none;
+  }
 }
 
 @media (max-width: 1040px) {
+  .veilGateBadge,
+  .dispatchPacket {
+    display: none;
+  }
   .heroGrid {
     grid-template-columns: 1fr;
   }

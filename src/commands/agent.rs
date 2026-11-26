@@ -251,6 +251,7 @@ pub async fn run(
         // A one-off CLI run builds no room context, so it withholds none.
         withheld: &[],
         channel: None,
+        shape: None,
         agent_name: &agent,
         cmd: &cmd,
         task: &task,

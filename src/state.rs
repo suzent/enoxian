@@ -498,6 +498,31 @@ impl AppState {
             );
         std::mem::forget(activity_sub);
 
+        // Execution receipts change on this device (every inbox transition is
+        // published) and arrive from peers. Either way the chat's routing strip
+        // wants to know, so this observer does not filter by origin; it fires
+        // only for inserts and updates, since `publish` writes a receipt only
+        // when its content changed.
+        let receipts_map = control.get_or_insert_map(crate::api::execution::RECEIPTS_KEY);
+        let events_for_receipts = events_tx.clone();
+        let receipts_sub = receipts_map.observe(
+            move |txn: &yrs::TransactionMut, event: &yrs::types::map::MapEvent| {
+                for change in event.keys(txn).values() {
+                    let (yrs::types::EntryChange::Inserted(yrs::Out::Any(yrs::Any::String(raw)))
+                    | yrs::types::EntryChange::Updated(_, yrs::Out::Any(yrs::Any::String(raw)))) =
+                        change
+                    else {
+                        continue;
+                    };
+                    if let Ok(receipt) = serde_json::from_str::<serde_json::Value>(raw) {
+                        let _ = events_for_receipts
+                            .send(CircleEvent::ExecutionReceiptChanged { receipt });
+                    }
+                }
+            },
+        );
+        std::mem::forget(receipts_sub);
+
         // Observe tasks for P2P-delivered changes and fire SSE events. Local task
         // APIs emit their own events; this covers updates that arrived via CRDT sync.
         let tasks_map = control.get_or_insert_map(TASKS_KEY);
