@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Archive, Plus } from 'lucide-react'
+import { Archive, Pencil, Plus } from 'lucide-react'
 import type { Channel } from '../types'
 import { channelKey } from '../context/ChannelContext'
 
@@ -11,16 +11,21 @@ interface Props {
   onSelect: (id: string | null) => void
   onCreate: (name: string, purpose: string) => Promise<void>
   onArchive: (id: string) => Promise<void>
+  onRename: (id: string, name: string) => Promise<void>
 }
 
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err))
+
 /** The active circle's topic channels, nested under its row in the sidebar.
- *  `#general` always comes first and cannot be archived. */
-export default function ChannelList({ channels, current, unread, onSelect, onCreate, onArchive }: Props) {
+ *  `#general` always comes first and cannot be renamed or archived. */
+export default function ChannelList({ channels, current, unread, onSelect, onCreate, onArchive, onRename }: Props) {
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
   const [purpose, setPurpose] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // The channel being renamed in place, and its draft name.
+  const [renaming, setRenaming] = useState<{ id: string; value: string; error: string | null } | null>(null)
   // An archived channel stays listed only while it is open.
   const listed = channels.filter(c => !c.archived || c.id === current)
 
@@ -39,7 +44,27 @@ export default function ChannelList({ channels, current, unread, onSelect, onCre
       await onCreate(name.trim(), purpose.trim())
       close()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errorText(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const startRename = (c: Channel) => {
+    if (c.id === null || c.archived) return
+    setRenaming({ id: c.id, value: c.name, error: null })
+  }
+
+  const commitRename = async (original: string) => {
+    if (!renaming || busy) return
+    const next = renaming.value.trim().replace(/^#/, '')
+    if (!next || next === original) { setRenaming(null); return }
+    setBusy(true)
+    try {
+      await onRename(renaming.id, next)
+      setRenaming(null)
+    } catch (err) {
+      setRenaming(r => (r ? { ...r, error: errorText(err) } : r))
     } finally {
       setBusy(false)
     }
@@ -52,30 +77,66 @@ export default function ChannelList({ channels, current, unread, onSelect, onCre
           const key = channelKey(c.id)
           const selected = c.id === current
           const count = selected ? 0 : unread[key] ?? 0
+          const editable = c.id !== null && !c.archived
+          if (renaming && renaming.id === c.id) {
+            return (
+              <li key={key} className="channel-row is-renaming">
+                <form
+                  className="channel-rename"
+                  onSubmit={event => { event.preventDefault(); void commitRename(c.name) }}
+                >
+                  <span className="channel-row__hash" aria-hidden="true">#</span>
+                  <input
+                    autoFocus
+                    aria-label={`Rename #${c.name}`}
+                    value={renaming.value}
+                    maxLength={33}
+                    spellCheck={false}
+                    onFocus={event => event.currentTarget.select()}
+                    onChange={event => setRenaming({ ...renaming, value: event.target.value, error: null })}
+                    onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); setRenaming(null) } }}
+                    onBlur={() => { if (!busy) setRenaming(null) }}
+                  />
+                  <span className="channel-rename__hint" aria-hidden="true">↵</span>
+                </form>
+                {renaming.error && <span className="channel-rename__error" role="alert">{renaming.error}</span>}
+              </li>
+            )
+          }
           return (
-            <li key={key || 'general'} className={`channel-row${selected ? ' is-current' : ''}${count > 0 ? ' has-unread' : ''}${c.archived ? ' is-archived' : ''}`}>
+            <li key={key || 'general'} className={`channel-row${selected ? ' is-current' : ''}${count > 0 ? ' has-unread' : ''}${c.archived ? ' is-archived' : ''}${editable ? ' is-editable' : ''}`}>
               <button
                 type="button"
                 className="channel-row__select"
                 aria-current={selected ? 'true' : undefined}
                 title={c.purpose || undefined}
                 onClick={() => onSelect(c.id)}
+                onDoubleClick={() => startRename(c)}
               >
                 <span className="channel-row__hash" aria-hidden="true">#</span>
                 <span className="channel-row__name">{c.name}</span>
                 {c.archived && <span className="channel-row__tag">archived</span>}
                 {count > 0 && <span className="channel-row__count" aria-label={`${count} unread`}>{count > 99 ? '99+' : count}</span>}
               </button>
-              {c.id !== null && !c.archived && (
-                <button
-                  type="button"
-                  className="channel-row__archive"
-                  aria-label={`Archive #${c.name}`}
-                  title={`Archive #${c.name}`}
-                  onClick={() => { void onArchive(c.id!).catch(() => {}) }}
-                >
-                  <Archive size={12} strokeWidth={1.75} aria-hidden="true" />
-                </button>
+              {editable && (
+                <span className="channel-row__tools">
+                  <button
+                    type="button"
+                    aria-label={`Rename #${c.name}`}
+                    title="Rename"
+                    onClick={() => startRename(c)}
+                  >
+                    <Pencil size={11} strokeWidth={1.75} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Archive #${c.name}`}
+                    title="Archive"
+                    onClick={() => { void onArchive(c.id!).catch(() => {}) }}
+                  >
+                    <Archive size={11} strokeWidth={1.75} aria-hidden="true" />
+                  </button>
+                </span>
               )}
             </li>
           )
@@ -96,6 +157,7 @@ export default function ChannelList({ channels, current, unread, onSelect, onCre
               placeholder="name"
               value={name}
               maxLength={33}
+              spellCheck={false}
               onChange={event => setName(event.target.value)}
             />
           </label>
@@ -115,7 +177,7 @@ export default function ChannelList({ channels, current, unread, onSelect, onCre
         </form>
       ) : (
         <button type="button" className="channel-list__new" onClick={() => setCreating(true)}>
-          <Plus size={12} strokeWidth={2} aria-hidden="true" />
+          <Plus size={11} strokeWidth={2} aria-hidden="true" />
           <span>New channel</span>
         </button>
       )}

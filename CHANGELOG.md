@@ -42,6 +42,7 @@ refuses to publish a version whose section is missing or empty.
 ### Added
 
 - Topic channels: a Circle's chat can split into `#general` plus named channels (`enox channels`, `enox chat --channel`, `enox say --channel`), listed under the active circle in the web sidebar with unread counts. Each agent keeps a separate conversation per channel, runs turns in different channels in parallel, replies in the channel it was asked in, and sees a short index of what is new in the other channels.
+- Channels can be renamed (`enox channels rename <channel> <name>`, or the pencil on a channel's row in the web sidebar, or a double-click on its name); history and agent conversations stay with the channel. The sidebar's channel list is also restyled.
 
 ## [0.16.0] — 2026-11-22
 

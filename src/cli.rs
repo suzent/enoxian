@@ -367,6 +367,13 @@ pub enum ChannelsAction {
         #[arg(long, default_value = "")]
         purpose: String,
     },
+    /// Rename a channel; its history and agent conversations stay with it
+    Rename {
+        /// Channel name or id
+        channel: String,
+        /// New name: a-z, 0-9, '-' and '_', at most 32 characters
+        name: String,
+    },
     /// Archive a channel: its history stays readable, it leaves the list
     Archive {
         /// Channel name or id

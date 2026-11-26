@@ -629,18 +629,20 @@ The agent ID is read automatically from the daemon's status endpoint.
 
 ### `channels`
 
-List, create, or archive topic channels. Every member reads and posts in every
+List, create, rename, or archive topic channels. Every member reads and posts in every
 channel; each agent keeps a separate conversation per channel.
 
 ```bash
 enox [--circle <NAME>] channels
 enox [--circle <NAME>] channels create <NAME> [--purpose <TEXT>]
+enox [--circle <NAME>] channels rename <CHANNEL> <NAME>
 enox [--circle <NAME>] channels archive <CHANNEL>
 enox [--circle <NAME>] channels unarchive <CHANNEL>
 ```
 
 Names use `a-z`, `0-9`, `-` and `_`, up to 32 characters. Archived channels keep
-their history; `#general` cannot be archived.
+their history, and so does a renamed channel; `#general` cannot be renamed or
+archived.
 
 ---
 

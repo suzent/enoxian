@@ -181,7 +181,7 @@ export const createChannel = (id: string, name: string, purpose: string, agentId
 export const updateChannel = (
   id: string,
   channel: string,
-  change: { purpose?: string; archived?: boolean },
+  change: { name?: string; purpose?: string; archived?: boolean },
 ) => patch<Channel>(`${api(id)}/channels/${encodeURIComponent(channel)}`, change)
 
 /** Largest upload the daemon will accept. Mirrors MAX_ATTACHMENT_BYTES. */
