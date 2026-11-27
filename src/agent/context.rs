@@ -332,7 +332,7 @@ fn channel_index(state: &AppState, agent_id: &str, current: Option<&str>) -> Str
     }
     let mut ranked = others;
     // Busiest first: what mentions this agent, then what moved most recently.
-    ranked.sort_by(|a, b| (b.3, b.2 > 0, b.1).cmp(&(a.3, a.2 > 0, a.1)));
+    ranked.sort_by_key(|c| std::cmp::Reverse((c.3, c.2 > 0, c.1)));
     out.push_str(
         "\nOther channels in this Circle — separate conversations you are not \
          shown here. Read one with `enox chat --channel <name>`; post into one \
