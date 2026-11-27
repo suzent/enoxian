@@ -2,7 +2,7 @@ import type { RightPanelTab } from './RightPanel'
 import { createPortal } from 'react-dom'
 import { Users, FileText, Download, Info } from 'lucide-react'
 import ExecutionStatus from './ExecutionStatus'
-import { Fragment, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
+import { Fragment, memo, startTransition, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import type { Attachment, ChatActivity, ChatMessage, EngagementView, ExecutionRun, Member, Presence } from '../types'
 import { getChat, postChat, chatStream, getChatActivity, getExecutions, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, getEngagement, exitEngagement, getAgentConfigFor, MAX_ATTACHMENT_BYTES } from '../api'
 import RoutingStrip, { deriveRouting, isRoutingNotice, type Routing } from './RoutingStrip'
@@ -36,12 +36,27 @@ interface Props {
 /** A message body. Markdown, because agents post structured output — lists,
  *  code blocks, tables — and a wall of raw syntax is unreadable in a bubble.
  *
- *  Parsing is memoised: the transcript re-renders on every incoming message,
- *  presence tick and typing update, and re-parsing every bubble each time makes
- *  a long scrollback crawl.
+ *  Parsing is cached by text across mounts: switching circles or channels
+ *  mounts every bubble afresh, and re-parsing a long scrollback each time
+ *  stalls the switch (and the sidebar animating beside it).
  */
+const MARKDOWN_CACHE_LIMIT = 2000
+const markdownCache = new Map<string, string>()
+function cachedChatMarkdown(text: string, mentions: string[]): string {
+  const key = `${mentions.join('\u0000')}\u0001${text}`
+  const hit = markdownCache.get(key)
+  if (hit !== undefined) return hit
+  const html = renderChatMarkdown(text, mentions)
+  if (markdownCache.size >= MARKDOWN_CACHE_LIMIT) {
+    // Drop the oldest entry; Map iterates in insertion order.
+    markdownCache.delete(markdownCache.keys().next().value!)
+  }
+  markdownCache.set(key, html)
+  return html
+}
+
 function MessageText({ text, mentions }: { text: string; mentions: string[] }) {
-  const html = useMemo(() => renderChatMarkdown(text, mentions), [text, mentions])
+  const html = useMemo(() => cachedChatMarkdown(text, mentions), [text, mentions])
   return (
     <div
       className="chat-message__text markdown-preview markdown-preview--chat"
@@ -320,7 +335,7 @@ interface BubbleProps {
   onReply?: (msg: ChatMessage) => void
 }
 
-function Bubble({ msg, isMine, isThisDevice, label, showSender, circleId, blobNonces, onOpenImage, onReply, replyParent, replyParentName, showQuote, onJumpTo }: BubbleProps) {
+function BubbleView({ msg, isMine, isThisDevice, label, showSender, circleId, blobNonces, onOpenImage, onReply, replyParent, replyParentName, showQuote, onJumpTo }: BubbleProps) {
   if (msg.agent_id === 'system') {
     return (
       <div className="chat-system-event" role="status" aria-label="System notice">
@@ -466,6 +481,26 @@ const ACTIVITY_COUNTED = 1
 const ACTIVITY_TERSE = 2
 const ACTIVITY_NO_SEEN = 3
 const ACTIVITY_NO_TYPING = 4
+
+/** Bubbles skip re-rendering unless their own props change. Without this, every
+ *  roster poll, typing tick and receipt re-rendered the whole scrollback. The
+ *  sender label is rebuilt on each render, so it is compared by value. */
+const Bubble = memo(BubbleView, (prev, next) => {
+  for (const key of Object.keys(next) as (keyof BubbleProps)[]) {
+    if (key === 'label') continue
+    if (prev[key] !== next[key]) return false
+  }
+  return prev.label.user === next.label.user
+    && prev.label.owner === next.label.owner
+    && prev.label.device === next.label.device
+    && prev.label.agent === next.label.agent
+    && Object.keys(prev).length === Object.keys(next).length
+})
+
+/** Bubbles mounted when a transcript opens, before the scrollback follows. */
+const INITIAL_BUBBLES = 60
+/** Past the sidebar's 180ms channel/highlight animation. */
+const SCROLLBACK_DELAY_MS = 260
 
 export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityContainer, onActivityNavigate, onMessage, variant = 'rail', hideActiveCircleGlyph = false }: Props) {
   const { activeCircleId, circles, status } = useApp()
@@ -852,6 +887,29 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
     [messages, folded],
   )
 
+  // Opening a transcript mounts only its latest bubbles, which is all a reader
+  // landing at the bottom sees. The scrollback follows once the switch has
+  // settled, as an interruptible render, so mounting hundreds of bubbles never
+  // lands in the frames where the sidebar is animating.
+  const transcriptKey = `${activeCircleId ?? ''}|${channelKey(channel)}`
+  const [fullTranscript, setFullTranscript] = useState<string | null>(null)
+  const showAll = fullTranscript === transcriptKey || shownMessages.length <= INITIAL_BUBBLES
+  const firstShown = showAll ? 0 : shownMessages.length - INITIAL_BUBBLES
+  useEffect(() => {
+    if (!chatLoaded || showAll) return
+    const timer = window.setTimeout(() => startTransition(() => setFullTranscript(transcriptKey)), SCROLLBACK_DELAY_MS)
+    return () => window.clearTimeout(timer)
+  }, [chatLoaded, showAll, transcriptKey])
+  // Prepending the scrollback must not move what the reader is looking at.
+  const fromBottomRef = useRef(0)
+  const scrollbackShown = useRef(showAll)
+  useLayoutEffect(() => {
+    const grew = showAll && !scrollbackShown.current
+    scrollbackShown.current = showAll
+    const list = messageListRef.current
+    if (grew && list) list.scrollTop = list.scrollHeight - fromBottomRef.current
+  }, [showAll])
+
   /** Upload dropped/pasted/picked files and stage them for the next send.
    *  Each upload is independent: one rejected file does not discard the rest. */
   const addFiles = useCallback(async (files: File[]) => {
@@ -1115,14 +1173,18 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
   const [replyTo, setReplyTo] = useState<{ id: string; agent: string } | null>(null)
   // A reply target belongs to the transcript it was picked from.
   useEffect(() => { setReplyTo(null) }, [activeCircleId, channel])
+  // Read through a ref so the callback stays stable and memoised bubbles
+  // need not re-render when the roster refreshes.
+  const membersRef = useRef(members)
+  membersRef.current = members
   const startReply = useCallback((msg: ChatMessage) => {
     const path = msg.relay?.path ?? []
     const agent = path.length > 0 ? path[path.length - 1] : msg.agent_id
-    const member = members.find(m => m.peer_id === msg.peer_id)
+    const member = membersRef.current.find(m => m.peer_id === msg.peer_id)
     const recipient = member?.owner && member?.device_label ? `${member.owner}/${member.device_label}/${agent}` : `${agent}${msg.peer_id ? ` on ${msg.peer_id.slice(-8)}` : ''}`
     setReplyTo({ id: msg.id, agent: recipient })
     inputRef.current?.focus()
-  }, [members])
+  }, [])
 
   const refreshEngagement = useCallback(() => {
     if (!activeCircleId) return
@@ -1312,6 +1374,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
 
       <div ref={messageListRef} className="chat-message-list" onScroll={event => {
         const list = event.currentTarget
+        fromBottomRef.current = list.scrollHeight - list.scrollTop
         if (document.visibilityState === 'visible' && list.scrollHeight - list.scrollTop - list.clientHeight < 48) setUnread(false)
       }} onPointerDown={() => {
         const list = messageListRef.current
@@ -1368,7 +1431,8 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
             <strong>{chatError}</strong>
           </div>
         )}
-        {shownMessages.map((msg, i) => {
+        {shownMessages.slice(firstShown).map((msg, shownIndex) => {
+          const i = firstShown + shownIndex
           const label = getSenderLabel(msg.agent_id, msg.peer_id)
           const isThisDevice = msg.agent_id === status?.agent_id
           const isMine = label.user === 'you'

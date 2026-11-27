@@ -1,4 +1,5 @@
 import { Fragment, useState, useEffect, useRef, useCallback } from 'react'
+import type { Channel } from '../types'
 import { Settings, Plus, LogIn } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import { useChannels } from '../context/ChannelContext'
@@ -16,6 +17,15 @@ interface Props {
 }
 
 type Modal = 'init' | 'enter' | null
+
+/** The channel list as one circle's drawer last showed it. */
+interface ShownChannels {
+  circleId: string
+  channels: Channel[]
+  channel: string | null
+}
+
+const noop = async () => {}
 
 export default function CircleSidebar({ onRitual, onNavigate }: Props) {
   const { circles, activeCircleId, setActiveCircleId, reloadCircles, status } = useApp()
@@ -47,6 +57,28 @@ export default function CircleSidebar({ onRitual, onNavigate }: Props) {
     return () => { cancelled = true }
   }, [])
 
+  // Channel drawers open and close with a height animation. The drawer a circle
+  // is leaving keeps its last list on screen until it has folded away, rather
+  // than emptying in one frame and pushing every row below it up.
+  const showing: ShownChannels | null = activeCircleId && !activeCircle?.disabled && channels.length > 0
+    ? { circleId: activeCircleId, channels, channel }
+    : null
+  const [shown, setShown] = useState<ShownChannels | null>(null)
+  const [closing, setClosing] = useState<ShownChannels | null>(null)
+  if (showing?.circleId !== shown?.circleId) {
+    if (shown) setClosing(shown)
+    setShown(showing)
+  } else if (showing && shown && (showing.channels !== shown.channels || showing.channel !== shown.channel)) {
+    setShown(showing)
+  }
+  const closingId = closing && closing.circleId !== showing?.circleId ? closing.circleId : null
+  useEffect(() => {
+    if (!closingId) return
+    // Fallback for when no transition runs (reduced motion, hidden drawer).
+    const timer = window.setTimeout(() => setClosing(null), 320)
+    return () => window.clearTimeout(timer)
+  }, [closingId])
+
   const rowRefMap = useRef<Map<string, HTMLButtonElement>>(new Map())
   const highlightRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
@@ -60,8 +92,18 @@ export default function CircleSidebar({ onRitual, onNavigate }: Props) {
     if (!row) { hl.style.opacity = '0'; return }
     const listRect = list.getBoundingClientRect()
     const rowRect = row.getBoundingClientRect()
+    let top = rowRect.top - listRect.top + list.scrollTop
+    // A drawer folding away above the row is about to lift it: aim for where
+    // the row ends up, so the highlight and the rows arrive together.
+    const folding = list.querySelector<HTMLElement>('.channel-drawer.is-closing')
+    if (folding && folding.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING) {
+      // Folded, a drawer is as tall as its inner's padding less its -4px reach.
+      const inner = folding.firstElementChild as HTMLElement | null
+      const foldedHeight = inner ? parseFloat(getComputedStyle(inner).paddingTop) - 4 : 0
+      top -= folding.getBoundingClientRect().height - foldedHeight
+    }
     hl.style.opacity = '1'
-    hl.style.top = `${rowRect.top - listRect.top + list.scrollTop}px`
+    hl.style.top = `${top}px`
     hl.style.height = `${rowRect.height}px`
   }, [activeCircleId, circles])
 
@@ -166,17 +208,44 @@ export default function CircleSidebar({ onRitual, onNavigate }: Props) {
                 </div>
                 <span className="circle-row__marker" aria-hidden="true">{circle.disabled ? '×' : '→'}</span>
               </button>
-              {isActive && !circle.disabled && channels.length > 0 && (
-                <ChannelList
-                  channels={channels}
-                  current={channel}
-                  unread={unread}
-                  onSelect={id => { selectChannel(id); onNavigate?.() }}
-                  onCreate={async (name, purpose) => { await createChannel(name, purpose); onNavigate?.() }}
-                  onArchive={archiveChannel}
-                  onRename={renameChannel}
-                />
-              )}
+              {(() => {
+                const open = showing?.circleId === circle.circle_id
+                const folding = !open && closingId === circle.circle_id
+                return (
+                  <div
+                    className={`channel-drawer${open ? ' is-open' : ''}${folding ? ' is-closing' : ''}`}
+                    inert={!open}
+                    onTransitionEnd={event => {
+                      if (folding && event.target === event.currentTarget) setClosing(null)
+                    }}
+                  >
+                    <div className="channel-drawer__inner">
+                      {open && (
+                        <ChannelList
+                          channels={channels}
+                          current={channel}
+                          unread={unread}
+                          onSelect={id => { selectChannel(id); onNavigate?.() }}
+                          onCreate={async (name, purpose) => { await createChannel(name, purpose); onNavigate?.() }}
+                          onArchive={archiveChannel}
+                          onRename={renameChannel}
+                        />
+                      )}
+                      {folding && closing && (
+                        <ChannelList
+                          channels={closing.channels}
+                          current={closing.channel}
+                          unread={{}}
+                          onSelect={() => {}}
+                          onCreate={noop}
+                          onArchive={noop}
+                          onRename={noop}
+                        />
+                      )}
+                    </div>
+                  </div>
+                )
+              })()}
               </Fragment>
             )
           })}
