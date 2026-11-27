@@ -46,6 +46,10 @@ impl ConnectionKind {
     }
 }
 
+/// One peer's live connections, by transport connection id, each with its
+/// route once the transport has selected one.
+type PeerConnections = HashMap<String, Option<PeerConnection>>;
+
 #[derive(Clone, Debug, Serialize)]
 pub struct PeerConnection {
     pub kind: ConnectionKind,
@@ -95,7 +99,10 @@ pub struct AppState {
     /// Connections observed by this daemon. This stays local because each peer
     /// can see a different route to the same member.
     /// Live connections per peer, keyed by the transport's connection id.
-    peer_connections: Arc<RwLock<HashMap<String, HashMap<String, PeerConnection>>>>,
+    /// Live connections per peer, by transport connection id. The route is
+    /// `None` until the transport selects a path, which can take a second after
+    /// the connection is already carrying streams.
+    peer_connections: Arc<RwLock<HashMap<String, PeerConnections>>>,
     /// File docs. Key = relative path with forward slashes.
     pub docs: Arc<DashMap<String, Arc<Doc>>>,
     /// __control__ coordination document
@@ -975,8 +982,24 @@ impl AppState {
         self.is_peer_removed(&self.peer_id)
     }
 
-    /// Note a live connection. `connection_id` is the transport's own id for
-    /// it, so the matching close can be told apart from the peer's other ones.
+    /// Note a live connection whose route is not known yet. `connection_id` is
+    /// the transport's own id for it, so the matching close can be told apart
+    /// from the peer's other ones.
+    ///
+    /// Recording only once a route was selected left a connection that already
+    /// carried sync unseen for up to a second, so an admin leaving right after a
+    /// member reconnected found no one connected to hand the key to.
+    pub fn note_peer_connection(&self, peer_id: String, connection_id: String) {
+        self.peer_connections
+            .write()
+            .unwrap()
+            .entry(peer_id)
+            .or_default()
+            .entry(connection_id)
+            .or_insert(None);
+    }
+
+    /// Note a live connection and the route it currently takes.
     pub fn record_peer_connection(
         &self,
         peer_id: String,
@@ -990,7 +1013,7 @@ impl AppState {
             .unwrap()
             .entry(peer_id)
             .or_default()
-            .insert(connection_id, connection);
+            .insert(connection_id, Some(connection));
     }
 
     pub fn remove_peer_connection(&self, peer_id: &str, connection_id: &str) {
@@ -1010,7 +1033,7 @@ impl AppState {
             .read()
             .unwrap()
             .get(peer_id)
-            .map(|entries| entries.values().cloned().collect::<Vec<_>>())
+            .map(|entries| entries.values().flatten().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
         connections.sort_by(|a, b| {
             a.kind
@@ -1099,6 +1122,27 @@ mod tests {
 
     fn kind(ip: &str) -> ConnectionKind {
         super::classify_ip(ip.parse().unwrap())
+    }
+
+    #[test]
+    fn a_connection_without_a_route_yet_is_connected_but_not_listed() {
+        let state = test_state();
+        state.note_peer_connection("peer-a".into(), "c1".into());
+        assert!(state.is_connected("peer-a"));
+        assert!(state.peer_connections("peer-a").is_empty());
+
+        state.record_peer_connection(
+            "peer-a".into(),
+            "c1".into(),
+            ConnectionKind::Lan,
+            "192.168.1.2:1".into(),
+        );
+        // A later note for the same connection keeps the route it has.
+        state.note_peer_connection("peer-a".into(), "c1".into());
+        assert_eq!(state.peer_connections("peer-a").len(), 1);
+
+        state.remove_peer_connection("peer-a", "c1");
+        assert!(!state.is_connected("peer-a"));
     }
 
     fn test_state() -> AppState {

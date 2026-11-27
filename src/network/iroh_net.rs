@@ -351,6 +351,11 @@ impl IrohNet {
             },
         );
         drop(connections);
+        // Live from now, not from when the transport selects a path: streams
+        // start flowing before that, and `watch` adds the route once it has one.
+        self.0
+            .state
+            .note_peer_connection(remote.to_string(), connection.stable_id().to_string());
         info!(
             "[{}] Iroh connected: {remote} ({})",
             self.circle(),
