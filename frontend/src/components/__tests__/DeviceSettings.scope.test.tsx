@@ -14,6 +14,8 @@ const getAgentConfigFor = vi.fn()
 vi.mock('../../api', () => ({
   getAgentConfigFor,
   getAgentPlugins: vi.fn(async () => ({ plugins: [] })),
+  getAgentIcons: vi.fn(async () => ({ icons: {} })),
+  agentIconUrl: (id: string) => `/api/agent-icons/${id}.svg`,
   discoverAgents: vi.fn(async () => ({ agents: [] })),
   installAgentPlugin: vi.fn(),
   uninstallAgentPlugin: vi.fn(),

@@ -324,6 +324,14 @@ and project link before installing. Where the registry lists the same package
 as a built-in (Claude, Codex, Pi), the built-in is used. Switching a registry
 agent off in Device Settings uninstalls it.
 
+Agents show their registry logo in Members, Activity and Settings. The logo is
+matched by handle: a registry id or its default handle (so the built-ins
+`@claude`, `@codex` and `@pi` get theirs too), or the handle you installed a
+registry agent under on this device. `@suzent`, which the registry does not
+list, has its logo built into enox. Your daemon fetches each logo once from the
+registry and caches it in `~/.enoxian/registry/icons/`; an agent with no match
+keeps the plain robot.
+
 For custom adapter or native plugin manifests, see
 [agent integration details](../development/reference/agent-integration.md#plugin-manifests).
 
@@ -647,12 +655,22 @@ unanswered question does not look like one nobody cared about.
 
 ### Finding out why nothing happened
 
-**Agent activity** lists what ran, and a **Not picked up** section lists what
-did not, with the reason: *too short to be worth a turn*, *every agent reading
+**Agent activity** lists what ran, and a **Skipped** section
+lists what did not, with the reason: *too short to be worth a turn*, *every agent reading
 this room had just spoken*, *no agent by this name is configured on this
 device*, *this device is set to pull*. Standing problems appear at the top —
 including an agent named in `ambient` whose spelling does not match any
 configured agent, which otherwise does nothing at all and says nothing about it.
+
+An agent that is broken on its device — its sign-in expired, or its program
+will not start — fails every message the same way, so it is not offered any
+more: that device leaves it out of every room it reads, and messages nobody
+addressed go to the other agents. **Members** marks it (*⚠ sign-in*,
+*⚠ won't start*, *⚠ limit*) and Agent activity says so once, instead of once per message.
+It is let back in when one of its turns succeeds — an @mention still runs it —
+when a sign-in from **Settings → ACP Agents** verifies, or by a single probe
+message every ten minutes. A one-off failure (a timeout, a model error) does
+not count.
 
 ## The warden
 

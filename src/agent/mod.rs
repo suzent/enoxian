@@ -26,6 +26,7 @@ pub mod decisions;
 pub mod driver;
 pub mod engagement;
 pub mod handled;
+pub mod health;
 pub mod inbox;
 pub mod label;
 pub mod ledger;

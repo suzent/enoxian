@@ -219,6 +219,37 @@ pub async fn refresh_registry() -> axum::response::Response {
     }
 }
 
+/// Which ACP Registry icon each agent handle shows: `{ icons: { handle: id } }`.
+pub async fn agent_icons() -> axum::response::Response {
+    crate::agent::acp_registry::refresh_quietly().await;
+    Json(json!({ "icons": crate::agent::acp_registry::icon_index() })).into_response()
+}
+
+/// One registry entry's SVG icon, fetched once and cached on this device so
+/// the browser never reaches the registry's CDN itself.
+pub async fn agent_icon(Path(id): Path<String>) -> axum::response::Response {
+    use axum::http::header;
+    let id = id.strip_suffix(".svg").unwrap_or(&id);
+    match crate::agent::acp_registry::icon(id).await {
+        Some(bytes) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "image/svg+xml"),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                (header::CACHE_CONTROL, "private, max-age=86400"),
+                // Opened on its own, the SVG still runs nothing.
+                (
+                    header::CONTENT_SECURITY_POLICY,
+                    "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "no icon").into_response(),
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct InstallPluginRequest {

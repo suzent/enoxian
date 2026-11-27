@@ -804,10 +804,35 @@ button[role="tab"][aria-selected="true"] {
   font-size: 10px;
 }
 
-.chat-routing__agents {
+/* Each chosen agent with a dot for how its turn went: filled answered,
+   pulsing working, hollow passed, a diamond failed. */
+.chat-routing__agent {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
   color: var(--fg-obsidian);
   font-weight: 600;
 }
+
+.chat-routing__dot-inline {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  align-self: center;
+  border: 1px solid var(--fg-obsidian);
+  border-radius: 50%;
+}
+
+.chat-routing__agent--answered .chat-routing__dot-inline,
+.chat-routing__agent--voted .chat-routing__dot-inline { background: var(--fg-obsidian); }
+.chat-routing__agent--working .chat-routing__dot-inline { animation: chat-routing-pulse 1.4s ease-in-out infinite; }
+.chat-routing__agent--passed,
+.chat-routing__agent--stopped,
+.chat-routing__agent--queued { font-weight: 400; color: var(--fg-slate); }
+.chat-routing__agent--passed .chat-routing__dot-inline,
+.chat-routing__agent--stopped .chat-routing__dot-inline,
+.chat-routing__agent--queued .chat-routing__dot-inline { border-color: currentColor; opacity: 0.6; }
+.chat-routing__agent--failed .chat-routing__dot-inline { border-radius: 0; transform: rotate(45deg); }
 
 .chat-routing__state {
   margin-left: 2px;
@@ -876,6 +901,30 @@ button[role="tab"][aria-selected="true"] {
 .chat-routing__step--active .chat-routing__dot { animation: chat-routing-pulse 1.4s ease-in-out infinite; }
 .chat-routing__step--failed .chat-routing__text { color: var(--fg-obsidian); }
 
+.chat-routing__text--agent {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 6px;
+}
+
+.chat-routing__handoff { opacity: 0.75; }
+.chat-routing__name { color: var(--fg-obsidian); font-weight: 600; }
+
+.chat-routing__outcome {
+  padding: 0 5px;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: rgba(10, 10, 10, 0.06);
+}
+
+.chat-routing__outcome--failed {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--fg-obsidian);
+  color: var(--fg-obsidian);
+}
+
 .chat-routing__detail {
   grid-column: 2;
   color: var(--fg-slate);
@@ -890,6 +939,7 @@ button[role="tab"][aria-selected="true"] {
 @media (prefers-reduced-motion: reduce) {
   .chat-routing__chip, .chat-routing__caret { transition: none; }
   .chat-routing__step--active .chat-routing__dot { animation: none; background: rgba(10, 10, 10, 0.35); }
+  .chat-routing__agent--working .chat-routing__dot-inline { animation: none; background: rgba(10, 10, 10, 0.35); }
 }
 
 .chat-empty-state {
@@ -1391,42 +1441,92 @@ button[role="tab"][aria-selected="true"] {
   opacity: 0.3;
 }
 
-/* The brake on a running cascade. */
-/* A conversation among agents, how far along it is, and its brake: one pill. */
-.chat-activity__chain {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 1px 2px 1px 8px;
-  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
-  border-radius: 999px;
-  white-space: nowrap;
-}
+/* Each group's slot also holds its stop button; it lays out as if absent. */
+.chat-activity__slot { display: contents; }
 
-.chat-activity__stop {
-  flex: 0 0 auto;
-  padding: 0 7px;
-  border: 1px solid currentColor;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--fg-obsidian);
-  font-family: inherit;
-  font-size: var(--ui-tiny);
-  font-weight: 700;
-  letter-spacing: 0.04em;
+/* Working is a shortcut into the Activity panel. */
+button.chat-activity__group {
+  font: inherit;
   cursor: pointer;
+  text-align: left;
 }
 
-.chat-activity__stop:hover:not(:disabled) {
+button.chat-activity__group:hover {
   background: var(--fg-obsidian);
   color: var(--bg-alabaster, #fff);
 }
 
-.chat-activity__stop:disabled {
-  opacity: 0.5;
-  cursor: default;
+.chat-activity__open {
+  flex: 0 0 auto;
+  margin-left: -2px;
+  opacity: 0.6;
 }
+
+.chat-activity__run-stop {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--fg-obsidian);
+  background: transparent;
+  color: var(--fg-obsidian);
+  cursor: pointer;
+}
+
+.chat-activity__run-stop svg { fill: currentColor; }
+.chat-activity__run-stop:hover:not(:disabled) { background: var(--fg-obsidian); color: var(--bg-alabaster, #fff); }
+.chat-activity__run-stop:disabled { opacity: 0.4; cursor: default; }
+
+/* A conversation among agents: who is in it, how far along, and its brake.
+   Its own line, since it is the one thing here that keeps spending. */
+.chat-chain {
+  grid-column: 1 / -1;
+  flex: 1 0 100%;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--fg-obsidian);
+  background: repeating-linear-gradient(-45deg, transparent 0 6px, rgba(10, 10, 10, 0.035) 6px 7px);
+  color: var(--fg-obsidian);
+  font-family: var(--font-mono);
+  font-size: var(--ui-tiny);
+  line-height: 1.3;
+}
+
+.chat-chain__icon { font-size: 13px; line-height: 1; }
+.chat-chain__label { font-weight: 700; }
+.chat-chain__path { color: var(--fg-slate); overflow-wrap: anywhere; }
+
+.chat-chain__turn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-slate);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-chain__pips { display: inline-flex; gap: 2px; }
+.chat-chain__pips i { width: 10px; height: 4px; border: 1px solid var(--fg-obsidian); }
+.chat-chain__pips i.is-spent { background: var(--fg-obsidian); }
+
+.chat-chain__stop {
+  margin-left: auto;
+  padding: 3px 10px;
+  border: 1px solid var(--fg-obsidian);
+  background: var(--fg-obsidian);
+  color: var(--bg-alabaster, #fff);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chat-chain__stop:hover:not(:disabled) { background: transparent; color: var(--fg-obsidian); }
+.chat-chain__stop:disabled { background: transparent; color: var(--fg-slate); border-color: var(--fg-slate); cursor: default; }
 
 @keyframes chat-activity-pulse {
   0%, 100% { opacity: 0.25; transform: scale(0.8); }
@@ -4760,50 +4860,6 @@ select option {
 .sidebar-members { flex: 1; min-height: 0; }
 .sidebar-agent-activity { flex: 1; min-height: 0; overflow-y: auto; }
 .sidebar-agent-activity[hidden] { display: none; }
-.agent-activity { border-top: 1px solid color-mix(in srgb, var(--fg-slate) 20%, transparent); padding: 16px; font: 12px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-.agent-activity__header, .agent-activity__identity, .agent-activity__meta { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.agent-activity__header h3 { font-size: 13px; font-weight: 600; margin: 0; }
-.agent-activity__count { color: var(--fg-slate); font-size: 11px; font-variant-numeric: tabular-nums; }
-.agent-activity__empty, .agent-activity__summary { color: var(--fg-slate); margin: 8px 0 14px; }
-.agent-activity__list { list-style: none; margin: 0; padding: 0; }
-.agent-activity__item { padding: 12px 0; border-bottom: 1px solid color-mix(in srgb, var(--fg-slate) 12%, transparent); }
-.agent-activity__item:last-child { border-bottom: 0; }
-.agent-activity__name { overflow-wrap: anywhere; min-width: 0; font-weight: 600; }
-.agent-activity__status { flex-shrink: 0; font-size: 11px; color: var(--fg-slate); }
-.agent-activity__item--running .agent-activity__status { color: #28704d; }
-.agent-activity__item--running .agent-activity__status::before { content: '●'; font-size: 8px; margin-right: 5px; }
-.agent-activity__device { color: var(--fg-slate); font-size: 11px; overflow-wrap: anywhere; }
-.agent-activity__meta { margin-top: 7px; color: var(--fg-slate); font-size: 10px; }
-.agent-activity__source { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; margin-top: 4px; color: var(--fg-obsidian); text-decoration: none; }
-.agent-activity__source:hover { text-decoration: underline; text-underline-offset: 3px; }
-.agent-activity__unavailable, .agent-activity__detail { display: block; margin-top: 4px; color: var(--fg-slate); font-size: 11px; overflow-wrap: anywhere; }
-.agent-activity__warden { display: block; margin-top: 4px; color: var(--fg-obsidian, inherit); font-size: 11px; overflow-wrap: anywhere; font-family: var(--font-mono, monospace); }
-.agent-activity__usage { margin-top: 4px; color: var(--fg-slate); font-size: 11px; font-variant-numeric: tabular-nums; }
-.agent-activity__context-bar { height: 3px; width: 100%; margin-top: 4px; background: color-mix(in srgb, var(--fg-slate) 18%, transparent); overflow: hidden; }
-.agent-activity__context-bar > span { display: block; height: 100%; background: var(--fg-obsidian); transition: width 0.2s ease; }
-.agent-activity__context-bar--high > span { background: #9a6019; }
-.agent-activity__plan, .agent-activity__tools { list-style: none; margin: 6px 0 0; padding: 4px 0 4px 8px; border-left: 1px solid color-mix(in srgb, var(--fg-slate) 25%, transparent); font-size: 11px; color: var(--fg-slate); }
-.agent-activity__plan-step, .agent-activity__tool { display: flex; align-items: baseline; gap: 6px; padding: 1px 0; line-height: 1.4; }
-.agent-activity__plan-step--in_progress { color: var(--fg-obsidian); font-weight: 500; }
-.agent-activity__plan-step--completed { opacity: 0.7; }
-.agent-activity__plan-mark, .agent-activity__tool-mark { flex-shrink: 0; font-family: var(--font-mono, monospace); font-size: 10px; }
-.agent-activity__tool--failed { color: #9a6019; }
-.agent-activity__tool-kind { flex-shrink: 0; padding: 0 4px; border: 1px solid color-mix(in srgb, var(--fg-slate) 30%, transparent); font-family: var(--font-mono, monospace); font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; }
-.agent-activity__tool-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-obsidian); }
-.agent-activity__tool-duration { margin-left: auto; flex-shrink: 0; font-variant-numeric: tabular-nums; font-size: 10px; }
-.agent-activity__spend { margin: 0 0 8px; color: var(--fg-slate); font-size: 11px; font-variant-numeric: tabular-nums; }
-.agent-activity__live { display: block; margin-top: 4px; color: var(--fg-slate); font-size: 11px; overflow-wrap: anywhere; }
-.agent-activity__live--quiet { color: #9a6019; }
-.agent-activity__actions { display: flex; gap: 8px; margin-top: 6px; font-size: 11px; }
-.agent-activity__actions:empty { display: none; }
-.agent-activity__actions button { padding: 3px 7px; border: 1px solid color-mix(in srgb, var(--fg-slate) 25%, transparent); text-decoration: none; }
-.agent-activity__group { border-top: 1px solid color-mix(in srgb, var(--fg-slate) 15%, transparent); }
-.agent-activity__group summary { padding: 10px 0; cursor: pointer; color: var(--fg-slate); font-size: 11px; }
-.agent-activity__group summary span { float: right; font-variant-numeric: tabular-nums; }
-.agent-activity__note { margin: 12px 0 0; color: var(--fg-slate); font-size: 10px; }
-.agent-activity__error { color: #9a6019; margin-top: 8px; }
-.agent-activity__readiness { color: #9a6019; margin: 8px 0 0; }
-.agent-activity__item--skipped .agent-activity__name { color: var(--fg-slate); font-weight: 500; }
 .chat-message:target { background: color-mix(in srgb, var(--fg-slate) 8%, transparent); }
 
 /* Keep settings typography scoped so the surrounding shell retains its style. */
@@ -5709,4 +5765,146 @@ input.invite-link-value:focus-visible {
   .channel-row__tools { display: none; }
   .channel-row.is-current .channel-row__tools { display: flex; opacity: 1; pointer-events: auto; }
   .channel-row.is-current.is-editable .channel-row__select { padding-right: 52px; }
+}
+
+/* Members: person → device → agents. Devices are rows with a laptop; their
+   agents hang off them as an indented tree, each with a robot and an @, the
+   way the chat addresses them. */
+.member-device { margin-left: 6px; padding: 4px 0 6px; border-bottom: 1px dashed color-mix(in srgb, var(--fg-obsidian) 15%, transparent); }
+.member-device:last-child { border-bottom: 0; }
+.member-device__head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.member-device__icon { flex: 0 0 auto; color: var(--fg-obsidian); }
+.member-device__name { font-weight: 700; font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-device__head .sigil { width: 7px; height: 7px; flex: 0 0 auto; }
+.member-device__role { font-size: 9px; font-weight: 700; color: var(--fg-obsidian); }
+.member-device__spacer { flex: 1; }
+.member-device__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 1px 0 0 19px; color: var(--fg-slate); font-size: 9px; }
+.member-agents { list-style: none; margin: 5px 0 0 12px; padding: 0 0 0 10px; border-left: 1px solid color-mix(in srgb, var(--fg-obsidian) 22%, transparent); }
+.member-agent { position: relative; display: flex; align-items: center; gap: 5px; padding: 1px 0; font-size: 11px; color: var(--fg-obsidian); cursor: default; }
+.member-agent::before { content: ''; position: absolute; left: -10px; top: 50%; width: 7px; border-top: 1px solid color-mix(in srgb, var(--fg-obsidian) 22%, transparent); }
+.member-agent__icon { flex: 0 0 auto; color: var(--fg-slate); }
+.member-agent__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-agent__state { margin-left: auto; flex: 0 0 auto; font-size: 9px; color: var(--fg-slate); }
+.member-agent__state--broken { color: #9a6019; font-weight: 700; }
+.member-agent--broken { cursor: help; }
+.member-agent--broken .member-agent__icon { color: #9a6019; }
+
+/* Agent activity. Speaks the side panel's language: mono labels with a rule
+   under them, square marks, hairlines; the quoted message stays in the body
+   face so it reads as what someone said. */
+.agent-activity { padding: 12px 16px 16px; font-family: var(--font-mono); font-size: 11px; line-height: 1.45; color: var(--fg-obsidian); }
+
+.agent-activity__stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0 0 14px; border: 1px solid var(--fg-obsidian); }
+.agent-activity__stats > div { padding: 6px 8px; min-width: 0; }
+.agent-activity__stats > div + div { border-left: 1px solid color-mix(in srgb, var(--fg-obsidian) 25%, transparent); }
+.agent-activity__stats dt { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-slate); }
+.agent-activity__stats dd { margin: 2px 0 0; font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-activity__stats .is-live { background: var(--fg-obsidian); color: var(--bg-alabaster, #fff); }
+.agent-activity__stats .is-live dt { color: inherit; opacity: 0.7; }
+
+.agent-activity__block { margin-bottom: 14px; }
+.agent-activity__section,
+.agent-activity__group > summary {
+  display: flex; align-items: baseline; gap: 6px; margin: 0 0 4px; padding: 0 0 3px;
+  border-bottom: 1px solid var(--fg-obsidian);
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--fg-obsidian); list-style: none;
+}
+.agent-activity__group > summary { cursor: pointer; border-bottom-color: color-mix(in srgb, var(--fg-obsidian) 25%, transparent); color: var(--fg-slate); }
+.agent-activity__group > summary::-webkit-details-marker { display: none; }
+.agent-activity__group > summary::before { content: '▸'; font-size: 8px; transition: transform var(--control-motion, 0.15s); }
+.agent-activity__group[open] > summary::before { transform: rotate(90deg); }
+.agent-activity__group[open] > summary { color: var(--fg-obsidian); border-bottom-color: var(--fg-obsidian); }
+.agent-activity__group { margin-bottom: 10px; }
+.agent-activity__section-count,
+.agent-activity__group > summary > span { margin-left: auto; font-variant-numeric: tabular-nums; }
+.agent-activity__section-link { margin-left: 8px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+
+.agent-activity__group--attention > summary,
+.agent-activity__group--attention[open] > summary { color: #9a6019; border-bottom-color: #9a6019; }
+
+.agent-activity__list, .agent-activity__broken { list-style: none; margin: 0; padding: 0; }
+.agent-activity__item, .agent-activity__broken > li { padding: 8px 0; border-bottom: 1px dashed color-mix(in srgb, var(--fg-obsidian) 15%, transparent); }
+.agent-activity__item:last-child, .agent-activity__broken > li:last-child { border-bottom: 0; }
+.agent-activity__broken > li { cursor: help; }
+
+.agent-activity__identity { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.agent-activity__who { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.agent-activity__bot { flex: 0 0 auto; color: var(--fg-slate); }
+.agent-activity__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.agent-activity__device { display: inline-flex; align-items: center; gap: 3px; min-width: 0; color: var(--fg-slate); font-size: 10px; white-space: nowrap; }
+
+.agent-activity__status { flex: 0 0 auto; padding: 0 5px; border: 1px solid color-mix(in srgb, var(--fg-obsidian) 30%, transparent); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-slate); }
+.agent-activity__status--running { border-color: var(--fg-obsidian); background: var(--fg-obsidian); color: var(--bg-alabaster, #fff); }
+.agent-activity__status--failed, .agent-activity__status--interrupted, .agent-activity__status--expired,
+.agent-activity__status--broken { border-color: #9a6019; color: #9a6019; }
+
+.agent-activity__meta { display: flex; align-items: center; gap: 8px; margin: 2px 0 0 17px; color: var(--fg-slate); font-size: 10px; }
+.agent-activity__meta time { margin-left: auto; font-variant-numeric: tabular-nums; }
+.agent-activity__source { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; margin: 4px 0 0 17px; padding-left: 8px; border-left: 2px solid color-mix(in srgb, var(--fg-obsidian) 20%, transparent); color: var(--fg-obsidian); font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif); font-size: 12px; text-decoration: none; }
+.agent-activity__source:hover { border-left-color: var(--fg-obsidian); }
+.agent-activity__unavailable, .agent-activity__detail { display: block; margin: 4px 0 0 17px; color: var(--fg-slate); font-size: 10px; overflow-wrap: anywhere; }
+.agent-activity__warden { display: block; margin: 4px 0 0 17px; font-size: 10px; color: var(--fg-slate); overflow-wrap: anywhere; }
+.agent-activity__live { display: block; margin: 6px 0 0 17px; padding: 4px 6px; background: color-mix(in srgb, var(--fg-slate) 8%, transparent); font-size: 10px; overflow-wrap: anywhere; }
+.agent-activity__live--quiet { color: #9a6019; }
+.agent-activity__usage { margin: 4px 0 0 17px; color: var(--fg-slate); font-size: 10px; font-variant-numeric: tabular-nums; }
+.agent-activity__context-bar { height: 3px; margin: 4px 0 0 17px; background: color-mix(in srgb, var(--fg-slate) 18%, transparent); overflow: hidden; }
+.agent-activity__context-bar > span { display: block; height: 100%; background: var(--fg-obsidian); transition: width 0.2s ease; }
+.agent-activity__context-bar--high > span { background: #9a6019; }
+.agent-activity__plan, .agent-activity__tools { list-style: none; margin: 6px 0 0 17px; padding: 2px 0 2px 8px; border-left: 1px solid color-mix(in srgb, var(--fg-slate) 25%, transparent); font-size: 10px; color: var(--fg-slate); }
+.agent-activity__plan-step, .agent-activity__tool { display: flex; align-items: baseline; gap: 6px; padding: 1px 0; }
+.agent-activity__plan-step--in_progress { color: var(--fg-obsidian); font-weight: 700; }
+.agent-activity__plan-step--completed { opacity: 0.7; }
+.agent-activity__plan-mark, .agent-activity__tool-mark { flex-shrink: 0; font-size: 9px; }
+.agent-activity__tool--failed { color: #9a6019; }
+.agent-activity__tool-kind { flex-shrink: 0; padding: 0 4px; border: 1px solid color-mix(in srgb, var(--fg-slate) 30%, transparent); font-size: 8px; text-transform: uppercase; }
+.agent-activity__tool-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-obsidian); }
+.agent-activity__tool-duration { margin-left: auto; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.agent-activity__tools-toggle { display: flex; align-items: baseline; gap: 6px; margin: 6px 0 0 17px; padding: 0; border: 0; background: none; color: var(--fg-slate); font: inherit; font-size: 10px; cursor: pointer; }
+.agent-activity__tools-toggle:hover { color: var(--fg-obsidian); }
+.agent-activity__tools-caret { display: inline-block; font-size: 8px; transition: transform var(--control-motion, 0.15s); }
+.agent-activity__tools-toggle[aria-expanded='true'] .agent-activity__tools-caret { transform: rotate(90deg); }
+.agent-activity__tools-failed { color: #9a6019; }
+.agent-activity__tools-failed::before { content: '·'; margin-right: 6px; color: var(--fg-slate); }
+
+.agent-activity__actions { display: flex; gap: 6px; margin: 8px 0 0 17px; }
+.agent-activity__actions:empty { display: none; }
+.agent-activity__actions button { padding: 2px 8px; border: 1px solid var(--fg-obsidian); background: transparent; color: var(--fg-obsidian); font: inherit; font-size: 10px; font-weight: 700; text-decoration: none; cursor: pointer; }
+.agent-activity__actions button:hover:not(:disabled) { background: var(--fg-obsidian); color: var(--bg-alabaster, #fff); }
+.agent-activity__group--attention .agent-activity__actions button { border-color: #9a6019; color: #9a6019; }
+.agent-activity__group--attention .agent-activity__actions button:hover:not(:disabled) { background: #9a6019; color: var(--bg-alabaster, #fff); }
+
+.agent-activity__empty { margin: 6px 0 0; color: var(--fg-slate); font-size: 10px; }
+.agent-activity__error, .agent-activity__readiness { margin: 0 0 10px; padding: 6px 8px; border-left: 2px solid #9a6019; color: #9a6019; font-size: 10px; }
+.agent-activity__item--skipped .agent-activity__name { color: var(--fg-slate); }
+.agent-activity__meta > * { white-space: nowrap; flex: 0 0 auto; }
+.agent-activity__meta > .agent-activity__device { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
+/* A broken agent's badge: opens its settings on this device, or says how to
+   fix it on the device it runs on. */
+.agent-fix { flex: 0 0 auto; padding: 0 5px; border: 1px solid #9a6019; background: transparent; color: #9a6019; font-family: var(--font-mono); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer; }
+.agent-fix:hover, .agent-fix[aria-expanded='true'] { background: #9a6019; color: var(--bg-alabaster, #fff); }
+.agent-fix-anchor { position: relative; display: inline-flex; }
+.agent-fix-note { position: absolute; z-index: 30; top: calc(100% + 4px); right: 0; width: 230px; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid #9a6019; background: var(--bg-alabaster, #fff); color: var(--fg-obsidian); font-family: var(--font-mono); font-size: 10px; font-weight: 400; line-height: 1.45; text-transform: none; letter-spacing: 0; white-space: normal; text-align: left; box-shadow: 3px 3px 0 color-mix(in srgb, #9a6019 25%, transparent); }
+.agent-fix-note__count { color: var(--fg-slate); }
+.agent-fix-note__detail { margin-top: -4px; color: var(--fg-slate); font-size: 9px; overflow-wrap: anywhere; }
+/* The agent a "Sign in" badge opened settings for. */
+.agent-card--focus { outline: 2px solid #9a6019; outline-offset: 2px; }
+/* Unavailable agents: as quiet as Done; only the count carries a mark. */
+.agent-activity__group--broken > summary > span::before { content: '⚠ '; color: #9a6019; }
+.agent-activity__group--broken .agent-fix { border-color: color-mix(in srgb, #9a6019 55%, transparent); }
+.agent-activity__members-link { display: block; margin: 2px 0 4px; font-size: 10px; color: var(--fg-slate); }
+
+/* An agent's ACP Registry logo: a single-colour SVG used as a mask, so it
+   takes the text colour around it (see AgentIcon.tsx). */
+.agent-icon {
+  display: inline-block;
+  flex: 0 0 auto;
+  vertical-align: -2px;
+  background-color: currentColor;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
 }

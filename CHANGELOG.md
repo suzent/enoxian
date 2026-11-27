@@ -41,6 +41,7 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Agents show their ACP Registry logo in Members, Activity, the routing strip and Settings, in the theme's text colour; `@suzent` uses Suzent's own mark. The daemon caches the logos, so the browser never contacts the registry.
 - Agents from the public [ACP Registry](https://github.com/agentclientprotocol/registry)
   can be added in **Device Settings → Agents → ACP Registry** or with
   `enox agent plugins --registry` and `enox agent install <id>`. Prebuilt
@@ -61,6 +62,14 @@ refuses to publish a version whose section is missing or empty.
 
 - Topic channels: a Circle's chat can split into `#general` plus named channels (`enox channels`, `enox chat --channel`, `enox say --channel`), listed under the active circle in the web sidebar with unread counts. Each agent keeps a separate conversation per channel, runs turns in different channels in parallel, replies in the channel it was asked in, and sees a short index of what is new in the other channels.
 - Channels can be renamed (`enox channels rename <channel> <name>`, or the pencil on a channel's row in the web sidebar, or a double-click on its name); history and agent conversations stay with the channel. The sidebar's channel list is also restyled.
+- An agent whose sign-in expired, or whose program will not start, now sits out the rooms it reads on that device until it works again: messages nobody addressed go to the other agents instead of failing one by one. It is let back in when a turn of it succeeds (an @mention still reaches it), when a sign-in from Settings verifies, or by one probe message every ten minutes. Members marks such an agent (`⚠ sign-in`), with how to fix it on hover.
+
+### Changed
+
+- Agent activity is easier to read: failures you can retry come first and open, an agent that is broken on its device is said once instead of once per failed message, a running turn shows what it is doing on one line with its tool calls folded away, labels are shorter, and failures older than a day are filed under **Done**.
+- Members tells people, devices and agents apart at a glance: each device is a row with a laptop icon, and its agents hang under it, one per line, as `@name` with a robot icon and whether they listen to the room.
+- The line under a message the warden or rotation routed shows how each chosen agent did, and its steps set each agent apart from its outcome.
+- Above the composer, the working indicator opens Agent activity and can stop a turn this device is running; a conversation among agents gets its own bar naming who is talking, how many turns it has used, and a **Stop** button.
 
 ### Fixed
 

@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 const getExecutions = vi.fn()
 const updateExecution = vi.fn(async () => ({}))
 const getWardenDecisions = vi.fn(async () => ({ mode: 'off', records: [] as unknown[] }))
-vi.mock('../../api', () => ({ getExecutions, updateExecution, getWardenDecisions }))
+vi.mock('../../api', () => ({ getExecutions, updateExecution, getWardenDecisions, getAgentIcons: vi.fn(async () => ({ icons: {} })), agentIconUrl: (id: string) => `/api/agent-icons/${id}.svg` }))
 const { default: ExecutionStatus, describeActivity, describeUsage, usageToday, QUIET_HINT_SECS } = await import('../ExecutionStatus')
 beforeEach(() => { cleanup(); vi.clearAllMocks(); getExecutions.mockResolvedValue({ peer_id: 'local', runs: [
   { run_id: 'r1', message_id: 'm1', agent_id: 'claude', peer_id: 'local', status: 'interrupted', ambient: false },
@@ -17,9 +17,9 @@ describe('agent activity', () => {
       { peer_id: 'local', owner: 'suzy', agent_id: 'suzy-local', device_label: 'macbook-pro', agents: ['claude'], role: 'admin' },
       { peer_id: 'remote', owner: 'suzy', agent_id: 'suzy-remote', device_label: 'jessair', agents: ['codex'], role: 'member' },
     ]} />)
-    await userEvent.click(await screen.findByText(/Needs attention/))
-    expect(screen.getByText('Stopped unexpectedly')).toBeTruthy()
-    expect(screen.getByText('macbook-pro · this device')).toBeTruthy()
+    await screen.findByTitle(/can be tried again/)
+    expect(screen.getByText('Interrupted')).toBeTruthy()
+    expect(screen.getByText('macbook-pro (this one)')).toBeTruthy()
     expect(screen.getByText('Retry on jessair.')).toBeTruthy()
     expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(1)
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
@@ -28,7 +28,7 @@ describe('agent activity', () => {
   it('does not retry when confirmation is declined', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(false)
     render(<ExecutionStatus circleId="circle" />)
-    await userEvent.click(await screen.findByText(/Needs attention/))
+    await screen.findByTitle(/can be tried again/)
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(updateExecution).not.toHaveBeenCalled()
   })
@@ -38,14 +38,14 @@ describe('agent activity', () => {
     ] })
     render(<ExecutionStatus circleId="circle" />)
     await waitFor(() => expect(getExecutions).toHaveBeenCalled())
-    expect(screen.getByText('No active requests')).toBeTruthy()
+    expect(screen.getByText('Nothing running')).toBeTruthy()
     expect(screen.queryByText(/Before this update/)).toBeNull()
     expect(screen.queryByText('@claude')).toBeNull()
     expect(screen.queryByRole('button', { name: /Try again/ })).toBeNull()
   })
   it('does not ask you to retry a turn the device already put back', async () => {
     // A restart expires whatever was queued and the drain requeues it. Both
-    // records exist, and listing the dead one under "Needs attention" with a
+    // records exist, and listing the dead one under "Failed" with a
     // Try again button makes a successful recovery read as a failure.
     getExecutions.mockResolvedValue({ peer_id: 'local', runs: [
       { run_id: 'dead', message_id: 'm1', agent_id: 'claude', peer_id: 'local', status: 'expired', ambient: true, detail: 'ambient observation expired on restart' },
@@ -53,10 +53,10 @@ describe('agent activity', () => {
     ] })
     render(<ExecutionStatus circleId="circle" />)
     await waitFor(() => expect(getExecutions).toHaveBeenCalled())
-    expect(screen.queryByText(/Needs attention/)).toBeNull()
+    expect(screen.queryByTitle(/can be tried again/)).toBeNull()
     expect(screen.queryByRole('button', { name: /Try again/ })).toBeNull()
     // The superseded run is still findable, just not demanding action.
-    await userEvent.click(await screen.findByText(/Recent history/))
+    await userEvent.click(await screen.findByText(/^Done/))
     expect(screen.getByText(/expired on restart/)).toBeTruthy()
   })
   it('still flags a failure nothing has picked up', async () => {
@@ -65,8 +65,8 @@ describe('agent activity', () => {
     ] })
     render(<ExecutionStatus circleId="circle" />)
     await waitFor(() => expect(getExecutions).toHaveBeenCalled())
-    expect(await screen.findByText(/Needs attention/)).toBeTruthy()
-    await userEvent.click(screen.getByText(/Needs attention/))
+    // Open without a click: it is the one thing that needs someone.
+    expect(await screen.findByTitle(/can be tried again/)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
   })
   it('distinguishes a quiet listener from a waiting request', async () => {
@@ -75,20 +75,60 @@ describe('agent activity', () => {
       { run_id: 'pass', message_id: 'm2', agent_id: 'claude', peer_id: 'local', status: 'completed', ambient: true, detail: 'No reply needed' },
     ] })
     render(<ExecutionStatus circleId="circle" />)
-    expect(await screen.findByText('0 working · 1 waiting')).toBeTruthy()
-    expect(screen.getByText('Waiting for a turn')).toBeTruthy()
-    await userEvent.click(screen.getByText(/Recent history/))
-    expect(screen.getAllByText('No reply needed')).toHaveLength(1)
+    expect((await screen.findByTitle(/Status is reported by each device/)).textContent).toContain('Working0Queued1')
+    expect(screen.getByText('Queued', { selector: '.agent-activity__status' })).toBeTruthy()
+    await userEvent.click(screen.getByText(/^Done/))
+    expect(screen.getAllByText('No reply')).toHaveLength(1)
+    expect(screen.queryByText('No reply needed')).toBeNull()
     expect(screen.getByRole('button', { name: 'Cancel request' })).toBeTruthy()
+  })
+  it('says once that an agent is broken instead of listing every message it failed', async () => {
+    const expired = 'ACP request failed (code -32603): Internal error: Failed to authenticate: OAuth session expired'
+    const now = Math.floor(Date.now() / 1000)
+    getExecutions.mockResolvedValue({ peer_id: 'local', runs: [
+      { run_id: 'a', message_id: 'm1', agent_id: 'claude', peer_id: 'remote', status: 'failed', ambient: true, detail: expired, updated_at: now - 30 },
+      { run_id: 'b', message_id: 'm2', agent_id: 'claude', peer_id: 'remote', status: 'failed', ambient: true, detail: expired, updated_at: now - 20 },
+      { run_id: 'c', message_id: 'm3', agent_id: 'codex', peer_id: 'local', status: 'failed', ambient: false, detail: 'turn timed out', updated_at: now - 10 },
+      // Two days old: filed under Done, not offered for a retry.
+      { run_id: 'd', message_id: 'm4', agent_id: 'codex', peer_id: 'local', status: 'failed', ambient: false, detail: 'turn timed out', updated_at: now - 2 * 86_400 },
+    ] })
+    const onOpenMembers = vi.fn()
+    render(<ExecutionStatus circleId="circle" onOpenMembers={onOpenMembers} members={[
+      { peer_id: 'remote', owner: 'suzy', agent_id: 'suzy-remote', device_label: 'jessair', agents: ['claude'], role: 'member' },
+    ]} />)
+    expect(await screen.findByText(/⚠ sign-in/)).toBeTruthy()
+    expect(screen.getAllByText('jessair').length).toBeGreaterThan(0)
+    expect(screen.getByText(/2 missed/)).toBeTruthy()
+    // Only the one-off failure is left to retry.
+    expect(screen.getByTitle(/can be tried again/).textContent).toContain('1')
+    await userEvent.click(screen.getByRole('button', { name: /Members →/ }))
+    expect(onOpenMembers).toHaveBeenCalled()
+  })
+  it('opens settings at a local agent that needs signing in, and only a local one', async () => {
+    const expired = 'Internal error: Failed to authenticate: OAuth session expired'
+    const now = Math.floor(Date.now() / 1000)
+    getExecutions.mockResolvedValue({ peer_id: 'local', runs: [
+      { run_id: 'a', message_id: 'm1', agent_id: 'claude', peer_id: 'local', status: 'failed', ambient: true, detail: expired, updated_at: now },
+      { run_id: 'b', message_id: 'm2', agent_id: 'codex', peer_id: 'remote', status: 'failed', ambient: true, detail: expired, updated_at: now },
+    ] })
+    const opened = vi.fn()
+    window.addEventListener('enoxian:open-agent-settings', e => opened((e as CustomEvent).detail))
+    render(<ExecutionStatus circleId="circle" />)
+    await userEvent.click(await screen.findByRole('button', { name: /Sign in/ }))
+    expect(opened).toHaveBeenCalledWith('claude')
+    // The remote one can only be fixed on its own device, so it says how.
+    expect(screen.getAllByRole('button', { name: /Sign in →/ })).toHaveLength(1)
+    await userEvent.click(screen.getByRole('button', { name: /sign-in/ }))
+    expect(screen.getByRole('dialog', { name: 'How to fix @codex' }).textContent).toMatch(/Sign @codex in again on device remote/)
   })
   it('does not let an old Circle response replace the current one', async () => {
     let resolveOld!: (value: unknown) => void
     getExecutions.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve }))
     const { rerender } = render(<ExecutionStatus circleId="old" />)
     rerender(<ExecutionStatus circleId="new" />)
-    await screen.findByText(/Needs attention/)
+    await screen.findByTitle(/can be tried again/)
     resolveOld({ peer_id: 'wrong', runs: [] })
-    await waitFor(() => expect(screen.getByText(/Needs attention/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByTitle(/can be tried again/)).toBeTruthy())
   })
   it('shows what a running turn is doing and stops it only after confirmation', async () => {
     const now = Date.now() / 1000
@@ -155,6 +195,9 @@ describe('describeActivity', () => {
     render(<ExecutionStatus circleId="circle" />)
     expect(await screen.findByText('Inspect ACP liveness')).toBeTruthy()
     expect(screen.getByText('Render richer status')).toBeTruthy()
+    // The tool list is folded into a count until asked for.
+    expect(screen.queryByText('cargo check')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: /1 tool/ }))
     expect(screen.getByText('cargo check')).toBeTruthy()
     expect(screen.getByText('execute')).toBeTruthy()
     const meter = screen.getByRole('meter', { name: 'Context window usage' })
@@ -172,9 +215,9 @@ describe('describeActivity', () => {
       { run_id: 'mine', ambient: true, updated_at: now, usage: { context_used: 41_000, context_size: 200_000, cost: { amount: 0.03, currency: 'USD' } } },
     ] })
     render(<ExecutionStatus circleId="circle" />)
-    await userEvent.click(await screen.findByText(/Recent history/))
+    await userEvent.click(await screen.findByText(/^Done/))
     expect(screen.getByText(/context 41k \/ 200k/)).toBeTruthy()
-    expect(screen.getByText(/Today on this device: scrying .*0\.03.* \(1 turn\)/)).toBeTruthy()
+    expect(screen.getByTitle(/Today on this device: scrying .*0\.03.* \(1 turn\)/)).toBeTruthy()
     expect(screen.queryByText(/context 0k/)).toBeNull()
   })
 })
@@ -182,7 +225,7 @@ describe('describeActivity', () => {
 describe('usage', () => {
   it('says what was reported and no more', () => {
     expect(describeUsage({ context_used: 41_000, context_size: 200_000, cost: { amount: 0.03, currency: 'USD' } })).toMatch(/0\.03.* · context 41k \/ 200k/)
-    expect(describeUsage({ context_used: 900, context_size: 0 })).toBe('cost not reported')
+    expect(describeUsage({ context_used: 900, context_size: 0 })).toBe('')
     expect(describeUsage({ context_used: 33_477, context_size: 1_000_000, cost: { amount: 0.335, currency: 'USD' },
       tokens: { input: 2, output: 4, cached_read: 0, cached_write: 33_471, total: 33_477 } })).toMatch(/0\.335.* · 33k tokens · context 33k \/ 1M$/)
   })

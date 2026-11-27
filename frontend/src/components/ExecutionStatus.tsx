@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
+import { Laptop } from 'lucide-react'
 import { getExecutions, getWardenDecisions, updateExecution, type WardenRecord } from '../api'
 import { describeDecision } from './WardenSettings'
+import { brokenAgents, healthKey } from '../lib/agentHealth'
+import AgentFixBadge from './AgentFixBadge'
 import type { AdmissionSkip, ChatMessage, ExecutionRun, Member, Readiness, RunActivity, RunSpend, RunUsage } from '../types'
+import AgentIcon from './AgentIcon'
 
 const retryable = new Set(['failed', 'interrupted', 'expired', 'cancelled'])
 const statusLabels: Record<ExecutionRun['status'], string> = {
-  pending: 'Waiting for a turn', running: 'Working', completed: 'Finished',
-  failed: 'Couldn’t finish', interrupted: 'Stopped unexpectedly',
-  expired: 'Not run', cancelled: 'Cancelled', legacy_suppressed: 'Outcome unavailable',
+  pending: 'Queued', running: 'Working', completed: 'Answered',
+  failed: 'Failed', interrupted: 'Interrupted',
+  expired: 'Not run', cancelled: 'Cancelled', legacy_suppressed: 'Unknown',
 }
 
 function ago(secs: number) {
@@ -20,6 +24,13 @@ function ago(secs: number) {
 /** How long a turn can say nothing, with no tool call open, before the panel
  *  mentions it. Only a hint for whoever is looking: nothing is stopped. */
 export const QUIET_HINT_SECS = 10 * 60
+
+/** How long a failed turn stays under "Failed · can retry" before it is
+ *  filed under Done. */
+export const RETRY_WINDOW_SECS = 24 * 60 * 60
+
+/** Context-window share (%) from which a running turn shows its meter. */
+const CONTEXT_BAR_FROM = 50
 
 /** Human-readable label for the latest ACP event when no tool call is open. */
 export function describePhase(lastKind?: string | null, lastFile?: string | null): string | undefined {
@@ -80,7 +91,9 @@ function tokens(n: number) {
 /** One line on what a finished or running turn used, as its agent reported it. */
 export function describeUsage(usage: RunUsage): string {
   const context = usage.context_size > 0 ? `context ${tokens(usage.context_used)} / ${tokens(usage.context_size)}` : undefined
-  const cost = usage.cost ? money(usage.cost.amount, usage.cost.currency) : 'cost not reported'
+  // An agent that reports no cost says nothing here: "cost not reported" on
+  // every turn read as an error. The daily total still counts such turns.
+  const cost = usage.cost ? money(usage.cost.amount, usage.cost.currency) : undefined
   const used = usage.tokens ? `${tokens(usage.tokens.total)} tokens` : undefined
   return [cost, used, context].filter(Boolean).join(' · ')
 }
@@ -91,6 +104,19 @@ function usageTitle(usage: RunUsage): string {
   const t = usage.tokens
   if (!t) return REPORTED
   return `${t.input} input, ${t.output} output, ${t.cached_read} read from cache, ${t.cached_write} written to cache. ${REPORTED}`
+}
+
+/** Today's reported spend on this device as one short figure, for the stats
+ *  row; the breakdown is {@link usageToday}. */
+export function todayCost(spend: RunSpend[], now: Date): string | undefined {
+  const midnight = new Date(now); midnight.setHours(0, 0, 0, 0)
+  const sums = new Map<string, number>()
+  for (const s of spend) {
+    if (s.updated_at < midnight.getTime() / 1000 || !s.usage.cost) continue
+    sums.set(s.usage.cost.currency, (sums.get(s.usage.cost.currency) ?? 0) + s.usage.cost.amount)
+  }
+  if (sums.size === 0) return undefined
+  return [...sums].map(([currency, amount]) => money(amount, currency)).join(' + ')
 }
 
 /** Today's spend on this device, scrying vs addressed. `spend` is every run
@@ -141,8 +167,8 @@ function readinessWarnings(readiness?: Readiness): string[] {
 }
 
 /** Current work is prominent; imported history should never look like a queue. */
-export default function ExecutionStatus({ onNavigate, circleId, members = [], messages = [] }: {
-  onNavigate?: () => void; circleId: string; members?: Member[]; messages?: ChatMessage[]
+export default function ExecutionStatus({ onNavigate, onOpenMembers, circleId, members = [], messages = [] }: {
+  onNavigate?: () => void; onOpenMembers?: () => void; circleId: string; members?: Member[]; messages?: ChatMessage[]
 }) {
   const [selfPeer, setSelfPeer] = useState<string | undefined>()
   const [runs, setRuns] = useState<ExecutionRun[]>([])
@@ -153,6 +179,14 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
   const [readiness, setReadiness] = useState<Readiness | undefined>()
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  // Runs whose tool-call list is open. Collapsed by default: the live line
+  // already says what the agent is doing now, and the list is for digging in.
+  const [openTools, setOpenTools] = useState<Set<string>>(new Set())
+  const toggleTools = (runId: string) => setOpenTools(prev => {
+    const next = new Set(prev)
+    if (next.has(runId)) next.delete(runId); else next.add(runId)
+    return next
+  })
   const generation = useRef(0)
   // The warden's records, by message: its latest decision, and how a vote went.
   // Polled slower than runs: decisions are made once per message.
@@ -217,7 +251,7 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
   // A message the device has since picked up again, or already answered. Its
   // earlier failures are history, not something anyone needs to act on: a turn
   // killed by a restart and automatically put back would otherwise sit under
-  // "Needs attention" offering a "Try again" that has already happened, which
+  // "Failed" offering a "Try again" that has already happened, which
   // makes a successful recovery read as an outstanding failure.
   const movedOn = new Set(
     runs.filter(r => r.status === 'completed' || r.status === 'running' || r.status === 'pending')
@@ -225,11 +259,23 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
   )
   const failed = (r: ExecutionRun) =>
     r.status === 'failed' || r.status === 'interrupted' || r.status === 'expired'
-  const attention = runs.filter(r => failed(r) && !movedOn.has(r.message_id))
+  // An agent that is broken on its device fails every message the same way.
+  // Those failures are one fact about the agent, said once below and in
+  // Members, not one card per message here.
+  const broken = brokenAgents(runs)
+  const agentFault = (r: ExecutionRun) => {
+    const b = broken.get(healthKey(r.peer_id, normalizedAgent(r)))
+    // Every failure since it last worked: they all wait on the same fix.
+    return failed(r) && !!b && (r.updated_at ?? 0) >= b.since
+  }
+  // A failure from days ago is history, not a to-do: the conversation has
+  // moved on, and retrying it now would answer a question nobody is waiting on.
+  const stale = (r: ExecutionRun) => r.updated_at != null && r.updated_at < Date.now() / 1000 - RETRY_WINDOW_SECS
+  const attention = runs.filter(r => failed(r) && !movedOn.has(r.message_id) && !agentFault(r) && !stale(r))
   // Listed explicitly rather than as "everything else": an imported marker is
   // shown nowhere at all, and a catch-all would surface it as history.
   const history = runs.filter(
-    r => r.status === 'completed' || r.status === 'cancelled' || (failed(r) && movedOn.has(r.message_id)),
+    r => r.status === 'completed' || r.status === 'cancelled' || (failed(r) && (movedOn.has(r.message_id) || agentFault(r) || stale(r))),
   )
   // Retrying a run the device has already replaced just starts a duplicate
   // turn on a question that is being answered.
@@ -242,18 +288,21 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
       const device = host?.device_label || (local ? 'This device' : run.peer_id ? `Device ${run.peer_id.slice(-8)}` : 'Unknown device')
       const source = messages.find(m => m.id === run.message_id)
       const ambient = run.ambient || run.agent_id.startsWith('~ambient:')
-      const label = run.status === 'completed' && run.detail === 'No reply needed' ? 'No reply needed' : statusLabels[run.status]
+      const label = run.status === 'completed' && run.detail === 'No reply needed' ? 'No reply' : statusLabels[run.status]
       const running = activity[run.run_id]
       const live = running ? describeActivity(running, Date.now() / 1000) : undefined
       return <li key={run.run_id} className={`agent-activity__item agent-activity__item--${run.status}`}>
         <div className="agent-activity__identity">
-          <strong className="agent-activity__name">@{agent}</strong>
-          <span className="agent-activity__status">{label}</span>
+          <span className="agent-activity__who">
+            <AgentIcon name={agent} className="agent-activity__bot" />
+            <strong className="agent-activity__name">@{agent}</strong>
+          </span>
+          <span className={`agent-activity__status agent-activity__status--${run.status}`}>{label}</span>
         </div>
-        <div className="agent-activity__device" title={host?.owner ? `${host.owner} · ${device}` : device}>{device}{local && host?.device_label ? ' · this device' : ''}</div>
-        <div className="agent-activity__meta">{ambient ? 'Scrying the room' : 'Addressed request'}
+        <div className="agent-activity__meta">
+          <span className="agent-activity__device" title={`Device: ${host?.owner ? `${host.owner} · ${device}` : device}`}><Laptop size={11} aria-hidden="true" />{device}{local && host?.device_label ? ' (this one)' : ''}</span>
+          <span title={ambient ? 'Nobody named this agent: it picked the message up from the room' : 'Someone @mentioned this agent'}>{ambient ? 'from room' : 'mentioned'}</span>
           {run.updated_at != null && <time dateTime={new Date(run.updated_at * 1000).toISOString()} title="Last status update from this device">{new Date(run.updated_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>}
-
         </div>
         {source ? <a className="agent-activity__source" href={`#chat-message-${run.message_id}`} onClick={onNavigate} title={source.text}>{source.text}</a>
           : <span className="agent-activity__unavailable">Message unavailable</span>}
@@ -267,7 +316,17 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
             </li>
           })}
         </ul>}
-        {run.status === 'running' && running?.recent_tools && running.recent_tools.length > 0 && <ul className="agent-activity__tools" aria-label="Completed tool calls">
+        {run.status === 'running' && running?.recent_tools && running.recent_tools.length > 0 && (() => {
+          const tools = running.recent_tools
+          const failures = tools.filter(t => t.status !== 'completed').length
+          const open = openTools.has(run.run_id)
+          return <button type="button" className="agent-activity__tools-toggle" aria-expanded={open} onClick={() => toggleTools(run.run_id)}>
+            <span className="agent-activity__tools-caret" aria-hidden="true">▸</span>
+            {tools.length} {tools.length === 1 ? 'tool' : 'tools'}
+            {failures > 0 && <span className="agent-activity__tools-failed">{failures} failed</span>}
+          </button>
+        })()}
+        {run.status === 'running' && running?.recent_tools && running.recent_tools.length > 0 && openTools.has(run.run_id) && <ul className="agent-activity__tools" aria-label="Completed tool calls">
           {running.recent_tools.map((tool, idx) => {
             const mark = tool.status === 'completed' ? '✓' : '✗'
             return <li key={`${idx}:${tool.finished_at}:${tool.title}`} className={`agent-activity__tool agent-activity__tool--${tool.status}`}>
@@ -278,7 +337,7 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
             </li>
           })}
         </ul>}
-        {run.detail && run.detail !== label && <p className="agent-activity__detail">{run.detail}</p>}
+        {run.detail && run.detail !== label && run.detail !== 'No reply needed' && <p className="agent-activity__detail">{run.detail}</p>}
         {ambient && warden.decided[run.message_id]?.decision && <p className="agent-activity__warden" title={warden.decided[run.message_id].decision!.decider}>
           {warden.decided[run.message_id].phase === 'shadow' ? 'Warden would have chosen: ' : 'Warden: '}
           {describeDecision(warden.decided[run.message_id].decision!)}
@@ -304,9 +363,12 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
         {local && usage[run.run_id] && (() => {
           const u = usage[run.run_id]
           const ratio = u.context_size > 0 ? Math.min(100, Math.round((u.context_used / u.context_size) * 100)) : null
+          const text = describeUsage(u)
           return <>
-            <p className="agent-activity__usage" title={usageTitle(u)}>{describeUsage(u)}</p>
-            {ratio !== null && <div className={`agent-activity__context-bar${ratio >= 80 ? ' agent-activity__context-bar--high' : ''}`} role="meter" aria-label="Context window usage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={ratio} title={`Context window ${ratio}% used`}>
+            {text && <p className="agent-activity__usage" title={usageTitle(u)}>{text}</p>}
+            {/* A bar for a window that is mostly empty is noise; it shows
+                once the context is worth watching. */}
+            {ratio !== null && ratio >= CONTEXT_BAR_FROM && <div className={`agent-activity__context-bar${ratio >= 80 ? ' agent-activity__context-bar--high' : ''}`} role="meter" aria-label="Context window usage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={ratio} title={`Context window ${ratio}% used`}>
               <span style={{ width: `${ratio}%` }} />
             </div>}
           </>
@@ -326,29 +388,64 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
   // message with either is only ever listed once, under its run.
   const ran = new Set(runs.map(r => r.message_id))
   const notPickedUp = skips.filter(s => !ran.has(s.message_id))
+  const working = active.filter(r => r.status === 'running').length
+  const waiting = active.length - working
+  const today = spend.length > 0 ? todayCost(spend, new Date()) : undefined
+  const section = (label: string) => <h4 className="agent-activity__section"><span>{label}</span></h4>
   return <section aria-label="Agent activity" className="agent-activity">
-    <header className="agent-activity__header">
-      <h3>Agent activity</h3>
-      <span className="agent-activity__count" title="Requests working or waiting">{active.length}</span>
-    </header>
+    <dl className="agent-activity__stats" title="Status is reported by each device and may be out of date while it’s disconnected. A missing entry doesn’t confirm delivery.">
+      <div className={working > 0 ? 'is-live' : undefined}><dt>Working</dt><dd>{working}</dd></div>
+      <div><dt>Queued</dt><dd>{waiting}</dd></div>
+      <div title={spent ? `Today on this device: ${spent}. What this device's agents reported spending since midnight — their figures, not a bill; on a subscription they may be API-price equivalents. Only this device sees it.` : 'Nothing reported today on this device'}>
+        <dt>Today</dt><dd>{today ?? '—'}</dd>
+      </div>
+    </dl>
     {error && <p role="status" className="agent-activity__error">{error}</p>}
     {warnings.map(warning => <p key={warning} className="agent-activity__readiness">{warning}</p>)}
-    {spent && <p className="agent-activity__spend" title="What this device's agents reported spending since midnight — their figures, not a bill; on a subscription they may be API-price equivalents. Agents that report no cost are counted apart, not as free. Only this device sees it.">Today on this device: {spent}</p>}
-    {active.length > 0 ? <>
-      <p className="agent-activity__summary">{active.filter(r => r.status === 'running').length} working · {active.filter(r => r.status === 'pending').length} waiting</p>
-      {rows(active)}
-    </> : <p className="agent-activity__empty">No active requests</p>}
-    {attention.length > 0 && <details className="agent-activity__group"><summary>Needs attention <span>{attention.length}</span></summary>{rows(attention)}</details>}
-    {history.length > 0 && <details className="agent-activity__group"><summary>Recent history <span>{history.length}</span></summary>{rows([...history].sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0)))}</details>}
+    {/* The only part anyone has to act on, so it comes first and open. */}
+    {attention.length > 0 && <details className="agent-activity__group agent-activity__group--attention" open>
+      <summary title="Turns from the last day that failed, were interrupted, or never ran, and can be tried again">Failed <span>{attention.length}</span></summary>
+      {rows(attention)}
+    </details>}
+    <div className="agent-activity__block">
+      {section('Now')}
+      {active.length > 0 ? rows(active) : <p className="agent-activity__empty">Nothing running</p>}
+    </div>
+    {/* Said once and folded away: each is a fact about an agent, fixed on its
+        own device, not a to-do for this one. Members marks them too. */}
+    {broken.size > 0 && <details className="agent-activity__group agent-activity__group--broken">
+      <summary title="Agents that fail every message on their device until someone fixes them there">Unavailable agents <span>{broken.size}</span></summary>
+      <ul className="agent-activity__broken">
+        {[...broken.values()].map(b => {
+          const host = members.find(m => m.peer_id === b.peerId)
+          const device = host?.device_label || (b.peerId === selfPeer ? 'this device' : `device ${b.peerId.slice(-8)}`)
+          return <li key={`${b.peerId}|${b.agent}`}>
+            <div className="agent-activity__identity">
+              <span className="agent-activity__who">
+                <AgentIcon name={b.agent} className="agent-activity__bot" />
+                <strong className="agent-activity__name">@{b.agent}</strong>
+              </span>
+              <AgentFixBadge broken={b} device={device} local={b.peerId === selfPeer} />
+            </div>
+            <div className="agent-activity__meta">
+              <span className="agent-activity__device"><Laptop size={11} aria-hidden="true" />{device}</span>
+              <span>{b.failures} missed</span>
+            </div>
+          </li>
+        })}
+      </ul>
+      {onOpenMembers && <button type="button" className="agent-activity__section-link agent-activity__members-link" onClick={onOpenMembers}>See all agents in Members →</button>}
+    </details>}
+    {history.length > 0 && <details className="agent-activity__group"><summary>Done <span>{history.length}</span></summary>{rows([...history].sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0)))}</details>}
     {notPickedUp.length > 0 && <details className="agent-activity__group">
-      <summary title="Messages this device saw and chose not to act on">Not picked up <span>{notPickedUp.length}</span></summary>
+      <summary title="Messages this device's agents saw and decided not to answer, with the reason. Cleared when the daemon restarts.">Skipped <span>{notPickedUp.length}</span></summary>
       <ul className="agent-activity__list">
         {notPickedUp.map(skip => {
           const source = messages.find(m => m.id === skip.message_id)
           return <li key={`${skip.message_id}:${skip.agent ?? ''}:${skip.reason}`} className="agent-activity__item agent-activity__item--skipped">
             <div className="agent-activity__identity">
               <strong className="agent-activity__name">{skip.agent ? `@${skip.agent}` : 'Nobody'}</strong>
-              <span className="agent-activity__status">Didn’t run</span>
+              <span className="agent-activity__status">Skipped</span>
             </div>
             <p className="agent-activity__detail">{skip.reason}</p>
             {source ? <a className="agent-activity__source" href={`#chat-message-${skip.message_id}`} onClick={onNavigate} title={source.text}>{source.text}</a>
@@ -361,6 +458,5 @@ export default function ExecutionStatus({ onNavigate, circleId, members = [], me
         })}
       </ul>
     </details>}
-    <p className="agent-activity__note" title="Status is reported by each device and may be out of date while it’s disconnected. A missing entry doesn’t confirm delivery. “Not picked up” is this device’s own reasoning and is cleared when the daemon restarts.">Last reported by each device <span aria-hidden="true">ⓘ</span></p>
   </section>
 }

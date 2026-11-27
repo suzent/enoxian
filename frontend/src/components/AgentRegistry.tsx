@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { AgentPlugin } from '../types'
 import { ConfirmDialog } from './ui/Dialog'
 import { availableRegistryPlugins, pluginSource } from '../lib/agentPlugins'
+import AgentIcon from './AgentIcon'
 
 interface Props {
   plugins: AgentPlugin[]
@@ -77,7 +78,7 @@ export default function AgentRegistry({ plugins, busy, installing, takenHandles 
             return (
               <div key={p.id} className="agent-card agent-registry__item">
                 <div className="agent-card__name">
-                  {p.registry?.icon && <img src={p.registry.icon} alt="" width={14} height={14} className="agent-registry__icon" />}
+                  {p.registry?.icon && <AgentIcon name={p.agent} id={p.id} size={14} className="agent-registry__icon" />}
                   {p.registry?.name ?? p.id}
                   <span>@{p.agent} · v{p.version}</span>
                 </div>

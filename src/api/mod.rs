@@ -266,6 +266,8 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
             "/api/agent-plugins/{plugin_id}/uninstall",
             post(agent_config::uninstall_plugin),
         )
+        .route("/api/agent-icons", get(agent_config::agent_icons))
+        .route("/api/agent-icons/{id}", get(agent_config::agent_icon))
         .route(
             "/api/agent-registry/refresh",
             post(agent_config::refresh_registry),

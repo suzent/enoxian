@@ -266,8 +266,10 @@ describe('a conversation among agents', () => {
       { activity_id: 'w', actor_id: 'beta', peer_id: 'p1', kind: 'working', message_id: 'a', updated_at: now + 60, expires_at: now + 60 },
     ] as never)
     render(<ChatPanel />)
-    expect(await screen.findByText(/agents talking · turn 2 of 6/)).toBeTruthy()
-    await userEvent.click(screen.getByRole('button', { name: 'stop' }))
+    expect(await screen.findByText('Agents talking')).toBeTruthy()
+    expect(screen.getByText('alpha → beta')).toBeTruthy()
+    expect(screen.getByText(/turn 2\/6/)).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
     await waitFor(() => expect(stopRelay).toHaveBeenCalledWith('c1', 'q'))
   })
 
@@ -285,7 +287,7 @@ describe('a conversation among agents', () => {
       { activity_id: 'w', actor_id: 'beta', peer_id: 'p9', kind: 'working', message_id: 'a', updated_at: now + 60, expires_at: now + 60 },
     ] as never)
     render(<ChatPanel />)
-    expect(await screen.findByText(/agents talking · turn 8$/)).toBeTruthy()
-    expect(screen.queryByText(/of 6/)).toBeNull()
+    expect(await screen.findByText(/^turn 8$/)).toBeTruthy()
+    expect(screen.queryByText(/\/6/)).toBeNull()
   })
 })

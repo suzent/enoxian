@@ -1,10 +1,10 @@
 import type { RightPanelTab } from './RightPanel'
 import { createPortal } from 'react-dom'
-import { Users, FileText, Download, Info } from 'lucide-react'
+import { Users, FileText, Download, Info, Square } from 'lucide-react'
 import ExecutionStatus from './ExecutionStatus'
 import { Fragment, memo, startTransition, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import type { Attachment, ChatActivity, ChatMessage, EngagementView, ExecutionRun, Member, Presence } from '../types'
-import { getChat, postChat, chatStream, getChatActivity, getExecutions, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, getEngagement, exitEngagement, getAgentConfigFor, MAX_ATTACHMENT_BYTES } from '../api'
+import { getChat, postChat, chatStream, getChatActivity, getExecutions, setChatTyping, getMembers, getWho, uploadAttachment, blobUrl, stopRelay, getEngagement, exitEngagement, getAgentConfigFor, updateExecution, MAX_ATTACHMENT_BYTES } from '../api'
 import RoutingStrip, { deriveRouting, isRoutingNotice, type Routing } from './RoutingStrip'
 import { channelKey, useChannels } from '../context/ChannelContext'
 import { useApp } from '../context/AppContext'
@@ -1149,12 +1149,16 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
       // limit it runs under is the running device's own, known here only for
       // this device.
       if (relay?.root && (relay.path?.length ?? 0) > 0) {
-        return { root: relay.root, turn: (relay.spent ?? 0) + 1, local: !!myMember && activity.peer_id === myMember.peer_id }
+        // Who has spoken in this conversation so far, then who is replying
+        // now — so the banner can say which agents are talking.
+        const current = getSenderLabel(activity.actor_id, activity.peer_id).agent
+        const agents = [...(relay.path ?? []), ...(current ? [current] : [])]
+          .filter((name, i, all) => i === 0 || all[i - 1] !== name)
+        return { root: relay.root, turn: (relay.spent ?? 0) + 1, local: !!myMember && activity.peer_id === myMember.peer_id, agents }
       }
     }
     return null
   })()
-  const runningCascadeRoot = runningCascade?.root ?? null
 
   // How many agent turns one person's message may pay for here, to say how
   // far along a conversation among agents is.
@@ -1221,6 +1225,24 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
   }, [])
 
   const [stoppingRoot, setStoppingRoot] = useState<string | null>(null)
+
+  // Stopping one turn this device is running, from the strip above the
+  // composer — the same action as Stop in the Activity panel.
+  const [stoppingRun, setStoppingRun] = useState<string | null>(null)
+  const localRunFor = (messageId: string | null, peerId: string | null) => {
+    if (!messageId || !myMember || peerId !== myMember.peer_id) return undefined
+    return Object.values(receipts).find(r => r.message_id === messageId && r.peer_id === myMember.peer_id && r.status === 'running')
+  }
+  const stopRun = useCallback(async (run: ExecutionRun) => {
+    if (!activeCircleId) return
+    if (!window.confirm('Stop this turn? The agent is asked to wind down and posts nothing; anything it already changed stays.')) return
+    setStoppingRun(run.run_id)
+    try {
+      await updateExecution(activeCircleId, run.run_id, 'cancel')
+    } catch {
+      setStoppingRun(null)
+    }
+  }, [activeCircleId])
   const haltCascade = useCallback(async (root: string) => {
     if (!activeCircleId) return
     setStoppingRoot(root)
@@ -1272,6 +1294,8 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
           const host = activity.peer_id ? members.find(member => member.peer_id === activity.peer_id) : undefined
           return {
             key: activity.activity_id,
+            peerId: activity.peer_id ?? null,
+            messageId: activity.message_id ?? null,
             name: label.agent ?? label.user,
             agent: !!label.agent,
             device: (label.agent ? host?.device_label : label.device) || null,
@@ -1303,7 +1327,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
   const [activityWidth, setActivityWidth] = useState(0)
   // Anything that changes what fits starts the steps again from the top.
   const activityKey = activityGroups.map(group => `${group.kind}:${group.actors.map(actor => actor.key).join(',')}`).join('|')
-    + `|${runningCascadeRoot ? 'stop' : ''}|${activityWidth}`
+    + `|${activityWidth}`
   const measuredActivityKey = useRef('')
   useLayoutEffect(() => {
     if (measuredActivityKey.current !== activityKey) {
@@ -1475,7 +1499,7 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
         <div ref={bottomRef} />
       </div>
 
-      {activeCircleId && activityContainer && createPortal(<ExecutionStatus onNavigate={onActivityNavigate} circleId={activeCircleId} members={members} messages={messages} />, activityContainer)}
+      {activeCircleId && activityContainer && createPortal(<ExecutionStatus onNavigate={onActivityNavigate} onOpenMembers={() => onOpenCircleDetails?.('members')} circleId={activeCircleId} members={members} messages={messages} />, activityContainer)}
       <div
         className={`chat-composer${dragging ? ' chat-composer--dragging' : ''}`}
         onDragOver={e => { e.preventDefault(); if (!activeCircle?.disabled) setDragging(true) }}
@@ -1505,6 +1529,36 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
             </button>
           </div>
         )}
+        {runningCascade && (
+          <div className="chat-chain" role="status">
+            <span className="chat-chain__icon" aria-hidden="true">⟳</span>
+            <span className="chat-chain__label" title="Agents are replying to each other">Agents talking</span>
+            {runningCascade.agents.length > 0 && (
+              <span className="chat-chain__path">{runningCascade.agents.join(' → ')}</span>
+            )}
+            <span className="chat-chain__turn" title={maxRelayTurns && runningCascade.local ? 'Turns this conversation may still take before it stops by itself' : 'The limit is set on the device running the turn'}>
+              {maxRelayTurns && runningCascade.local ? (
+                <>
+                  <span className="chat-chain__pips" aria-hidden="true">
+                    {Array.from({ length: Math.min(maxRelayTurns, 12) }, (_, i) => (
+                      <i key={i} className={i < runningCascade.turn ? 'is-spent' : undefined} />
+                    ))}
+                  </span>
+                  turn {runningCascade.turn}/{maxRelayTurns}
+                </>
+              ) : <>turn {runningCascade.turn}</>}
+            </span>
+            <button
+              type="button"
+              className="chat-chain__stop"
+              title="Ends this conversation's remaining turns on every device. The reply being written still finishes."
+              onClick={() => haltCascade(runningCascade.root)}
+              disabled={stoppingRoot === runningCascade.root}
+            >
+              {stoppingRoot === runningCascade.root ? 'Stopping…' : 'Stop'}
+            </button>
+          </div>
+        )}
         {activityGroups.length > 0 && (
           <div ref={activityRef} className="chat-activity" role="status" aria-live="polite">
             {activityGroups.filter(group =>
@@ -1514,11 +1568,16 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
               const terse = activityDensity >= ACTIVITY_TERSE
               const counted = group.actors.length > (activityDensity >= ACTIVITY_COUNTED ? 1 : ACTIVITY_NAMES_SHOWN)
               const noun = group.actors.every(actor => actor.agent) ? 'agents' : 'members'
+              const opens = group.kind === 'working' && !!onOpenCircleDetails
+              const Tag = opens ? 'button' : 'span'
+              const lone = group.kind === 'working' && group.actors.length === 1 ? group.actors[0] : null
+              const stoppable = lone ? localRunFor(lone.messageId, lone.peerId) : undefined
               return (
-                <span
-                  key={group.kind}
+                <span key={group.kind} className="chat-activity__slot">
+                <Tag
+                  {...(opens ? { type: 'button' as const, onClick: () => onOpenCircleDetails?.('activity') } : {})}
                   className={`chat-activity__group chat-activity__group--${group.kind}`}
-                  title={group.actors.map(actor => actor.description).join('\n')}
+                  title={group.actors.map(actor => actor.description).join('\n') + (opens ? '\nOpen in Activity' : '')}
                 >
                   <i className="chat-activity__pulse" aria-hidden="true" />
                   {group.kind === 'seen' && <span className="chat-activity__verb">seen by</span>}
@@ -1548,24 +1607,23 @@ export default function ChatPanel({ activeDetail, onOpenCircleDetails, activityC
                         : null}
                     </span>
                   )}
+                  {opens && <span className="chat-activity__open" aria-hidden="true">›</span>}
+                </Tag>
+                {stoppable && (
+                  <button
+                    type="button"
+                    className="chat-activity__run-stop"
+                    aria-label={`Stop ${lone!.name}`}
+                    title="Stop this turn"
+                    disabled={stoppingRun === stoppable.run_id}
+                    onClick={() => void stopRun(stoppable)}
+                  >
+                    <Square size={9} aria-hidden="true" />
+                  </button>
+                )}
                 </span>
               )
             })}
-            {runningCascade && (
-              <span className="chat-activity__chain" title="Agents are replying to each other. Stop ends this conversation's remaining turns on every device; the reply being written still finishes.">
-                <span>
-                  agents talking · turn {runningCascade.turn}{maxRelayTurns && runningCascade.local ? ` of ${maxRelayTurns}` : ''}
-                </span>
-                <button
-                  type="button"
-                  className="chat-activity__stop"
-                  onClick={() => haltCascade(runningCascade.root)}
-                  disabled={stoppingRoot === runningCascade.root}
-                >
-                  {stoppingRoot === runningCascade.root ? 'stopped' : 'stop'}
-                </button>
-              </span>
-            )}
           </div>
         )}
         {(pending.length > 0 || uploadEntries.length > 0 || attachError) && (

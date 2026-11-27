@@ -16,6 +16,7 @@ import RecommendedSetup from './RecommendedSetup'
 import AgentRegistry from './AgentRegistry'
 import { isListedPlugin } from '../lib/agentPlugins'
 import type { InstallPluginOptions } from '../api'
+import AgentIcon from './AgentIcon'
 
 type SettingsTab = 'device' | 'agents' | 'behaviour' | 'connectivity' | 'membership'
 
@@ -42,6 +43,8 @@ interface Props {
   membership?: ReactNode
   /** Open a shared-folder file in the editor, closing settings. */
   onOpenFile?: (path: string) => void
+  /** Open on the Agents tab, scrolled to this agent's card and marked. */
+  focusAgent?: string
 }
 
 /**
@@ -51,12 +54,21 @@ interface Props {
  * a local process) is gated behind a confirm; adding/removing agents is
  * ordinary launcher config. See docs/concepts/proposals.md.
  */
-export default function DeviceSettings({ onClose, circleId, membership, onOpenFile }: Props) {
+export default function DeviceSettings({ onClose, circleId, membership, onOpenFile, focusAgent }: Props) {
   const { circles } = useApp()
   const activeCircleId = circleId ?? null
   const scope = circleId ? 'circle' : 'global'
-  const [activeTab, setActiveTab] = useState<SettingsTab>('behaviour')
+  const [activeTab, setActiveTab] = useState<SettingsTab>(focusAgent ? 'agents' : 'behaviour')
   const auth = useAgentAuthentication(activeTab === 'agents', activeCircleId)
+  // Bring the agent asked about into view once its card has rendered.
+  const focused = useRef(false)
+  useEffect(() => {
+    if (!focusAgent || focused.current || activeTab !== 'agents') return
+    const card = document.querySelector(`[data-agent="${CSS.escape(focusAgent.toLowerCase())}"]`)
+    if (!card) return
+    focused.current = true
+    card.scrollIntoView({ block: 'center' })
+  })
   const [cfg, setCfg] = useState<AgentConfigView | null>(null)
   const [plugins, setPlugins] = useState<AgentPlugin[] | null>(null)
   const [known, setKnown] = useState<DiscoveredAgent[]>([])
@@ -348,8 +360,9 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                               : fromRegistry ? 'Off · downloads the pinned release when turned on'
                               : 'Off · downloads a pinned adapter when turned on'
                       return (
-                      <div key={plugin.id} className="agent-card">
+                      <div key={plugin.id} className={`agent-card${focusAgent?.toLowerCase() === plugin.agent.toLowerCase() ? ' agent-card--focus' : ''}`} data-agent={plugin.agent.toLowerCase()}>
                         <div className="agent-card__name">
+                          <AgentIcon name={plugin.agent} id={plugin.registry?.icon ? plugin.id : undefined} size={13} />
                           @{plugin.agent}
                           <span title={plugin.runtime_program ? (native
                             ? `Runs your installed ${plugin.runtime_program} CLI, which speaks ACP itself. Nothing is downloaded.`
@@ -493,7 +506,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                         ? { label: 'DOWNLOADS', ready: false, detail: 'Runs a package manager on first use · migrate to a pinned adapter' }
                         : { label: 'MISSING', ready: false, detail: `${agent.command[0] || 'Command'} not found on PATH` }
                     return (
-                    <div key={agent.name} className="flex items-start justify-between gap-2 border-b border-obsidian/20 pb-2 text-[10px]">
+                    <div key={agent.name} data-agent={agent.name.toLowerCase()} className={`flex items-start justify-between gap-2 border-b border-obsidian/20 pb-2 text-[10px]${focusAgent?.toLowerCase() === agent.name.toLowerCase() ? ' agent-card--focus' : ''}`}>
                       <div className="min-w-0">
                         <div className="font-bold">@{agent.name} <span className="text-[8px] text-slate">{agent.driver.toUpperCase()}</span></div>
                         {health.detail && (

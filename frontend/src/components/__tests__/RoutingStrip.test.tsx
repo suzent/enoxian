@@ -117,7 +117,8 @@ describe('RoutingStrip', () => {
     const routing = deriveRouting([run(warden)], ['claude on jessair'], [], nameOf)!
     render(<RoutingStrip routing={routing} />)
     const chip = screen.getByRole('button', { expanded: false })
-    expect(chip).toHaveTextContent('Warden→claude on jessair· one listener· 82%answered')
+    expect(chip).toHaveTextContent(/^▸Warden\s*claude on jessair\s*· 82%\s*answered$/)
+    expect(chip.querySelector('.chat-routing__agent--answered')).not.toBeNull()
     expect(screen.queryByText('a direct question')).toBeNull()
     fireEvent.click(chip)
     expect(screen.getByText('a direct question')).toBeInTheDocument()
