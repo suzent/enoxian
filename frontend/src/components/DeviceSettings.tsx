@@ -65,6 +65,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [installingPlugin, setInstallingPlugin] = useState<string | null>(null)
+  const [unverifiedUpdate, setUnverifiedUpdate] = useState<AgentPlugin | null>(null)
 
   const [saved, setSaved] = useState(false)
   const [identityDirty, setIdentityDirty] = useState(false)
@@ -377,7 +378,9 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                           <div className="agent-card__actions">
                             <button type="button" className="agent-btn" disabled={busy}
                               title={`Install v${plugin.update_version} from the ACP Registry`}
-                              onClick={() => installPlugin(plugin, { upgrade: true })}>
+                              onClick={() => plugin.update_verified === false
+                                ? setUnverifiedUpdate(plugin)
+                                : installPlugin(plugin, { upgrade: true })}>
                               UPDATE v{plugin.update_version}</button>
                           </div>
                         )}
@@ -432,6 +435,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
 
               {plugins && (
                 <AgentRegistry plugins={plugins} busy={busy} installing={installingPlugin}
+                  takenHandles={cfg.agents.map(agent => agent.name)}
                   onInstall={(plugin, options) => void installPlugin(plugin, options)}
                   onRefresh={() => void run(refreshAgentRegistry)} />
               )}
@@ -598,6 +602,16 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
       setRecommending(false)
       if (applied) { setSaved(true); void refresh() }
     }} />}
+    {unverifiedUpdate && <ConfirmDialog title={`Update @${unverifiedUpdate.agent} to v${unverifiedUpdate.update_version}?`}
+      confirmLabel="Update unverified"
+      onClose={() => setUnverifiedUpdate(null)}
+      onConfirm={() => {
+        const plugin = unverifiedUpdate
+        setUnverifiedUpdate(null)
+        void installPlugin(plugin, { upgrade: true, allow_unverified: true })
+      }}>
+      <p role="alert"><strong>Its publisher gives no checksum for this release</strong>, so Enoxian cannot verify the download.</p>
+    </ConfirmDialog>}
     {discard &&<ConfirmDialog title="Discard unsaved changes?" confirmLabel="Discard changes"
       onClose={() => setDiscard(null)} onConfirm={() => { const action = discard; setDiscard(null); setIdentityDirty(false); action() }}>
       Your unsaved entries will be lost. Saved settings are kept.

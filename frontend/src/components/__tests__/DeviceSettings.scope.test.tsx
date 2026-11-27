@@ -151,7 +151,12 @@ describe('settings recovery', () => {
       plugin('gemini', {}),
       plugin('goose', { kind: 'binary', package: '', verified: false }),
       plugin('cline', { state: 'ready', configured: true, update_version: '2.0.0' }),
+      plugin('kilo', { kind: 'binary', state: 'ready', configured: true, update_version: '3.0.0', update_verified: false }),
+      plugin('vibe', {}),
     ] } as never)
+    vi.mocked(getAgentConfigFor).mockResolvedValue({
+      ...CONFIG, agents: [{ name: 'vibe', driver: 'acp', command: ['/usr/local/bin/vibe'], status: 'ready' }],
+    } as never)
     render(<DeviceSettings onClose={vi.fn()} />)
     await userEvent.click(screen.getByRole('tab', { name: 'Agents' }))
 
@@ -161,6 +166,12 @@ describe('settings recovery', () => {
     expect(screen.queryByRole('switch', { name: 'Enable @gemini' })).toBeNull()
     await userEvent.click(screen.getByRole('button', { name: 'UPDATE v2.0.0' }))
     expect(installAgentPlugin).toHaveBeenCalledWith('cline', { upgrade: true })
+    // An update with no published checksum asks before installing.
+    await userEvent.click(screen.getByRole('button', { name: 'UPDATE v3.0.0' }))
+    expect(installAgentPlugin).not.toHaveBeenCalledWith('kilo', expect.anything())
+    expect(screen.getByRole('alert')).toHaveTextContent('no checksum')
+    await userEvent.click(screen.getByRole('button', { name: 'Update unverified' }))
+    expect(installAgentPlugin).toHaveBeenCalledWith('kilo', { upgrade: true, allow_unverified: true })
     await userEvent.click(cline)
     expect(uninstallAgentPlugin).toHaveBeenCalledWith('cline')
     expect(removeAgent).not.toHaveBeenCalledWith('cline')
@@ -178,6 +189,13 @@ describe('settings recovery', () => {
     await userEvent.type(handle, 'gem')
     await userEvent.click(screen.getByRole('button', { name: 'Add agent' }))
     expect(installAgentPlugin).toHaveBeenCalledWith('gemini', { handle: 'gem' })
+
+    // A custom agent's handle is taken too, even though no plugin owns it.
+    await userEvent.clear(screen.getByLabelText('Search the ACP Registry'))
+    await userEvent.type(screen.getByLabelText('Search the ACP Registry'), 'vibe')
+    await userEvent.click(screen.getByRole('button', { name: 'Add VIBE' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('@vibe is already in use')
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
     // An unverified release says so and is only added with explicit consent.
     await userEvent.clear(screen.getByLabelText('Search the ACP Registry'))

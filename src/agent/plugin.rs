@@ -177,6 +177,9 @@ pub struct PluginView {
     /// The registry's current version when it differs from the one this
     /// device has installed (an upgrade is available).
     pub update_version: Option<String>,
+    /// For an update that is a prebuilt release: whether its publisher gave a
+    /// checksum. Installing an unverified one needs explicit consent.
+    pub update_verified: Option<bool>,
     /// For a prebuilt release: whether its publisher gave a checksum.
     pub verified: Option<bool>,
     /// Extra environment the handle launches with.
@@ -679,11 +682,15 @@ pub fn views() -> Vec<PluginView> {
         // A native plugin's "bridged CLI" is its own binary: there is no
         // adapter in front of it, so its presence is the prerequisite.
         let bridge = super::probe::bridged_cli(&manifest.binary);
-        let update_version = (entry.origin == Origin::RegistryInstalled)
+        let update = (entry.origin == Origin::RegistryInstalled)
             .then(|| live.iter().find(|m| m.id == manifest.id))
             .flatten()
-            .filter(|m| m.version != manifest.version || m.kind != manifest.kind)
-            .map(|m| m.version.clone());
+            .filter(|m| m.version != manifest.version || m.kind != manifest.kind);
+        // A registry entry's handle is only a default: a custom agent that
+        // happens to share it is the user's own, not a stale install of this
+        // plugin, so it must not mark the entry configured or migratable.
+        let configured_cmd = configured_cmd
+            .filter(|c| handle_belongs(entry.origin, &base, &manifest.id, &expected, &c.command));
         PluginView {
             id: manifest.id.clone(),
             agent: manifest.agent.clone(),
@@ -700,7 +707,10 @@ pub fn views() -> Vec<PluginView> {
             }
             .into(),
             registry: manifest.registry.clone(),
-            update_version,
+            update_version: update.map(|m| m.version.clone()),
+            update_verified: update
+                .filter(|m| m.kind == Kind::Binary)
+                .map(|m| !m.sha256.is_empty()),
             verified: (manifest.kind == Kind::Binary).then_some(!manifest.sha256.is_empty()),
             env: manifest.env.clone(),
             install_url: manifest.install_url.clone(),
@@ -878,13 +888,28 @@ fn check_handle_free(manifest: &PluginManifest, previous: Option<&str>) -> Resul
 
 /// Whether a configured command launches something installed for plugin `id`.
 fn launches_from(command: &[String], id: &str) -> bool {
-    let Some(program) = command.first() else {
-        return false;
-    };
-    let Ok(base) = adapters_dir() else {
-        return false;
-    };
-    Path::new(program).starts_with(base.join(id))
+    adapters_dir()
+        .map(|base| launches_from_at(&base, command, id))
+        .unwrap_or(false)
+}
+
+fn launches_from_at(base: &Path, command: &[String], id: &str) -> bool {
+    command
+        .first()
+        .is_some_and(|program| Path::new(program).starts_with(base.join(id)))
+}
+
+/// Whether the agent configured under a plugin's handle is that plugin's.
+/// Built-in and local handles are part of the plugin. A registry handle is
+/// only a default, so a custom agent that shares it stays the user's own.
+fn handle_belongs(
+    origin: Origin,
+    base: &Path,
+    id: &str,
+    expected: &[String],
+    command: &[String],
+) -> bool {
+    !origin.is_registry() || command == expected || launches_from_at(base, command, id)
 }
 
 /// Run an installer command, turning a failure into the tail of its stderr.
@@ -1604,6 +1629,29 @@ mod tests {
         validate_manifest(&manifest).unwrap();
         manifest.env.insert("BAD=NAME".into(), "1".into());
         assert!(validate_manifest(&manifest).is_err());
+    }
+
+    #[test]
+    fn a_custom_handle_does_not_belong_to_a_registry_entry() {
+        let base = Path::new("/adapters");
+        let expected = vec!["/adapters/gemini/0.71.1/node_modules/.bin/gemini".to_string()];
+        let custom = vec!["/usr/local/bin/gemini".to_string(), "--acp".to_string()];
+        let older = vec!["/adapters/gemini/0.70.0/node_modules/.bin/gemini".to_string()];
+        for origin in [Origin::Registry, Origin::RegistryInstalled] {
+            assert!(!handle_belongs(origin, base, "gemini", &expected, &custom));
+            assert!(handle_belongs(origin, base, "gemini", &expected, &expected));
+            // An earlier install of the same plugin is still its own.
+            assert!(handle_belongs(origin, base, "gemini", &expected, &older));
+        }
+        // A built-in's handle is the built-in's whatever it launches, so an
+        // old runtime-download command still shows as migratable.
+        assert!(handle_belongs(
+            Origin::Builtin,
+            base,
+            "codex-acp",
+            &expected,
+            &custom
+        ));
     }
 
     #[test]

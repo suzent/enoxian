@@ -7,6 +7,8 @@ interface Props {
   plugins: AgentPlugin[]
   busy: boolean
   installing: string | null
+  /** Handles already configured on this device, including custom agents. */
+  takenHandles?: string[]
   onInstall: (plugin: AgentPlugin, options: { handle?: string; allow_unverified?: boolean }) => void
   onRefresh: () => void
 }
@@ -27,13 +29,16 @@ function missingRuntime(p: AgentPlugin): string | null {
  * confirmation that says what will be downloaded, from where, and under which
  * licence — and lets the user pick the @handle it answers to.
  */
-export default function AgentRegistry({ plugins, busy, installing, onInstall, onRefresh }: Props) {
+export default function AgentRegistry({ plugins, busy, installing, takenHandles = [], onInstall, onRefresh }: Props) {
   const [query, setQuery] = useState('')
   const [pending, setPending] = useState<AgentPlugin | null>(null)
   const [handle, setHandle] = useState('')
   const all = availableRegistryPlugins(plugins)
   const shown = availableRegistryPlugins(plugins, query)
-  const taken = new Set(plugins.filter(p => p.origin !== 'registry' || p.configured).map(p => p.agent))
+  const taken = new Set([
+    ...plugins.filter(p => p.origin !== 'registry' || p.configured).map(p => p.agent),
+    ...takenHandles,
+  ])
 
   const open = (p: AgentPlugin) => { setPending(p); setHandle(p.agent) }
   const handleError = !pending ? null

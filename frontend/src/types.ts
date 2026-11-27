@@ -216,6 +216,8 @@ export interface AgentPlugin {
   registry?: AgentPluginRegistryInfo | null
   /** The registry's current version, when it differs from the installed one. */
   update_version?: string | null
+  /** For an update that is a prebuilt release: whether its publisher gave a checksum. */
+  update_verified?: boolean | null
   /** For a prebuilt release: whether its publisher gave a checksum. */
   verified?: boolean | null
   env?: Record<string, string>
