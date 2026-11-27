@@ -104,6 +104,8 @@ command = ["<enoxian-home>/adapters/claude-agent-acp/0.69.0/node_modules/.bin/cl
 - The **table key** (`claude`, `codex`) is the name you mention: `@claude …`.
 - `command` is argv — no shell, so no quoting or injection concerns.
 - `working_dir` (optional) is relative to the workspace root.
+- `env` (optional) is a table of extra environment variables for the process.
+  Registry installs fill it with what the publisher requires.
 
 The allowlist is the security gate: a mention of an agent not listed here is
 ignored. Missing file = pull, no agents = the device reacts to nothing. The
@@ -134,6 +136,13 @@ enox agent list
 enox agent plugins
 enox agent install codex-acp
 enox agent install claude
+
+# Browse the ACP Registry and add an agent from it (see below).
+enox agent plugins --registry --search gemini
+enox agent install gemini
+
+# Remove a plugin's handle and the files downloaded for it.
+enox agent uninstall gemini
 
 # Add (or replace) an agent. Everything after `--` is the launch command.
 # This remains available for custom, already-installed executables.
@@ -278,6 +287,42 @@ no adapter to install, nothing to pin, and no Node.js:
   ```bash
   enox agent install openclaw
   ```
+
+#### Agents from the ACP Registry
+
+Beyond the built-ins, any agent listed in the public
+[ACP Registry](https://github.com/agentclientprotocol/registry) can be added.
+Find them under **Device Settings → Agents → ACP Registry**, or:
+
+```bash
+enox agent plugins --registry          # what is available on this device
+enox agent install gemini              # add one; it answers to @gemini
+enox agent install goose --as g        # or pick the handle yourself
+```
+
+The registry index is fetched when you list plugins (at most once a day; `enox
+agent registry refresh` fetches it now) and cached in `~/.enoxian/registry/`.
+For each agent Enoxian picks, in order: a prebuilt release for this platform
+(no runtime needed), its npm package (needs Node.js 22+), or its Python package
+(needs [uv](https://docs.astral.sh/uv/)). Installing works like the built-ins —
+an explicit, pinned, one-time download — with three additions:
+
+- **Checksums.** A prebuilt release is checked against the SHA-256 its publisher
+  lists. Some publishers list none; those install only with
+  `--allow-unverified` (or by confirming in Device Settings).
+- **Pinned until you update.** What you installed is recorded in
+  `~/.enoxian/registry/installed/`, so a newer registry entry never changes what
+  a mention launches. When one exists, `enox agent plugins` shows
+  `update-available` and Device Settings shows **UPDATE**; apply it with
+  `enox agent install <id> --upgrade`.
+- **Handles.** An agent answers to its registry id minus any `-acp` suffix.
+  Installing refuses a handle that a built-in or one of your own agents already
+  uses; pick another with `--as`.
+
+Registry agents are third-party code: Device Settings shows the source, license
+and project link before installing. Where the registry lists the same package
+as a built-in (Claude, Codex, Pi), the built-in is used. Switching a registry
+agent off in Device Settings uninstalls it.
 
 For custom adapter or native plugin manifests, see
 [agent integration details](../development/reference/agent-integration.md#plugin-manifests).

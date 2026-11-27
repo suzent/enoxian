@@ -13,7 +13,9 @@
 //!   the coding agent is the agent).
 
 pub mod acp;
+pub mod acp_registry;
 pub mod ambient;
+pub mod archive;
 pub mod auth_terminal;
 pub mod authentication;
 pub mod cards;

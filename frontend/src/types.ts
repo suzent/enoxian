@@ -188,16 +188,37 @@ export interface AgentSummary {
   status: 'ready' | 'missing' | 'runtime_download'
 }
 
+export interface AgentPluginRegistryInfo {
+  name: string
+  license: string
+  repository?: string
+  website?: string
+  icon?: string
+}
+
 export interface AgentPlugin {
   id: string
   agent: string
   /** Empty for a native plugin, which pins no version. */
   version: string
   driver: 'acp' | 'argv'
-  /** 'npm' for a pinned adapter Enoxian installs, 'native' for a CLI that speaks ACP itself. */
-  kind: 'npm' | 'native'
+  /** 'npm' for a pinned adapter Enoxian installs, 'native' for a CLI that speaks ACP itself,
+   *  'binary' for a prebuilt release, 'uvx' for a pinned Python package installed with uv. */
+  kind: 'npm' | 'native' | 'binary' | 'uvx'
   /** False for a native plugin, which never uses Node. */
   requires_node: boolean
+  /** Whether this plugin needs `uv`, and whether it is on PATH. */
+  requires_uv?: boolean
+  uv_installed?: boolean
+  /** 'builtin', 'local' (a manifest in ~/.enoxian/plugins) or 'registry' (the ACP Registry). */
+  origin?: 'builtin' | 'local' | 'registry'
+  /** Display name, license and links for a registry plugin. */
+  registry?: AgentPluginRegistryInfo | null
+  /** The registry's current version, when it differs from the installed one. */
+  update_version?: string | null
+  /** For a prebuilt release: whether its publisher gave a checksum. */
+  verified?: boolean | null
+  env?: Record<string, string>
   /** Where to get the CLI when a native plugin is missing. */
   install_url: string
   package: string

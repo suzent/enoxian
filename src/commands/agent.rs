@@ -36,13 +36,47 @@ pub fn list() -> Result<()> {
     Ok(())
 }
 
+fn matches_search(plugin: &crate::agent::plugin::PluginView, query: &str) -> bool {
+    let query = query.to_lowercase();
+    let name = plugin
+        .registry
+        .as_ref()
+        .map(|r| r.name.as_str())
+        .unwrap_or("");
+    [
+        plugin.id.as_str(),
+        plugin.agent.as_str(),
+        name,
+        plugin.about.as_str(),
+    ]
+    .iter()
+    .any(|field| field.to_lowercase().contains(&query))
+}
+
 /// `enox agent plugins` — show deterministic managed adapter availability.
-pub fn plugins() -> Result<()> {
+pub async fn plugins(registry: bool, search: Option<String>) -> Result<()> {
+    crate::agent::acp_registry::refresh_quietly().await;
     println!(
         "managed adapter root: {}",
         crate::agent::plugin::adapters_dir()?.display()
     );
-    for plugin in crate::agent::plugin::views() {
+    let all: Vec<_> = crate::agent::plugin::views()
+        .into_iter()
+        .filter(|p| {
+            search
+                .as_deref()
+                .map(|q| matches_search(p, q))
+                .unwrap_or(true)
+        })
+        .collect();
+    // A registry agent that is not installed is only a listing entry; it is
+    // shown in its own section, and only on request.
+    let (available, shown): (Vec<_>, Vec<_>) = all.into_iter().partition(|p| {
+        p.origin == "registry"
+            && p.state == crate::agent::plugin::PluginState::Missing
+            && !p.configured
+    });
+    for plugin in shown {
         let runtime = match plugin.runtime_installed {
             Some(true) => format!(
                 "  cli={}",
@@ -73,14 +107,29 @@ pub fn plugins() -> Result<()> {
                     .unwrap_or_else(|| "(need 22+ with npm)".to_string())
             )
         };
+        let uv = if plugin.requires_uv && !plugin.uv_installed {
+            "  UV-MISSING"
+        } else {
+            ""
+        };
         // Native plugins pin no version, so there is no "v" to print.
         let version = if plugin.version.is_empty() {
             format!("[{}]", plugin.kind)
         } else {
             format!("v{}", plugin.version)
         };
+        let origin = if plugin.origin == "registry" {
+            "  (acp registry)"
+        } else {
+            ""
+        };
+        let update = plugin
+            .update_version
+            .as_deref()
+            .map(|v| format!("  update-available(v{v})"))
+            .unwrap_or_default();
         println!(
-            "  {}  @{}  {}  [{:?}]{}{}{}{}",
+            "  {}  @{}  {}  [{:?}]{}{}{}{}{}{}{}",
             plugin.id,
             plugin.agent,
             version,
@@ -97,25 +146,126 @@ pub fn plugins() -> Result<()> {
             },
             runtime,
             node,
+            uv,
+            origin,
+            update,
+        );
+    }
+    if registry {
+        println!(
+            "\nACP Registry ({}):",
+            crate::agent::acp_registry::REGISTRY_URL
+        );
+        if available.is_empty() {
+            println!("  (nothing to add — the registry may not be reachable yet)");
+        }
+        for plugin in &available {
+            let name = plugin
+                .registry
+                .as_ref()
+                .map(|r| r.name.as_str())
+                .unwrap_or("");
+            let license = plugin
+                .registry
+                .as_ref()
+                .map(|r| r.license.as_str())
+                .unwrap_or("");
+            let unverified = if plugin.verified == Some(false) {
+                "  unverified"
+            } else {
+                ""
+            };
+            let mut about: String = plugin.about.chars().take(70).collect();
+            if plugin.about.chars().count() > 70 {
+                about.push('…');
+            }
+            println!(
+                "  {}  @{}  v{}  [{}]  {name} ({license}){unverified}\n      {about}",
+                plugin.id, plugin.agent, plugin.version, plugin.kind
+            );
+        }
+        println!("\ninstall one with `enox agent install <id>` (add `--as <handle>` to rename it)");
+    } else if !available.is_empty() {
+        println!(
+            "\n{} more agents are available from the ACP Registry: `enox agent plugins --registry`",
+            available.len()
         );
     }
     Ok(())
+}
+
+/// `enox agent registry refresh`.
+pub async fn registry_refresh() -> Result<()> {
+    use crate::agent::acp_registry::{self, Refresh};
+    let outcome = acp_registry::refresh(true).await?;
+    let installable = acp_registry::cached()
+        .iter()
+        .filter(|a| acp_registry::to_manifest(a).is_some())
+        .count();
+    let total = acp_registry::cached().len();
+    let what = match outcome {
+        Refresh::Updated => "updated",
+        Refresh::NotModified | Refresh::Fresh => "unchanged",
+    };
+    println!("✓ ACP Registry {what}: {total} agents, {installable} installable on this device");
+    Ok(())
+}
+
+/// Describe a registry plugin before installing it: this is third-party code
+/// the user is about to run, so say what and from where.
+fn describe_registry_install(plugin: &crate::agent::plugin::PluginView, upgrade: bool) {
+    let Some(info) = &plugin.registry else {
+        return;
+    };
+    let version = if upgrade {
+        plugin.update_version.as_deref().unwrap_or(&plugin.version)
+    } else {
+        &plugin.version
+    };
+    println!(
+        "→ {} v{version} from the ACP Registry (third-party)",
+        info.name
+    );
+    match plugin.kind.as_str() {
+        "binary" => println!(
+            "  prebuilt release, {}",
+            if plugin.verified == Some(true) {
+                "checked against its published SHA-256"
+            } else {
+                "NO published checksum"
+            }
+        ),
+        "uvx" => println!("  PyPI package {} via uv", plugin.package),
+        _ => println!("  npm package {}", plugin.package),
+    }
+    if !info.license.is_empty() {
+        println!("  license: {}", info.license);
+    }
+    if let Some(repo) = info.repository.as_deref().or(info.website.as_deref()) {
+        println!("  source:  {repo}");
+    }
 }
 
 /// `enox agent install <plugin>` — the explicit networked install phase.
 ///
 /// For a native plugin nothing is networked at all: it only checks the CLI is
 /// present and writes the handle, so the output must not claim an install.
-pub async fn install(plugin: String) -> Result<()> {
-    let native = crate::agent::plugin::find(&plugin)
-        .map(|entry| entry.manifest.kind == crate::agent::plugin::Kind::Native)
-        .unwrap_or(false);
+pub async fn install(plugin: String, options: crate::agent::plugin::InstallOptions) -> Result<()> {
+    // A registry id typed before the index was ever fetched still resolves.
+    crate::agent::acp_registry::refresh_quietly().await;
+    let view = crate::agent::plugin::views()
+        .into_iter()
+        .find(|p| Some(p.id.clone()) == crate::agent::plugin::find(&plugin).map(|e| e.manifest.id));
+    let native = view.as_ref().map(|v| v.kind == "native").unwrap_or(false);
+    if let Some(view) = &view {
+        describe_registry_install(view, options.upgrade);
+    }
     if native {
         println!("→ checking that the '{plugin}' CLI is installed");
     } else {
-        println!("→ checking prerequisites for adapter '{plugin}'");
+        println!("→ checking prerequisites for '{plugin}'");
     }
-    let command = crate::agent::plugin::install(&plugin).await?;
+    let command = crate::agent::plugin::install_with(&plugin, &options).await?;
     let verb = if native {
         "configured (nothing downloaded)"
     } else {
@@ -128,7 +278,26 @@ pub async fn install(plugin: String) -> Result<()> {
     ) {
         println!("  using the authenticated Claude Code CLI through CLAUDE_CODE_EXECUTABLE");
     }
-    println!("  mention the configured agent in chat; no package download occurs at runtime.");
+    if let Some(handle) = crate::agent::plugin::find(&plugin).map(|e| e.manifest.agent) {
+        println!("  mention @{handle} in chat; no package download occurs at runtime.");
+    }
+    Ok(())
+}
+
+/// `enox agent uninstall <plugin>`.
+pub fn uninstall(plugin: String) -> Result<()> {
+    let removed = crate::agent::plugin::uninstall(&plugin)?;
+    match (&removed.handle, removed.files) {
+        (None, false) => println!("nothing to remove for '{plugin}'"),
+        _ => {
+            if let Some(handle) = &removed.handle {
+                println!("✓ removed @{handle}");
+            }
+            if removed.files {
+                println!("✓ deleted the files downloaded for '{plugin}'");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -167,6 +336,11 @@ pub fn add(
             command,
             driver,
             working_dir,
+            // Editing the command keeps the variables its installer set.
+            env: cfg
+                .resolve(&name)
+                .map(|c| c.env.clone())
+                .unwrap_or_default(),
             ..Default::default()
         }
         .inheriting_delegation(cfg.resolve(&name)),

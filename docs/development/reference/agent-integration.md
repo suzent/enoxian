@@ -92,6 +92,38 @@ install_url = "https://example.com/install"
 about = "My tool, speaking ACP directly."
 ```
 
+An npm manifest may also set `args` (appended after the pinned executable) and
+an `env` table, both copied into the agent's handle.
+
+Two further kinds exist for agents installed from the ACP Registry, and work in
+local manifests too:
+
+- `kind = "binary"` — a prebuilt release. `archive` is its `https://` URL,
+  `sha256` its published checksum (lowercase hex; omit only when the publisher
+  gives none, which makes installation require `--allow-unverified`), and
+  `binary` the executable's relative path inside the unpacked release. Gzip,
+  bzip2 and plain tar archives, zip files, and bare executables are recognised
+  by content. `package` must be omitted.
+- `kind = "uvx"` — a PyPI package installed with `uv tool install` into the
+  plugin's own directory. `package` is the PyPI name and `binary` the script it
+  installs (normally the same).
+
+```toml
+id = "mytool"
+agent = "mytool"
+kind = "binary"
+version = "1.2.0"
+archive = "https://example.com/mytool-1.2.0-darwin-arm64.tar.gz"
+sha256 = "<64 hex characters>"
+binary = "bin/mytool"
+args = ["acp"]
+env = { MYTOOL_NO_UPDATE = "1" }
+```
+
+Registry entries rank below built-ins and local manifests: a clashing id, or
+an npm package a built-in already installs, keeps the earlier entry. Installed
+registry manifests are frozen to `~/.enoxian/registry/installed/<id>.toml`.
+
 ## Session persistence
 
 acp agents get continuity per **(circle, agent)**. After each run, enoxian

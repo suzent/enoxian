@@ -101,6 +101,12 @@ pub struct AgentCommand {
     /// Working directory relative to the workspace root; defaults to the root.
     #[serde(default)]
     pub working_dir: Option<String>,
+    /// Extra environment for the launched process, on top of the daemon's own.
+    /// Registry-installed agents use it for the variables their publisher
+    /// requires (usually switching off a self-updater, which would otherwise
+    /// replace the version this device pinned).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
     /// Read from configs written before engagement settings were scoped, and
     /// folded into the global scope on load. Never written back.
     ///

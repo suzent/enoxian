@@ -17,6 +17,7 @@ import AgentAuthentication, { useAgentAuthentication } from './AgentAuthenticati
 import DeciderPicker, { RECOMMENDED_DECIDER, WARDEN_SAMPLES } from './DeciderPicker'
 import { describeDecision } from './WardenSettings'
 import { OPEN_CEILING, RECOMMENDED_VERSION, RECOMMENDED_WINDOW_SECS } from './RecommendedSetup'
+import { isListedPlugin } from '../lib/agentPlugins'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
@@ -65,8 +66,10 @@ function AgentsStep({ circleId, onNext, onSkip }: { circleId?: string | null; on
   const refresh = useCallback(async () => {
     try {
       const [p, d, cfg] = await Promise.all([getAgentPlugins(), discoverAgents(), getAgentConfig()])
-      const managed = new Set(p.plugins.map(x => x.agent))
-      setPlugins(p.plugins)
+      // Registry agents not on this device are not suggestions for setup.
+      const listed = p.plugins.filter(isListedPlugin)
+      const managed = new Set(listed.map(x => x.agent))
+      setPlugins(listed)
       setExtra(d.agents.filter(a => a.installed && !managed.has(a.name)))
       setConfigured(cfg.agents.map(a => a.name))
       setError(null)

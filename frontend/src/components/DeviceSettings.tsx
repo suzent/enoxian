@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { Bot, RadioTower, Laptop, Users, SlidersHorizontal } from 'lucide-react'
 import type { AgentConfigView, AgentPlugin, ConnectivitySettings, DiscoveredAgent } from '../types'
 import type { IdentityInfo } from '../api'
-import { getAgentConfigFor, getAgentPlugins, discoverAgents, installAgentPlugin, setEngagement, addAgent, removeAgent, getConnectivitySettings, setForceRelay, getIdentity, setIdentity } from '../api'
+import { getAgentConfigFor, getAgentPlugins, discoverAgents, installAgentPlugin, uninstallAgentPlugin, refreshAgentRegistry, setEngagement, addAgent, removeAgent, getConnectivitySettings, setForceRelay, getIdentity, setIdentity } from '../api'
 import { useApp } from '../context/AppContext'
 import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
 import EngagementSettings, { type Patch } from './EngagementSettings'
@@ -13,6 +13,9 @@ import AgentAuthentication, { useAgentAuthentication } from './AgentAuthenticati
 import AgentCards from './AgentCards'
 import WardenSettings from './WardenSettings'
 import RecommendedSetup from './RecommendedSetup'
+import AgentRegistry from './AgentRegistry'
+import { isListedPlugin } from '../lib/agentPlugins'
+import type { InstallPluginOptions } from '../api'
 
 type SettingsTab = 'device' | 'agents' | 'behaviour' | 'connectivity' | 'membership'
 
@@ -161,14 +164,19 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
     }
   }
 
-  const installPlugin = async (plugin: AgentPlugin) => {
+  const installPlugin = async (plugin: AgentPlugin, options: InstallPluginOptions = {}) => {
     setInstallingPlugin(plugin.id)
     try {
-      await run(() => installAgentPlugin(plugin.id))
+      await run(() => installAgentPlugin(plugin.id, options))
     } finally {
       setInstallingPlugin(null)
     }
   }
+  // A registry agent switched off is uninstalled: its files and pinned record
+  // go too, so it returns to the registry list rather than lingering here.
+  const disablePlugin = (plugin: AgentPlugin) => run(() => plugin.origin === 'registry'
+    ? uninstallAgentPlugin(plugin.id)
+    : removeAgent(plugin.agent))
 
   const submitAdd = () => {
     const parts = command.trim().split(/\s+/).filter(Boolean)
@@ -185,7 +193,10 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
       ...patch,
     }))
 
-  const managedNames = new Set((plugins || []).map(plugin => plugin.agent))
+  // Registry agents not on this device are browsed separately, and their
+  // default handles must not hide a custom agent of the same name.
+  const listedPlugins = (plugins || []).filter(isListedPlugin)
+  const managedNames = new Set(listedPlugins.map(plugin => plugin.agent))
   const customAgents = cfg?.agents.filter(agent => !managedNames.has(agent.name)) || []
   const activeCircle = circles.find(circle => circle.circle_id === activeCircleId)
 
@@ -289,24 +300,26 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
           {activeTab === 'agents' && auth.error && <p role="alert" className="text-[11px] font-mono">{auth.error}</p>}
           {activeTab === 'agents' && cfg && (
             <>
-              {plugins && plugins.length > 0 && (
+              {listedPlugins.length > 0 && (
                 <section>
                   <div className="flex items-baseline justify-between border-b border-obsidian pb-1 mb-1">
                     <span className="font-mono text-[11px] font-bold">AGENT ADAPTERS</span>
                     {/* Only npm adapters are pinned; a native plugin is whatever
                         CLI the user installed, so do not claim otherwise. */}
                     <span className="font-mono text-[8px] text-slate">
-                      {plugins.every(p => p.kind === 'npm') ? 'LOCAL · PINNED' : 'LOCAL'}
+                      {listedPlugins.every(p => p.kind === 'npm') ? 'LOCAL · PINNED' : 'LOCAL'}
                     </span>
                   </div>
                   <div className="divide-y divide-obsidian/20">
-                    {plugins.map(plugin => {
+                    {listedPlugins.map(plugin => {
                       const native = plugin.kind === 'native'
+                      const fromRegistry = plugin.origin === 'registry'
                       const runtimeMissing = plugin.runtime_installed === false
                       // A native plugin never uses Node, so it must not be
                       // gated on a runtime it does not have.
                       const nodeMissing = plugin.requires_node && !plugin.node_runtime_installed
-                      const prerequisitesMissing = runtimeMissing || nodeMissing
+                      const uvMissing = !!plugin.requires_uv && !plugin.uv_installed
+                      const prerequisitesMissing = runtimeMissing || nodeMissing || uvMissing
                       const ready = plugin.state === 'ready' && plugin.configured && !prerequisitesMissing
                       const installing = installingPlugin === plugin.id || plugin.state === 'installing'
                       // Nothing is downloaded for a native plugin: enabling it
@@ -322,13 +335,17 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                           ? plugin.node_runtime_version
                             ? `Node.js ${plugin.node_runtime_version} is too old · requires 22+ with npm`
                             : 'Node.js 22+ with npm required'
+                        : uvMissing
+                          ? 'uv required'
                         : ready
                         ? 'Ready'
                         : plugin.legacy_configured
                           ? 'Runtime download · migrate'
                           : enabled
                             ? 'Needs repair'
-                            : plugin.state === 'ready' || native ? 'Off' : 'Off · downloads a pinned adapter when turned on'
+                            : plugin.state === 'ready' || native ? 'Off'
+                              : fromRegistry ? 'Off · downloads the pinned release when turned on'
+                              : 'Off · downloads a pinned adapter when turned on'
                       return (
                       <div key={plugin.id} className="agent-card">
                         <div className="agent-card__name">
@@ -337,6 +354,9 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                             ? `Runs your installed ${plugin.runtime_program} CLI, which speaks ACP itself. Nothing is downloaded.`
                             : `Runs your installed ${plugin.runtime_program} CLI through a pinned adapter. Its login and settings stay yours.`) : undefined}>
                             {plugin.version ? `v${plugin.version}` : 'native ACP'}</span>
+                          {fromRegistry && <span className="agent-card__badge" title={plugin.registry
+                            ? `${plugin.registry.name} from the ACP Registry${plugin.registry.license ? ` · ${plugin.registry.license}` : ''}`
+                            : 'From the ACP Registry'}>REGISTRY</span>}
                         </div>
                         {/* A ready agent's status line is its sign-in state. */}
                         {ready ? (
@@ -353,6 +373,14 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                             )}
                           </>
                         )}
+                        {plugin.update_version && enabled && !installing && (
+                          <div className="agent-card__actions">
+                            <button type="button" className="agent-btn" disabled={busy}
+                              title={`Install v${plugin.update_version} from the ACP Registry`}
+                              onClick={() => installPlugin(plugin, { upgrade: true })}>
+                              UPDATE v{plugin.update_version}</button>
+                          </div>
+                        )}
                         <button type="button" role="switch" aria-checked={enabled || installing}
                           aria-label={`Enable @${plugin.agent}`}
                           title={prerequisitesMissing && !enabled ? 'Install the missing prerequisite first'
@@ -360,7 +388,7 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                             : `${plugin.package}@${plugin.version}`}
                           disabled={busy || installing || (prerequisitesMissing && !enabled)}
                           className={`settings-switch agent-card__extra${enabled || installing ? ' is-on' : ''}`}
-                          onClick={() => enabled ? run(() => removeAgent(plugin.agent)) : installPlugin(plugin)}>
+                          onClick={() => enabled ? disablePlugin(plugin) : installPlugin(plugin)}>
                           <span aria-hidden="true" />
                         </button>
                         {runtimeMissing && (
@@ -385,6 +413,12 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                             <a href="https://nodejs.org/en/download" target="_blank" rel="noreferrer">nodejs.org</a>, then restart Enoxian.
                           </p>
                         )}
+                        {uvMissing && (
+                          <p className="agent-card__note">
+                            Install uv from{' '}
+                            <a href="https://docs.astral.sh/uv/" target="_blank" rel="noreferrer">docs.astral.sh/uv</a>, then come back.
+                          </p>
+                        )}
                         {installing && (
                           <div className="agent-card__progress h-1 overflow-hidden bg-obsidian/10" role="progressbar" aria-label={`Installing @${plugin.agent}`}>
                             <div className="h-full w-2/3 bg-obsidian animate-pulse" />
@@ -394,6 +428,12 @@ export default function DeviceSettings({ onClose, circleId, membership, onOpenFi
                     )})}
                   </div>
                 </section>
+              )}
+
+              {plugins && (
+                <AgentRegistry plugins={plugins} busy={busy} installing={installingPlugin}
+                  onInstall={(plugin, options) => void installPlugin(plugin, options)}
+                  onRefresh={() => void run(refreshAgentRegistry)} />
               )}
 
               <details className="font-mono border-t border-obsidian/30 pt-2">

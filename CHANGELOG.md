@@ -41,6 +41,24 @@ refuses to publish a version whose section is missing or empty.
 
 ### Added
 
+- Agents from the public [ACP Registry](https://github.com/agentclientprotocol/registry)
+  can be added in **Device Settings → Agents → ACP Registry** or with
+  `enox agent plugins --registry` and `enox agent install <id>`. Prebuilt
+  releases, npm packages and Python (uv) packages are supported; each is pinned
+  to the version you add, `--as <handle>` picks the name it answers to, and an
+  available update is offered instead of applied.
+- `enox agent uninstall <id>` removes a plugin's handle and downloaded files;
+  `enox agent registry refresh` fetches the registry index now.
+- Configured agents may carry an `env` table of extra environment variables.
+
+### Security
+
+- Prebuilt agent releases are checked against the SHA-256 their publisher
+  lists; a release with no published checksum is installed only with explicit
+  consent (`--allow-unverified`, or confirming in Device Settings).
+
+### Added
+
 - Topic channels: a Circle's chat can split into `#general` plus named channels (`enox channels`, `enox chat --channel`, `enox say --channel`), listed under the active circle in the web sidebar with unread counts. Each agent keeps a separate conversation per channel, runs turns in different channels in parallel, replies in the channel it was asked in, and sees a short index of what is new in the other channels.
 - Channels can be renamed (`enox channels rename <channel> <name>`, or the pencil on a channel's row in the web sidebar, or a double-click on its name); history and agent conversations stay with the channel. The sidebar's channel list is also restyled.
 
