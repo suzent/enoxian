@@ -16,8 +16,13 @@ on:
 permissions:
   contents: read
 
+# Each push to main gets a group of its own. A push run only checks what
+# changed since the previous tip, so a later push cancelling it would leave
+# that change never checked on main — a docs-only merge landing mid-run
+# would drop the Rust merge before it. Pull requests still cancel their own
+# superseded runs.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || (github.event_name == 'push' && github.sha) || github.ref }}
   cancel-in-progress: true
 
 env:
