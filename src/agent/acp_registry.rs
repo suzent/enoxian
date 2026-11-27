@@ -228,6 +228,8 @@ pub async fn refresh(force: bool) -> Result<Refresh> {
         etag,
     };
     write_atomic(&meta_path(&dir), &serde_json::to_vec(&meta)?)?;
+    // A new index may point at new icons; cached ones are fetched again.
+    let _ = std::fs::remove_dir_all(icons_dir(&dir));
     Ok(Refresh::Updated)
 }
 
@@ -436,6 +438,130 @@ pub fn unfreeze(id: &str) -> Result<()> {
     }
 }
 
+/// Icons are small single-colour SVGs (16×16, `currentColor`); anything near
+/// this is not one.
+const MAX_ICON_BYTES: usize = 64 * 1024;
+
+fn icons_dir(dir: &Path) -> PathBuf {
+    dir.join("icons")
+}
+
+/// Which registry entry's icon each chat handle shows, keyed by lowercased
+/// handle.
+///
+/// Handles are all another device's presence says about its agents, so a
+/// handle is matched to an entry by the entry's id or its default handle
+/// (which also covers the built-ins: `claude`, `codex`, `pi`). Registry
+/// plugins installed here under a chosen handle are matched exactly; the same
+/// chosen handle on another device is not known here and gets no icon.
+pub fn icon_index() -> BTreeMap<String, String> {
+    icon_index_from(&cached(), &installed())
+}
+
+/// Icons for built-in agents the registry does not list, shipped in the
+/// binary: `(handle, svg)`. The handle doubles as the icon id, and wins over a
+/// registry entry of the same name, since the handle means the built-in.
+const BUILTIN_ICONS: &[(&str, &[u8])] = &[("suzent", include_bytes!("icons/suzent.svg"))];
+
+fn builtin_icon(id: &str) -> Option<&'static [u8]> {
+    BUILTIN_ICONS
+        .iter()
+        .find(|(handle, _)| *handle == id)
+        .map(|(_, svg)| *svg)
+}
+
+fn icon_index_from(
+    agents: &[Agent],
+    installed: &[(PluginManifest, PathBuf)],
+) -> BTreeMap<String, String> {
+    let mut index = BTreeMap::new();
+    let with_icon = |id: &str| agents.iter().any(|a| a.id == id && a.icon.is_some());
+    for agent in agents.iter().filter(|a| a.icon.is_some()) {
+        index.insert(agent.id.to_ascii_lowercase(), agent.id.clone());
+    }
+    for agent in agents.iter().filter(|a| a.icon.is_some()) {
+        index
+            .entry(default_handle(&agent.id).to_ascii_lowercase())
+            .or_insert_with(|| agent.id.clone());
+    }
+    for (manifest, _) in installed {
+        if with_icon(&manifest.id) {
+            index.insert(manifest.agent.to_ascii_lowercase(), manifest.id.clone());
+        }
+    }
+    for (handle, _) in BUILTIN_ICONS {
+        index.insert(handle.to_string(), handle.to_string());
+    }
+    index
+}
+
+/// Whether `bytes` look like an SVG document and nothing else.
+fn looks_like_svg(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let text = text.trim_start_matches('\u{feff}').trim_start();
+    (text.starts_with("<svg") || text.starts_with("<?xml")) && text.contains("<svg")
+}
+
+/// The SVG icon of registry entry `id`, from the cache or fetched once.
+///
+/// `None` when the entry has no icon or it cannot be had right now. The bytes
+/// are only ever served as an image, never put into the page as markup.
+pub async fn icon(id: &str) -> Option<Vec<u8>> {
+    if let Some(svg) = builtin_icon(id) {
+        return Some(svg.to_vec());
+    }
+    let dir = dir().ok()?;
+    let agent = read_cached(&dir)?.into_iter().find(|a| a.id == id)?;
+    let url = agent.icon.as_deref()?;
+    // The id names a file below; keep it to what registry ids look like.
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        || id.starts_with('.')
+    {
+        return None;
+    }
+    let path = icons_dir(&dir).join(format!("{id}.svg"));
+    if let Ok(bytes) = std::fs::read(&path) {
+        if looks_like_svg(&bytes) {
+            return Some(bytes);
+        }
+    }
+    if !url.starts_with("https://") {
+        return None;
+    }
+    let fetched = async {
+        let client = reqwest::Client::builder()
+            .timeout(FETCH_TIMEOUT)
+            .user_agent(concat!("enoxian/", env!("CARGO_PKG_VERSION")))
+            .build()?;
+        let response = client.get(url).send().await?.error_for_status()?;
+        if response.content_length().unwrap_or(0) as usize > MAX_ICON_BYTES {
+            bail!("icon is unexpectedly large");
+        }
+        let body = response.bytes().await?;
+        if body.len() > MAX_ICON_BYTES || !looks_like_svg(&body) {
+            bail!("not an SVG icon");
+        }
+        anyhow::Ok(body.to_vec())
+    }
+    .await;
+    match fetched {
+        Ok(bytes) => {
+            if std::fs::create_dir_all(icons_dir(&dir)).is_ok() {
+                let _ = write_atomic(&path, &bytes);
+            }
+            Some(bytes)
+        }
+        Err(e) => {
+            tracing::debug!("[registry] icon for {id} unavailable: {e:#}");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,6 +593,61 @@ mod tests {
       ],
       "extensions": []
     }"#;
+
+    #[test]
+    fn icons_are_found_by_id_default_handle_or_installed_handle() {
+        let mut agents = parse(SAMPLE.as_bytes()).unwrap().agents;
+        agents.push(Agent {
+            id: "claude-acp".into(),
+            icon: Some("https://cdn.example/claude.svg".into()),
+            ..agents[0].clone()
+        });
+        agents.push(Agent {
+            id: "plain-acp".into(),
+            icon: None,
+            ..agents[0].clone()
+        });
+        let droid = PluginManifest {
+            id: "factory-droid".into(),
+            agent: "Robo".into(),
+            ..Default::default()
+        };
+        let index = icon_index_from(&agents, &[(droid, PathBuf::new())]);
+        assert_eq!(index.get("gemini").map(String::as_str), Some("gemini"));
+        assert_eq!(index.get("claude").map(String::as_str), Some("claude-acp"));
+        assert_eq!(
+            index.get("claude-acp").map(String::as_str),
+            Some("claude-acp")
+        );
+        assert_eq!(index.get("robo").map(String::as_str), Some("factory-droid"));
+        assert!(!index.contains_key("plain"), "no icon, no entry");
+        assert_eq!(index.get("suzent").map(String::as_str), Some("suzent"));
+    }
+
+    #[test]
+    fn built_in_icons_are_single_colour_svgs() {
+        for (handle, svg) in BUILTIN_ICONS {
+            assert!(looks_like_svg(svg), "{handle}");
+            let text = std::str::from_utf8(svg).unwrap();
+            assert!(
+                text.contains("currentColor"),
+                "{handle} follows the text colour"
+            );
+            assert!(svg.len() < MAX_ICON_BYTES);
+        }
+        let served = futures::executor::block_on(icon("suzent"));
+        assert_eq!(served.as_deref(), builtin_icon("suzent"));
+    }
+
+    #[test]
+    fn only_svg_counts_as_an_icon() {
+        assert!(looks_like_svg(
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"
+        ));
+        assert!(looks_like_svg(b"\n<?xml version=\"1.0\"?><svg/>"));
+        assert!(!looks_like_svg(b"<html><svg/></html>"));
+        assert!(!looks_like_svg(b"\x89PNG\r\n"));
+    }
 
     #[test]
     fn parses_the_index_and_maps_npx_entries() {

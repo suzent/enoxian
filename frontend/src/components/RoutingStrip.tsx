@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { ChatMessage, ExecutionRun } from '../types'
+import AgentIcon from './AgentIcon'
 
 /**
  * Who a message was routed to, and what happened to it, under the message.
@@ -24,6 +25,19 @@ export interface RoutingStep {
   tone: 'done' | 'active' | 'failed' | 'muted'
   text: string
   detail?: string
+  /** For a step about one agent's turn: who, and how it went, so the strip
+   *  can set the name and the outcome apart instead of one run-on sentence. */
+  who?: string
+  status?: string
+  handedOn?: boolean
+}
+
+/** Where one agent's turn on the message stands, by its latest run. */
+export type AgentOutcome = 'queued' | 'working' | 'answered' | 'voted' | 'passed' | 'failed' | 'stopped'
+
+export interface RoutedAgent {
+  name: string
+  outcome: AgentOutcome
 }
 
 export interface Routing {
@@ -35,6 +49,8 @@ export interface Routing {
   state: RoutingState
   handedOn: boolean
   steps: RoutingStep[]
+  /** Every agent that took a turn on the message, in the order they started. */
+  agents: RoutedAgent[]
 }
 
 const STATUS_TEXT: Record<ExecutionRun['status'], string> = {
@@ -106,6 +122,7 @@ export function deriveRouting(
   if (visible.length === 0 && answered) return null
 
   const steps: RoutingStep[] = []
+  const outcomes = new Map<string, AgentOutcome>()
   const note = lead?.warden
   if (routedBy === 'warden' && note) {
     const by = note.decider ? ` (${note.decider}${note.fallback ? ', fell back to rules' : ''})` : ''
@@ -127,7 +144,16 @@ export function deriveRouting(
     // the others voted rather than passed.
     const voted = (r.warden?.mode ?? note?.mode) === 'vote'
     const status = r.status === 'completed' ? (replied ? 'answered' : voted ? 'voted' : 'passed') : STATUS_TEXT[r.status]
+    // Later runs for the same agent overwrite earlier ones: a retry that
+    // answered means the agent answered.
+    outcomes.set(who, replied && r.status === 'completed' ? 'answered'
+      : r.status === 'completed' ? (voted ? 'voted' : 'passed')
+      : r.status === 'running' ? 'working'
+      : r.status === 'pending' ? 'queued'
+      : TERMINAL_FAILURE.has(r.status) ? 'failed'
+      : 'stopped')
     steps.push({
+      who, status, handedOn: isHandOff(r),
       key: r.run_id,
       tone: r.status === 'pending' || r.status === 'running' ? 'active'
         : TERMINAL_FAILURE.has(r.status) ? 'failed'
@@ -156,14 +182,30 @@ export function deriveRouting(
     state,
     handedOn,
     steps,
+    agents: [...outcomes].map(([name, outcome]) => ({ name, outcome })),
   }
 }
 
 const STATE_TEXT: Record<RoutingState, string> = {
   working: 'working',
   answered: 'answered',
-  passed: 'passed',
+  passed: 'no reply',
   failed: 'no answer',
+}
+
+const OUTCOME_TEXT: Record<AgentOutcome, string> = {
+  queued: 'queued',
+  working: 'working',
+  answered: 'answered',
+  voted: 'voted',
+  passed: 'passed',
+  failed: 'failed',
+  stopped: 'stopped',
+}
+
+const MODE_TEXT: Record<string, string> = {
+  vote: 'vote',
+  together: 'together',
 }
 
 export default function RoutingStrip({ routing }: { routing: Routing }) {
@@ -174,9 +216,11 @@ export default function RoutingStrip({ routing }: { routing: Routing }) {
     : routing.routedBy === 'rotation' ? 'Rotation'
     : routing.routedBy === 'mention' ? 'Asked'
     : 'Agents'
+  // Agents that only joined after a failure are named in the steps, not here:
+  // the chip says who was chosen, and the dots say how each did.
+  const outcomeOf = new Map(routing.agents.map(a => [a.name, a.outcome]))
   const meta = [
-    routing.chosen.length > 1 ? `${routing.chosen.length} listeners` : routing.chosen.length === 1 ? 'one listener' : null,
-    routing.mode && routing.mode !== 'single' ? routing.mode : null,
+    routing.mode && routing.mode !== 'single' ? (MODE_TEXT[routing.mode] ?? routing.mode) : null,
     routing.confidence != null ? pct(routing.confidence) : null,
     routing.handedOn ? 'handed on' : null,
   ].filter(Boolean)
@@ -187,11 +231,20 @@ export default function RoutingStrip({ routing }: { routing: Routing }) {
         className="chat-routing__chip"
         aria-expanded={expanded}
         onClick={() => setOpen(!expanded)}
+        title={expanded ? 'Hide how this message was routed' : 'Show how this message was routed'}
       >
         <span className="chat-routing__caret" aria-hidden="true">▸</span>
         <span className="chat-routing__who">{who}</span>
-        {routing.chosen.length > 0 && <span aria-hidden="true">→</span>}
-        {routing.chosen.length > 0 && <span className="chat-routing__agents">{routing.chosen.join(', ')}</span>}
+        {routing.chosen.map(name => {
+          const outcome = outcomeOf.get(name)
+          return (
+            <span key={name} className={`chat-routing__agent chat-routing__agent--${outcome ?? 'queued'}`} title={outcome ? `${name}: ${OUTCOME_TEXT[outcome]}` : name}>
+              <span className="chat-routing__dot-inline" aria-hidden="true" />
+              <AgentIcon name={name} size={11} className="chat-routing__agent-icon" />
+              {name}
+            </span>
+          )
+        })}
         {meta.map(m => <span key={m} className="chat-routing__meta">· {m}</span>)}
         <span className={`chat-routing__state chat-routing__state--${routing.state}`}>{STATE_TEXT[routing.state]}</span>
       </button>
@@ -200,7 +253,15 @@ export default function RoutingStrip({ routing }: { routing: Routing }) {
           {routing.steps.map(step => (
             <li key={step.key} className={`chat-routing__step chat-routing__step--${step.tone}`}>
               <span className="chat-routing__dot" aria-hidden="true" />
-              <span className="chat-routing__text">{step.text}</span>
+              {step.who ? (
+                <span className="chat-routing__text chat-routing__text--agent">
+                  {step.handedOn && <span className="chat-routing__handoff">handed on to</span>}
+                  <span className="chat-routing__name">{step.who}</span>
+                  <span className={`chat-routing__outcome chat-routing__outcome--${step.tone}`}>{step.status}</span>
+                </span>
+              ) : (
+                <span className="chat-routing__text">{step.text}</span>
+              )}
               {step.detail && <span className="chat-routing__detail">{step.detail}</span>}
             </li>
           ))}

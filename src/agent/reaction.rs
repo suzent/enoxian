@@ -581,6 +581,52 @@ fn drain_ambient(
                 .cloned()
         })
         .collect();
+    // Agents that are broken on this device sit the room out (see `health`):
+    // rotation, the warden and the retries below all choose from what is left.
+    let (listeners, left_out): (Vec<String>, Vec<(String, super::health::Problem)>) = {
+        let mut usable = Vec::new();
+        let mut out = Vec::new();
+        for name in listeners {
+            match super::health::left_out(&name, now) {
+                Some(problem) => out.push((name, problem)),
+                None => usable.push(name),
+            }
+        }
+        (usable, out)
+    };
+    // Said only when it left a message with nobody: a message another agent
+    // took is explained by that run, and its notes are cleared when it runs.
+    let explain_left_out = |message_id: &str| {
+        for (name, problem) in &left_out {
+            note(
+                state,
+                message_id,
+                Some(name),
+                &format!("left out: {}", problem.reason()),
+            );
+        }
+    };
+    if listeners.is_empty() && !left_out.is_empty() {
+        // Everyone who reads this room is broken here. Settled rather than
+        // held: answering hours-old messages once someone signs in would be
+        // stranger than having missed them, and they can be retried by hand.
+        let reason = match left_out.len() {
+            1 => "the only agent reading this room is unavailable on this device",
+            _ => "every agent reading this room is unavailable on this device",
+        };
+        // Like having no listener at all: new messages are recorded as
+        // passed over, and failed ones waiting for another try are settled.
+        for message in &undecided {
+            ledger.record(&message.id, Decision::Skipped(reason.into()), now);
+            explain_left_out(&message.id);
+        }
+        for message in &reopened {
+            ledger.settle(&message.id, Decision::Skipped(reason.into()), now);
+            explain_left_out(&message.id);
+            note(state, &message.id, None, reason);
+        }
+        return undecided.len() + reopened.len();
+    }
     if listeners.is_empty() {
         // Nobody is listening, so nothing is undecided in any meaningful sense.
         // Recording them keeps the drain O(new messages) instead of rescanning
@@ -645,6 +691,17 @@ fn drain_ambient(
         let mut requeued = 0;
         inbox.set_per_agent_limit(cfg.max_queued_per_agent);
         for run_id in &state_of.never_started {
+            // Not an agent left out here: its turn did not start because it
+            // is broken, and putting it back would only refuse it again.
+            let listening = entries.iter().any(|e| {
+                &e.run_id == run_id
+                    && listeners
+                        .iter()
+                        .any(|l| l.eq_ignore_ascii_case(&e.request.agent))
+            });
+            if !listening {
+                continue;
+            }
             match inbox.retry(run_id, settings.max_relay_turns, now) {
                 Ok(_) => requeued += 1,
                 Err(error) => tracing::debug!("[agent] could not requeue {run_id}: {error}"),
@@ -1707,6 +1764,24 @@ async fn run_next_cancellable(
         let Some(cmd) = cfg.resolve(&request.agent) else {
             continue;
         };
+        // An unaddressed turn for an agent that is broken here launches only
+        // as its one probe. The rest never ran, so they end as not started:
+        // the next drain offers the message to another listener.
+        if request.ambient {
+            let now = chrono::Utc::now().timestamp();
+            if let Err(problem) = super::health::may_launch(&request.agent, &entry.run_id, now) {
+                let reason = format!("left out: {}", problem.reason());
+                inbox.transition(
+                    &entry.run_id,
+                    Status::Pending,
+                    Status::Expired,
+                    Some(reason.clone()),
+                    now,
+                )?;
+                note(state, &request.message.id, Some(&request.agent), &reason);
+                continue;
+            }
+        }
         if !inbox.transition(
             &entry.run_id,
             Status::Pending,
@@ -1716,6 +1791,8 @@ async fn run_next_cancellable(
         )? {
             continue;
         }
+        // A turn for an agent that was left out is its probe.
+        super::health::starting(&request.agent, chrono::Utc::now().timestamp());
         let _ = crate::api::execution::publish(state, inbox);
         // A private delivery is admitted only through this device's own API,
         // whatever name it is given as said by.
@@ -1752,7 +1829,10 @@ async fn run_next_cancellable(
         )
         .await;
         let (status, detail) = match result {
-            Ok(detail) => (Status::Completed, detail),
+            Ok(detail) => {
+                super::health::recovered(&request.agent);
+                (Status::Completed, detail)
+            }
             Err(error) if error.is::<crate::proposal::runs::ConversationBusy>() => (
                 Status::Pending,
                 Some("waiting for the previous conversation turn".into()),
@@ -1769,6 +1849,16 @@ async fn run_next_cancellable(
             Err(error) => {
                 let reason = concise_error(&error);
                 tracing::warn!("[agent] run {} failed: {error:#}", entry.run_id);
+                // A failure that is the agent's, not the message's, keeps it
+                // out of the room's listeners until it works again.
+                if let Some(problem) = super::health::classify(&error) {
+                    tracing::warn!(
+                        "[agent] {} {}; leaving it out of the listeners",
+                        request.agent,
+                        problem.reason()
+                    );
+                    super::health::failed(&request.agent, problem, chrono::Utc::now().timestamp());
+                }
                 publish_relay_skipped(state, &request.agent, &request.message.id, &reason);
                 (Status::Failed, Some(reason))
             }
@@ -4414,6 +4504,127 @@ mod tests {
             .recent(5)
             .iter()
             .any(|d| d.reason.contains("needs a decider")));
+    }
+
+    /// A listener whose sign-in expired sits the room out: the message goes to
+    /// the others, and the reason is recorded against it. With nobody left,
+    /// the message is passed over rather than handed to a failure.
+    #[tokio::test]
+    async fn a_broken_listener_sits_the_room_out() {
+        use super::super::health;
+        use super::super::warden::WardenMode;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = super::super::inbox::Inbox::open(dir.path(), 100).unwrap();
+        let handled = super::super::handled::HandledMentions::load(dir.path());
+        let wake = tokio::sync::Notify::new();
+        let ledger = ledger_at_startup(dir.path());
+        let broken = "fake-acp:say-a#health-out";
+        let fine = "fake-acp:say-b#health-in";
+        let cfg = voting_config(&[broken, fine], WardenMode::Off);
+        health::failed(
+            broken,
+            health::Problem::SignIn,
+            chrono::Utc::now().timestamp(),
+        );
+
+        add_chat(
+            &state,
+            &room_message(
+                "q1",
+                "Could someone look at why the relay keeps reconnecting?",
+            ),
+        );
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &cfg);
+        let offered: Vec<String> = inbox
+            .entries()
+            .iter()
+            .map(|e| e.request.agent.clone())
+            .collect();
+        assert_eq!(offered, vec![fine.to_string()]);
+
+        // Only the broken one reads the room: nobody is offered anything.
+        let alone = voting_config(&[broken], WardenMode::Off);
+        add_chat(
+            &state,
+            &room_message("q2", "And is the relay server still on the old build?"),
+        );
+        drain_ambient(&state, &handled, &inbox, &ledger, &wake, &alone);
+        assert!(inbox.entries().iter().all(|e| e.request.message.id != "q2"));
+        assert!(ledger.decided("q2"));
+        assert!(state
+            .admission_log
+            .recent(20)
+            .iter()
+            .any(|d| d.message_id == "q2"
+                && d.agent.as_deref() == Some(broken)
+                && d.reason.contains("sign in")));
+
+        health::recovered(broken);
+    }
+
+    #[tokio::test]
+    async fn turns_queued_for_a_broken_agent_do_not_launch_behind_its_probe() {
+        use super::super::health;
+        use super::super::inbox::Status;
+        use super::super::warden::WardenMode;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = super::super::inbox::Inbox::open(dir.path(), 100).unwrap();
+        let agent = "fake-acp:say-a#health-probe-once";
+        let cfg = voting_config(&[agent], WardenMode::Off);
+        // Two unaddressed turns, from two channels, admitted while the agent
+        // was allowed in.
+        for (id, channel) in [("p1", None), ("p2", Some("ops"))] {
+            let mut request = super::super::inbox::tests::request(id, agent);
+            request.ambient = true;
+            request.message.mentions.clear();
+            request.message.channel = channel.map(str::to_string);
+            add_chat(&state, &request.message);
+            inbox
+                .admit(request, 20, chrono::Utc::now().timestamp())
+                .unwrap();
+        }
+        assert_eq!(inbox.entries().len(), 2);
+
+        // It broke, and its probe is due: a turn in another channel took it
+        // and is still running. Neither queued turn may launch behind it.
+        let now = chrono::Utc::now().timestamp();
+        health::failed(agent, health::Problem::SignIn, now - health::PROBE_EVERY);
+        assert!(health::may_launch(agent, "probe-elsewhere", now).is_ok());
+        run_next_for_agent(&state, &inbox, &cfg, Some(agent))
+            .await
+            .unwrap();
+        run_next_for_agent(&state, &inbox, &cfg, Some(agent))
+            .await
+            .unwrap();
+        for entry in inbox.entries() {
+            assert_eq!(
+                entry.status,
+                Status::Expired,
+                "{} never launched",
+                entry.run_id
+            );
+            assert!(entry
+                .detail
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("left out:"));
+        }
+
+        // An @mention still runs it.
+        let named = super::super::inbox::tests::request("p3", agent);
+        add_chat(&state, &named.message);
+        inbox.admit(named, 20, now).unwrap();
+        run_next_for_agent(&state, &inbox, &cfg, Some(agent))
+            .await
+            .unwrap();
+        let named = inbox
+            .entries()
+            .into_iter()
+            .find(|e| e.request.message.id == "p3")
+            .unwrap();
+        assert_eq!(named.status, Status::Completed);
+
+        health::recovered(agent);
     }
 
     #[tokio::test]

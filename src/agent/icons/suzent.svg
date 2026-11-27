@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24">
+  <!-- Suzent's mark (github.com/cyzus/suzent, frontend/public/favicon.svg) in
+       one colour: the square in currentColor, the eyes cut out of it. -->
+  <path fill="currentColor" fill-rule="evenodd" d="M4 0h16a4 4 0 0 1 4 4v16a4 4 0 0 1-4 4H4a4 4 0 0 1-4-4V4a4 4 0 0 1 4-4zM6.5 8A1.5 1.5 0 0 0 5 9.5v2A1.5 1.5 0 0 0 6.5 13h2a1.5 1.5 0 0 0 1.5-1.5v-2A1.5 1.5 0 0 0 8.5 8zM15.5 8A1.5 1.5 0 0 0 14 9.5v2a1.5 1.5 0 0 0 1.5 1.5h2a1.5 1.5 0 0 0 1.5-1.5v-2A1.5 1.5 0 0 0 17.5 8z"/>
+</svg>

@@ -154,6 +154,17 @@ impl AuthJobs {
                     }
                 }
             };
+            // A verified sign-in lets a left-out agent back into the room at
+            // once; one that still wants signing in stays out.
+            match outcome.0 {
+                Status::Ready => super::health::recovered(&id),
+                Status::AuthRequired => super::health::failed(
+                    &id,
+                    super::health::Problem::SignIn,
+                    chrono::Utc::now().timestamp(),
+                ),
+                _ => {}
+            }
             if let Some(job) = this.0.lock().unwrap().get_mut(&id) {
                 job.state.status = outcome.0;
                 job.state.error = outcome.1;

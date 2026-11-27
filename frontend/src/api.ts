@@ -128,6 +128,13 @@ export const installAgentPlugin = (pluginId: string, options: InstallPluginOptio
   post<{ ok: boolean; plugin: string; command: string[] }>(`/api/agent-plugins/${encodeURIComponent(pluginId)}/install`, options)
 export const uninstallAgentPlugin = (pluginId: string) =>
   post<{ ok: boolean; plugin: string }>(`/api/agent-plugins/${encodeURIComponent(pluginId)}/uninstall`, {})
+/** Which ACP Registry icon each agent handle (lowercased) shows. */
+export const getAgentIcons = () =>
+  get<{ icons: Record<string, string> }>('/api/agent-icons')
+/** A registry entry's SVG icon, as cached by this device. The token rides as
+ *  a query param because a CSS mask cannot send an Authorization header. */
+export const agentIconUrl = (id: string) =>
+  withToken(`/api/agent-icons/${encodeURIComponent(id)}.svg`)
 export const refreshAgentRegistry = () =>
   post<{ ok: boolean; fetched_at: string | null }>('/api/agent-registry/refresh', {})
 export const setAgentReaction = (reaction: 'push' | 'pull') =>

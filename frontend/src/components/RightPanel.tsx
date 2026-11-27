@@ -1,18 +1,21 @@
 import { ConfirmDialog } from './ui/Dialog'
 import ActionMenu, { type MenuAnchor } from './ui/ActionMenu'
 import { importWorkspaceFiles } from '../lib/workspaceUpload'
-import { X, UserPlus, FilePlus, ListPlus, Search, ChevronRight, Settings2, MoreHorizontal, Upload, Copy, Pencil, Trash2, PanelLeftOpen } from 'lucide-react'
+import { X, Laptop, User, UserPlus, FilePlus, ListPlus, Search, ChevronRight, Settings2, MoreHorizontal, Upload, Copy, Pencil, Trash2, PanelLeftOpen } from 'lucide-react'
 import CircleMembership from './CircleMembership'
 import DeviceSettings from './DeviceSettings'
 import InviteLink from './InviteLink'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Presence, Task, Member, PendingEntry, Proposal, InviteConnectivity } from '../types'
-import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, createFile, renameFile, deleteFile, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember, enableCircle, disableCircle, leaveCircle, getProposals } from '../api'
+import { getWho, getTasks, createTask, claimTask, doneTask, getFiles, createFile, renameFile, deleteFile, eventStream, inviteCircle, getMembers, getPending, approveMember, rejectMember, removeMember, enableCircle, disableCircle, leaveCircle, getProposals, getExecutions } from '../api'
 import ProposalsTab from './ProposalsTab'
 import { FileQuickView, type FileViewMode } from './EditorPanel'
 import { useApp } from '../context/AppContext'
 import { shortenAgentId, peerLabel } from '../lib/displayName'
 import SegmentedTabs, { type SegmentedTabOption } from './ui/SegmentedTabs'
+import { brokenAgents, healthKey, type BrokenAgent } from '../lib/agentHealth'
+import AgentFixBadge from './AgentFixBadge'
+import AgentIcon from './AgentIcon'
 
 interface Props {
   activityRef?: (element: HTMLDivElement | null) => void
@@ -49,6 +52,20 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
   const [tasks, setTasks] = useState<Task[]>([])
   const [files, setFiles] = useState<string[]>([])
   const [members, setMembers] = useState<Member[]>([])
+  // Agents broken on their device, from the synced run receipts. Read while
+  // the members list is open, which is where they are shown.
+  const [broken, setBroken] = useState<Map<string, BrokenAgent>>(new Map())
+  useEffect(() => {
+    setBroken(new Map())
+    if (!activeCircleId || activeTab !== 'members') return
+    let live = true
+    const refresh = () => getExecutions(activeCircleId)
+      .then(page => { if (live) setBroken(brokenAgents(page.runs ?? [])) })
+      .catch(() => {})
+    void refresh()
+    const timer = window.setInterval(refresh, 10_000)
+    return () => { live = false; window.clearInterval(timer) }
+  }, [activeCircleId, activeTab])
   const [pending, setPending] = useState<PendingEntry[]>([])
   const [proposals, setProposals] = useState<Proposal[]>([])
   const [newTaskTitle, setNewTaskTitle] = useState('')
@@ -590,8 +607,9 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
               return (
                 <div key={group.owner || group.devices[0]?.peer_id} className="flex flex-col gap-1">
                   <div className="flex items-center gap-1 min-w-0">
-                    <span className={`font-bold text-[10px] tracking-wide truncate ${isGroupSelf ? 'text-obsidian' : ''}`}>
-                      {groupLabel}{isGroupSelf ? ' ✦' : ''}
+                    <User size={12} className="shrink-0 text-slate" aria-hidden="true" />
+                    <span className={`font-bold text-[10px] tracking-wide truncate ${isGroupSelf ? 'text-obsidian' : ''}`} title="Person">
+                      {groupLabel}{isGroupSelf ? ' (you)' : ''}
                     </span>
                   </div>
                   {group.devices.map(device => {
@@ -600,42 +618,55 @@ export default function RightPanel({ activityRef, onFileSelect, selectedFile, ac
                     const statusKey = p ? (stale && p.status === 'online' ? 'stale' : p.status) : 'offline'
                     const isOnline = statusKey !== 'offline'
                     return (
-                      <div key={device.peer_id} className="ml-2 flex flex-col gap-0.5 pb-1 border-b border-dashed border-obsidian/15 last:border-0">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <span className={`sigil ${statusKey}`} aria-hidden="true" />
-                            <span className="font-bold truncate" title={device.agent_id}>{device.displayLabel}</span>
-                            <span className={`text-[9px] font-bold ${device.role === 'admin' ? 'text-obsidian' : 'text-slate/50'}`}>{device.role.toUpperCase()}</span>
-                          </div>
-                          <div className="flex items-center gap-1 shrink-0">
-                            {p?.current_file && <span className="text-[9px] text-slate truncate max-w-[60px]" title={p.current_file}>{p.current_file.split('/').pop()}</span>}
-                            {isAdmin && !device.isSelf && <button onClick={() => handleRemove(device.peer_id)} className="text-[9px] text-slate hover:text-obsidian font-bold px-1" title={`Remove ${device.displayLabel}`}>×</button>}
-                          </div>
+                      <div key={device.peer_id} className="member-device">
+                        <div className="member-device__head">
+                          <Laptop size={13} className="member-device__icon" aria-hidden="true" />
+                          <span className="member-device__name" title={`Device · ${device.agent_id}`}>{device.displayLabel}</span>
+                          <span className={`sigil ${statusKey}`} title={statusKey} aria-label={statusKey} />
+                          {device.role === 'admin' && <span className="member-device__role">ADMIN</span>}
+                          <span className="member-device__spacer" />
+                          {p?.current_file && <span className="text-[9px] text-slate truncate max-w-[60px]" title={p.current_file}>{p.current_file.split('/').pop()}</span>}
+                          {isAdmin && !device.isSelf && <button onClick={() => handleRemove(device.peer_id)} className="text-[9px] text-slate hover:text-obsidian font-bold px-1" title={`Remove ${device.displayLabel}`}>×</button>}
+                        </div>
+                        <div className="member-device__meta">
+                          {p ? <span>{age(p.last_seen)}</span> : <span>offline</span>}
+                          {isOnline && (device.isSelf ? (
+                            <span className="border border-slate/50 px-1 text-[8px] font-bold text-slate" title="This device">LOCAL</span>
+                          ) : p?.connections.length ? (
+                            p.connections.map(connection => (
+                              <span
+                                key={connection.kind}
+                                className={`border px-1 text-[8px] font-bold ${CONNECTION_BADGE[connection.kind]}`}
+                                title={connection.address}
+                              >
+                                {connection.kind.toUpperCase()}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="border border-slate/40 px-1 text-[8px] font-bold text-slate/70" title="No direct connection is currently observed by this device">UNKNOWN</span>
+                          ))}
                         </div>
                         {device.agents.length > 0 && (
-                          <div className="ml-3 flex flex-wrap gap-1">
-                            {device.agents.map(a => <span key={a} className="text-[9px] text-slate border border-obsidian/20 px-1">{a}{device.ambientAgents.includes(a) ? ' · listening' : ''}</span>)}
-                          </div>
-                        )}
-                        {p && <div className="ml-3 text-[9px] text-slate">{age(p.last_seen)}</div>}
-                        {isOnline && (
-                          <div className="ml-3 flex flex-wrap gap-1" aria-label="Active connection routes">
-                            {device.isSelf ? (
-                              <span className="border border-slate/50 px-1 text-[8px] font-bold text-slate" title="This device">LOCAL</span>
-                            ) : p?.connections.length ? (
-                              p.connections.map(connection => (
-                                <span
-                                  key={connection.kind}
-                                  className={`border px-1 text-[8px] font-bold ${CONNECTION_BADGE[connection.kind]}`}
-                                  title={connection.address}
-                                >
-                                  {connection.kind.toUpperCase()}
-                                </span>
-                              ))
-                            ) : (
-                              <span className="border border-slate/40 px-1 text-[8px] font-bold text-slate/70" title="No direct connection is currently observed by this device">UNKNOWN</span>
-                            )}
-                          </div>
+                          <ul className="member-agents" aria-label={`Agents on ${device.displayLabel}`}>
+                            {device.agents.map(a => {
+                              const problem = broken.get(healthKey(device.peer_id, a))
+                              const listening = device.ambientAgents.includes(a)
+                              const title = problem ? undefined
+                                : listening ? `@${a} reads this room and may answer messages nobody addressed` : `@${a} answers when mentioned`
+                              return (
+                                <li key={a} className={`member-agent${problem ? ' member-agent--broken' : ''}`} title={title}>
+                                  <AgentIcon name={a} className="member-agent__icon" />
+                                  <span className="member-agent__name">@{a}</span>
+                                  {problem
+                                    ? <span className="member-agent__state"><AgentFixBadge broken={problem} device={device.displayLabel} local={device.isSelf}
+                                        // Only this device's daemon is known to leave a broken agent out:
+                                        // another device may run an enox from before it did.
+                                        leftOut={device.isSelf && listening && problem.problem !== 'failing'} /></span>
+                                    : listening && <span className="member-agent__state">listening</span>}
+                                </li>
+                              )
+                            })}
+                          </ul>
                         )}
                       </div>
                     )

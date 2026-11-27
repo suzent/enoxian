@@ -10,6 +10,8 @@ import SidebarToggles from './components/SidebarToggles'
 import LandingPage from './components/LandingPage'
 import RecommendedSetup from './components/RecommendedSetup'
 import RitualTransition, { type RitualMode } from './components/RitualTransition'
+import DeviceSettings from './components/DeviceSettings'
+import { OPEN_AGENT_SETTINGS } from './lib/openAgentSettings'
 import { useApp } from './context/AppContext'
 import { leaveCircle } from './api'
 import { Trash2 } from 'lucide-react'
@@ -62,6 +64,13 @@ function Layout() {
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [fileMode, setFileMode] = useState<FileViewMode>('source')
   const [ritual, setRitual] = useState<{ mode: RitualMode; label?: string; circleId: string } | null>(null)
+  // One agent's settings, opened from a "⚠ sign-in" badge anywhere.
+  const [agentSettings, setAgentSettings] = useState<string | null>(null)
+  useEffect(() => {
+    const open = (event: Event) => setAgentSettings((event as CustomEvent<string>).detail)
+    window.addEventListener(OPEN_AGENT_SETTINGS, open)
+    return () => window.removeEventListener(OPEN_AGENT_SETTINGS, open)
+  }, [])
   const [showLanding, setShowLanding] = useState(false)
   const [recommendedAsked, setRecommendedAsked] = useState(false)
   const closeRecommended = useCallback(() => setRecommendedAsked(true), [])
@@ -422,6 +431,7 @@ function Layout() {
           </div>
         </div>
       )}
+      {agentSettings && <DeviceSettings key={agentSettings} focusAgent={agentSettings} onClose={() => setAgentSettings(null)} />}
     </>
   )
 }
