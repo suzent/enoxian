@@ -11,7 +11,9 @@
 //! It is let back in by any of: a turn that succeeds (an @mention still runs
 //! it, and is how someone who fixed it outside enoxian finds out); a sign-in
 //! from Settings that verifies; or, every [`PROBE_EVERY`], one message offered
-//! as a probe. Only this device's agents, and only in memory: a restart lets
+//! as a probe. The probe is one turn, reserved when it launches
+//! ([`may_launch`]): other unaddressed turns admitted for the agent meanwhile
+//! — one per channel, say — do not launch behind it. Only this device's agents, and only in memory: a restart lets
 //! every agent try again, which is what someone restarting expects.
 //!
 //! Nothing here is synced. Other devices learn about it the way they learn
@@ -50,6 +52,8 @@ struct Broken {
     problem: Problem,
     /// When a message may next be offered to it as a probe.
     probe_at: i64,
+    /// The unaddressed run that is its probe, once one has launched.
+    probe: Option<String>,
 }
 
 static BROKEN: Mutex<Option<HashMap<String, Broken>>> = Mutex::new(None);
@@ -133,6 +137,7 @@ pub fn failed(agent: &str, problem: Problem, now: i64) {
             Broken {
                 problem,
                 probe_at: now + PROBE_EVERY,
+                probe: None,
             },
         );
     })
@@ -154,6 +159,31 @@ pub fn starting(agent: &str, now: i64) {
         if let Some(broken) = all.get_mut(&key(agent)) {
             broken.probe_at = broken.probe_at.max(now + PROBE_EVERY);
         }
+    })
+}
+
+/// Whether the unaddressed turn `run_id` may launch for `agent` now, and why
+/// not if it may not.
+///
+/// A healthy agent's turns always may. A broken one's may only as its probe:
+/// the first such turn once a probe is due reserves it, and every other turn
+/// is refused until that probe has had its answer — so turns admitted while
+/// the probe was due, in several channels at once, cannot all launch. An
+/// @mention does not ask: whoever named the agent wants it to try.
+pub fn may_launch(agent: &str, run_id: &str, now: i64) -> Result<(), Problem> {
+    with(|all| {
+        let Some(broken) = all.get_mut(&key(agent)) else {
+            return Ok(());
+        };
+        if broken.probe.as_deref() == Some(run_id) {
+            return Ok(());
+        }
+        if broken.probe.is_none() && now >= broken.probe_at {
+            broken.probe = Some(run_id.to_string());
+            broken.probe_at = now + PROBE_EVERY;
+            return Ok(());
+        }
+        Err(broken.problem)
     })
 }
 
@@ -238,7 +268,31 @@ mod tests {
     }
 
     #[test]
+    fn one_probe_launches_and_the_rest_wait() {
+        let agent = "health-test-one-probe";
+        let now = 5_000;
+        failed(agent, Problem::SignIn, now);
+        assert_eq!(may_launch(agent, "run-a", now + 1), Err(Problem::SignIn));
+        let due = now + PROBE_EVERY;
+        // Two channels' turns were admitted while the probe was due.
+        assert_eq!(may_launch(agent, "run-a", due), Ok(()));
+        assert_eq!(may_launch(agent, "run-b", due), Err(Problem::SignIn));
+        assert_eq!(
+            may_launch(agent, "run-a", due),
+            Ok(()),
+            "the probe itself may retry"
+        );
+        // The probe failed: a fresh wait, and a fresh probe after it.
+        failed(agent, Problem::SignIn, due + 5);
+        assert_eq!(may_launch(agent, "run-b", due + 6), Err(Problem::SignIn));
+        assert_eq!(may_launch(agent, "run-b", due + 5 + PROBE_EVERY), Ok(()));
+        recovered(agent);
+        assert_eq!(may_launch(agent, "run-c", 0), Ok(()));
+    }
+
+    #[test]
     fn a_healthy_agent_is_never_left_out() {
+        assert_eq!(may_launch("health-test-never-failed", "r", 0), Ok(()));
         assert_eq!(left_out("health-test-never-failed", 0), None);
         starting("health-test-never-failed", 0);
         assert_eq!(left_out("health-test-never-failed", 1), None);

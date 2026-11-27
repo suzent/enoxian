@@ -691,6 +691,17 @@ fn drain_ambient(
         let mut requeued = 0;
         inbox.set_per_agent_limit(cfg.max_queued_per_agent);
         for run_id in &state_of.never_started {
+            // Not an agent left out here: its turn did not start because it
+            // is broken, and putting it back would only refuse it again.
+            let listening = entries.iter().any(|e| {
+                &e.run_id == run_id
+                    && listeners
+                        .iter()
+                        .any(|l| l.eq_ignore_ascii_case(&e.request.agent))
+            });
+            if !listening {
+                continue;
+            }
             match inbox.retry(run_id, settings.max_relay_turns, now) {
                 Ok(_) => requeued += 1,
                 Err(error) => tracing::debug!("[agent] could not requeue {run_id}: {error}"),
@@ -1753,6 +1764,24 @@ async fn run_next_cancellable(
         let Some(cmd) = cfg.resolve(&request.agent) else {
             continue;
         };
+        // An unaddressed turn for an agent that is broken here launches only
+        // as its one probe. The rest never ran, so they end as not started:
+        // the next drain offers the message to another listener.
+        if request.ambient {
+            let now = chrono::Utc::now().timestamp();
+            if let Err(problem) = super::health::may_launch(&request.agent, &entry.run_id, now) {
+                let reason = format!("left out: {}", problem.reason());
+                inbox.transition(
+                    &entry.run_id,
+                    Status::Pending,
+                    Status::Expired,
+                    Some(reason.clone()),
+                    now,
+                )?;
+                note(state, &request.message.id, Some(&request.agent), &reason);
+                continue;
+            }
+        }
         if !inbox.transition(
             &entry.run_id,
             Status::Pending,
@@ -4531,6 +4560,71 @@ mod tests {
                 && d.reason.contains("sign in")));
 
         health::recovered(broken);
+    }
+
+    #[tokio::test]
+    async fn turns_queued_for_a_broken_agent_do_not_launch_behind_its_probe() {
+        use super::super::health;
+        use super::super::inbox::Status;
+        use super::super::warden::WardenMode;
+        let (state, dir) = test_state("local", "suzy");
+        let inbox = super::super::inbox::Inbox::open(dir.path(), 100).unwrap();
+        let agent = "fake-acp:say-a#health-probe-once";
+        let cfg = voting_config(&[agent], WardenMode::Off);
+        // Two unaddressed turns, from two channels, admitted while the agent
+        // was allowed in.
+        for (id, channel) in [("p1", None), ("p2", Some("ops"))] {
+            let mut request = super::super::inbox::tests::request(id, agent);
+            request.ambient = true;
+            request.message.mentions.clear();
+            request.message.channel = channel.map(str::to_string);
+            add_chat(&state, &request.message);
+            inbox
+                .admit(request, 20, chrono::Utc::now().timestamp())
+                .unwrap();
+        }
+        assert_eq!(inbox.entries().len(), 2);
+
+        // It broke, and its probe is due: a turn in another channel took it
+        // and is still running. Neither queued turn may launch behind it.
+        let now = chrono::Utc::now().timestamp();
+        health::failed(agent, health::Problem::SignIn, now - health::PROBE_EVERY);
+        assert!(health::may_launch(agent, "probe-elsewhere", now).is_ok());
+        run_next_for_agent(&state, &inbox, &cfg, Some(agent))
+            .await
+            .unwrap();
+        run_next_for_agent(&state, &inbox, &cfg, Some(agent))
+            .await
+            .unwrap();
+        for entry in inbox.entries() {
+            assert_eq!(
+                entry.status,
+                Status::Expired,
+                "{} never launched",
+                entry.run_id
+            );
+            assert!(entry
+                .detail
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("left out:"));
+        }
+
+        // An @mention still runs it.
+        let named = super::super::inbox::tests::request("p3", agent);
+        add_chat(&state, &named.message);
+        inbox.admit(named, 20, now).unwrap();
+        run_next_for_agent(&state, &inbox, &cfg, Some(agent))
+            .await
+            .unwrap();
+        let named = inbox
+            .entries()
+            .into_iter()
+            .find(|e| e.request.message.id == "p3")
+            .unwrap();
+        assert_eq!(named.status, Status::Completed);
+
+        health::recovered(agent);
     }
 
     #[tokio::test]
