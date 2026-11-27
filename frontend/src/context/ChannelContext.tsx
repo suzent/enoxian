@@ -6,6 +6,8 @@ import { useApp } from './AppContext'
 /** Stable key for a channel id; `#general` has id null. */
 export const channelKey = (id: string | null | undefined) => id ?? ''
 
+const NO_CHANNELS: Channel[] = []
+
 interface ChannelContextValue {
   /** The active circle's channels, `#general` first. Empty until loaded. */
   channels: Channel[]
@@ -43,7 +45,11 @@ export function ChannelProvider({ children }: { children: ReactNode }) {
   // The channel open in each circle, kept per circle so switching circles
   // never pairs one circle's channel with another.
   const [channelByCircle, setChannelByCircle] = useState<Record<string, string | null>>({})
-  const [channels, setChannels] = useState<Channel[]>([])
+  // Kept per circle, like the open channel: switching circles then never shows
+  // the previous circle's channels under the new one, and switching back shows
+  // the cached list at once while it refreshes.
+  const [channelsByCircle, setChannelsByCircle] = useState<Record<string, Channel[]>>({})
+  const channels = (activeCircleId && channelsByCircle[activeCircleId]) || NO_CHANNELS
   const [unread, setUnread] = useState<Record<string, number>>({})
   const channel = (activeCircleId && channelByCircle[activeCircleId]) || null
   const channelRef = useRef(channel)
@@ -51,12 +57,13 @@ export function ChannelProvider({ children }: { children: ReactNode }) {
 
   const refreshRef = useRef<() => void>(() => {})
   useEffect(() => {
-    setChannels([])
     setUnread({})
     if (!activeCircleId) return
     let cancelled = false
     const refresh = () => {
-      getChannels(activeCircleId).then(list => { if (!cancelled) setChannels(list) }).catch(() => {})
+      getChannels(activeCircleId)
+        .then(list => { if (!cancelled) setChannelsByCircle(prev => ({ ...prev, [activeCircleId]: list })) })
+        .catch(() => {})
     }
     refreshRef.current = refresh
     refresh()
@@ -98,7 +105,10 @@ export function ChannelProvider({ children }: { children: ReactNode }) {
     if (!activeCircleId) return
     const renamed = await updateChannel(activeCircleId, id, { name })
     // Show the new name at once; the refresh confirms it.
-    setChannels(prev => prev.map(c => (c.id === id ? { ...c, name: renamed.name } : c)))
+    setChannelsByCircle(prev => ({
+      ...prev,
+      [activeCircleId]: (prev[activeCircleId] ?? []).map(c => (c.id === id ? { ...c, name: renamed.name } : c)),
+    }))
     refreshRef.current()
   }, [activeCircleId])
 

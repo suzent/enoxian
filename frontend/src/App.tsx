@@ -68,6 +68,22 @@ function Layout() {
   const [revealing, setRevealing] = useState(false)
   const [layoutPreferences, setLayoutPreferences] = useState(loadLayoutPreferences)
   const [mobileDrawer, setMobileDrawer] = useState<MobileDrawer>(null)
+  // Set only while a docked panel opens or closes, so the grid tracks animate
+  // for the toggle but follow the pointer, keyboard and window size instantly.
+  const [panelMotion, setPanelMotion] = useState(false)
+  const panelMotionTimer = useRef<number | null>(null)
+  const animatePanels = useCallback(() => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    setPanelMotion(true)
+    if (panelMotionTimer.current !== null) window.clearTimeout(panelMotionTimer.current)
+    panelMotionTimer.current = window.setTimeout(() => {
+      panelMotionTimer.current = null
+      setPanelMotion(false)
+    }, 260)
+  }, [])
+  useEffect(() => () => {
+    if (panelMotionTimer.current !== null) window.clearTimeout(panelMotionTimer.current)
+  }, [])
   const [compactLayout, setCompactLayout] = useState(() => window.matchMedia('(max-width: 960px)').matches)
   const [confirmRemovedLeave, setConfirmRemovedLeave] = useState(false)
   const [removedLeaveBusy, setRemovedLeaveBusy] = useState(false)
@@ -135,6 +151,8 @@ function Layout() {
     setMobileDrawer(d => d === drawer ? null : drawer)
 
   const openCircleDetails = (tab: RightPanelTab) => {
+    // Switching tabs in an open panel moves nothing; opening or closing it does.
+    if (!compactLayout && (!layoutPreferences.rightPanelOpen || layoutPreferences.rightPanelTab === tab)) animatePanels()
     setLayoutPreferences(current => ({ ...current, rightPanelOpen: current.rightPanelTab !== tab || !current.rightPanelOpen, rightPanelTab: tab }))
     if (compactLayout) setMobileDrawer(current => current === 'info' && layoutPreferences.rightPanelTab === tab ? null : 'info')
   }
@@ -145,6 +163,7 @@ function Layout() {
       return
     }
     setMobileDrawer(null)
+    animatePanels()
     setLayoutPreferences(current => ({
       ...current,
       rightPanelOpen: !current.rightPanelOpen,
@@ -157,6 +176,7 @@ function Layout() {
       return
     }
     setMobileDrawer(null)
+    animatePanels()
     setLayoutPreferences(current => ({
       ...current,
       leftPanelOpen: !current.leftPanelOpen,
@@ -260,7 +280,7 @@ function Layout() {
       {circles.length > 0 && (
         <div
           ref={shellRef}
-          className={`app-shell relative z-10 grid drawer-${mobileDrawer ?? 'none'}${layoutPreferences.leftPanelOpen ? ' left-panel-open' : ''}${layoutPreferences.rightPanelOpen ? ' right-panel-open' : ''}${isVoid ? ' app-shell--void' : ''}`}
+          className={`app-shell relative z-10 grid drawer-${mobileDrawer ?? 'none'}${layoutPreferences.leftPanelOpen ? ' left-panel-open' : ''}${layoutPreferences.rightPanelOpen ? ' right-panel-open' : ''}${isVoid ? ' app-shell--void' : ''}${panelMotion ? ' is-panel-moving' : ''}`}
           style={{
             '--left-panel-width': `${layoutPreferences.leftPanelWidth}px`,
             '--right-panel-width': `${layoutPreferences.rightPanelWidth}px`,
