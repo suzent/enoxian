@@ -263,6 +263,14 @@ pub fn router(daemon: DaemonState, token: Option<String>) -> Router {
             post(agent_config::install_plugin),
         )
         .route(
+            "/api/agent-plugins/{plugin_id}/uninstall",
+            post(agent_config::uninstall_plugin),
+        )
+        .route(
+            "/api/agent-registry/refresh",
+            post(agent_config::refresh_registry),
+        )
+        .route(
             "/api/agent-config/reaction",
             post(agent_config::set_reaction),
         )

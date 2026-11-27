@@ -31,6 +31,35 @@ use tokio::process::{Child, ChildStdin};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+/// What [`AcpSession`] launches: the argv, plus any environment the agent's
+/// configuration adds. Plain argv converts into one with no extra environment.
+#[derive(Clone, Copy)]
+pub struct Launch<'a> {
+    pub argv: &'a [String],
+    pub env: Option<&'a std::collections::BTreeMap<String, String>>,
+}
+
+impl<'a> From<&'a [String]> for Launch<'a> {
+    fn from(argv: &'a [String]) -> Self {
+        Self { argv, env: None }
+    }
+}
+
+impl<'a> From<&'a Vec<String>> for Launch<'a> {
+    fn from(argv: &'a Vec<String>) -> Self {
+        Self { argv, env: None }
+    }
+}
+
+impl<'a> From<&'a super::config::AgentCommand> for Launch<'a> {
+    fn from(cmd: &'a super::config::AgentCommand) -> Self {
+        Self {
+            argv: &cmd.command,
+            env: Some(&cmd.env),
+        }
+    }
+}
+
 use super::liveness::Activity;
 
 /// Supported major protocol version.
@@ -317,8 +346,8 @@ impl<H: ClientHooks> AcpSession<H> {
     /// silently replacing it with an empty conversation — except when the agent
     /// says the session does not exist ([`session_gone`]), which no retry can
     /// fix; then a fresh session starts and `was_resumed` stays false.
-    pub async fn start(
-        command: &[String],
+    pub async fn start<'a>(
+        command: impl Into<Launch<'a>>,
         workspace: &Path,
         hooks: H,
         resume: Option<&str>,
@@ -356,8 +385,8 @@ impl<H: ClientHooks> AcpSession<H> {
         Ok(session)
     }
 
-    pub async fn connect(
-        command: &[String],
+    pub async fn connect<'a>(
+        command: impl Into<Launch<'a>>,
         workspace: &Path,
         hooks: H,
         agent_id: &str,
@@ -365,11 +394,18 @@ impl<H: ClientHooks> AcpSession<H> {
         actor_token: Option<&str>,
         terminal_auth: bool,
     ) -> Result<Self> {
-        let (program, args) = command
+        let launch = command.into();
+        let (program, args) = launch
+            .argv
             .split_first()
             .ok_or_else(|| anyhow!("empty agent command"))?;
 
         let mut command = super::spawn::command(program, args);
+        // The agent's own variables go first so the actor identity below can
+        // never be overridden by a configured value.
+        if let Some(env) = launch.env {
+            command.envs(env);
+        }
         super::spawn::apply_actor_env(&mut command, agent_id, circle_id, actor_token);
         if let Some(id) = hooks.run_id() {
             command.env("ENOXIAN_RUN_ID", id);

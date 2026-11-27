@@ -180,10 +180,54 @@ pub async fn get_agent_config(
 
 // ── Managed adapter plugins ───────────────────────────────────────────────
 
-/// List built-in and third-party plugin manifests together with their actual
-/// versioned install/configuration state.
+/// List built-in and third-party plugin manifests, and the ACP Registry's
+/// agents, together with their actual versioned install/configuration state.
+///
+/// The registry index is refreshed first when stale, but only briefly: an
+/// offline device lists from its cache (or without registry entries).
 pub async fn list_plugins() -> impl IntoResponse {
-    Json(json!({ "plugins": plugin::views() }))
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        crate::agent::acp_registry::refresh_quietly(),
+    )
+    .await;
+    let plugins = tokio::task::spawn_blocking(plugin::views)
+        .await
+        .unwrap_or_default();
+    Json(json!({
+        "plugins": plugins,
+        "registry": {
+            "url": crate::agent::acp_registry::REGISTRY_URL,
+            "fetched_at": crate::agent::acp_registry::fetched_at(),
+        },
+    }))
+}
+
+/// Fetch the ACP Registry index now, regardless of the cache's age.
+pub async fn refresh_registry() -> axum::response::Response {
+    match crate::agent::acp_registry::refresh(true).await {
+        Ok(_) => Json(json!({
+            "ok": true,
+            "fetched_at": crate::agent::acp_registry::fetched_at(),
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("registry refresh failed: {e:#}") })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct InstallPluginRequest {
+    /// Registry plugins: mention under this handle instead of the default.
+    handle: Option<String>,
+    /// Registry plugins installed here: move to the registry's current version.
+    upgrade: bool,
+    /// Accept a prebuilt release that has no published checksum.
+    allow_unverified: bool,
 }
 
 /// Explicitly install/repair one pinned plugin, then configure its agent handle
@@ -192,10 +236,19 @@ pub async fn list_plugins() -> impl IntoResponse {
 pub async fn install_plugin(
     State(daemon): State<DaemonState>,
     Path(plugin_id): Path<String>,
+    body: Option<Json<InstallPluginRequest>>,
 ) -> axum::response::Response {
+    let req = body.map(|Json(r)| r).unwrap_or_default();
+    let options = plugin::InstallOptions {
+        handle: req.handle.filter(|h| !h.trim().is_empty()),
+        upgrade: req.upgrade,
+        allow_unverified: req.allow_unverified,
+    };
+    // Prebuilt releases can be hundreds of megabytes; the install marker's
+    // staleness window in `plugin::install_with` is longer than this.
     let result = tokio::time::timeout(
-        std::time::Duration::from_secs(300),
-        plugin::install(&plugin_id),
+        std::time::Duration::from_secs(20 * 60),
+        plugin::install_with(&plugin_id, &options),
     )
     .await;
     match result {
@@ -215,7 +268,25 @@ pub async fn install_plugin(
             .into_response(),
         Err(_) => (
             StatusCode::GATEWAY_TIMEOUT,
-            Json(json!({ "error": "plugin install timed out after 5 minutes" })),
+            Json(json!({ "error": "plugin install timed out after 20 minutes" })),
+        )
+            .into_response(),
+    }
+}
+
+/// Remove a plugin's handle and downloaded files.
+pub async fn uninstall_plugin(
+    State(daemon): State<DaemonState>,
+    Path(plugin_id): Path<String>,
+) -> axum::response::Response {
+    match plugin::uninstall(&plugin_id) {
+        Ok(removed) => {
+            crate::lifecycle::readvertise_local_agents(&daemon);
+            Json(json!({ "ok": true, "plugin": plugin_id, "removed": removed })).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("plugin uninstall failed: {e:#}") })),
         )
             .into_response(),
     }
@@ -524,6 +595,11 @@ pub async fn add_agent(
                 command: req.command.clone(),
                 driver,
                 working_dir: req.working_dir.clone(),
+                // Editing the command keeps the variables its installer set.
+                env: cfg
+                    .resolve(&name)
+                    .map(|c| c.env.clone())
+                    .unwrap_or_default(),
                 ..Default::default()
             }
             .inheriting_delegation(cfg.resolve(&name)),

@@ -115,9 +115,21 @@ export const getAgentConfig = () => get<AgentConfigView>('/api/agent-config')
 export const discoverAgents = () =>
   get<{ agents: DiscoveredAgent[] }>('/api/agent-config/discover')
 export const getAgentPlugins = () =>
-  get<{ plugins: AgentPlugin[] }>('/api/agent-plugins')
-export const installAgentPlugin = (pluginId: string) =>
-  post<{ ok: boolean; plugin: string; command: string[] }>(`/api/agent-plugins/${encodeURIComponent(pluginId)}/install`, {})
+  get<{ plugins: AgentPlugin[]; registry?: { url: string; fetched_at: string | null } }>('/api/agent-plugins')
+export interface InstallPluginOptions {
+  /** Registry plugins: mention under this handle instead of the default. */
+  handle?: string
+  /** Registry plugins installed here: move to the registry's current version. */
+  upgrade?: boolean
+  /** Accept a prebuilt release whose publisher gave no checksum. */
+  allow_unverified?: boolean
+}
+export const installAgentPlugin = (pluginId: string, options: InstallPluginOptions = {}) =>
+  post<{ ok: boolean; plugin: string; command: string[] }>(`/api/agent-plugins/${encodeURIComponent(pluginId)}/install`, options)
+export const uninstallAgentPlugin = (pluginId: string) =>
+  post<{ ok: boolean; plugin: string }>(`/api/agent-plugins/${encodeURIComponent(pluginId)}/uninstall`, {})
+export const refreshAgentRegistry = () =>
+  post<{ ok: boolean; fetched_at: string | null }>('/api/agent-registry/refresh', {})
 export const setAgentReaction = (reaction: 'push' | 'pull') =>
   post('/api/agent-config/reaction', { reaction })
 /** Change engagement settings in one scope.

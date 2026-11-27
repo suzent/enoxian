@@ -16,6 +16,8 @@ vi.mock('../../api', () => ({
   getAgentPlugins: vi.fn(async () => ({ plugins: [] })),
   discoverAgents: vi.fn(async () => ({ agents: [] })),
   installAgentPlugin: vi.fn(),
+  uninstallAgentPlugin: vi.fn(),
+  refreshAgentRegistry: vi.fn(),
   setEngagement: vi.fn(async () => ({ ok: true })),
   addAgent: vi.fn(),
   removeAgent: vi.fn(),
@@ -128,13 +130,79 @@ describe('settings recovery', () => {
     const hermes = await screen.findByRole('switch', { name: 'Enable @hermes' })
     expect(hermes).toHaveAttribute('aria-checked', 'false')
     await userEvent.click(hermes)
-    expect(installAgentPlugin).toHaveBeenCalledWith('hermes')
+    expect(installAgentPlugin).toHaveBeenCalledWith('hermes', {})
     const codex = screen.getByRole('switch', { name: 'Enable @codex' })
     expect(codex).toHaveAttribute('aria-checked', 'true')
     await userEvent.click(codex)
     expect(removeAgent).toHaveBeenCalledWith('codex')
     expect(screen.getByRole('switch', { name: 'Enable @openclaw' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: /ENABLE|INSTALL|CHECK AGAIN/ })).toBeNull()
+  })
+  it('lists registry agents apart, adds one under a chosen handle, and uninstalls it when switched off', async () => {
+    const { getAgentPlugins, installAgentPlugin, uninstallAgentPlugin, removeAgent } = await import('../../api')
+    const plugin = (id: string, extra: object) => ({
+      id, agent: id, version: '1.0.0', driver: 'acp', kind: 'npm', requires_node: true, install_url: '',
+      package: id, about: `${id} agent`, source: '', state: 'missing', configured: false, legacy_configured: false,
+      executable: '', node_runtime_installed: true, node_runtime_version: 'v24.0.0',
+      runtime_program: null, runtime_installed: null, runtime_login_command: null,
+      origin: 'registry', registry: { name: id.toUpperCase(), license: 'MIT' }, ...extra,
+    })
+    vi.mocked(getAgentPlugins).mockResolvedValue({ plugins: [
+      plugin('gemini', {}),
+      plugin('goose', { kind: 'binary', package: '', verified: false }),
+      plugin('cline', { state: 'ready', configured: true, update_version: '2.0.0' }),
+      plugin('kilo', { kind: 'binary', state: 'ready', configured: true, update_version: '3.0.0', update_verified: false }),
+      plugin('vibe', {}),
+    ] } as never)
+    vi.mocked(getAgentConfigFor).mockResolvedValue({
+      ...CONFIG, agents: [{ name: 'vibe', driver: 'acp', command: ['/usr/local/bin/vibe'], status: 'ready' }],
+    } as never)
+    render(<DeviceSettings onClose={vi.fn()} />)
+    await userEvent.click(screen.getByRole('tab', { name: 'Agents' }))
+
+    // An installed registry agent sits with the others, offers its update,
+    // and switching it off uninstalls it rather than only removing the handle.
+    const cline = await screen.findByRole('switch', { name: 'Enable @cline' })
+    expect(screen.queryByRole('switch', { name: 'Enable @gemini' })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'UPDATE v2.0.0' }))
+    expect(installAgentPlugin).toHaveBeenCalledWith('cline', { upgrade: true })
+    // An update with no published checksum asks before installing.
+    await userEvent.click(screen.getByRole('button', { name: 'UPDATE v3.0.0' }))
+    expect(installAgentPlugin).not.toHaveBeenCalledWith('kilo', expect.anything())
+    expect(screen.getByRole('alert')).toHaveTextContent('no checksum')
+    await userEvent.click(screen.getByRole('button', { name: 'Update unverified' }))
+    expect(installAgentPlugin).toHaveBeenCalledWith('kilo', { upgrade: true, allow_unverified: true })
+    await userEvent.click(cline)
+    expect(uninstallAgentPlugin).toHaveBeenCalledWith('cline')
+    expect(removeAgent).not.toHaveBeenCalledWith('cline')
+
+    // The rest are browsed in the registry section.
+    await userEvent.click(screen.getByText(/ACP REGISTRY/))
+    await userEvent.type(screen.getByLabelText('Search the ACP Registry'), 'gem')
+    expect(screen.queryByRole('button', { name: 'Add GOOSE' })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Add GEMINI' }))
+    const handle = screen.getByLabelText('Handle')
+    await userEvent.clear(handle)
+    await userEvent.type(handle, 'cline')
+    expect(screen.getByRole('alert')).toHaveTextContent('@cline is already in use')
+    await userEvent.clear(handle)
+    await userEvent.type(handle, 'gem')
+    await userEvent.click(screen.getByRole('button', { name: 'Add agent' }))
+    expect(installAgentPlugin).toHaveBeenCalledWith('gemini', { handle: 'gem' })
+
+    // A custom agent's handle is taken too, even though no plugin owns it.
+    await userEvent.clear(screen.getByLabelText('Search the ACP Registry'))
+    await userEvent.type(screen.getByLabelText('Search the ACP Registry'), 'vibe')
+    await userEvent.click(screen.getByRole('button', { name: 'Add VIBE' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('@vibe is already in use')
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    // An unverified release says so and is only added with explicit consent.
+    await userEvent.clear(screen.getByLabelText('Search the ACP Registry'))
+    await userEvent.click(screen.getByRole('button', { name: 'Add GOOSE' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('no checksum')
+    await userEvent.click(screen.getByRole('button', { name: 'Add unverified' }))
+    expect(installAgentPlugin).toHaveBeenCalledWith('goose', { allow_unverified: true })
   })
   it('preserves a custom agent draft after the server rejects it', async () => {
     const { addAgent } = await import('../../api')

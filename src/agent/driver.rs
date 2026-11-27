@@ -447,6 +447,7 @@ async fn run_argv(
     let rendered = cmd.render(task);
     let (program, args) = rendered.split_first().context("empty agent command")?;
     let mut command = super::spawn::command(program, args);
+    command.envs(&cmd.env);
     super::spawn::apply_actor_env(&mut command, actor.agent_id, actor.circle_id, actor.token);
     command.env("ENOXIAN_RUN_ID", &lease.record.session.session_id);
     if let Some(channel) = &lease.record.session.channel {
@@ -521,7 +522,7 @@ async fn run_acp(
     // Dropping the half-started session ends the agent's process tree.
     let started = tokio::select! {
         started = AcpSession::start(
-            &cmd.command,
+            cmd,
             run_dir,
             hooks,
             resume,

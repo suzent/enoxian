@@ -150,12 +150,34 @@ async fn main() -> anyhow::Result<()> {
                     .await
                 }
                 AgentAction::List => enoxian::commands::agent::list(),
-                AgentAction::Plugins => enoxian::commands::agent::plugins(),
-                AgentAction::Install { plugin } => {
-                    enoxian::commands::agent::install(plugin).await?;
+                AgentAction::Plugins { registry, search } => {
+                    enoxian::commands::agent::plugins(registry, search).await
+                }
+                AgentAction::Install {
+                    plugin,
+                    handle,
+                    upgrade,
+                    allow_unverified,
+                } => {
+                    let options = enoxian::agent::plugin::InstallOptions {
+                        handle,
+                        upgrade,
+                        allow_unverified,
+                    };
+                    enoxian::commands::agent::install(plugin, options).await?;
                     enoxian::commands::agent::readvertise(&client, &root).await;
                     Ok(())
                 }
+                AgentAction::Uninstall { plugin } => {
+                    enoxian::commands::agent::uninstall(plugin)?;
+                    enoxian::commands::agent::readvertise(&client, &root).await;
+                    Ok(())
+                }
+                AgentAction::Registry { action } => match action {
+                    enoxian::cli::RegistryAction::Refresh => {
+                        enoxian::commands::agent::registry_refresh().await
+                    }
+                },
                 AgentAction::Add {
                     name,
                     driver,

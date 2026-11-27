@@ -242,11 +242,38 @@ pub enum AgentAction {
     /// List this device's configured agents and reaction policy.
     List,
     /// List managed adapter plugins and their install/health state.
-    Plugins,
-    /// Install or repair a pinned managed adapter and configure its @handle.
+    Plugins {
+        /// Also list the ACP Registry agents not installed on this device.
+        #[arg(long)]
+        registry: bool,
+        /// Only show plugins whose id, handle, name or description contains this.
+        #[arg(long)]
+        search: Option<String>,
+    },
+    /// Install or repair a plugin and configure its @handle: a built-in
+    /// adapter, a local manifest, or an agent from the ACP Registry.
     Install {
-        /// Plugin id, e.g. `codex-acp` or `claude`.
+        /// Plugin id, e.g. `codex-acp`, `claude` or a registry id like `gemini`.
         plugin: String,
+        /// Mention a registry agent under this handle instead of its default.
+        #[arg(long = "as", value_name = "HANDLE")]
+        handle: Option<String>,
+        /// Install the registry's current version of an installed registry agent.
+        #[arg(long)]
+        upgrade: bool,
+        /// Install a prebuilt release even though its publisher gave no checksum.
+        #[arg(long)]
+        allow_unverified: bool,
+    },
+    /// Remove a plugin's @handle and the files downloaded for it.
+    Uninstall {
+        /// Plugin id, as shown by `enox agent plugins`.
+        plugin: String,
+    },
+    /// The ACP Registry of installable agents.
+    Registry {
+        #[command(subcommand)]
+        action: RegistryAction,
     },
     /// Add or replace an agent in agents.toml.
     ///
@@ -273,6 +300,12 @@ pub enum AgentAction {
         #[arg(value_parser = ["push", "pull"])]
         mode: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum RegistryAction {
+    /// Fetch the current ACP Registry index now.
+    Refresh,
 }
 
 #[derive(clap::Args)]

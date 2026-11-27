@@ -173,7 +173,7 @@ impl AuthJobs {
         let cwd = super::driver::working_dir(&base, cmd.working_dir.as_deref());
         tokio::fs::create_dir_all(&cwd).await?;
         let mut session = AcpSession::connect(
-            &cmd.command,
+            cmd,
             &cwd,
             Deny,
             id,
@@ -242,19 +242,23 @@ impl AuthJobs {
                             .cloned()
                             .unwrap_or(serde_json::json!([])),
                     )?;
-                    let env = serde_json::from_value(
-                        selected
-                            .get("env")
-                            .cloned()
-                            .unwrap_or(serde_json::json!({})),
-                    )?;
+                    let method_env: std::collections::BTreeMap<String, String> =
+                        serde_json::from_value(
+                            selected
+                                .get("env")
+                                .cloned()
+                                .unwrap_or(serde_json::json!({})),
+                        )?;
+                    // The method's own variables win over the agent's.
+                    let mut env = cmd.env.clone();
+                    env.extend(method_env);
                     let mut command = cmd.command.clone();
                     command.extend(args);
                     session.shutdown().await;
                     self.update(id, Status::Terminal);
                     super::auth_terminal::run(command, cwd.clone(), env).await?;
                     session = AcpSession::connect(
-                        &cmd.command,
+                        cmd,
                         &cwd,
                         Deny,
                         id,
@@ -276,7 +280,7 @@ impl AuthJobs {
                     self.update(id, Status::Terminal);
                     super::auth_terminal::run(command, cwd.clone(), Default::default()).await?;
                     session = AcpSession::connect(
-                        &cmd.command,
+                        cmd,
                         &cwd,
                         Deny,
                         id,
@@ -294,8 +298,7 @@ impl AuthJobs {
         session.shutdown().await;
         // A fresh connection must work too: task runs use their own process and actor identity.
         if matches!(action, Action::Login) {
-            let mut fresh =
-                AcpSession::connect(&cmd.command, &cwd, Deny, id, "", None, false).await?;
+            let mut fresh = AcpSession::connect(cmd, &cwd, Deny, id, "", None, false).await?;
             fresh.new_session().await?;
             fresh.shutdown().await;
         }
