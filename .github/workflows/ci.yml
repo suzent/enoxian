@@ -6,10 +6,10 @@ on:
   pull_request:
     branches: [main]
   merge_group:
-  # Advisories are published against code that has not changed, and pull
-  # requests now only audit when they touch dependencies. A weekly run keeps a
-  # new advisory against an untouched lockfile from going unnoticed when main
-  # is quiet; `changes` turns everything else off for it.
+  # Advisories are published against code that has not changed, and pushes
+  # only audit when they touch dependencies. Base images move the same way. A
+  # weekly run audits and rebuilds the bootstrap image so neither goes
+  # unnoticed when main is quiet; `changes` turns everything else off for it.
   schedule:
     - cron: "0 6 * * 1"
 
@@ -30,8 +30,16 @@ jobs:
   # Decides which jobs a pull request needs. Every job below is a required
   # status check, so nothing is filtered with workflow-level `paths:` — a
   # required check that never reports blocks the merge. A job skipped through
-  # `if:` reports as passing instead. Pushes to main and merge-queue runs build
-  # everything, which is what keeps the caches warm and catches rot.
+  # `if:` reports as passing instead.
+  #
+  # A push to main is classified the same way, against the previous tip of
+  # main. Re-running the full matrix after a frontend- or docs-only merge
+  # repeated checks the pull request had already passed on identical Rust
+  # inputs. Pull requests are not required to be up to date with main, so a
+  # merge can still combine two changes that never ran together — but only
+  # when Rust inputs changed, and then main runs everything Rust touches,
+  # the bootstrap image included. Merge-queue runs, manual runs and pushes
+  # whose previous tip is unknown still build everything.
   #
   # Dependent jobs fail open: if this job itself fails, they would otherwise be
   # skipped — and a skipped required check passes. So each one also runs
@@ -57,6 +65,7 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           areas=(workflows rust frontend installers audit docker)
@@ -68,10 +77,24 @@ jobs:
           }
 
           case "$EVENT" in
-            pull_request) ;;
+            pull_request)
+              git fetch --no-tags origin "$BASE_REF"
+              base="$(git merge-base FETCH_HEAD HEAD)"
+              ;;
+            push)
+              # A new branch reports an all-zero `before`, and a force push
+              # can name a commit this clone no longer has. Either way there
+              # is nothing trustworthy to diff against.
+              if [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+                set_all true
+                exit 0
+              fi
+              base="$BEFORE"
+              ;;
             schedule)
               set_all false
               echo "audit=true" >> "$GITHUB_OUTPUT"
+              echo "docker=true" >> "$GITHUB_OUTPUT"
               exit 0
               ;;
             *)
@@ -80,8 +103,6 @@ jobs:
               ;;
           esac
 
-          git fetch --no-tags origin "$BASE_REF"
-          base="$(git merge-base FETCH_HEAD HEAD)"
           changed="$(git diff --name-only "$base" HEAD)"
           printf 'Changed files:\n%s\n' "$changed"
 
@@ -99,20 +120,29 @@ jobs:
             fi
           }
 
-          matches workflows  '^\.github/'
           # The end-to-end scripts run in the test job against the built CLI.
-          matches rust       '^(src/|tests/|Cargo\.(toml|lock)$|build\.rs$|\.cargo/|rustfmt\.toml$|scripts/test-[^/]+\.sh$)'
+          rust='^(src/|tests/|Cargo\.(toml|lock)$|build\.rs$|\.cargo/|rustfmt\.toml$|scripts/test-[^/]+\.sh$)'
+          docker='^(Dockerfile$|\.dockerignore$|scripts/rendezvous/(release\.Dockerfile|docker-compose\.yml)$)'
+          # On main a source change rebuilds the image too: the release build
+          # it runs is the only place the image's own build is exercised
+          # against new code, and it is what keeps the image from rotting.
+          if [ "$EVENT" = push ]; then
+            docker="$docker|$rust"
+          fi
+
+          matches workflows  '^\.github/'
+          matches rust       "$rust"
           matches frontend   '^frontend/'
           # `.gitattributes` decides the scripts' line endings, which the
           # installers job guards against CRLF.
           matches installers '^(scripts/|\.gitattributes$)'
           matches audit      '^(Cargo\.(toml|lock)$|\.cargo/)'
-          # Only the image's own files. A source change cannot break the image
-          # in a way the Rust jobs miss: they compile the same code with the
-          # same toolchain and the `iroh-relay-server` feature. Rebuilding
-          # here meant an uncached six-minute release build on every code
-          # change; main and the merge queue still build it every time.
-          matches docker     '^(Dockerfile$|\.dockerignore$|scripts/rendezvous/(release\.Dockerfile|docker-compose\.yml)$)'
+          # On a pull request, only the image's own files. A source change
+          # cannot break the image in a way the Rust jobs miss: they compile
+          # the same code with the same toolchain and the `iroh-relay-server`
+          # feature. Rebuilding here meant an uncached six-minute release
+          # build on every code change; main rebuilds it on any Rust change.
+          matches docker     "$docker"
 
   workflows:
     name: Workflow lint
@@ -211,7 +241,23 @@ jobs:
       # references, breaking every PR at once. `--locked` uses the lockfile
       # cargo-audit published and tested against, so the tool's own tree stops
       # drifting under us.
+      #
+      # Compiling it took about two and a half minutes of every audit run. The
+      # built binary is cached for the week: a new 0.22.x still lands within
+      # seven days, and advisories come from the database fetched at run
+      # time, not from the binary.
+      - id: week
+        name: Cache week
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - id: audit-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-0.22-${{ runner.os }}-${{ steps.week.outputs.week }}
+
       - name: Install cargo-audit
+        if: steps.audit-cache.outputs.cache-hit != 'true'
         run: cargo install cargo-audit --locked --version ^0.22
 
       - name: Audit Rust dependencies
@@ -436,8 +482,9 @@ jobs:
     name: Bootstrap image
     needs: changes
     # A full release build is expensive, so a pull request only rebuilds when
-    # the image's own files changed. Every push to main rebuilds
-    # unconditionally, which is what keeps the image from rotting unnoticed.
+    # the image's own files changed. A push to main rebuilds whenever Rust
+    # inputs changed too, and the weekly run rebuilds regardless, which is
+    # what keeps the image from rotting unnoticed.
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.docker == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
