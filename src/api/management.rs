@@ -476,7 +476,20 @@ async fn hand_over_admin(
     if candidates.is_empty() {
         return Ok(None);
     }
-    let successor = admin_handover::choose_successor(&candidates, req.admin_to.as_deref())?;
+    let successor = admin_handover::choose_successor(&candidates, req.admin_to.as_deref())
+        .inspect_err(|_| {
+            // The refusal cannot say which condition each member missed, and
+            // "not admitted yet" (a device that just rejoined) reads the same
+            // to the user as "offline". Name it here for whoever debugs it.
+            for c in &candidates {
+                tracing::info!(
+                    "[admin-handover] {} not eligible: admitted={} connected={}",
+                    c.peer_id,
+                    c.admitted,
+                    c.connected
+                );
+            }
+        })?;
     admin_handover::hand_over(&state, &successor, admin_key_hex.trim())
         .await
         .map_err(|e| format!("could not hand the admin key over: {e}"))?;

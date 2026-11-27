@@ -331,7 +331,21 @@ udp = [a for a in addrs if '/udp/' in a and '/p2p/' in a]
 a = udp[0] if udp else ''
 print('/ip4/127.0.0.1/udp/' + a.split('/udp/')[1] if a else '')
 ")
-OUT=$(enox1 --circle "$CIRCLE_NAME" leave --yes 2>&1) || { echo "$OUT"; fail "admin leave failed"; }
+# The admin hands over only to a member that is connected and holds a current
+# MLS leaf. Daemon 2 rejoined just above with a fresh KeyPackage, and files
+# sync over the transport before daemon 1 commits its new leaf, so seeing
+# after-rejoin.txt does not mean it can take admin yet. No API reports MLS
+# standing; daemon 1's own answer to the leave does, and a refused leave
+# changes nothing. Wait on that, and fail on any other refusal.
+admin_leave() {
+    OUT=$(enox1 --circle "$CIRCLE_NAME" leave --yes 2>&1) && return 0
+    if grep -q "no other member is online" <<< "$OUT"; then
+        return 1
+    fi
+    echo "$OUT"
+    fail "admin leave failed"
+}
+wait_for "admin leave never found daemon 2 ready to take over" 60 admin_leave
 ok "daemon 1 (admin) left"
 d2_is_admin() { [[ -f "$D2_STATE/circles/$CIRCLE_ID/admin.key" ]]; }
 wait_for "daemon 2 never became admin" 30 d2_is_admin
