@@ -54,6 +54,7 @@ refuses to publish a version whose section is missing or empty.
 
 ### Changed
 
+- Panels, menus and dialogs in the web UI no longer have hard offset "brutalist" shadows. In-page panels rely on their borders alone, and menus, popovers and dialogs that float above the page get a soft drop shadow.
 - The built-in Claude Code agent now uses `claude-agent-acp` 0.112.0 (was
   0.69.0). Existing installs see it as an available upgrade.
 

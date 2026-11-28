@@ -226,7 +226,7 @@ export default function CircleManager({ onRitual }: Props) {
                       : 'NEW MEMBERS WAIT FOR YOUR EXPLICIT APPROVAL.'}
                   </p>
                 </div>
-                <button type="submit" className="w-full bg-obsidian text-alabaster py-3 font-bold hover:bg-slate transition-colors border-2 border-obsidian shadow-[2px_2px_0px_#111] active:translate-y-px active:translate-x-px active:shadow-none">
+                <button type="submit" className="w-full bg-obsidian text-alabaster py-3 font-bold hover:bg-slate transition-colors border-2 border-obsidian">
                   CREATE CIRCLE
                 </button>
               </form>
@@ -265,7 +265,7 @@ export default function CircleManager({ onRitual }: Props) {
                     CLAIMED FIRST-COME-FIRST-SERVE. LEAVE BLANK TO USE YOUR PEER ID.
                   </p>
                 </div>
-                <button type="submit" className="w-full bg-obsidian text-alabaster py-3 font-bold hover:bg-slate transition-colors border-2 border-obsidian shadow-[2px_2px_0px_#111] active:translate-y-px active:translate-x-px active:shadow-none">
+                <button type="submit" className="w-full bg-obsidian text-alabaster py-3 font-bold hover:bg-slate transition-colors border-2 border-obsidian">
                   JOIN CIRCLE
                 </button>
               </form>
@@ -279,10 +279,10 @@ export default function CircleManager({ onRitual }: Props) {
                   THIS WILL REMOVE ALL LOCAL CONFIGURATION. YOUR WORKSPACE FILES WILL BE UNTOUCHED.
                 </p>
                 <div className="flex gap-4">
-                  <button onClick={() => setModal(null)} className="flex-1 border-2 border-obsidian py-2 font-bold hover:bg-obsidian/5 transition-colors shadow-[2px_2px_0px_#111] active:translate-y-px active:translate-x-px active:shadow-none">
+                  <button onClick={() => setModal(null)} className="flex-1 border-2 border-obsidian py-2 font-bold hover:bg-obsidian/5 transition-colors">
                     CANCEL
                   </button>
-                  <button onClick={handleLeave} className="flex-1 bg-obsidian border-2 border-obsidian text-alabaster font-bold py-2 hover:bg-alabaster hover:text-obsidian transition-colors shadow-[2px_2px_0px_#000] active:translate-y-px active:translate-x-px active:shadow-none">
+                  <button onClick={handleLeave} className="flex-1 bg-obsidian border-2 border-obsidian text-alabaster font-bold py-2 hover:bg-alabaster hover:text-obsidian transition-colors">
                     CONFIRM LEAVE
                   </button>
                 </div>

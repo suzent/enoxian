@@ -454,7 +454,7 @@ export default function EditorPanel({ filePath, onBack, initialMode = 'source' }
     return (
       <main className="app-editor-panel flex min-h-0 items-center justify-center z-10 bg-transparent p-4">
         <div className="border-2 border-obsidian bg-alabaster p-10 font-mono text-[11px] text-slate
-                        shadow-[12px_12px_0px_rgba(17,17,17,0.12)] max-w-sm w-full text-center">
+                        max-w-sm w-full text-center">
           <div className="text-obsidian font-bold mb-2 text-[13px]">NO ARTIFACT SELECTED</div>
           <div>Select a file from the Artifact Filesystem to begin editing.</div>
         </div>
