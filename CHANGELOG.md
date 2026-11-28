@@ -52,6 +52,18 @@ refuses to publish a version whose section is missing or empty.
   `enox agent registry refresh` fetches the registry index now.
 - Configured agents may carry an `env` table of extra environment variables.
 
+### Changed
+
+- The built-in Claude Code agent now uses `claude-agent-acp` 0.112.0 (was
+  0.69.0). Existing installs see it as an available upgrade.
+
+### Fixed
+
+- Signing in to Claude Code from Device Settings on Windows no longer fails
+  with "localhost refused to connect" when the browser returns. The login
+  terminal was ended about five seconds after it opened, before the sign-in
+  could finish.
+
 ### Security
 
 - Prebuilt agent releases are checked against the SHA-256 their publisher

@@ -98,7 +98,7 @@ command = ["<enoxian-home>/adapters/codex-acp/1.1.14/node_modules/.bin/codex-acp
 
 [agents.claude]
 driver = "acp"
-command = ["<enoxian-home>/adapters/claude-agent-acp/0.69.0/node_modules/.bin/claude-agent-acp"]
+command = ["<enoxian-home>/adapters/claude-agent-acp/0.112.0/node_modules/.bin/claude-agent-acp"]
 ```
 
 - The **table key** (`claude`, `codex`) is the name you mention: `@claude …`.

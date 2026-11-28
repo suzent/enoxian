@@ -45,7 +45,7 @@ max_relay_turns = 20
 # proposal — review with `enox proposal list`.
 [agents.claude]
 driver = "acp"
-command = ["<enoxian-home>/adapters/claude-agent-acp/0.69.0/node_modules/.bin/claude-agent-acp"]
+command = ["<enoxian-home>/adapters/claude-agent-acp/0.112.0/node_modules/.bin/claude-agent-acp"]
 
 # ── Codex over ACP ────────────────────────────────────────────────────────────
 # enoxian speaks ACP to the Codex adapter (same mechanism as claude above).

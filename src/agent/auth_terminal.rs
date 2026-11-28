@@ -41,6 +41,21 @@ impl Drop for Handoff {
         let _ = std::fs::remove_file(self.0.join("launch.json"));
     }
 }
+/// Mark `path` as fresh now. The heartbeat and started files carry no data,
+/// only their modification time. Rewriting an empty file is not enough on
+/// Windows: `std::fs::write` opens the existing file and truncates it to the
+/// size it already has, and NTFS then leaves its last-write time alone. Both
+/// sides would read the file as stale after five seconds and end the login
+/// while the browser is still on the sign-in page. Setting the time
+/// explicitly behaves the same on every platform.
+fn touch(path: &Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?
+        .set_modified(SystemTime::now())
+}
 fn private_json(path: &Path, value: &Launch) -> Result<()> {
     crate::config::write_secret(path, serde_json::to_vec(value)?)
 }
@@ -63,7 +78,7 @@ pub async fn run(command: Vec<String>, cwd: PathBuf, env: BTreeMap<String, Strin
         &directory.join("launch.json"),
         &Launch { command, cwd, env },
     )?;
-    std::fs::write(directory.join("heartbeat"), [])?;
+    touch(&directory.join("heartbeat"))?;
     let exe = std::env::current_exe()?;
     let mut launcher;
     #[cfg(windows)]
@@ -130,7 +145,7 @@ pub async fn run(command: Vec<String>, cwd: PathBuf, env: BTreeMap<String, Strin
                 bail!("Could not open login terminal");
             }
         }
-        std::fs::write(directory.join("heartbeat"), [])?;
+        touch(&directory.join("heartbeat"))?;
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
@@ -160,7 +175,7 @@ async fn worker_inner(directory: &Path) -> Result<()> {
     if directory.join("cancel").exists() {
         return Ok(());
     }
-    std::fs::write(directory.join("started"), [])?;
+    touch(&directory.join("started"))?;
     let (program, args) = launch
         .command
         .split_first()
@@ -207,7 +222,7 @@ async fn worker_inner(directory: &Path) -> Result<()> {
             let _ = std::fs::remove_dir_all(directory);
             return Ok(());
         }
-        std::fs::write(directory.join("started"), [])?;
+        touch(&directory.join("started"))?;
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
     // All descendants belong to this completed login, including helper processes.
@@ -236,6 +251,29 @@ mod tests {
         drop(Handoff(directory.path().into()));
         assert!(!directory.path().join("launch.json").exists());
         assert!(directory.path().join("cancel").exists());
+    }
+
+    #[test]
+    fn touching_an_empty_file_renews_its_time() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("heartbeat");
+        touch(&path).unwrap();
+        let old = SystemTime::now() - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        touch(&path).unwrap();
+        let age = std::fs::metadata(&path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .elapsed()
+            .unwrap_or_default();
+        assert!(age < Duration::from_secs(5), "heartbeat still {age:?} old");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
     }
 
     #[tokio::test]
