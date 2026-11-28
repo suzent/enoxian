@@ -601,7 +601,6 @@ export default function LandingPage({ onEntered }: Props) {
           maxWidth: 'calc(100vw - 24px)',
           maxHeight: 'calc(100vh - 48px)',
           overflowY: 'auto',
-          padding: '0 6px 6px 0', // room for the card's offset shadow inside the scroll box
           opacity: isErupting ? 0 : 1,
           pointerEvents: isErupting ? 'none' : 'auto',
           transition: 'opacity 0.4s ease',
@@ -612,7 +611,6 @@ export default function LandingPage({ onEntered }: Props) {
           style={{
             background: '#fff',
             border: '2px solid #000',
-            boxShadow: '6px 6px 0 #000',
             position: 'relative',
           }}
         >

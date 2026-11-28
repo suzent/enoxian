@@ -455,7 +455,7 @@ export function buildAngelScene(mount: HTMLDivElement): AngelScene {
   revText.style.fontWeight = '900'
   revText.style.padding = '10px 28px'
   revText.style.border = '2px solid #fff'
-  revText.style.boxShadow = '6px 6px 0 #000'
+  revText.style.boxShadow = '0 12px 40px rgba(0, 0, 0, 0.35)'
   revText.style.letterSpacing = '0.08em'
   revText.style.textTransform = 'uppercase'
   overlay.appendChild(revText)
