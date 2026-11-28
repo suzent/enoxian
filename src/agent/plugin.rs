@@ -230,7 +230,7 @@ impl Origin {
 
 const CODEX_VERSION: &str = "1.1.14";
 const PI_VERSION: &str = "0.0.33";
-const CLAUDE_VERSION: &str = "0.69.0";
+const CLAUDE_VERSION: &str = "0.112.0";
 const CLAUDE_PLUGIN_ID: &str = "claude-agent-acp";
 
 fn builtins() -> Vec<CatalogEntry> {
