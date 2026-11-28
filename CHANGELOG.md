@@ -73,6 +73,7 @@ refuses to publish a version whose section is missing or empty.
 
 ### Fixed
 
+- An admin leaving a circle right after another device connected no longer fails with "no other member is online" or "circle state busy": a new connection counts as online as soon as it is up, and leaving waits a moment for sync to let go of the circle's state.
 - Switching circles in the web UI is smooth again: the channel list folds open and closed instead of jumping, never briefly shows the previous circle's channels, and the chat no longer re-renders its whole scrollback while the sidebar animates. Opening or closing a side panel now slides the chat column along with it instead of snapping.
 
 ## [0.16.0] — 2026-11-22

@@ -231,6 +231,8 @@ sleep 1
 ENOXIAN_DEVICE_LABEL="device-one" ENOXIAN_HOME="$D1_STATE" \
     "$ENOX" daemon run --port $D1_PORT >> "$TMPDIR_TEST/d1.log" 2>&1 &
 wait_for "daemon 1 never came back after restart" 40 daemon_up "$D1_STATE" $D1_PORT
+# Up is not serving: the circle's routes 404 until the daemon's sweep starts it.
+wait_for "daemon 1 never served the circle again after restart" 30 circle_live_1
 PEER_AFTER=$(curl1 "/circles/$CIRCLE_ID/api/status" | python3 -c "import sys,json;print(json.load(sys.stdin)['p2p']['peer_id'])")
 [[ "$PEER_BEFORE" == "$PEER_AFTER" ]] || fail "peer ID changed after restart: $PEER_BEFORE → $PEER_AFTER"
 ok "peer ID stable across restart"
@@ -331,7 +333,22 @@ udp = [a for a in addrs if '/udp/' in a and '/p2p/' in a]
 a = udp[0] if udp else ''
 print('/ip4/127.0.0.1/udp/' + a.split('/udp/')[1] if a else '')
 ")
-OUT=$(enox1 --circle "$CIRCLE_NAME" leave --yes 2>&1) || { echo "$OUT"; fail "admin leave failed"; }
+# The admin hands over only to a member that is connected and holds a current
+# MLS leaf. Daemon 2 rejoined just above, and its connections to daemon 1 are
+# still being torn down and redialed for a few seconds after, so seeing
+# after-rejoin.txt does not mean it is connected, or admitted, at the moment
+# the admin asks. No API reports either; daemon 1's own answer to the leave
+# does, and a refused leave changes nothing. Wait on that, and fail on any
+# other refusal.
+admin_leave() {
+    OUT=$(enox1 --circle "$CIRCLE_NAME" leave --yes 2>&1) && return 0
+    if grep -q "no other member is online" <<< "$OUT"; then
+        return 1
+    fi
+    echo "$OUT"
+    fail "admin leave failed"
+}
+wait_for "admin leave never found daemon 2 ready to take over" 60 admin_leave
 ok "daemon 1 (admin) left"
 d2_is_admin() { [[ -f "$D2_STATE/circles/$CIRCLE_ID/admin.key" ]]; }
 wait_for "daemon 2 never became admin" 30 d2_is_admin

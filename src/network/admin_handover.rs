@@ -34,6 +34,10 @@ use crate::state::AppState;
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 /// Covers opening the stream, both frames, and the successor writing the key.
 const HANDOVER_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often, and how patiently, reading the members retries a busy control
+/// document before leaving gives up with nothing changed.
+const BUSY_RETRIES: u32 = 10;
+const BUSY_BACKOFF: Duration = Duration::from_millis(50);
 
 #[derive(Serialize, Deserialize)]
 struct Offer {
@@ -114,11 +118,20 @@ pub async fn candidates(state: &AppState) -> Result<Vec<Candidate>> {
         binding: Option<String>,
         user: Option<String>,
     }
-    let (own_user, entries) = {
-        let txn = state
-            .control
-            .try_transact()
-            .map_err(|_| anyhow::anyhow!("circle state busy"))?;
+    // Sync holds the control document's write lock for a moment at a time, and
+    // more often right after a peer connects. Leaving straight after a member
+    // rejoined lost that race and answered "circle state busy" (CI run
+    // 44570290945), so wait it out briefly like the member handlers do.
+    let mut attempt: u32 = 0;
+    let (own_user, entries) = loop {
+        let Ok(txn) = state.control.try_transact() else {
+            attempt += 1;
+            if attempt >= BUSY_RETRIES {
+                anyhow::bail!("circle state busy");
+            }
+            tokio::time::sleep(BUSY_BACKOFF * attempt).await;
+            continue;
+        };
         let packages = txn.get_map(MLS_KEY_PACKAGES_KEY);
         let claims = txn.get_map(MLS_OWNER_CLAIMS_KEY);
         let verified_user = |peer_id: &str| {
@@ -153,7 +166,7 @@ pub async fn candidates(state: &AppState) -> Result<Vec<Candidate>> {
                     .collect()
             })
             .unwrap_or_default();
-        (verified_user(&state.peer_id), entries)
+        break (verified_user(&state.peer_id), entries);
     };
     let mls = state.mls.lock().await;
     Ok(entries
