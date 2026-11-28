@@ -275,7 +275,6 @@ body {
   background: var(--color-fd-card);
   border: 1px solid var(--enox-border);
   padding: 8px;
-  box-shadow: 4px 4px 0 var(--enox-border);
   max-height: 60vh;
   overflow-y: auto;
   min-width: 100%;
@@ -323,12 +322,11 @@ body {
   border: 1px solid var(--color-fd-border);
   background: var(--color-fd-card);
   text-decoration: none !important;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+  transition: border-color 0.18s ease, background-color 0.18s ease;
 }
 
 .document-card:hover {
   border-color: var(--enox-border);
-  box-shadow: 3px 3px 0 var(--enox-border);
 }
 
 .document-card strong {
